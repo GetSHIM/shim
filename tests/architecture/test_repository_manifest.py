@@ -46,7 +46,7 @@ def _resolve_ref(candidate: str) -> str | None:
     for ref in (candidate, f"origin/{candidate}"):
         try:
             result = subprocess.run(
-                ["git", "rev-parse", "--verify", "--quiet", ref],
+                ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{tree}}"],
                 cwd=ROOT,
                 check=False,
                 capture_output=True,
