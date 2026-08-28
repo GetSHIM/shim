@@ -1,0 +1,44 @@
+[project]
+name = "shim-enterprise"
+version = "0.1.0"
+description = "Enterprise extensions for the SHIM AI gateway"
+authors = [{ name = "SHIM Engineering" }]
+license = "Elastic-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "shim-gateway==0.1.0",
+  "fastapi>=0.109,<1",
+  "starlette>=1.3,<2",
+  "httpx>=0.28,<1",
+  "pydantic>=2.13,<3",
+  "prometheus-client>=0.25,<1",
+  "email-validator>=2.3,<3",
+  "sqlalchemy[asyncio]>=2.0.25,<3",
+  "alembic>=1.17.2,<2",
+  "asyncpg>=0.31,<1",
+  "redis>=5.0.1,<6",
+  "supabase>=2.27,<3",
+  "pyyaml>=6.0.2,<7",
+  "reportlab>=5,<6",
+  "cryptography>=48.0.1,<49",
+  "google-cloud-secret-manager>=2.29,<3",
+]
+
+[project.optional-dependencies]
+secrets-aws = ["boto3>=1.42,<2"]
+secrets-azure = [
+  "azure-identity>=1.25,<2",
+  "azure-keyvault-secrets>=4.10,<5",
+]
+
+[tool.uv.sources]
+shim-gateway = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "shim_enterprise"
+module-root = "src"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"

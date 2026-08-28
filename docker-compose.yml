@@ -1,0 +1,117 @@
+x-app: &app
+  build:
+    context: .
+    dockerfile: ee/Dockerfile
+  env_file: [ee/.env]
+  environment:
+    DATABASE_URL: postgresql+asyncpg://shim:shim@postgres:5432/shim
+    REDIS_URL: redis://redis:6379/0
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  migrate:
+    <<: *app
+    command: ["alembic", "-c", "ee/alembic.ini", "upgrade", "head"]
+    healthcheck:
+      disable: true
+
+  test:
+    build:
+      context: .
+      dockerfile: ee/Dockerfile
+      target: test
+    profiles: ["test"]
+    env_file: [ee/.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://shim:shim@postgres:5432/shim
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+      OTEL_EXPORTER_OTLP_HEADERS: ""
+      REDIS_URL: redis://redis:6379/0
+      SENTRY_DSN: ""
+    working_dir: /workspace
+    volumes: [".:/workspace"]
+    command: ["sh", "-c", "/app/.venv/bin/alembic -c ee/alembic.ini upgrade head && /app/.venv/bin/python -m pytest -q"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  gateway-api:
+    <<: *app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports: ["8000:8000"]
+
+  outbox-worker:
+    <<: *app
+    command: ["python", "-m", "shim_enterprise.workers.outbox"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  reconciliation-worker:
+    <<: *app
+    command: ["python", "-m", "shim_enterprise.workers.reconciliation"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  compliance-worker:
+    <<: *app
+    command: ["python", "-m", "shim_enterprise.workers.compliance"]
+    profiles: ["compliance"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  ai-act-worker:
+    <<: *app
+    command: ["python", "-m", "shim_enterprise.workers.ai_act"]
+    profiles: ["compliance"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  postgres:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    environment:
+      POSTGRES_USER: shim
+      POSTGRES_PASSWORD: shim
+      POSTGRES_DB: shim
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shim -d shim"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+
+  redis:
+    image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes: ["redis_data:/data"]
+
+volumes:
+  postgres_data:
+  redis_data:

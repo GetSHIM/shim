@@ -1,0 +1,5 @@
+This directory contains the single standalone SHIM trust-boundary schema.
+
+It is intentionally independent from migration histories on other branches.
+Validate upgrade, drift, downgrade, and re-upgrade against an empty PostgreSQL
+database before release.

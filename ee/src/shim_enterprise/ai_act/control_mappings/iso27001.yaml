@@ -1,0 +1,24 @@
+framework: iso27001
+title: ISO/IEC 27001:2022 technical evidence map
+note: This maps product evidence to selected controls and is not certification evidence by itself.
+controls:
+  - id: ISO-A5.15
+    title: Access control
+    description: Tenant-bound identities and scoped reads can support access-control review.
+    evidence_source: access_control
+  - id: ISO-A8.15
+    title: Logging
+    description: Durable audit facts can support event-logging review.
+    evidence_source: audit_logging
+  - id: ISO-A8.16
+    title: Monitoring
+    description: Compliance connectors can support monitoring review.
+    evidence_source: findings_monitoring
+  - id: ISO-A5.28
+    title: Evidence integrity
+    description: Chain verification and anchors can support evidence-integrity review.
+    evidence_source: chain_integrity
+  - id: ISO-A5.33
+    title: Record protection
+    description: Retention configuration can support record-protection review.
+    evidence_source: retention_6_months

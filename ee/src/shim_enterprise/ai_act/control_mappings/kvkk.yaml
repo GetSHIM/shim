@@ -1,0 +1,24 @@
+framework: kvkk
+title: KVKK technical evidence map
+note: Technical evidence only; legal interpretation requires qualified review.
+controls:
+  - id: KVKK-MINIMIZATION
+    title: Purpose limitation and minimization
+    description: Privacy-stage facts can support minimization review.
+    evidence_source: pii_minimization
+  - id: KVKK-LOGGING
+    title: Security event recording
+    description: Tenant-scoped audit facts can support technical-measure review.
+    evidence_source: audit_logging
+  - id: KVKK-ACCESS
+    title: Access isolation
+    description: Mandatory tenant ownership can support access-control review.
+    evidence_source: access_control
+  - id: KVKK-MONITORING
+    title: Exposure monitoring
+    description: Connector findings can support monitoring review.
+    evidence_source: findings_monitoring
+  - id: KVKK-INTEGRITY
+    title: Record integrity
+    description: Hash-chain verification can support integrity review.
+    evidence_source: chain_integrity

@@ -1,0 +1,499 @@
+steps:
+  - id: validate-deployment
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: bash
+    env:
+      - ACTUAL_PROJECT_ID=$PROJECT_ID
+      - BUILD_ID=$BUILD_ID
+      - DEPLOY_LOCK_URI=${_DEPLOY_LOCK_URI}
+      - DEPLOY_PROJECT_ID=${_DEPLOY_PROJECT_ID}
+      - DEPLOY_TRIGGER_ID=${_DEPLOY_TRIGGER_ID}
+      - FRONTEND_ORIGINS=${_FRONTEND_ORIGINS}
+      - IMAGE_TAG=$COMMIT_SHA
+      - MAX_INSTANCES=${_MAX_INSTANCES}
+      - SHORT_SHA=$SHORT_SHA
+      - WORKER_INSTANCES=${_WORKER_INSTANCES}
+    args:
+      - -ceu
+      - |
+        test -n "$$DEPLOY_PROJECT_ID" || { echo "_DEPLOY_PROJECT_ID is required"; exit 1; }
+        test "$$ACTUAL_PROJECT_ID" = "$$DEPLOY_PROJECT_ID" || { echo "deployment project mismatch"; exit 1; }
+        [[ "$$BUILD_ID" =~ ^[0-9a-f-]{36}$$ ]] || { echo "BUILD_ID must be a UUID"; exit 1; }
+        [[ "$$DEPLOY_LOCK_URI" =~ ^gs://[^/]+/.+$$ ]] || { echo "_DEPLOY_LOCK_URI must be an object URI"; exit 1; }
+        [[ "$$DEPLOY_TRIGGER_ID" =~ ^[0-9a-f-]{36}$$ ]] || { echo "_DEPLOY_TRIGGER_ID must be a UUID"; exit 1; }
+        test -n "$$FRONTEND_ORIGINS" || { echo "_FRONTEND_ORIGINS is required"; exit 1; }
+        [[ "$$IMAGE_TAG" =~ ^[0-9a-f]{40}$$ ]] || { echo "COMMIT_SHA must be a full Git commit SHA"; exit 1; }
+        [[ "$$MAX_INSTANCES" =~ ^[1-9][0-9]*$ ]] || { echo "_MAX_INSTANCES must be a positive decimal integer"; exit 1; }
+        [[ "$$SHORT_SHA" =~ ^[0-9a-f]{7}$$ ]] || { echo "SHORT_SHA must be a seven-character Git SHA"; exit 1; }
+        [[ "$$WORKER_INSTANCES" =~ ^[1-9][0-9]*$ ]] || { echo "_WORKER_INSTANCES must be a positive decimal integer"; exit 1; }
+
+  - id: build-image
+    name: gcr.io/kaniko-project/executor@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
+    args:
+      - --destination=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --cache=true
+      - --cache-ttl=168h
+      - --context=.
+      - --dockerfile=ee/Dockerfile
+
+  - id: acquire-deployment-lock
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: bash
+    env:
+      - BUILD_ID=$BUILD_ID
+      - DEPLOY_LOCK_URI=${_DEPLOY_LOCK_URI}
+      - DEPLOY_PROJECT_ID=${_DEPLOY_PROJECT_ID}
+      - DEPLOY_TRIGGER_ID=${_DEPLOY_TRIGGER_ID}
+      - REGION=${_REGION}
+    args:
+      - -ceu
+      - |
+        for attempt in {1..360}; do
+          if printf '%s\n' "$$BUILD_ID" | gcloud storage cp - "$$DEPLOY_LOCK_URI" --if-generation-match=0 >/dev/null 2>&1; then
+            lock_generation="$$(gcloud storage objects describe "$$DEPLOY_LOCK_URI" --format='value(generation)')"
+            lock_owner="$$(gcloud storage cat "$$DEPLOY_LOCK_URI#$$lock_generation")"
+            test "$$lock_owner" = "$$BUILD_ID" || { echo "deployment lock ownership verification failed"; exit 1; }
+            printf '%s\n' "$$lock_generation" > /workspace/deployment-lock-generation
+            break
+          fi
+
+          existing_generation="$$(gcloud storage objects describe "$$DEPLOY_LOCK_URI" --format='value(generation)' 2>/dev/null || true)"
+          if test -n "$$existing_generation"; then
+            owner_build="$$(gcloud storage cat "$$DEPLOY_LOCK_URI#$$existing_generation" 2>/dev/null || true)"
+            owner_status="$$(gcloud builds describe "$$owner_build" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format='value(status)' 2>/dev/null || true)"
+            case "$$owner_status" in
+              SUCCESS|FAILURE|INTERNAL_ERROR|TIMEOUT|CANCELLED|EXPIRED)
+                gcloud storage rm "$$DEPLOY_LOCK_URI" --if-generation-match="$$existing_generation" --quiet >/dev/null 2>&1 || true
+                ;;
+            esac
+          fi
+          sleep 5
+        done
+        test -s /workspace/deployment-lock-generation || { echo "timed out waiting for the production deployment lock"; exit 1; }
+
+        latest_build="$$(gcloud builds list --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --filter="buildTriggerId:$$DEPLOY_TRIGGER_ID AND status=(QUEUED OR PENDING OR WORKING OR SUCCESS)" --sort-by=~createTime --limit=1 --format='value(id)')"
+        if test "$$latest_build" != "$$BUILD_ID"; then
+          gcloud storage rm "$$DEPLOY_LOCK_URI" --if-generation-match="$$lock_generation" --quiet >/dev/null 2>&1 || true
+          echo "a newer main deployment superseded this build"
+          exit 1
+        fi
+
+  - id: deploy-migration
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - ${_RESOURCE_PREFIX}-migrate
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --command=alembic
+      - --args=-c,ee/alembic.ini,upgrade,head
+      - --tasks=1
+      - --max-retries=0
+      - --task-timeout=10m
+      - --service-account=${_MIGRATION_SERVICE_ACCOUNT}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-migration-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}
+
+  - id: run-migration
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - ${_RESOURCE_PREFIX}-migrate
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --region=${_REGION}
+      - --wait
+
+  - id: deploy-gateway
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_RESOURCE_PREFIX}-gateway
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --port=8000
+      - --min-instances=${_MIN_INSTANCES}
+      - --max-instances=3
+      - --max=${_MAX_INSTANCES}
+      - --cpu=2
+      - --memory=4Gi
+      - --concurrency=80
+      - --timeout=600s
+      - --no-invoker-iam-check
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --command=uvicorn
+      - --args=shim_enterprise.application:create_enterprise_app,--factory,--host,0.0.0.0,--port,8000,--workers,1
+      - --revision-suffix=rel-$SHORT_SHA
+      - --deploy-health-check
+      - --no-traffic
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,ENCRYPTION_KEY=${_SECRET_PREFIX}-encryption-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
+      - --set-env-vars=^@^BACKEND_CORS_ORIGINS=${_FRONTEND_ORIGINS}@ENVIRONMENT=production@SECRET_BACKEND=gcp_secret_manager@GOOGLE_CLOUD_PROJECT=$PROJECT_ID@LOG_LEVEL=INFO@OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-gateway@DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE}@DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}@LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID=${_LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID}@LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID=${_LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID}@LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID=${_LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID}@LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID=${_LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID}@LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL=${_LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL}@LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL=${_LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL}@LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL=${_LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL}@LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL=${_LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL}@COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM}
+
+  - id: verify-gateway
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: bash
+    env:
+      - CANDIDATE_REVISION=${_RESOURCE_PREFIX}-gateway-rel-$SHORT_SHA
+      - DEPLOY_PROJECT_ID=${_DEPLOY_PROJECT_ID}
+      - GATEWAY_NAME=${_RESOURCE_PREFIX}-gateway
+      - REGION=${_REGION}
+      - RELEASE_TAG=release-$SHORT_SHA
+    args:
+      - -ceu
+      - |
+        remove_release_tag() {
+          gcloud run services update-traffic "$$GATEWAY_NAME" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --remove-tags="$$RELEASE_TAG" >/dev/null 2>&1 || true
+        }
+        trap remove_release_tag EXIT
+        trap 'exit 1' INT TERM
+
+        gcloud run services update-traffic "$$GATEWAY_NAME" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --update-tags="$$RELEASE_TAG=$$CANDIDATE_REVISION"
+        python3 - "$$DEPLOY_PROJECT_ID" "$$GATEWAY_NAME" "$$REGION" "$$RELEASE_TAG" <<'PY'
+        import json
+        import subprocess
+        import sys
+        import urllib.request
+
+        project, gateway, region, tag = sys.argv[1:]
+        service = json.loads(
+            subprocess.check_output(
+                [
+                    "gcloud",
+                    "run",
+                    "services",
+                    "describe",
+                    gateway,
+                    f"--project={project}",
+                    f"--region={region}",
+                    "--format=json",
+                ],
+                text=True,
+            )
+        )
+        candidate_url = next(
+            route["url"]
+            for route in service["status"]["traffic"]
+            if route.get("tag") == tag
+        )
+        with urllib.request.urlopen(f"{candidate_url}/health", timeout=30) as response:
+            payload = json.load(response)
+
+        expected = {
+            "status": "ok",
+            "database": "connected",
+            "redis": "connected",
+        }
+        if any(payload.get(key) != value for key, value in expected.items()):
+            raise SystemExit(f"candidate gateway health failed: {payload}")
+        PY
+        gcloud run services update-traffic "$$GATEWAY_NAME" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --remove-tags="$$RELEASE_TAG"
+        trap - EXIT
+
+  - id: deploy-outbox-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - worker-pools
+      - deploy
+      - ${_RESOURCE_PREFIX}-outbox-worker
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --region=${_REGION}
+      - --instances=${_WORKER_INSTANCES}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --command=python
+      - --args=-m,shim_enterprise.workers.outbox
+      - --revision-suffix=rel-$SHORT_SHA
+      - --no-promote
+      - --cpu=1
+      - --memory=1Gi
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-outbox-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW},COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM}
+
+  - id: deploy-reconciliation-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - worker-pools
+      - deploy
+      - ${_RESOURCE_PREFIX}-reconciliation-worker
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --region=${_REGION}
+      - --instances=${_WORKER_INSTANCES}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --command=python
+      - --args=-m,shim_enterprise.workers.reconciliation
+      - --revision-suffix=rel-$SHORT_SHA
+      - --no-promote
+      - --cpu=1
+      - --memory=1Gi
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-reconciliation-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}
+
+  - id: deploy-compliance-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - worker-pools
+      - deploy
+      - ${_RESOURCE_PREFIX}-compliance-worker
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --region=${_REGION}
+      - --instances=${_WORKER_INSTANCES}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --command=python
+      - --args=-m,shim_enterprise.workers.compliance
+      - --revision-suffix=rel-$SHORT_SHA
+      - --no-promote
+      - --cpu=1
+      - --memory=1Gi
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-compliance-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}
+
+  - id: deploy-ai-act-worker
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: gcloud
+    args:
+      - run
+      - worker-pools
+      - deploy
+      - ${_RESOURCE_PREFIX}-ai-act-worker
+      - --project=${_DEPLOY_PROJECT_ID}
+      - --region=${_REGION}
+      - --instances=${_WORKER_INSTANCES}
+      - --network=${_VPC_NETWORK}
+      - --subnet=${_VPC_SUBNET}
+      - --vpc-egress=private-ranges-only
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
+      - --command=python
+      - --args=-m,shim_enterprise.workers.ai_act
+      - --revision-suffix=rel-$SHORT_SHA
+      - --no-promote
+      - --cpu=1
+      - --memory=1Gi
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-ai-act-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}
+
+  - id: promote-release
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
+    entrypoint: bash
+    env:
+      - BUILD_ID=$BUILD_ID
+      - DEPLOY_LOCK_URI=${_DEPLOY_LOCK_URI}
+      - DEPLOY_PROJECT_ID=${_DEPLOY_PROJECT_ID}
+      - DEPLOY_TRIGGER_ID=${_DEPLOY_TRIGGER_ID}
+      - REGION=${_REGION}
+      - RESOURCE_PREFIX=${_RESOURCE_PREFIX}
+      - SHORT_SHA=$SHORT_SHA
+    args:
+      - -ceu
+      - |
+        test -s /workspace/deployment-lock-generation || { echo "deployment lock generation is missing"; exit 1; }
+        lock_generation="$$(< /workspace/deployment-lock-generation)"
+        lock_owner="$$(gcloud storage cat "$$DEPLOY_LOCK_URI#$$lock_generation")"
+        test "$$lock_owner" = "$$BUILD_ID" || { echo "deployment lock ownership verification failed"; exit 1; }
+
+        release_lock() {
+          gcloud storage rm "$$DEPLOY_LOCK_URI" --if-generation-match="$$lock_generation" --quiet >/dev/null 2>&1 || true
+        }
+
+        gateway="$$RESOURCE_PREFIX-gateway"
+        candidate_gateway="$$gateway-rel-$$SHORT_SHA"
+        gateway_attempted=false
+        previous_gateway=""
+        rollout_complete=false
+        workers=(outbox reconciliation compliance ai-act)
+        previous_revisions=()
+        attempted_workers=()
+        attempted_revisions=()
+
+        restore_gateway() {
+          if test "$$gateway_attempted" != true; then
+            return 0
+          fi
+          gateway_status="$$(gcloud run services describe "$$gateway" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format=json 2>/dev/null || true)"
+          active_gateway="$$(python3 -c 'import json, sys; data=json.load(sys.stdin); print(next((route["revisionName"] for route in data.get("status", {}).get("traffic", ()) if route.get("percent") == 100), ""))' <<<"$$gateway_status" 2>/dev/null || true)"
+          if test "$$active_gateway" = "$$candidate_gateway"; then
+            gcloud run services update-traffic "$$gateway" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --to-revisions="$$previous_gateway=100" || true
+          elif test "$$active_gateway" != "$$previous_gateway"; then
+            echo "skipped stale gateway restore; active revision is $$active_gateway"
+          fi
+        }
+
+        restore_workers() {
+          for index in "$${!attempted_workers[@]}"; do
+            worker="$${attempted_workers[$$index]}"
+            previous_revision="$${attempted_revisions[$$index]}"
+            pool="$$RESOURCE_PREFIX-$$worker-worker"
+            candidate="$$pool-rel-$$SHORT_SHA"
+            active="$$(gcloud run worker-pools describe "$$pool" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format='value(status.instanceSplits[0].revisionName)' 2>/dev/null || true)"
+            if test "$$active" = "$$candidate"; then
+              gcloud run worker-pools update-instance-split "$$pool" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --to-revisions="$$previous_revision=100" || true
+            elif test "$$active" != "$$previous_revision"; then
+              echo "skipped stale restore for $$pool; active revision is $$active"
+            fi
+          done
+        }
+
+        cleanup_rollout() {
+          if test "$$rollout_complete" != true; then
+            restore_gateway || true
+            restore_workers || true
+          fi
+          release_lock
+        }
+        trap cleanup_rollout EXIT
+        trap 'exit 1' INT TERM
+
+        latest_build="$$(gcloud builds list --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --filter="buildTriggerId:$$DEPLOY_TRIGGER_ID AND status=(QUEUED OR PENDING OR WORKING OR SUCCESS)" --sort-by=~createTime --limit=1 --format='value(id)')"
+        test "$$latest_build" = "$$BUILD_ID" || { echo "a newer main deployment superseded this build"; exit 1; }
+
+        for worker in "$${workers[@]}"; do
+          pool="$$RESOURCE_PREFIX-$$worker-worker"
+          previous_revision="$$(gcloud run worker-pools describe "$$pool" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format='value(status.instanceSplits[0].revisionName)')"
+          test -n "$$previous_revision" || { echo "active revision not found for $$pool"; exit 1; }
+          previous_revisions+=("$$previous_revision")
+        done
+
+        promote_worker() {
+          worker="$$1"
+          previous_revision="$$2"
+          pool="$$RESOURCE_PREFIX-$$worker-worker"
+          candidate="$$pool-rel-$$SHORT_SHA"
+          attempted_workers+=("$$worker")
+          attempted_revisions+=("$$previous_revision")
+          gcloud run worker-pools update-instance-split "$$pool" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --to-revisions="$$candidate=100" || return
+          status="$$(gcloud run worker-pools describe "$$pool" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format='value(status.latestReadyRevisionName,status.instanceSplits[0].revisionName,status.instanceSplits[0].percent)')" || return
+          read -r latest_ready active percent <<<"$$status"
+          test "$$latest_ready" = "$$candidate" && test "$$active" = "$$candidate" && test "$$percent" = "100" || return
+          success_filter=""
+          case "$$worker" in
+            outbox) marker="Outbox worker started" ;;
+            reconciliation) marker="Gateway reconciliation worker started" ;;
+            compliance) marker="Compliance sweep completed"; success_filter=' AND jsonPayload.message:"errors=0"' ;;
+            ai-act) marker="Audit maintenance completed" ;;
+          esac
+          log_filter="resource.type=\"cloud_run_worker_pool\" AND resource.labels.worker_pool_name=\"$$pool\" AND resource.labels.revision_name=\"$$candidate\""
+          for attempt in {1..12}; do
+            sleep 5
+            errors="$$(gcloud logging read "$$log_filter AND (severity>=ERROR OR jsonPayload.level=(\"ERROR\" OR \"CRITICAL\"))" --project="$$DEPLOY_PROJECT_ID" --freshness=5m --limit=1 --format='value(timestamp)')" || return
+            test -z "$$errors" || return
+            started="$$(gcloud logging read "$$log_filter AND jsonPayload.message:\"$$marker\"$$success_filter" --project="$$DEPLOY_PROJECT_ID" --freshness=5m --limit=1 --format='value(timestamp)')" || return
+            if test "$$attempt" -ge 4 && test -n "$$started"; then
+              return 0
+            fi
+          done
+          return 1
+        }
+
+        for index in "$${!workers[@]}"; do
+          worker="$${workers[$$index]}"
+          if ! promote_worker "$$worker" "$${previous_revisions[$$index]}"; then
+            echo "candidate runtime check failed for $$RESOURCE_PREFIX-$$worker-worker"
+            exit 1
+          fi
+        done
+
+        if ! gateway_status="$$(gcloud run services describe "$$gateway" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format=json)"; then
+          exit 1
+        fi
+        if ! previous_gateway="$$(python3 -c 'import json, sys; print(next(route["revisionName"] for route in json.load(sys.stdin)["status"]["traffic"] if route.get("percent") == 100))' <<<"$$gateway_status")"; then
+          echo "active gateway revision not found"
+          exit 1
+        fi
+
+        promote_gateway() {
+          gateway_attempted=true
+          gcloud run services update-traffic "$$gateway" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --to-revisions="$$candidate_gateway=100" || return
+          service_url="$$(gcloud run services describe "$$gateway" --project="$$DEPLOY_PROJECT_ID" --region="$$REGION" --format='value(status.url)')" || return
+          test -n "$$service_url" || return
+          python3 - "$$service_url/health" <<'PY'
+        import json
+        import sys
+        import urllib.request
+
+        with urllib.request.urlopen(sys.argv[1], timeout=30) as response:
+            payload = json.load(response)
+
+        expected = {
+            "status": "ok",
+            "database": "connected",
+            "redis": "connected",
+        }
+        if any(payload.get(key) != value for key, value in expected.items()):
+            raise SystemExit(f"production gateway health failed: {payload}")
+        PY
+        }
+
+        if ! promote_gateway; then
+          exit 1
+        fi
+        rollout_complete=true
+
+substitutions:
+  _DEPLOY_PROJECT_ID: shim-prod
+  _DEPLOY_TRIGGER_ID: 3d769864-29a7-46f0-a2ec-73d488e3a5a5
+  _DEPLOY_LOCK_URI: gs://shim-prod_europe-west3_cloudbuild/locks/shim-production
+  _REGION: europe-west3
+  _RESOURCE_PREFIX: shim
+  _ARTIFACT_REPOSITORY: shim
+  _IMAGE_NAME: gateway
+  _SECRET_PREFIX: shim
+  _RUNTIME_SERVICE_ACCOUNT: shim-runtime@shim-prod.iam.gserviceaccount.com
+  _MIGRATION_SERVICE_ACCOUNT: shim-migrate@shim-prod.iam.gserviceaccount.com
+  _FRONTEND_ORIGINS: https://shim-phi.vercel.app,https://getshim.tech,https://www.getshim.tech
+  _LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID: ""
+  _LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID: ""
+  _LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID: ""
+  _LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID: ""
+  _LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL: ""
+  _LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL: ""
+  _LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL: ""
+  _LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL: ""
+  _COMPLIANCE_EMAIL_FROM: ""
+  _VPC_NETWORK: shim
+  _VPC_SUBNET: shim-europe-west3
+  _MIN_INSTANCES: "1"
+  _MAX_INSTANCES: "10"
+  _WORKER_INSTANCES: "1"
+  _DATABASE_POOL_SIZE: "2"
+  _DATABASE_MAX_OVERFLOW: "1"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET
+
+serviceAccount: projects/shim-prod/serviceAccounts/shim-build@shim-prod.iam.gserviceaccount.com
+
+timeout: 3600s

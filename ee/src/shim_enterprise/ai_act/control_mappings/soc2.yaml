@@ -1,0 +1,24 @@
+framework: soc2
+title: SOC 2 technical evidence map
+note: Product evidence map only; it is not an attestation.
+controls:
+  - id: SOC2-CC6.1
+    title: Logical access
+    description: Authenticated tenant scoping can support logical-access review.
+    evidence_source: access_control
+  - id: SOC2-CC7.2
+    title: Anomaly monitoring
+    description: Compliance findings can support monitoring review.
+    evidence_source: findings_monitoring
+  - id: SOC2-CC7.3
+    title: Security event recording
+    description: Durable audit facts can support security-event review.
+    evidence_source: audit_logging
+  - id: SOC2-PI1.4
+    title: Processing integrity
+    description: Chain verification can support processing-integrity review.
+    evidence_source: chain_integrity
+  - id: SOC2-A1.2
+    title: Evidence availability
+    description: Retention configuration can support evidence-availability review.
+    evidence_source: retention_6_months

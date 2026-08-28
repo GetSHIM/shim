@@ -1,0 +1,1 @@
+"""Enterprise privacy persistence adapters."""

@@ -1,0 +1,62 @@
+name: Update model catalog
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: model-catalog-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - name: Refresh catalog
+        run: uv run --locked python scripts/sync_models_dev.py
+      - name: Open and merge update pull request
+        env:
+          BRANCH: automation/models-dev-catalog
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ -z "$(git status --porcelain -- src/shim/billing/model_catalog.json)" ]; then
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            git fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
+          fi
+          git switch -c "$BRANCH"
+          git add src/shim/billing/model_catalog.json
+          git commit -m "chore: update Models.dev catalog"
+          git push --force-with-lease origin "HEAD:$BRANCH"
+
+          PR="$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')"
+          if [ -z "$PR" ]; then
+            PR="$(gh pr create \
+              --base "$PR_BASE" \
+              --head "$BRANCH" \
+              --title "chore: update Models.dev catalog" \
+              --body "Automated catalog refresh from https://models.dev/api.json.")"
+          fi
+          gh pr merge "$PR" --squash

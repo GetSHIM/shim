@@ -1,0 +1,400 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  community:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked --package shim-gateway
+      - name: Verify community dependency isolation
+        run: |
+          uv run --locked --package shim-gateway python -c '
+          from importlib.metadata import distribution, distributions
+          installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
+          forbidden = {
+              "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
+              "boto3", "botocore", "email-validator",
+              "google-cloud-secret-manager", "redis", "reportlab",
+              "shim-enterprise", "sqlalchemy", "supabase",
+          }
+          assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
+          direct = {
+              requirement.split(";", 1)[0].split("[", 1)[0]
+              .split("<", 1)[0].split(">", 1)[0].split("=", 1)[0]
+              .split("!", 1)[0].split("~", 1)[0].strip().lower()
+              .replace("_", "-").replace(".", "-")
+              for requirement in (distribution("shim-gateway").requires or ())
+          }
+          forbidden_direct = {
+              "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
+              "boto3", "botocore", "cryptography", "email-validator",
+              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
+              "sqlalchemy", "supabase",
+          }
+          assert forbidden_direct.isdisjoint(direct), sorted(forbidden_direct & direct)
+          '
+      - run: uv run --locked --package shim-gateway ruff format --check src tests scripts
+      - run: uv run --locked --package shim-gateway ruff check src tests scripts
+      - run: uv run --locked --package shim-gateway ty check src
+      - run: uv run --locked --package shim-gateway python -m pytest -q tests
+      - run: uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
+      - name: Build community package
+        run: uv build --package shim-gateway --wheel --sdist --out-dir dist/community
+      - name: Verify community artifacts
+        run: |
+          python - <<'PY'
+          from email import message_from_bytes
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          from zipfile import ZipFile
+
+          expected_legal = {
+              name: Path(name).read_bytes() for name in ("LICENSE", "NOTICE")
+          }
+          wheel = next(Path("dist/community").glob("*.whl"))
+          sdist = next(Path("dist/community").glob("*.tar.gz"))
+          with ZipFile(wheel) as archive:
+              wheel_paths = tuple(PurePosixPath(name) for name in archive.namelist())
+              metadata_path = next(
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              )
+              metadata = message_from_bytes(archive.read(metadata_path))
+              wheel_legal = {
+                  path.name: archive.read(str(path))
+                  for path in wheel_paths
+                  if path.parent.name == "licenses" and path.name in expected_legal
+              }
+          with tarfile.open(sdist) as archive:
+              members = archive.getmembers()
+              sdist_paths = tuple(PurePosixPath(member.name) for member in members)
+              sdist_legal = {
+                  PurePosixPath(member.name).name: archive.extractfile(member).read()
+                  for member in members
+                  if member.isfile()
+                  and PurePosixPath(member.name).name in expected_legal
+              }
+              pkg_info = next(
+                  member for member in members if member.name.endswith("/PKG-INFO")
+              )
+              sdist_metadata = message_from_bytes(archive.extractfile(pkg_info).read())
+          assert wheel_legal == expected_legal
+          assert sdist_legal == expected_legal
+          for package_metadata in (metadata, sdist_metadata):
+              assert package_metadata["Metadata-Version"] == "2.4"
+              assert package_metadata["License-Expression"] == "Apache-2.0"
+              assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
+              assert package_metadata.get("License") is None
+              assert not any(
+                  value.startswith("License ::")
+                  for value in package_metadata.get_all("Classifier", [])
+              )
+          for paths in (wheel_paths, sdist_paths):
+              assert any("shim" in path.parts for path in paths)
+              assert not any(
+                  component in path.parts
+                  for path in paths
+                  for component in ("app", "ee", "shim_enterprise")
+              )
+          forbidden_direct = {
+              "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
+              "boto3", "botocore", "cryptography", "email-validator",
+              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
+              "sqlalchemy", "supabase",
+          }
+          direct = {
+              requirement.split(";", 1)[0]
+              .split("[", 1)[0]
+              .split("<", 1)[0]
+              .split(">", 1)[0]
+              .split("=", 1)[0]
+              .split("!", 1)[0]
+              .split("~", 1)[0]
+              .strip()
+              .lower()
+              .replace("_", "-")
+              .replace(".", "-")
+              for requirement in metadata.get_all("Requires-Dist", [])
+          }
+          assert forbidden_direct.isdisjoint(direct), sorted(forbidden_direct & direct)
+          PY
+      - name: Smoke clean community wheel installation
+        run: |
+          uv venv "$RUNNER_TEMP/community-venv" --python 3.13
+          uv pip install --python "$RUNNER_TEMP/community-venv/bin/python" dist/community/*.whl
+          "$RUNNER_TEMP/community-venv/bin/python" -c '
+          from importlib.util import find_spec
+          import shim.application
+          assert find_spec("shim_enterprise") is None
+          '
+      - name: Build community image from scratch
+        run: docker build --pull --no-cache --tag shim-community:ci .
+      - name: Verify community image boundary
+        run: |
+          docker run --rm --entrypoint python shim-community:ci -c '
+          from importlib.metadata import distribution, distributions
+          from importlib.util import find_spec
+          from pathlib import Path
+          installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
+          forbidden = {
+              "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
+              "boto3", "botocore", "email-validator",
+              "google-cloud-secret-manager", "pytest", "pytest-asyncio", "redis",
+              "reportlab", "ruff", "shim-enterprise", "sqlalchemy", "supabase",
+              "ty",
+          }
+          assert "shim-gateway" in installed
+          assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
+          direct = {
+              requirement.split(";", 1)[0].split("[", 1)[0]
+              .split("<", 1)[0].split(">", 1)[0].split("=", 1)[0]
+              .split("!", 1)[0].split("~", 1)[0].strip().lower()
+              .replace("_", "-").replace(".", "-")
+              for requirement in (distribution("shim-gateway").requires or ())
+          }
+          forbidden_direct = {
+              "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
+              "boto3", "botocore", "cryptography", "email-validator",
+              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
+              "sqlalchemy", "supabase",
+          }
+          assert forbidden_direct.isdisjoint(direct), sorted(forbidden_direct & direct)
+          package = distribution("shim-gateway")
+          assert package.metadata["License-Expression"] == "Apache-2.0"
+          assert package.metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
+          assert {"LICENSE", "NOTICE"} <= {Path(path).name for path in package.files or ()}
+          assert find_spec("shim") is not None
+          assert find_spec("shim_enterprise") is None
+          assert not any(Path(path).exists() for path in ("/app/app", "/app/ee", "/app/alembic"))
+          '
+      - name: Smoke community image
+        run: |
+          container=shim-community-ci
+          trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --rm --detach --name "$container" --network host \
+            --env SHIM_API_KEY=ci-only-community-key shim-community:ci
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1
+
+  enterprise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: shim_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test -d shim_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/shim_test
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-only-secret-key
+      ENCRYPTION_KEY: 1yuHjGCrKdLoXrHt6qVL4vd6GHUZ1KVDbsXWJsbq3Kw=
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_KEY: ci-public-anon-key
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked --all-packages
+      - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
+      - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini check
+      - run: uv run --locked --all-packages ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
+      - run: uv run --locked --all-packages ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
+      - run: uv run --locked --all-packages ty check
+      - run: uv run --locked --all-packages python -m pytest -q
+      - run: uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
+      - name: Build both packages from the validated lock
+        run: |
+          uv build --package shim-gateway --wheel --sdist --out-dir dist/community
+          uv build --package shim-enterprise --wheel --sdist --out-dir dist/enterprise
+      - name: Verify enterprise artifacts
+        run: |
+          python - <<'PY'
+          from email import message_from_bytes
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          from zipfile import ZipFile
+
+          expected_legal = {
+              name: (Path("ee") / name).read_bytes()
+              for name in ("LICENSE", "NOTICE")
+          }
+          wheel = next(Path("dist/enterprise").glob("*.whl"))
+          sdist = next(Path("dist/enterprise").glob("*.tar.gz"))
+          with ZipFile(wheel) as archive:
+              wheel_paths = tuple(PurePosixPath(name) for name in archive.namelist())
+              metadata_path = next(
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              )
+              metadata = message_from_bytes(archive.read(metadata_path))
+              wheel_legal = {
+                  path.name: archive.read(str(path))
+                  for path in wheel_paths
+                  if path.parent.name == "licenses" and path.name in expected_legal
+              }
+          with tarfile.open(sdist) as archive:
+              members = archive.getmembers()
+              sdist_paths = tuple(PurePosixPath(member.name) for member in members)
+              sdist_legal = {
+                  PurePosixPath(member.name).name: archive.extractfile(member).read()
+                  for member in members
+                  if member.isfile()
+                  and PurePosixPath(member.name).name in expected_legal
+              }
+              pkg_info = next(
+                  member for member in members if member.name.endswith("/PKG-INFO")
+              )
+              sdist_metadata = message_from_bytes(archive.extractfile(pkg_info).read())
+          assert wheel_legal == expected_legal
+          assert sdist_legal == expected_legal
+          for package_metadata in (metadata, sdist_metadata):
+              assert package_metadata["Metadata-Version"] == "2.4"
+              assert package_metadata["License-Expression"] == "Elastic-2.0"
+              assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
+              assert package_metadata.get("License") is None
+              assert not any(
+                  value.startswith("License ::")
+                  for value in package_metadata.get_all("Classifier", [])
+              )
+          for paths in (wheel_paths, sdist_paths):
+              assert any("shim_enterprise" in path.parts for path in paths)
+              assert not any(
+                  component in path.parts
+                  for path in paths
+                  for component in ("app", "shim")
+              )
+              assert {
+                  "ai_act.yaml", "gdpr.yaml", "iso27001.yaml", "kvkk.yaml",
+                  "soc2.yaml",
+              } <= {
+                  path.name for path in paths if "control_mappings" in path.parts
+              }
+          assert "shim-gateway==0.1.0" in metadata.get_all("Requires-Dist", [])
+          PY
+      - name: Smoke clean enterprise wheel installation
+        run: |
+          uv venv "$RUNNER_TEMP/enterprise-venv" --python 3.13
+          uv pip install --python "$RUNNER_TEMP/enterprise-venv/bin/python" \
+            dist/community/*.whl dist/enterprise/*.whl
+          "$RUNNER_TEMP/enterprise-venv/bin/python" -c '
+          from importlib import import_module
+          import shim.application
+          import shim_enterprise.application
+          for module in (
+              "shim_enterprise.workers.outbox",
+              "shim_enterprise.workers.reconciliation",
+              "shim_enterprise.workers.compliance",
+              "shim_enterprise.workers.ai_act",
+          ):
+              import_module(module)
+          '
+      - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini downgrade base
+      - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
+      - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini check
+      - name: Build enterprise image from scratch
+        run: docker build --pull --no-cache --file ee/Dockerfile --tag shim-enterprise:ci .
+      - name: Verify enterprise image boundary
+        run: |
+          docker run --rm --entrypoint python shim-enterprise:ci -c '
+          from importlib.metadata import distribution, distributions
+          from importlib.resources import files
+          from importlib.util import find_spec
+          from pathlib import Path
+          installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
+          forbidden = {"pytest", "pytest-asyncio", "ruff", "ty"}
+          assert {"shim-gateway", "shim-enterprise"} <= installed
+          assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
+          for package_name, expression in (
+              ("shim-gateway", "Apache-2.0"),
+              ("shim-enterprise", "Elastic-2.0"),
+          ):
+              package = distribution(package_name)
+              assert package.metadata["License-Expression"] == expression
+              assert package.metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
+              assert {"LICENSE", "NOTICE"} <= {
+                  Path(path).name for path in package.files or ()
+              }
+          assert find_spec("shim") is not None
+          assert find_spec("shim_enterprise") is not None
+          assert all(find_spec(module) is not None for module in (
+              "shim_enterprise.workers.outbox",
+              "shim_enterprise.workers.reconciliation",
+              "shim_enterprise.workers.compliance",
+              "shim_enterprise.workers.ai_act",
+          ))
+          assert files("shim_enterprise.ai_act").joinpath("control_mappings/ai_act.yaml").is_file()
+          assert all(Path(path).exists() for path in (
+              "/app/ee/alembic.ini", "/app/ee/alembic/versions",
+              "/app/ee/scripts/activate_plan.py",
+          ))
+          assert not Path("/app/app").exists()
+          '
+      - name: Smoke enterprise image
+        run: |
+          container=shim-enterprise-ci
+          trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --rm --detach --name "$container" --network host \
+            --env ENVIRONMENT=test \
+            --env DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:5432/shim_test \
+            --env REDIS_URL=redis://127.0.0.1:6379/0 \
+            --env SECRET_KEY=ci-only-secret-key \
+            --env ENCRYPTION_KEY=1yuHjGCrKdLoXrHt6qVL4vd6GHUZ1KVDbsXWJsbq3Kw= \
+            --env SUPABASE_URL=https://example.supabase.co \
+            --env SUPABASE_KEY=ci-public-anon-key \
+            shim-enterprise:ci
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1

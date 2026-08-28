@@ -1,0 +1,24 @@
+framework: ai_act
+title: EU AI Act technical evidence map
+note: Engineering evidence map only; legal applicability and sufficiency require independent review.
+controls:
+  - id: AIA-12-LOG
+    title: Event recording
+    description: Durable request facts can evidence automated event recording.
+    evidence_source: audit_logging
+  - id: AIA-12-INTEGRITY
+    title: Record integrity
+    description: Hash-chain verification and daily anchors can evidence tamper detection.
+    evidence_source: chain_integrity
+  - id: AIA-RETENTION
+    title: Evidence retention
+    description: Configured retention is checked against the product minimum.
+    evidence_source: retention_6_months
+  - id: AIA-OVERSIGHT
+    title: Human oversight workflow
+    description: Tenant policies and recorded decisions can evidence oversight activity.
+    evidence_source: human_oversight
+  - id: AIA-MONITORING
+    title: Operational monitoring
+    description: Connector findings can evidence detective monitoring.
+    evidence_source: findings_monitoring

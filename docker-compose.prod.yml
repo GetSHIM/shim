@@ -1,0 +1,80 @@
+x-runtime: &runtime
+  image: ${SHIM_IMAGE:?set SHIM_IMAGE}
+  restart: unless-stopped
+  environment:
+    ENVIRONMENT: production
+    SECRET_BACKEND: gcp_secret_manager
+    GOOGLE_CLOUD_PROJECT: "${GOOGLE_CLOUD_PROJECT:?set GOOGLE_CLOUD_PROJECT}"
+    DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL}"
+    REDIS_URL: "${REDIS_URL:?set REDIS_URL}"
+    SECRET_KEY: "${SECRET_KEY:?set SECRET_KEY}"
+    ENCRYPTION_KEY: "${ENCRYPTION_KEY:?set ENCRYPTION_KEY}"
+    SUPABASE_URL: "${SUPABASE_URL:?set SUPABASE_URL}"
+    SUPABASE_KEY: "${SUPABASE_KEY:-}"
+    LEMON_SQUEEZY_SIGNING_SECRET: "${LEMON_SQUEEZY_SIGNING_SECRET:-}"
+    LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID: "${LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID:-}"
+    LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID: "${LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID:-}"
+    LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID: "${LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID:-}"
+    LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID: "${LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID:-}"
+    LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL: "${LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL:-}"
+    LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL: "${LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL:-}"
+    LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL: "${LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL:-}"
+    LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL: "${LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL:-}"
+    RESEND_API_KEY: "${RESEND_API_KEY:-}"
+    COMPLIANCE_EMAIL_FROM: "${COMPLIANCE_EMAIL_FROM:-}"
+    SENTRY_DSN: "${SENTRY_DSN:-}"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+    OTEL_EXPORTER_OTLP_HEADERS: "${OTEL_EXPORTER_OTLP_HEADERS:-}"
+
+services:
+  migrate:
+    <<: *runtime
+    restart: "no"
+    command: ["alembic", "-c", "ee/alembic.ini", "upgrade", "head"]
+    healthcheck:
+      disable: true
+
+  gateway-api:
+    <<: *runtime
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports: ["8000:8000"]
+
+  outbox-worker:
+    <<: *runtime
+    command: ["python", "-m", "shim_enterprise.workers.outbox"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  reconciliation-worker:
+    <<: *runtime
+    command: ["python", "-m", "shim_enterprise.workers.reconciliation"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  compliance-worker:
+    <<: *runtime
+    command: ["python", "-m", "shim_enterprise.workers.compliance"]
+    profiles: ["compliance"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  ai-act-worker:
+    <<: *runtime
+    command: ["python", "-m", "shim_enterprise.workers.ai_act"]
+    profiles: ["compliance"]
+    depends_on:
+      gateway-api:
+        condition: service_healthy
+    healthcheck:
+      disable: true

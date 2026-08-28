@@ -1,0 +1,1 @@
+"""Invocation-scoped provider credentials."""

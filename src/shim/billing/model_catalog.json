@@ -1,0 +1,392 @@
+{
+  "providers": {
+    "anthropic": {
+      "claude-fable-5": {
+        "input_per_million": "12.5",
+        "max_output_tokens": 128000,
+        "name": "Claude Fable 5",
+        "output_per_million": "50",
+        "release_date": "2026-06-07"
+      },
+      "claude-haiku-4-5": {
+        "input_per_million": "1.25",
+        "max_output_tokens": 64000,
+        "name": "Claude Haiku 4.5 (latest)",
+        "output_per_million": "5",
+        "release_date": "2025-10-15"
+      },
+      "claude-haiku-4-5-20251001": {
+        "input_per_million": "1.25",
+        "max_output_tokens": 64000,
+        "name": "Claude Haiku 4.5",
+        "output_per_million": "5",
+        "release_date": "2025-10-15"
+      },
+      "claude-opus-4-5": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 64000,
+        "name": "Claude Opus 4.5 (latest)",
+        "output_per_million": "25",
+        "release_date": "2025-11-24"
+      },
+      "claude-opus-4-5-20251101": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 64000,
+        "name": "Claude Opus 4.5",
+        "output_per_million": "25",
+        "release_date": "2025-11-24"
+      },
+      "claude-opus-4-6": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 128000,
+        "name": "Claude Opus 4.6",
+        "output_per_million": "25",
+        "release_date": "2026-02-04"
+      },
+      "claude-opus-4-7": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 128000,
+        "name": "Claude Opus 4.7",
+        "output_per_million": "25",
+        "release_date": "2026-04-14"
+      },
+      "claude-opus-4-8": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 128000,
+        "name": "Claude Opus 4.8",
+        "output_per_million": "25",
+        "release_date": "2026-05-28"
+      },
+      "claude-opus-5": {
+        "input_per_million": "6.25",
+        "max_output_tokens": 128000,
+        "name": "Claude Opus 5",
+        "output_per_million": "25",
+        "release_date": "2026-07-24"
+      },
+      "claude-sonnet-4-5": {
+        "input_per_million": "3.75",
+        "max_output_tokens": 64000,
+        "name": "Claude Sonnet 4.5 (latest)",
+        "output_per_million": "15",
+        "release_date": "2025-09-29"
+      },
+      "claude-sonnet-4-5-20250929": {
+        "input_per_million": "3.75",
+        "max_output_tokens": 64000,
+        "name": "Claude Sonnet 4.5",
+        "output_per_million": "15",
+        "release_date": "2025-09-29"
+      },
+      "claude-sonnet-4-6": {
+        "input_per_million": "3.75",
+        "max_output_tokens": 128000,
+        "name": "Claude Sonnet 4.6",
+        "output_per_million": "15",
+        "release_date": "2026-02-17"
+      },
+      "claude-sonnet-5": {
+        "input_per_million": "2.5",
+        "max_output_tokens": 128000,
+        "name": "Claude Sonnet 5",
+        "output_per_million": "10",
+        "release_date": "2026-06-29"
+      }
+    },
+    "google": {
+      "gemini-2.5-pro": {
+        "input_per_million": "1.25",
+        "large_context_input_per_million": "2.5",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 200000,
+        "max_output_tokens": 65536,
+        "name": "Gemini 2.5 Pro",
+        "output_per_million": "10",
+        "release_date": "2025-06-17"
+      },
+      "gemini-3.1-pro-preview": {
+        "input_per_million": "2",
+        "large_context_input_per_million": "4",
+        "large_context_output_per_million": "18",
+        "large_context_threshold": 200000,
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.1 Pro Preview",
+        "output_per_million": "12",
+        "release_date": "2026-02-19"
+      },
+      "gemini-3.5-flash": {
+        "input_per_million": "1.5",
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.5 Flash",
+        "output_per_million": "9",
+        "release_date": "2026-05-19"
+      },
+      "gemini-3.5-flash-lite": {
+        "input_per_million": "0.3",
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.5 Flash Lite",
+        "output_per_million": "2.5",
+        "release_date": "2026-07-21"
+      },
+      "gemini-3.6-flash": {
+        "input_per_million": "0.75",
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.6 Flash",
+        "output_per_million": "3.75",
+        "release_date": "2026-07-21"
+      },
+      "gemini-3.7-flash": {
+        "input_per_million": "0.75",
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.7 Flash",
+        "output_per_million": "3.75",
+        "release_date": "2026-08-13"
+      },
+      "gemini-flash-latest": {
+        "input_per_million": "0.75",
+        "max_output_tokens": 65536,
+        "name": "Gemini Flash Latest",
+        "output_per_million": "3.75",
+        "release_date": "2026-08-13"
+      },
+      "gemini-flash-lite-latest": {
+        "input_per_million": "0.3",
+        "max_output_tokens": 65536,
+        "name": "Gemini Flash-Lite Latest",
+        "output_per_million": "2.5",
+        "release_date": "2026-07-21"
+      }
+    },
+    "openai": {
+      "gpt-4.1": {
+        "input_per_million": "2",
+        "max_output_tokens": 32768,
+        "name": "GPT-4.1",
+        "output_per_million": "8",
+        "release_date": "2025-04-14"
+      },
+      "gpt-4.1-mini": {
+        "input_per_million": "0.4",
+        "max_output_tokens": 32768,
+        "name": "GPT-4.1 mini",
+        "output_per_million": "1.6",
+        "release_date": "2025-04-14"
+      },
+      "gpt-4o": {
+        "input_per_million": "2.5",
+        "max_output_tokens": 16384,
+        "name": "GPT-4o",
+        "output_per_million": "10",
+        "release_date": "2024-05-13"
+      },
+      "gpt-4o-2024-08-06": {
+        "input_per_million": "2.5",
+        "max_output_tokens": 16384,
+        "name": "GPT-4o (2024-08-06)",
+        "output_per_million": "10",
+        "release_date": "2024-08-06"
+      },
+      "gpt-4o-2024-11-20": {
+        "input_per_million": "2.5",
+        "max_output_tokens": 16384,
+        "name": "GPT-4o (2024-11-20)",
+        "output_per_million": "10",
+        "release_date": "2024-11-20"
+      },
+      "gpt-4o-mini": {
+        "input_per_million": "0.15",
+        "max_output_tokens": 16384,
+        "name": "GPT-4o mini",
+        "output_per_million": "0.6",
+        "release_date": "2024-07-18"
+      },
+      "gpt-5": {
+        "input_per_million": "1.25",
+        "max_output_tokens": 128000,
+        "name": "GPT-5",
+        "output_per_million": "10",
+        "release_date": "2025-08-07"
+      },
+      "gpt-5-mini": {
+        "input_per_million": "0.25",
+        "max_output_tokens": 128000,
+        "name": "GPT-5 Mini",
+        "output_per_million": "2",
+        "release_date": "2025-08-07"
+      },
+      "gpt-5-nano": {
+        "input_per_million": "0.05",
+        "max_output_tokens": 128000,
+        "name": "GPT-5 Nano",
+        "output_per_million": "0.4",
+        "release_date": "2025-08-07"
+      },
+      "gpt-5-pro": {
+        "input_per_million": "15",
+        "max_output_tokens": 272000,
+        "name": "GPT-5 Pro",
+        "output_per_million": "120",
+        "release_date": "2025-10-06"
+      },
+      "gpt-5.1": {
+        "input_per_million": "1.25",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.1",
+        "output_per_million": "10",
+        "release_date": "2025-11-13"
+      },
+      "gpt-5.2": {
+        "input_per_million": "1.75",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.2",
+        "output_per_million": "14",
+        "release_date": "2025-12-11"
+      },
+      "gpt-5.2-chat-latest": {
+        "input_per_million": "1.75",
+        "max_output_tokens": 16384,
+        "name": "GPT-5.2 Chat",
+        "output_per_million": "14",
+        "release_date": "2025-12-11"
+      },
+      "gpt-5.2-pro": {
+        "input_per_million": "21",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.2 Pro",
+        "output_per_million": "168",
+        "release_date": "2025-12-11"
+      },
+      "gpt-5.3-chat-latest": {
+        "input_per_million": "1.75",
+        "max_output_tokens": 16384,
+        "name": "GPT-5.3 Chat (latest)",
+        "output_per_million": "14",
+        "release_date": "2026-03-03"
+      },
+      "gpt-5.3-codex": {
+        "input_per_million": "1.75",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.3 Codex",
+        "output_per_million": "14",
+        "release_date": "2026-02-05"
+      },
+      "gpt-5.3-codex-spark": {
+        "input_per_million": "1.75",
+        "max_output_tokens": 32000,
+        "name": "GPT-5.3 Codex Spark",
+        "output_per_million": "14",
+        "release_date": "2026-02-05"
+      },
+      "gpt-5.4": {
+        "input_per_million": "2.5",
+        "large_context_input_per_million": "5",
+        "large_context_output_per_million": "22.5",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.4",
+        "output_per_million": "15",
+        "release_date": "2026-03-05"
+      },
+      "gpt-5.4-mini": {
+        "input_per_million": "0.75",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.4 mini",
+        "output_per_million": "4.5",
+        "release_date": "2026-03-17"
+      },
+      "gpt-5.4-nano": {
+        "input_per_million": "0.2",
+        "max_output_tokens": 128000,
+        "name": "GPT-5.4 nano",
+        "output_per_million": "1.25",
+        "release_date": "2026-03-17"
+      },
+      "gpt-5.4-pro": {
+        "input_per_million": "30",
+        "large_context_input_per_million": "60",
+        "large_context_output_per_million": "270",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.4 Pro",
+        "output_per_million": "180",
+        "release_date": "2026-03-05"
+      },
+      "gpt-5.5": {
+        "input_per_million": "5",
+        "large_context_input_per_million": "10",
+        "large_context_output_per_million": "45",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.5",
+        "output_per_million": "30",
+        "release_date": "2026-04-23"
+      },
+      "gpt-5.5-pro": {
+        "input_per_million": "30",
+        "large_context_input_per_million": "60",
+        "large_context_output_per_million": "270",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.5 Pro",
+        "output_per_million": "180",
+        "release_date": "2026-04-23"
+      },
+      "gpt-5.6": {
+        "input_per_million": "5",
+        "large_context_input_per_million": "10",
+        "large_context_output_per_million": "30",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.6",
+        "output_per_million": "20",
+        "release_date": "2026-07-09"
+      },
+      "gpt-5.6-luna": {
+        "input_per_million": "0.25",
+        "large_context_input_per_million": "0.5",
+        "large_context_output_per_million": "1.8",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.6 Luna",
+        "output_per_million": "1.2",
+        "release_date": "2026-07-09"
+      },
+      "gpt-5.6-sol": {
+        "input_per_million": "5",
+        "large_context_input_per_million": "10",
+        "large_context_output_per_million": "30",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.6 Sol",
+        "output_per_million": "20",
+        "release_date": "2026-07-09"
+      },
+      "gpt-5.6-terra": {
+        "input_per_million": "2.5",
+        "large_context_input_per_million": "5",
+        "large_context_output_per_million": "18",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-5.6 Terra",
+        "output_per_million": "12",
+        "release_date": "2026-07-09"
+      },
+      "o3": {
+        "input_per_million": "2",
+        "max_output_tokens": 100000,
+        "name": "o3",
+        "output_per_million": "8",
+        "release_date": "2025-04-16"
+      },
+      "o3-pro": {
+        "input_per_million": "20",
+        "max_output_tokens": 100000,
+        "name": "o3-pro",
+        "output_per_million": "80",
+        "release_date": "2025-06-10"
+      }
+    }
+  },
+  "source": "https://models.dev/api.json",
+  "version": "models.dev:14bb9c9f7fe87eb35e3ecaa8"
+}

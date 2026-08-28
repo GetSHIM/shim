@@ -1,0 +1,24 @@
+framework: gdpr
+title: GDPR technical evidence map
+note: Evidence mapping is not a certification or legal conclusion.
+controls:
+  - id: GDPR-MINIMIZATION
+    title: Data minimization
+    description: Privacy-stage results can evidence configured PII minimization.
+    evidence_source: pii_minimization
+  - id: GDPR-RECORDS
+    title: Processing records
+    description: Tenant-scoped audit facts can support records of processing.
+    evidence_source: audit_logging
+  - id: GDPR-INTEGRITY
+    title: Processing integrity
+    description: Audit verification can support integrity evidence.
+    evidence_source: chain_integrity
+  - id: GDPR-ACCESS
+    title: Access isolation
+    description: Mandatory tenant ownership can support access-control evidence.
+    evidence_source: access_control
+  - id: GDPR-MONITORING
+    title: Exposure monitoring
+    description: Derived findings can support incident-readiness evidence.
+    evidence_source: findings_monitoring

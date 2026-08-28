@@ -1,0 +1,1 @@
+"""Gateway application composition boundary."""
