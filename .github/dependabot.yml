@@ -11,6 +11,15 @@ updates:
       python:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      # The provider SDKs are pinned on purpose and the README says so: a new
+      # provider SDK does not arrive automatically, because each one needs a
+      # compatibility review against the streaming and error contracts.
+      # Security fixes still reach us through Dependabot security updates,
+      # which this ignore does not affect.
+      - dependency-name: openai
+      - dependency-name: anthropic
+      - dependency-name: google-genai
 
   - package-ecosystem: github-actions
     directory: /
@@ -26,3 +35,10 @@ updates:
     directories: ["/", "/ee"]
     schedule:
       interval: weekly
+    ignore:
+      # requires-python is >=3.13,<3.14, so a 3.14 base image cannot install
+      # the project. Digest and patch bumps within 3.13 are what we want here.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
