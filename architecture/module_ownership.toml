@@ -340,6 +340,7 @@ enterprise = [
 split = [
   "scripts/export_openapi.py",
   "tests/architecture/test_module_ownership.py",
+  "tests/architecture/test_release_workflow.py",
   "tests/architecture/test_repository_manifest.py",
   "tests/architecture/test_route_profiles.py",
 ]

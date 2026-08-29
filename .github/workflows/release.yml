@@ -1,0 +1,102 @@
+# A tag produces artifacts: a multi-architecture image, an SBOM, a signed
+# provenance attestation and a GitHub release.
+#
+# This workflow does not deploy. Production is reached by the Cloud Build
+# trigger that watches the same tag, and the two stay separate on purpose:
+# publishing a release and rolling the hosted service are different decisions,
+# and a community contribution must never reach production on its own.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release
+  packages: write # push to ghcr.io
+  id-token: write # sign the provenance attestation
+  attestations: write # record it against the image
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # ponytail: arm64 is emulated through QEMU. A release runs rarely, so the
+      # extra minutes cost nothing; if they ever do, build arm64 natively on
+      # ubuntu-24.04-arm and merge the two manifests.
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to ghcr.io
+        run: |
+          echo '${{ github.token }}' \
+            | docker login ghcr.io --username '${{ github.actor }}' --password-stdin
+
+      - name: Read the version from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the community image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/getshim/shim:${{ steps.version.outputs.value }}
+            ghcr.io/getshim/shim:latest
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-name: ghcr.io/getshim/shim
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # The published image must start, because the README asks a reader to run
+      # exactly this command.
+      - name: Smoke the published image
+        run: |
+          container=shim-release-smoke
+          trap 'docker stop "$container" >/dev/null 2>&1 || true' EXIT
+          docker run --rm --detach --name "$container" --network host \
+            --env SHIM_API_KEY=release-smoke-only-key \
+            ghcr.io/getshim/shim@${{ steps.build.outputs.digest }}
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8000/health && exit 0
+            sleep 1
+          done
+          docker logs "$container"
+          exit 1
+
+      # Enterprise buyers ask for this file by name, and the Cyber Resilience
+      # Act expects it alongside the release.
+      - name: Generate the SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ghcr.io/getshim/shim@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: shim-${{ steps.version.outputs.value }}.spdx.json
+          upload-artifact: false
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Every 0.x release is alpha, and the repository says so out loud.
+          case "$GITHUB_REF_NAME" in
+            v0.*) maturity=--prerelease ;;
+            *) maturity= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            $maturity \
+            "shim-${{ steps.version.outputs.value }}.spdx.json"
