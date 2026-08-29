@@ -361,7 +361,7 @@ async def test_compliance_email_uses_fixed_resend_endpoint(
 
     await handlers._send_compliance_email(
         "alerts@example.com",
-        text="SHIM summary",
+        text="shim summary",
         idempotency_key="compliance:email:1",
     )
 

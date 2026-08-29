@@ -1,1 +1,1 @@
-"""SHIM trust-boundary gateway application package."""
+"""shim trust-boundary gateway application package."""

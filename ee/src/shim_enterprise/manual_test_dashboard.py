@@ -1,4 +1,4 @@
-"""Dev-only browser client for exercising SHIM's public HTTP boundaries."""
+"""Dev-only browser client for exercising shim's public HTTP boundaries."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ _HTML = r"""<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <title>SHIM manual test dashboard</title>
+  <title>shim manual test dashboard</title>
   <style nonce="__NONCE__">
     :root { color-scheme: dark; font: 15px/1.45 system-ui, sans-serif; }
     * { box-sizing: border-box; }
@@ -157,7 +157,7 @@ _HTML = r"""<!doctype html>
 </head>
 <body>
 <main>
-  <h1>SHIM manual test dashboard</h1>
+  <h1>shim manual test dashboard</h1>
   <p class="warning">Local development only. Calls go directly to the existing public and management endpoints; credentials stay in this page's memory and are redacted from the log.</p>
 
   <section class="grid">
@@ -165,7 +165,7 @@ _HTML = r"""<!doctype html>
       <h2>Credentials</h2>
       <label for="email">Supabase email</label><input id="email" autocomplete="username">
       <label for="password">Supabase password</label><input id="password" type="password" autocomplete="current-password">
-      <label for="api-key">SHIM API key</label><input id="api-key" type="password" autocomplete="off">
+      <label for="api-key">shim API key</label><input id="api-key" type="password" autocomplete="off">
       <button id="sign-in">Supabase sign in</button>
       <button id="profile">JWT profile</button>
       <div id="auth-status" class="status">Not signed in.</div>
@@ -200,7 +200,7 @@ _HTML = r"""<!doctype html>
     <div class="card">
       <h2>Chat completions</h2>
       <label for="model">Model</label><input id="model" value="gpt-5-nano">
-      <label for="prompt">Prompt</label><textarea id="prompt">Reply with one short sentence confirming SHIM reached the configured provider.</textarea>
+      <label for="prompt">Prompt</label><textarea id="prompt">Reply with one short sentence confirming shim reached the configured provider.</textarea>
       <button id="chat">Normal chat</button>
       <button id="stream">Streaming chat</button>
       <button id="abort" disabled>Abort stream</button>
@@ -266,7 +266,7 @@ _HTML = r"""<!doctype html>
 
   function apiKey() {
     const value = byId("api-key").value.trim();
-    if (!value) throw new Error("Enter a SHIM API key.");
+    if (!value) throw new Error("Enter a shim API key.");
     return value;
   }
 

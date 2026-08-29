@@ -1,6 +1,6 @@
-# SHIM
+# shim
 
-SHIM is a provider-native AI trust-boundary gateway. It applies authentication,
+shim is a provider-native AI trust-boundary gateway. It applies authentication,
 privacy, admission, usage, and error-sanitization policy without translating
 OpenAI, Anthropic, or Gemini payloads into a shared wire format.
 
@@ -112,7 +112,7 @@ contract or a cross-package dependency.
 Files outside `ee/` are licensed under the Apache License 2.0 in
 [`LICENSE`](LICENSE), with scope recorded in [`NOTICE`](NOTICE). Files under
 `ee/` are source-available under the Elastic License 2.0 in
-[`ee/LICENSE`](ee/LICENSE), with Shim identified as licensor in
+[`ee/LICENSE`](ee/LICENSE), with the licensor named in
 [`ee/NOTICE`](ee/NOTICE). `shim-enterprise` depends on the separately licensed
 `shim-gateway` distribution.
 

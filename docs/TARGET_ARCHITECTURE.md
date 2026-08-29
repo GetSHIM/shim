@@ -1,10 +1,10 @@
-# SHIM target architecture
+# shim target architecture
 
 Status: approved and implemented architecture
 
 Last reviewed: 2026-08-28
 
-This is the architectural contract for the SHIM backend. Implementation and
+This is the architectural contract for the shim backend. Implementation and
 release evidence are tracked in
 [`MIGRATION_PROGRESS.md`](./MIGRATION_PROGRESS.md).
 
@@ -260,7 +260,7 @@ customer integrations.
 The checked-in boundary is authoritative:
 
 - `LICENSE` contains Apache-2.0 and `NOTICE` applies it outside `ee/`;
-- `ee/LICENSE` contains Elastic-2.0 and `ee/NOTICE` identifies Shim as the
+- `ee/LICENSE` contains Elastic-2.0 and `ee/NOTICE` identifies the
   licensor for files under `ee/`;
 - each `pyproject.toml` declares its own SPDX expression and legal files; and
 - CI compares the legal files and metadata embedded in wheels and sdists with

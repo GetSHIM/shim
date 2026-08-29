@@ -1,1 +1,1 @@
-"""SHIM community gateway package."""
+"""shim community gateway package."""
