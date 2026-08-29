@@ -1,4 +1,4 @@
-"""Alembic environment for the standalone SHIM architecture baseline."""
+"""Alembic environment for the standalone shim architecture baseline."""
 
 from __future__ import annotations
 

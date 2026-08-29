@@ -2,7 +2,7 @@
 name = "shim-gateway"
 version = "0.1.0"
 description = "High-performance B2B AI Gateway & Optimization Platform"
-authors = [{ name = "SHIM Engineering" }]
+authors = [{ name = "shim Engineering" }]
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

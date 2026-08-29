@@ -1,4 +1,4 @@
-# SHIM developer guide
+# shim developer guide
 
 Read `docs/CURRENT_ARCHITECTURE.md` before changing provider routes, privacy,
 streaming, authentication, accounting, or package boundaries.
@@ -75,7 +75,7 @@ or production environment.
 
 ## Database workflow
 
-SHIM has one independent enterprise baseline and one linear Alembic history
+shim has one independent enterprise baseline and one linear Alembic history
 under `ee/alembic/`. Validate schema changes against disposable data:
 
 ```bash

@@ -18,7 +18,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         settings = CommunitySettings()
     except ValidationError:
-        parser.error("invalid SHIM configuration")
+        parser.error("invalid shim configuration")
     if settings.SHIM_API_KEY is None and not _is_loopback(arguments.host):
         parser.error("SHIM_API_KEY is required for a non-loopback host")
     uvicorn.run(

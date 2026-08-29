@@ -1,4 +1,4 @@
-"""Validated deployment configuration for the documented SHIM architecture."""
+"""Validated deployment configuration for the documented shim architecture."""
 
 from __future__ import annotations
 

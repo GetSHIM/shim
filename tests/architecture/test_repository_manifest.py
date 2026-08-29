@@ -576,26 +576,24 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         assert "--revision-suffix=rel-$SHORT_SHA" in steps[step_id]["args"]
         assert command in steps[step_id]["args"]
 
-    assert substitutions["_DEPLOY_PROJECT_ID"] == "shim-prod"
-    assert substitutions["_DEPLOY_TRIGGER_ID"] == (
-        "3d769864-29a7-46f0-a2ec-73d488e3a5a5"
-    )
-    assert substitutions["_DEPLOY_LOCK_URI"] == (
-        "gs://shim-prod_europe-west3_cloudbuild/locks/shim-production"
-    )
+    # This repository is public. The deployment identity lives on the Cloud
+    # Build trigger, not in the file, so a project id, a service account, a
+    # bucket or a secret prefix must never reappear here. These substitutions
+    # stay declared, because the build steps reference them, and stay empty.
+    for name in (
+        "_DEPLOY_PROJECT_ID",
+        "_DEPLOY_TRIGGER_ID",
+        "_DEPLOY_LOCK_URI",
+        "_SECRET_PREFIX",
+        "_RUNTIME_SERVICE_ACCOUNT",
+        "_MIGRATION_SERVICE_ACCOUNT",
+        "_VPC_NETWORK",
+        "_VPC_SUBNET",
+    ):
+        assert substitutions[name] == "", f"{name} carries a deployment value"
+    assert "serviceAccount" not in deployment
     assert substitutions["_RESOURCE_PREFIX"] == "shim"
     assert substitutions["_ARTIFACT_REPOSITORY"] == "shim"
-    assert substitutions["_SECRET_PREFIX"] == "shim"
-    assert substitutions["_RUNTIME_SERVICE_ACCOUNT"] == (
-        "shim-runtime@shim-prod.iam.gserviceaccount.com"
-    )
-    assert substitutions["_MIGRATION_SERVICE_ACCOUNT"] == (
-        "shim-migrate@shim-prod.iam.gserviceaccount.com"
-    )
-    assert deployment["serviceAccount"] == (
-        "projects/shim-prod/serviceAccounts/"
-        "shim-build@shim-prod.iam.gserviceaccount.com"
-    )
     assert substitutions["_WORKER_INSTANCES"] == "1"
     assert substitutions["_MIN_INSTANCES"] == "1"
     assert substitutions["_MAX_INSTANCES"] == "10"

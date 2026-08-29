@@ -184,7 +184,7 @@ async def _send_compliance_email(
             json={
                 "from": str(settings.COMPLIANCE_EMAIL_FROM),
                 "to": [recipient],
-                "subject": "SHIM compliance finding summary",
+                "subject": "shim compliance finding summary",
                 "text": text,
             },
         )
@@ -194,16 +194,16 @@ async def _send_compliance_email(
 def _compliance_text(body: dict) -> str:
     if body.get("event_type") == "pii_finding_summary":
         return (
-            f"SHIM detected {body.get('finding_count', 0)} compliance finding(s) "
+            f"shim detected {body.get('finding_count', 0)} compliance finding(s) "
             f"for {body.get('provider', 'provider')}. "
             f"Severity: {json.dumps(body.get('by_severity', {}), sort_keys=True)}"
         )
     if body.get("event_type") == "pii_finding":
         return (
-            f"SHIM compliance finding: {body.get('severity', 'unknown')} "
+            f"shim compliance finding: {body.get('severity', 'unknown')} "
             f"{body.get('entity_type', 'entity')}"
         )
-    return f"SHIM compliance alert: {body.get('message', body.get('kind', 'event'))}"
+    return f"shim compliance alert: {body.get('message', body.get('kind', 'event'))}"
 
 
 def _request_payload(message: OutboxMessage) -> dict:
@@ -238,7 +238,7 @@ def _tenant_payload(
 def _budget_text(payload: dict) -> str:
     scope = payload.get("scope_value") or payload.get("scope_type")
     return (
-        f"SHIM budget {scope}: {payload.get('percent_used')}% used in "
+        f"shim budget {scope}: {payload.get('percent_used')}% used in "
         f"{payload.get('period')}"
     )
 

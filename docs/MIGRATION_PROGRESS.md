@@ -106,7 +106,7 @@ dependency, route, schema, and artifact leakage in either direction.
 
 - [x] Compose OpenAI Chat JSON and streaming without enterprise imports or
   infrastructure.
-- [x] Implement optional local SHIM-key authentication and refuse keyless
+- [x] Implement optional local shim key authentication and refuse keyless
   non-loopback binds.
 - [x] Implement invocation-first provider credentials.
 - [x] Add bounded local admission, circuit, and privacy-continuation state.
@@ -205,7 +205,7 @@ dependency, route, schema, and artifact leakage in either direction.
 ### Mixed-licence completion
 
 - [x] Add canonical Apache-2.0 terms and scope them outside `ee/`.
-- [x] Add canonical Elastic-2.0 terms under `ee/` with Shim as licensor.
+- [x] Add canonical Elastic-2.0 terms under `ee/` with the licensor named in `ee/NOTICE`.
 - [x] Add matching PEP 639 package metadata and legal-file declarations.
 - [x] Include and compare legal files in both wheel and sdist profiles.
 - [x] Keep the community image free of enterprise source and install both

@@ -31,7 +31,7 @@ jobs:
           enable-cache: true
       - name: Refresh catalog
         run: uv run --locked python scripts/sync_models_dev.py
-      - name: Open and merge update pull request
+      - name: Open update pull request
         env:
           BRANCH: automation/models-dev-catalog
           GH_TOKEN: ${{ github.token }}
@@ -51,12 +51,10 @@ jobs:
           git commit -m "chore: update Models.dev catalog"
           git push --force-with-lease origin "HEAD:$BRANCH"
 
-          PR="$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')"
-          if [ -z "$PR" ]; then
-            PR="$(gh pr create \
+          if [ -z "$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')" ]; then
+            gh pr create \
               --base "$PR_BASE" \
               --head "$BRANCH" \
               --title "chore: update Models.dev catalog" \
-              --body "Automated catalog refresh from https://models.dev/api.json.")"
+              --body "Automated catalog refresh from https://models.dev/api.json. Pricing feeds cost accounting, so this reaches main through review."
           fi
-          gh pr merge "$PR" --auto --squash

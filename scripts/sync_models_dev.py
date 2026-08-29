@@ -50,7 +50,7 @@ def _invalid_json_constant(value: str) -> None:
 
 
 def fetch_catalog() -> dict[str, Any]:
-    request = Request(SOURCE_URL, headers={"User-Agent": "SHIM model catalog sync"})
+    request = Request(SOURCE_URL, headers={"User-Agent": "shim model catalog sync"})
     with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed HTTPS URL
         payload = response.read(MAX_RESPONSE_BYTES + 1)
     if len(payload) > MAX_RESPONSE_BYTES:

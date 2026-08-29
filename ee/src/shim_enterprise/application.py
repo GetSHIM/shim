@@ -1,4 +1,4 @@
-"""ASGI application composition for SHIM gateway and control planes."""
+"""ASGI application composition for shim gateway and control planes."""
 
 from __future__ import annotations
 

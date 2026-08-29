@@ -1,121 +1,160 @@
-# SHIM
+<p align="center">
+  <a href="https://getshim.tech">
+    <img src="https://raw.githubusercontent.com/GetSHIM/shim/main/docs/assets/shim-logo.svg" alt="shim" width="280">
+  </a>
+</p>
 
-SHIM is a provider-native AI trust-boundary gateway. It applies authentication,
-privacy, admission, usage, and error-sanitization policy without translating
-OpenAI, Anthropic, or Gemini payloads into a shared wire format.
+<h1 align="center">shim</h1>
 
-The backend is one package-modular monorepo with two products:
+<p align="center">
+  <strong>One trust boundary for your AI traffic, without rewriting the payload.</strong><br>
+  An OpenAI request leaves as OpenAI, an Anthropic request as Anthropic. shim
+  applies privacy, admission, accounting and error policy on the way through.
+</p>
 
-```text
-src/shim                              ee/src/shim_enterprise
-community gateway  <----------------  enterprise composition
-no enterprise imports                 tenancy, billing, audit, workers
+<p align="center">
+  <a href="https://getshim.tech">Website</a> ·
+  <a href="https://getshim.tech/docs">Documentation</a> ·
+  <a href="https://getshim.tech/playground">Playground</a> ·
+  <a href="https://github.com/GetSHIM/shim-guard">shim Guard</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/GetSHIM/shim/actions/workflows/test.yml"><img src="https://github.com/GetSHIM/shim/actions/workflows/test.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.13-blue?logo=python&logoColor=white" alt="Python 3.13">
+  <a href="https://github.com/GetSHIM/shim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="Apache-2.0"></a>
+  <a href="https://github.com/GetSHIM/shim/stargazers"><img src="https://img.shields.io/github/stars/GetSHIM/shim.svg?style=flat&logo=github" alt="Stars"></a>
+</p>
+
+> [!NOTE]
+> shim is alpha software. Interfaces can still change between releases.
+>
+> The community gateway under `src/shim` is Apache-2.0 and is what this
+> repository is for. The enterprise layer under `ee/` is source-available under
+> the Elastic License 2.0, which is not an open-source licence: you can read it,
+> and outside contributions to it are not accepted. Tenancy, durable accounting,
+> stored audit evidence, roles and budgets live there.
+
+## What it does
+
+One HTTP boundary between your application and the model provider. On every
+request it:
+
+- **Detects and replaces personal data before the request leaves.** Email
+  addresses, phone numbers, credit cards, IBANs, Turkish national ID and tax
+  numbers, and provider secrets such as AWS keys and GitHub tokens. Each value
+  becomes a placeholder, and policy decides whether the request is masked,
+  blocked, or recorded.
+- **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
+  model allow-list taken from the checked-in price catalog, and repeat-loop
+  detection.
+- **Accounts usage and cost per request**, from that same catalog, attributed
+  by the `X-Shim-Tag` header.
+- **Sanitizes provider errors**, so a provider error body does not reach your
+  caller unchanged.
+- **Makes at most one billable provider attempt per admitted request**, because
+  outbound SDK retries are disabled.
+
+It does not translate payloads. When a provider ships a new field, a new model,
+or changes streaming behaviour, you are not waiting on shim to catch up.
+
+## Quickstart
+
+```console
+docker run --rm -p 8000:8000 ghcr.io/getshim/shim:latest
 ```
 
-The `shim-gateway` distribution installs the `shim` package. The
-`shim-enterprise` distribution installs `shim_enterprise` and depends on the
-exact same version of `shim-gateway`.
+Ask it what it finds in a prompt. This route calls no provider, so it needs no
+provider key:
 
-## Community quick start
-
-Requires Python 3.13 and uv 0.12.x (0.12.5 or newer).
-
-```bash
-cp .env.example .env
-uv sync --locked --package shim-gateway
-uv run --locked --package shim-gateway shim serve
+```console
+curl http://localhost:8000/v1/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Customer jane.doe@example.com, IBAN TR33 0006 1005 1978 6457 8413 26"}'
 ```
 
-The default bind is `127.0.0.1:8000`. Set a `SHIM_API_KEY` of at least 16
-characters before binding to a non-loopback address:
-
-```bash
-uv run --locked --package shim-gateway shim serve --host 0.0.0.0 --port 8000
+```json
+{
+  "request_id": "scan_73ac33b589af4b82a1430b777a82d493",
+  "verdict": "block",
+  "entities": [
+    {"type": "EMAIL_ADDRESS", "score": 1.0, "start": 9, "end": 29},
+    {"type": "IBAN_CODE", "score": 1.0, "start": 36, "end": 68}
+  ],
+  "entity_types": ["EMAIL_ADDRESS", "IBAN_CODE"],
+  "policy": "block"
+}
 ```
 
-Provider credentials may be configured as `OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, or `GOOGLE_API_KEY`, or supplied per request with
-`x-provider-key`. The gateway key authenticates the caller; it is not forwarded
-to a provider.
+Then point an existing client at it. No SDK change, only a base URL:
 
-Community mode needs no PostgreSQL, Redis, Supabase, enterprise settings, or
-workers. Its rate, circuit, privacy-continuation, and usage state is bounded and
-process-local.
+```python
+from openai import OpenAI
 
-The root `Dockerfile` builds the same community-only runtime:
-
-```bash
-docker build -t shim-community .
-docker run --rm -p 8000:8000 -e SHIM_API_KEY=replace-with-a-long-key shim-community
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-shim-key")
+client.chat.completions.create(
+    model="gpt-5-nano",
+    messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
+)
 ```
 
-## Enterprise quick start
+Under a masking policy the provider receives placeholders in place of the
+detected values, in the form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
+They are generated per request, so the same value gets a different placeholder
+next time, and the reply is restored before it reaches your caller.
 
-Enterprise composes the community gateway with tenant authentication, durable
-accounting, managed secrets, audit, compliance, and workers. Copy and complete
-the enterprise environment before startup:
+Provider credentials come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
+`GOOGLE_API_KEY`, or per request through `x-provider-key`. The shim key
+authenticates your caller and is never forwarded to a provider. The default bind
+is loopback; set a `SHIM_API_KEY` of at least 16 characters before binding
+anywhere else.
 
-```bash
-cp ee/.env.example ee/.env
-docker compose up --build
-```
+Community exposes `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, the
+Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and
+`/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
 
-Canonical source commands are:
+To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 
-```bash
-uv sync --locked --all-packages
-uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
-uv run --locked --package shim-enterprise uvicorn \
-  shim_enterprise.application:create_enterprise_app --factory
-```
+## Limitations
 
-Workers run as `python -m shim_enterprise.workers.outbox`,
-`reconciliation`, `compliance`, and `ai_act`.
+- Detection is best-effort and can miss a sensitive value. shim narrows the
+  exposure, it does not remove it.
+- In community mode the rate, circuit, privacy-continuation and usage state is
+  process-local and bounded. It is not shared across replicas, so limits apply
+  per process.
+- shim validates the routing, privacy and admission fields of a provider
+  payload. The rest of the provider's JSON passes through unvalidated.
+- `background=true` Responses requests are not supported.
+- Stored audit evidence, retained records, roles and budgets are enterprise
+  features. Community keeps no request history.
+- SDK compatibility is pinned to `openai==2.53.0` and `anthropic==0.121.0`. A
+  new provider SDK does not arrive automatically.
+- Community mode needs no PostgreSQL, Redis or Supabase, and runs no workers.
+  Anything that depends on those is enterprise.
 
-## API profiles
+## Documentation
 
-Community exposes provider-native inference routes, model discovery,
-`POST /v1/scan`, `/health`, and `/metrics`. Enterprise exposes the same provider
-contracts plus tenant management, durable scan usage, shared results,
-subscriptions, compliance, and AI Act controls.
+- [Developer guide](DEVELOPER_GUIDE.md)
+- [Current architecture](docs/CURRENT_ARCHITECTURE.md)
+- [Target architecture](docs/TARGET_ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](https://github.com/GetSHIM/shim/security/policy)
 
-The checked-in contracts are:
+## Related projects
 
-- `openapi/community.json`
-- `ee/openapi/enterprise.json`
-
-OpenAI and Anthropic SDK compatibility is pinned to `openai==2.53.0` and
-`anthropic==0.121.0`. Outbound SDK retries are disabled so one admitted request
-causes at most one billable provider attempt. Use `/v1/models` to inspect the
-models admitted by the checked-in price catalog.
-
-## Verification
-
-```bash
-uv lock --check
-uv sync --locked --all-packages
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ty check
-uv run --locked python -m pytest -q
-uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
-uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-```
-
-See [the developer guide](DEVELOPER_GUIDE.md),
-[current architecture](docs/CURRENT_ARCHITECTURE.md), and
-[target architecture](docs/TARGET_ARCHITECTURE.md) before changing a public
-contract or a cross-package dependency.
+- [shim Guard](https://github.com/GetSHIM/shim-guard) — local pre-submit privacy
+  protection for coding-agent CLIs. It redacts before a prompt leaves your
+  machine; shim covers the traffic your applications send.
 
 ## Licensing
 
 Files outside `ee/` are licensed under the Apache License 2.0 in
 [`LICENSE`](LICENSE), with scope recorded in [`NOTICE`](NOTICE). Files under
 `ee/` are source-available under the Elastic License 2.0 in
-[`ee/LICENSE`](ee/LICENSE), with Shim identified as licensor in
+[`ee/LICENSE`](ee/LICENSE), with the licensor named in
 [`ee/NOTICE`](ee/NOTICE). `shim-enterprise` depends on the separately licensed
 `shim-gateway` distribution.
 
-No CLA, runtime licence check, or enterprise bootstrap validator is implied by
-this split. Add one only when an approved contribution or commercial policy
+There is no CLA, no runtime licence check, and no enterprise bootstrap
+validator. Add one only when an approved contribution or commercial policy
 requires it.

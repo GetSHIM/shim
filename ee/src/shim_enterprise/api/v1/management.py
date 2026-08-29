@@ -2070,11 +2070,11 @@ def _billing_breakdown_pdf(
         bottomMargin=18 * mm,
         leftMargin=18 * mm,
         rightMargin=18 * mm,
-        title="SHIM Cost Showback",
+        title="shim Cost Showback",
     )
     document.build(
         [
-            Paragraph("SHIM Cost Showback", styles["Title"]),
+            Paragraph("shim Cost Showback", styles["Title"]),
             Paragraph(
                 f"Group: {group_by}<br/>Period: {start:%Y-%m-%d} – {end:%Y-%m-%d}",
                 styles["Normal"],

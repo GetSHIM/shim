@@ -1,0 +1,28 @@
+# Keeping dependencies current is an obligation under the Cyber Resilience Act,
+# and these pull requests are the cheapest evidence that we meet it.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Both Dockerfiles pin their base images by digest, so these pull requests
+  # carry the digest forward.
+  - package-ecosystem: docker
+    directories: ["/", "/ee"]
+    schedule:
+      interval: weekly

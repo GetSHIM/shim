@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class CommunitySettings(BaseSettings):
-    PROJECT_NAME: str = "SHIM Trust Boundary Gateway"
+    PROJECT_NAME: str = "shim trust-boundary gateway"
     VERSION: str = "0.1.0"
     ENVIRONMENT: Literal["development", "test", "production"] = "development"
     IS_DEBUG: bool = False

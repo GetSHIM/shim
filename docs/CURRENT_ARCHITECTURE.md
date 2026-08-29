@@ -1,4 +1,4 @@
-# SHIM current architecture
+# shim current architecture
 
 Status: current implementation contract
 
@@ -14,7 +14,7 @@ use this order of authority:
 
 ## Product and dependency shape
 
-SHIM is a package-modular monolith with two application compositions and one
+shim is a package-modular monolith with two application compositions and one
 lockfile.
 
 ```text
@@ -61,12 +61,12 @@ GatewayKernel
 provider-native JSON or SSE response
 ```
 
-Provider-owned JSON remains open-ended. SHIM validates the routing, privacy,
+Provider-owned JSON remains open-ended. shim validates the routing, privacy,
 and accounting fields it consumes, then uses the official provider SDK or
 native Gemini transport. It does not introduce a canonical cross-provider
 request model.
 
-Outbound SDK retries are disabled. One admitted SHIM request may make at most
+Outbound SDK retries are disabled. One admitted shim request may make at most
 one billable provider attempt.
 
 ## Community composition
@@ -134,14 +134,14 @@ stream contracts while adding enterprise authentication and lifecycle policy.
 
 ### Authentication and provider credentials
 
-- OpenAI SDKs carry the SHIM key in `Authorization: Bearer ...`.
-- Anthropic SDKs carry the SHIM key in `x-api-key` on Anthropic routes.
+- OpenAI SDKs carry the shim key in `Authorization: Bearer ...`.
+- Anthropic SDKs carry the shim key in `x-api-key` on Anthropic routes.
 - `x-shim-key` is the explicit provider-independent gateway-key header.
 - `x-provider-key` is an invocation-scoped provider credential.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
 
 Credential-bearing headers are removed before request metadata is recorded.
-Inbound authorization, cookies, host headers, SHIM tags, and credentials are
+Inbound authorization, cookies, host headers, shim tags, and credentials are
 never forwarded wholesale.
 
 ### Native responses, streams, and errors
@@ -157,7 +157,7 @@ Anthropic errors retain `{type: "error", error: {type, message}}`. Upstream
 details that could contain credentials or PII are discarded. A stream failure
 after headers is emitted as a sanitized terminal event.
 
-`background=true` Responses requests remain unsupported because SHIM has no
+`background=true` Responses requests remain unsupported because shim has no
 retrieval lifecycle with which to settle them safely. Explicit model IDs must
 exist in the checked-in model and price catalog.
 
@@ -252,7 +252,7 @@ Persistence tests require PostgreSQL and Redis. The canonical Alembic config is
 ## Licence boundary
 
 `LICENSE` and `NOTICE` apply Apache-2.0 outside `ee/`. `ee/LICENSE` and
-`ee/NOTICE` apply Elastic-2.0 under `ee/` with Shim as licensor. Both package
+`ee/NOTICE` apply Elastic-2.0 under `ee/` and name the licensor. Both package
 manifests declare the matching SPDX expression and legal files; CI verifies
 those files in wheel and sdist metadata. No runtime licence validator exists.
 

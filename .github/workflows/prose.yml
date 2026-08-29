@@ -1,0 +1,38 @@
+# Repository language rules. See brand-marketing/repo-dili/STYLE.md.
+#
+# The Vale prose job is intentionally absent: it reads the shared style from
+# GetSHIM/.github, which does not carry a style/ directory yet. Add that job
+# once the shared rules are published, so the rules cannot drift per repository.
+name: prose
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  naming:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Check the name in metadata files
+        run: |
+          set -uo pipefail
+          # \bSHIM\b matches neither GetSHIM nor SHIM_API_KEY, so the org handle
+          # and the environment variables stay as they are.
+          hits=$(grep -rnE '\b(SHIM|Shim)\b' \
+            --include='pyproject.toml' \
+            --include='plugin.json' \
+            --include='package.json' \
+            --include='*.cff' \
+            --exclude='NOTICE' --exclude='LICENSE' \
+            . || true)
+          if [ -n "$hits" ]; then
+            echo "The name is lowercase 'shim'. Fix these:"
+            echo "$hits"
+            exit 1
+          fi

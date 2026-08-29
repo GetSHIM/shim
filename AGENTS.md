@@ -1,4 +1,4 @@
-# SHIM repository rules
+# shim repository rules
 
 Read `docs/CURRENT_ARCHITECTURE.md`, `docs/TARGET_ARCHITECTURE.md`, and
 `DEVELOPER_GUIDE.md` before changing runtime boundaries.
