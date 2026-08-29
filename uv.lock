@@ -1364,11 +1364,11 @@ wheels = [
 
 [[package]]
 name = "python-json-logger"
-version = "2.0.7"
+version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4f/da/95963cebfc578dabd323d7263958dfb68898617912bb09327dd30e9c8d13/python-json-logger-2.0.7.tar.gz", hash = "sha256:23e7ec02d34237c5aa1e29a070193a4ea87583bb4e7f8fd06d3de8264c4b2e1c", size = 10508, upload-time = "2023-02-21T17:40:06.209Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/25/5473e46b179f8e8b4ad3aeeb36773d1701b7770eaf5e5bc2025c7303b598/python_json_logger-4.2.0.tar.gz", hash = "sha256:e371ebe22ec01e289850102091a2b1f6fc9e655c7f1f5f29073936756c290afa", size = 18211, upload-time = "2026-08-15T11:36:38.232Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/a6/145655273568ee78a581e734cf35beb9e33a370b29c5d3c8fee3744de29f/python_json_logger-2.0.7-py3-none-any.whl", hash = "sha256:f380b826a991ebbe3de4d897aeec42760035ac760345e57b812938dc8b35e2bd", size = 8067, upload-time = "2023-02-21T17:40:05.117Z" },
+    { url = "https://files.pythonhosted.org/packages/dc/55/6467fde553886cb293e41538f3a8b4e4fd4688c6df242cf982162d8367fb/python_json_logger-4.2.0-py3-none-any.whl", hash = "sha256:158a52126fcd6869e09574d2b66272666f3dc8f468c62637ef9a1fa883719cb9", size = 14988, upload-time = "2026-08-15T11:36:36.821Z" },
 ]
 
 [[package]]
@@ -1678,7 +1678,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.25,<1" },
     { name = "pydantic", specifier = ">=2.13,<3" },
     { name = "pydantic-settings", specifier = ">=2.1,<3" },
-    { name = "python-json-logger", specifier = ">=2.0.7,<3" },
+    { name = "python-json-logger", specifier = ">=2.0.7,<5" },
     { name = "sentry-sdk", specifier = ">=2.48,<3" },
     { name = "starlette", specifier = ">=1.3,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27,<1" },
