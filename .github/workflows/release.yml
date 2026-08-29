@@ -37,7 +37,20 @@ jobs:
 
       - name: Read the version from the tag
         id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          # A version carrying a hyphen is a candidate. It gets its own tag and
+          # publishes the whole pipeline for real, but it must not move latest.
+          {
+            echo "tags<<TAGS"
+            echo "ghcr.io/getshim/shim:$version"
+            case "$version" in
+              *-*) ;;
+              *) echo "ghcr.io/getshim/shim:latest" ;;
+            esac
+            echo "TAGS"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push the community image
         id: build
@@ -46,9 +59,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/getshim/shim:${{ steps.version.outputs.value }}
-            ghcr.io/getshim/shim:latest
+          tags: ${{ steps.version.outputs.tags }}
           provenance: mode=max
           sbom: true
 
