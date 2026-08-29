@@ -329,6 +329,7 @@ enterprise = [
   "ee/tests/outbox/test_dead_letter.py",
   "ee/tests/outbox/test_publisher.py",
   "ee/tests/outbox/test_worker.py",
+  "ee/tests/secrets/test_ciphertext_compatibility.py",
   "ee/tests/secrets/test_store.py",
   "ee/tests/shared_results/test_api.py",
   "ee/tests/tenants/test_policy.py",
