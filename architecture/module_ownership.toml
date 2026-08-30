@@ -340,6 +340,7 @@ enterprise = [
 # Transitional Python files that contain or exercise both ownership regions.
 split = [
   "scripts/export_openapi.py",
+  "tests/architecture/test_documented_quickstart.py",
   "tests/architecture/test_module_ownership.py",
   "tests/architecture/test_release_workflow.py",
   "tests/architecture/test_repository_manifest.py",
