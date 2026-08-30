@@ -6,11 +6,13 @@ import httpx
 import pytest
 from anthropic import APIStatusError as AnthropicStatusError
 from anthropic import AsyncAnthropic
-from fastapi import HTTPException
 from openai import APIStatusError as OpenAIStatusError
 from openai import AsyncOpenAI
 
-from shim.gateway.api.errors import provider_error_response
+from shim.gateway.api.errors import (
+    native_gateway_error_response,
+    provider_error_response,
+)
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 
 
@@ -127,51 +129,78 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
 
 
 @pytest.mark.parametrize(
-    ("error_code", "retryable", "status_code", "message"),
+    ("error_code", "retryable", "status_code", "message", "status"),
     [
-        ("PROVIDER_TIMEOUT", True, 504, "The Google request timed out."),
-        ("PROVIDER_UNAVAILABLE", True, 503, "Google is unavailable."),
-        ("PROVIDER_UNAVAILABLE", False, 502, "Google is unavailable."),
+        (
+            "PROVIDER_TIMEOUT",
+            True,
+            504,
+            "The Google request timed out.",
+            "DEADLINE_EXCEEDED",
+        ),
+        (
+            "PROVIDER_UNAVAILABLE",
+            True,
+            503,
+            "The Google request failed.",
+            "UNAVAILABLE",
+        ),
+        (
+            "PROVIDER_UNAVAILABLE",
+            False,
+            502,
+            "The Google request failed.",
+            "UNAVAILABLE",
+        ),
+        # The real upstream status survives instead of collapsing to 502/503.
+        (
+            "PROVIDER_UNAVAILABLE",
+            True,
+            429,
+            "The Google request failed.",
+            "RESOURCE_EXHAUSTED",
+        ),
         (
             "PROVIDER_NOT_CONFIGURED",
             False,
-            502,
+            503,
             "No Google credential is configured for this gateway. "
             "Add a provider credential before sending requests.",
+            "UNAVAILABLE",
         ),
     ],
 )
-def test_google_errors_preserve_generic_status_body_and_request_id_header(
+def test_google_errors_use_native_gemini_envelope(
     error_code: str,
     retryable: bool,
     status_code: int,
     message: str,
+    status: str,
 ) -> None:
-    with pytest.raises(HTTPException) as raised:
-        provider_error_response(
-            ProviderCallError(
-                status_code=418,
-                error_code=error_code,
-                retryable=retryable,
-                provider="google",
-                request_id="google_req_safe",
-                retry_after="7",
-            )
+    response = provider_error_response(
+        ProviderCallError(
+            status_code=status_code,
+            error_code=error_code,
+            retryable=retryable,
+            provider="google",
+            request_id="google_req_safe",
+            retry_after="7",
         )
+    )
 
-    assert raised.value.status_code == status_code
-    assert raised.value.detail == {
-        "code": error_code,
-        "message": message,
-        "retryable": retryable,
-        "provider": "google",
+    assert response.status_code == status_code
+    payload = json.loads(bytes(response.body))
+    assert "detail" not in payload
+    assert payload == {
+        "error": {"code": status_code, "message": message, "status": status}
     }
-    assert raised.value.headers == {"x-goog-request-id": "google_req_safe"}
+    assert response.headers["x-goog-request-id"] == "google_req_safe"
+    assert response.headers["retry-after"] == "7"
 
 
 @pytest.mark.parametrize(
     ("provider", "provider_label"),
-    [("openai", "OpenAI"), ("anthropic", "Anthropic")],
+    [("openai", "OpenAI"), ("anthropic", "Anthropic"), ("google", "Google")],
 )
 def test_unconfigured_provider_reports_setup_not_outage(
     provider: str,
@@ -188,8 +217,8 @@ def test_unconfigured_provider_reports_setup_not_outage(
         )
     )
     payload = json.loads(bytes(response.body))
-    # Native OpenAI and Anthropic envelopes both carry the human message at
-    # error.message; only the surrounding envelope shape differs.
+    # All three native envelopes carry the human message at error.message; only
+    # the surrounding envelope shape differs.
     message = payload["error"]["message"]
     assert message == (
         f"No {provider_label} credential is configured for this gateway. "
@@ -198,3 +227,29 @@ def test_unconfigured_provider_reports_setup_not_outage(
     assert "request failed" not in message
     if provider == "openai":
         assert payload["error"]["code"] == "PROVIDER_NOT_CONFIGURED"
+
+
+def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
+    # An error raised on a Gemini route — e.g. admission MODEL_NOT_PRICED — must
+    # surface as a native google.rpc.Status body, not FastAPI's {"detail": ...},
+    # so a Gemini client parses it as a Gemini error.
+    response = native_gateway_error_response(
+        path="/v1beta/models/gemini-2.0-flash:generateContent",
+        request_headers={},
+        status_code=400,
+        detail={
+            "code": "MODEL_NOT_PRICED",
+            "message": "The requested model is not approved for billing.",
+        },
+    )
+
+    assert response is not None
+    payload = json.loads(bytes(response.body))
+    assert "detail" not in payload
+    assert payload == {
+        "error": {
+            "code": 400,
+            "message": "The requested model is not approved for billing.",
+            "status": "INVALID_ARGUMENT",
+        }
+    }
