@@ -5,9 +5,11 @@ on:
     - cron: "17 5 * * *"
   workflow_dispatch:
 
+# Nothing above job level. The one job that opens a pull request asks for the
+# writes it needs, and a scheduled workflow is exactly the kind that should not
+# hand a broad token to every step it runs.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: model-catalog-update
@@ -17,6 +19,9 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write # push the automation branch
+      pull-requests: write # open the catalog update
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

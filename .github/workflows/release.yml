@@ -11,16 +11,21 @@ on:
   push:
     tags: ["v*"]
 
+# The workflow itself needs nothing. Every write lives on the job that needs
+# it, which is what a leaked step in a third-party action would have to get
+# past first.
 permissions:
-  contents: write # create the release
-  packages: write # push to ghcr.io
-  id-token: write # sign the provenance attestation
-  attestations: write # record it against the image
+  contents: read
 
 jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write # create the release
+      packages: write # push to ghcr.io
+      id-token: write # sign the provenance attestation
+      attestations: write # record it against the image
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -64,11 +69,30 @@ jobs:
           sbom: true
 
       - name: Attest the build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ghcr.io/getshim/shim
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      # The attestation is already in the registry and in the GitHub
+      # attestations API, which is where `gh attestation verify` reads it. A
+      # copy travels with the release as well, for two reasons: an air-gapped
+      # reviewer can verify without calling either API, and an automated
+      # supply-chain audit that reads release assets can see the signature at
+      # all. The extension follows the bundle's own format, because that is
+      # what those tools match on.
+      - name: Copy the provenance bundle into the release
+        id: bundle
+        run: |
+          src='${{ steps.attest.outputs.bundle-path }}'
+          case "$src" in
+            *.jsonl) dest="shim-${{ steps.version.outputs.value }}.intoto.jsonl" ;;
+            *) dest="shim-${{ steps.version.outputs.value }}.sigstore.json" ;;
+          esac
+          cp "$src" "$dest"
+          echo "path=$dest" >> "$GITHUB_OUTPUT"
 
       # The published image must start, because the README asks a reader to run
       # exactly this command.
@@ -110,4 +134,5 @@ jobs:
             --generate-notes \
             --verify-tag \
             $maturity \
-            "shim-${{ steps.version.outputs.value }}.spdx.json"
+            "shim-${{ steps.version.outputs.value }}.spdx.json" \
+            "${{ steps.bundle.outputs.path }}"
