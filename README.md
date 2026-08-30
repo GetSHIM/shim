@@ -61,14 +61,19 @@ or changes streaming behaviour, you are not waiting on shim to catch up.
 ## Quickstart
 
 ```console
-docker run --rm -p 8000:8000 ghcr.io/getshim/shim:latest
+docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
+  ghcr.io/getshim/shim:latest
 ```
+
+The container publishes a port, so it refuses to start without a key. Replace
+that value with your own before anything but a local trial.
 
 Ask it what it finds in a prompt. This route calls no provider, so it needs no
 provider key:
 
 ```console
 curl http://localhost:8000/v1/scan \
+  -H 'Authorization: Bearer a-key-of-at-least-16-chars' \
   -H 'Content-Type: application/json' \
   -d '{"text":"Customer jane.doe@example.com, IBAN TR33 0006 1005 1978 6457 8413 26"}'
 ```
