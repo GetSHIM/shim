@@ -24,6 +24,7 @@
   <img src="https://img.shields.io/badge/python-3.13-blue?logo=python&logoColor=white" alt="Python 3.13">
   <a href="https://github.com/GetSHIM/shim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="Apache-2.0"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/GetSHIM/shim"><img src="https://api.scorecard.dev/projects/github.com/GetSHIM/shim/badge" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/14372"><img src="https://www.bestpractices.dev/projects/14372/badge" alt="OpenSSF Best Practices"></a>
 </p>
 
 > [!NOTE]

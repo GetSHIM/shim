@@ -84,3 +84,10 @@ product on the European market. It does not place them on a person who
 contributes to someone else's open-source project. Contributing here does not
 make you answerable for shim's compliance, and we are not asking you to take on
 any part of it.
+
+## Tests come with the change
+
+New functionality arrives with tests for it in the same pull request, and a
+bug fix arrives with a test that fails without the fix. This is the rule, not
+a preference: a change that cannot be tested is a design question to raise in
+the pull request rather than something to skip.
