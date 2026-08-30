@@ -23,7 +23,7 @@
   <a href="https://github.com/GetSHIM/shim/actions/workflows/test.yml"><img src="https://github.com/GetSHIM/shim/actions/workflows/test.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.13-blue?logo=python&logoColor=white" alt="Python 3.13">
   <a href="https://github.com/GetSHIM/shim/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-green.svg" alt="Apache-2.0"></a>
-  <a href="https://github.com/GetSHIM/shim/stargazers"><img src="https://img.shields.io/github/stars/GetSHIM/shim.svg?style=flat&logo=github" alt="Stars"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/GetSHIM/shim"><img src="https://api.scorecard.dev/projects/github.com/GetSHIM/shim/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 > [!NOTE]
