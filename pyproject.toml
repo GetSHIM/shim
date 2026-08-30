@@ -1,7 +1,7 @@
 [project]
 name = "shim-gateway"
 version = "0.1.2"
-description = "One trust boundary for AI traffic, without rewriting the payload"
+description = "One trust boundary for your AI traffic, without rewriting the payload"
 authors = [{ name = "shim Engineering" }]
 readme = "README.md"
 license = "Apache-2.0"
