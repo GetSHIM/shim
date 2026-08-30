@@ -1575,7 +1575,7 @@ wheels = [
 
 [[package]]
 name = "shim-enterprise"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "ee" }
 dependencies = [
     { name = "alembic" },
@@ -1631,7 +1631,7 @@ provides-extras = ["secrets-aws", "secrets-azure"]
 
 [[package]]
 name = "shim-gateway"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
