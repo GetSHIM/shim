@@ -87,7 +87,7 @@ class AnthropicExecution:
         if not api_key:
             raise ProviderCallError(
                 503,
-                "PROVIDER_UNAVAILABLE",
+                "PROVIDER_NOT_CONFIGURED",
                 False,
                 provider="anthropic",
             )
