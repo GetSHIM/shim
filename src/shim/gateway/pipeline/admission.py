@@ -75,7 +75,7 @@ class AdmissionStage:
                 status_code=400,
                 detail={
                     "code": "MODEL_NOT_PRICED",
-                    "message": "The requested model is not approved for billing.",
+                    "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
                 },
             )
         payload = value.payload

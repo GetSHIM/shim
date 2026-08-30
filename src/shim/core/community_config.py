@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 class CommunitySettings(BaseSettings):
     PROJECT_NAME: str = "shim trust-boundary gateway"
-    VERSION: str = "0.1.1"
+    VERSION: str = "0.1.2"
     ENVIRONMENT: Literal["development", "test", "production"] = "development"
     IS_DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

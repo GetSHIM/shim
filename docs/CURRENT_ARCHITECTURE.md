@@ -153,7 +153,8 @@ never forwarded wholesale.
 | Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
 
 OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
-Anthropic errors retain `{type: "error", error: {type, message}}`. Upstream
+Anthropic errors retain `{type: "error", error: {type, message}}`. Gemini errors
+retain the google.rpc.Status `{error: {code, message, status}}` shape. Upstream
 details that could contain credentials or PII are discarded. A stream failure
 after headers is emitted as a sanitized terminal event.
 

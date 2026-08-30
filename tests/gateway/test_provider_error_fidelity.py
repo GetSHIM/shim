@@ -239,7 +239,7 @@ def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
         status_code=400,
         detail={
             "code": "MODEL_NOT_PRICED",
-            "message": "The requested model is not approved for billing.",
+            "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
         },
     )
 
@@ -249,7 +249,7 @@ def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
     assert payload == {
         "error": {
             "code": 400,
-            "message": "The requested model is not approved for billing.",
+            "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
             "status": "INVALID_ARGUMENT",
         }
     }
