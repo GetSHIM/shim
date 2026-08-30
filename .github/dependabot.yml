@@ -20,6 +20,13 @@ updates:
       - dependency-name: openai
       - dependency-name: anthropic
       - dependency-name: google-genai
+      # The lint gate is ruff's default rule selection, because the repository
+      # carries no ruff configuration. A minor bump therefore changes what the
+      # gate enforces: 0.16 turns on isort, pyupgrade, bugbear, refurb and more,
+      # which is 739 findings on a tree that 0.15 calls clean. Adopting a ruff
+      # release is a review, not a version bump, so it does not ride along in
+      # the group. Remove this once pyproject.toml selects its own rule set.
+      - dependency-name: ruff
 
   - package-ecosystem: github-actions
     directory: /
