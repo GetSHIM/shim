@@ -1,8 +1,8 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 from starlette.responses import Response
 
 import shim.gateway.kernel.gateway_kernel as kernel_module
@@ -148,27 +148,31 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
         usage=usage,
     )
 
-    with pytest.raises(HTTPException) as captured:
-        await GatewayService(kernel).dispatch_inference(
-            payload={},
-            provider="google",
-            protocol="generate_content",
-            model="gemini-test",
-            stream=False,
-            headers={},
-            provider_credential=None,
-            principal=SimpleNamespace(),  # type: ignore[arg-type]
-            request_metadata=GatewayRequestMetadata(
-                endpoint="/v1beta/models/gemini-test:generateContent"
-            ),
-        )
+    response = await GatewayService(kernel).dispatch_inference(
+        payload={},
+        provider="google",
+        protocol="generate_content",
+        model="gemini-test",
+        stream=False,
+        headers={},
+        provider_credential=None,
+        principal=SimpleNamespace(),  # type: ignore[arg-type]
+        request_metadata=GatewayRequestMetadata(
+            endpoint="/v1beta/models/gemini-test:generateContent"
+        ),
+    )
 
-    assert captured.value.status_code == 503
-    assert captured.value.detail == {
-        "code": "PROVIDER_UNAVAILABLE",
-        "message": "Google is unavailable.",
-        "retryable": True,
-        "provider": "google",
+    # A Gemini request surfaces a native google.rpc.Status body, not FastAPI's
+    # {"detail": ...}, and keeps the 503 the kernel raised.
+    assert response.status_code == 503
+    payload = json.loads(bytes(response.body))
+    assert "detail" not in payload
+    assert payload == {
+        "error": {
+            "code": 503,
+            "message": "The Google request failed.",
+            "status": "UNAVAILABLE",
+        }
     }
     usage.fail.assert_not_awaited()
 

@@ -144,6 +144,17 @@ def _native_error_response(
                 "code": code,
             }
         }
+    elif provider == "google":
+        # Native Gemini errors follow google.rpc.Status: a numeric HTTP code, a
+        # message, and the canonical status enum. The request id rides the
+        # x-goog-request-id header, not the body.
+        content = {
+            "error": {
+                "code": status_code,
+                "message": message,
+                "status": _google_error_status(status_code),
+            }
+        }
     else:
         content = {
             "type": "error",
@@ -168,6 +179,8 @@ def _gateway_provider(
         return "openai"
     if normalized == "/v1/models" or normalized.startswith("/v1/models/"):
         return "anthropic" if headers.get("anthropic-version") else "openai"
+    if normalized.startswith("/v1beta/models/"):
+        return "google"
     return None
 
 
@@ -223,9 +236,6 @@ def raise_privacy_continuation_error() -> NoReturn:
 
 
 def provider_error_response(exc: ProviderCallError) -> JSONResponse:
-    if exc.provider not in {"openai", "anthropic"}:
-        _raise_legacy_provider_error(exc)
-
     headers: dict[str, str] = {}
     if exc.request_id:
         headers[
@@ -247,10 +257,11 @@ def provider_error_response(exc: ProviderCallError) -> JSONResponse:
 
 
 def _provider_message(exc: ProviderCallError) -> str:
-    provider = {"openai": "OpenAI", "anthropic": "Anthropic"}.get(
-        exc.provider,
-        "Provider",
-    )
+    provider = {
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        "google": "Google",
+    }.get(exc.provider, "Provider")
     if exc.error_code == "PROVIDER_NOT_CONFIGURED":
         return (
             f"No {provider} credential is configured for this gateway. "
@@ -263,36 +274,23 @@ def _provider_message(exc: ProviderCallError) -> str:
     )
 
 
-def _raise_legacy_provider_error(exc: ProviderCallError) -> NoReturn:
-    timed_out = exc.error_code == "PROVIDER_TIMEOUT"
-    not_configured = exc.error_code == "PROVIDER_NOT_CONFIGURED"
-    provider_name = "Google" if exc.provider == "google" else "Provider"
-    status_code = 504 if timed_out else 503 if exc.retryable else 502
-    if not_configured:
-        message = (
-            f"No {provider_name} credential is configured for this gateway. "
-            "Add a provider credential before sending requests."
-        )
-    elif timed_out:
-        message = f"The {provider_name} request timed out."
-    else:
-        message = f"{provider_name} is unavailable."
-    detail = {
-        "code": exc.error_code,
-        "message": message,
-        "retryable": exc.retryable,
-        "provider": exc.provider,
-    }
-    headers = (
-        {"x-goog-request-id": exc.request_id}
-        if exc.provider == "google" and exc.request_id
-        else None
-    )
-    raise HTTPException(
-        status_code=status_code,
-        detail=detail,
-        headers=headers,
-    ) from None
+def _google_error_status(status_code: int) -> str:
+    return {
+        400: "INVALID_ARGUMENT",
+        401: "UNAUTHENTICATED",
+        403: "PERMISSION_DENIED",
+        404: "NOT_FOUND",
+        408: "DEADLINE_EXCEEDED",
+        409: "ABORTED",
+        413: "INVALID_ARGUMENT",
+        422: "INVALID_ARGUMENT",
+        429: "RESOURCE_EXHAUSTED",
+        500: "INTERNAL",
+        502: "UNAVAILABLE",
+        503: "UNAVAILABLE",
+        504: "DEADLINE_EXCEEDED",
+        529: "UNAVAILABLE",
+    }.get(status_code, "INTERNAL" if status_code >= 500 else "INVALID_ARGUMENT")
 
 
 def _anthropic_error_type(status_code: int) -> str:
