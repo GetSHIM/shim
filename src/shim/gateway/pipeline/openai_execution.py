@@ -86,7 +86,7 @@ class OpenAIExecution:
         except Exception:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
-            raise _error(503, "PROVIDER_UNAVAILABLE", False)
+            raise _error(503, "PROVIDER_NOT_CONFIGURED", False)
         if not await self.circuit.acquire_call():
             raise _error(503, "PROVIDER_UNAVAILABLE", True)
         try:

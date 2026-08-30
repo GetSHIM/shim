@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from anthropic import APIStatusError as AnthropicStatusError
@@ -130,6 +132,13 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
         ("PROVIDER_TIMEOUT", True, 504, "The Google request timed out."),
         ("PROVIDER_UNAVAILABLE", True, 503, "Google is unavailable."),
         ("PROVIDER_UNAVAILABLE", False, 502, "Google is unavailable."),
+        (
+            "PROVIDER_NOT_CONFIGURED",
+            False,
+            502,
+            "No Google credential is configured for this gateway. "
+            "Add a provider credential before sending requests.",
+        ),
     ],
 )
 def test_google_errors_preserve_generic_status_body_and_request_id_header(
@@ -158,3 +167,34 @@ def test_google_errors_preserve_generic_status_body_and_request_id_header(
         "provider": "google",
     }
     assert raised.value.headers == {"x-goog-request-id": "google_req_safe"}
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_label"),
+    [("openai", "OpenAI"), ("anthropic", "Anthropic")],
+)
+def test_unconfigured_provider_reports_setup_not_outage(
+    provider: str,
+    provider_label: str,
+) -> None:
+    # A workspace with no provider credential must not be told the provider
+    # call "failed" — that reads as an outage and hides the real fix.
+    response = provider_error_response(
+        ProviderCallError(
+            status_code=503,
+            error_code="PROVIDER_NOT_CONFIGURED",
+            retryable=False,
+            provider=provider,
+        )
+    )
+    payload = json.loads(bytes(response.body))
+    # Native OpenAI and Anthropic envelopes both carry the human message at
+    # error.message; only the surrounding envelope shape differs.
+    message = payload["error"]["message"]
+    assert message == (
+        f"No {provider_label} credential is configured for this gateway. "
+        "Add a provider credential before sending requests."
+    )
+    assert "request failed" not in message
+    if provider == "openai":
+        assert payload["error"]["code"] == "PROVIDER_NOT_CONFIGURED"

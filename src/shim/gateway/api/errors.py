@@ -251,6 +251,11 @@ def _provider_message(exc: ProviderCallError) -> str:
         exc.provider,
         "Provider",
     )
+    if exc.error_code == "PROVIDER_NOT_CONFIGURED":
+        return (
+            f"No {provider} credential is configured for this gateway. "
+            "Add a provider credential before sending requests."
+        )
     return (
         f"The {provider} request timed out."
         if exc.error_code == "PROVIDER_TIMEOUT"
@@ -260,15 +265,21 @@ def _provider_message(exc: ProviderCallError) -> str:
 
 def _raise_legacy_provider_error(exc: ProviderCallError) -> NoReturn:
     timed_out = exc.error_code == "PROVIDER_TIMEOUT"
+    not_configured = exc.error_code == "PROVIDER_NOT_CONFIGURED"
     provider_name = "Google" if exc.provider == "google" else "Provider"
     status_code = 504 if timed_out else 503 if exc.retryable else 502
+    if not_configured:
+        message = (
+            f"No {provider_name} credential is configured for this gateway. "
+            "Add a provider credential before sending requests."
+        )
+    elif timed_out:
+        message = f"The {provider_name} request timed out."
+    else:
+        message = f"{provider_name} is unavailable."
     detail = {
         "code": exc.error_code,
-        "message": (
-            f"The {provider_name} request timed out."
-            if timed_out
-            else f"{provider_name} is unavailable."
-        ),
+        "message": message,
         "retryable": exc.retryable,
         "provider": exc.provider,
     }
