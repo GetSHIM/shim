@@ -166,6 +166,7 @@ class PrivacyStage:
             value.pii_config,
             self.scrubber,
             known_placeholders=parent_map,
+            request_model=value.model,
         )
         pii_detected = bool(verification_map)
         if (
@@ -205,6 +206,7 @@ def scrub_payload(
     scrubber: PIIScrubberService,
     *,
     known_placeholders: Mapping[str, str] | None = None,
+    request_model: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     verification_map = dict(known_placeholders or {})
     if not pii_scrubbing_enabled(config):
@@ -300,6 +302,20 @@ def scrub_payload(
                 inspect_identifier(key)
                 if deep:
                     scrubbed[key] = visit(item, content=content, deep=True)
+                elif (
+                    key == "model"
+                    and request_model is not None
+                    and item == request_model
+                ):
+                    # Admission validates the request model against the catalog
+                    # before privacy runs, so it is a known-safe identifier that
+                    # must reach the provider verbatim. Running PII detection on it
+                    # only yields false positives — a dated Anthropic snapshot such
+                    # as claude-sonnet-4-5-20250929 trips the phone-number
+                    # recognizer on its "4-5-20250929" suffix. Only the validated
+                    # request model is exempt; any other "model" value (e.g. inside
+                    # metadata) still passes through identifier inspection.
+                    scrubbed[key] = item
                 elif _is_protocol_field(key) or (
                     isinstance(value_type, str)
                     and key in _OPAQUE_PROTOCOL_FIELDS_BY_TYPE.get(value_type, ())

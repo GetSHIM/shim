@@ -555,6 +555,40 @@ def test_pii_in_protocol_identifier_is_rejected_without_rewriting_valid_ids() ->
     assert error.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"
 
 
+def test_validated_request_model_bypasses_identifier_pii_detection() -> None:
+    # A dated Anthropic snapshot trips the phone-number recognizer on its
+    # "4-5-20250929" suffix. Admission already validated it against the catalog,
+    # so it must pass through verbatim instead of being rejected as PII.
+    model = "claude-sonnet-4-5-20250929"
+    safe, mapping = scrub_payload(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Email alice@example.com"}],
+        },
+        None,
+        PIIScrubberService(),
+        request_model=model,
+    )
+
+    assert safe["model"] == model
+    assert "alice@example.com" not in json.dumps(safe["messages"])
+    assert mapping
+
+
+def test_model_pii_still_rejected_when_not_the_validated_request_model() -> None:
+    # The exemption is scoped to the validated request model only. The same
+    # string reaching a "model" field without matching the validated model still
+    # passes through identifier inspection and is rejected.
+    with pytest.raises(HTTPException, match="protocol identifier") as error:
+        scrub_payload(
+            {"model": "claude-sonnet-4-5-20250929"},
+            None,
+            PIIScrubberService(),
+            request_model="claude-sonnet-4-5",
+        )
+    assert error.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"
+
+
 def test_opaque_protocol_values_are_preserved_when_clean_and_rejected_with_pii() -> (
     None
 ):
