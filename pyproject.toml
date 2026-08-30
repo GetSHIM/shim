@@ -1,6 +1,6 @@
 [project]
 name = "shim-gateway"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance B2B AI Gateway & Optimization Platform"
 authors = [{ name = "shim Engineering" }]
 readme = "README.md"

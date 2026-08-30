@@ -105,7 +105,7 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
                 extra_headers={"x-provider-key": PROVIDER_KEY},
             )
 
-    assert health.json() == {"status": "ok", "version": "0.1.0"}
+    assert health.json() == {"status": "ok", "version": "0.1.1"}
     assert completion.id == "chatcmpl_community"
     assert completion.choices[0].message.content == f"Received Contact {EMAIL}"
     assert len(attempts) == 1
