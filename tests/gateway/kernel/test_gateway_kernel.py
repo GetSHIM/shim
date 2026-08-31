@@ -162,11 +162,8 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
         ),
     )
 
-    # A Gemini request surfaces a native google.rpc.Status body, not FastAPI's
-    # {"detail": ...}, and keeps the 503 the kernel raised.
     assert response.status_code == 503
-    payload = json.loads(bytes(response.body))
-    assert "detail" not in payload
+    payload = json.loads(response.body)
     assert payload == {
         "error": {
             "code": 503,

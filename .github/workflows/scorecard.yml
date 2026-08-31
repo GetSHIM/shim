@@ -1,12 +1,6 @@
-# OpenSSF Scorecard reads this repository the way a buyer's security review
-# would: twenty checks, each scored out of ten, run by a third party rather
-# than asserted by us. publish_results has to stay true, because the README
-# badge and the public viewer read the published run, not this file.
 name: Scorecard
 
 on:
-  # Branch-Protection is one of the graded checks, so re-score when a rule
-  # changes rather than waiting for the weekly run.
   branch_protection_rule:
   schedule:
     - cron: "31 5 * * 1"
@@ -21,9 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      # Write the findings to the code scanning tab.
       security-events: write
-      # Sign the published result, so the public score cannot be forged.
       id-token: write
       contents: read
       actions: read

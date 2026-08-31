@@ -1,5 +1,3 @@
-# Keeping dependencies current is an obligation under the Cyber Resilience Act,
-# and these pull requests are the cheapest evidence that we meet it.
 version: 2
 updates:
   - package-ecosystem: uv
@@ -12,20 +10,9 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
-      # The provider SDKs are pinned on purpose and the README says so: a new
-      # provider SDK does not arrive automatically, because each one needs a
-      # compatibility review against the streaming and error contracts.
-      # Security fixes still reach us through Dependabot security updates,
-      # which this ignore does not affect.
       - dependency-name: openai
       - dependency-name: anthropic
       - dependency-name: google-genai
-      # The lint gate is ruff's default rule selection, because the repository
-      # carries no ruff configuration. A minor bump therefore changes what the
-      # gate enforces: 0.16 turns on isort, pyupgrade, bugbear, refurb and more,
-      # which is 739 findings on a tree that 0.15 calls clean. Adopting a ruff
-      # release is a review, not a version bump, so it does not ride along in
-      # the group. Remove this once pyproject.toml selects its own rule set.
       - dependency-name: ruff
 
   - package-ecosystem: github-actions
@@ -36,15 +23,11 @@ updates:
       actions:
         patterns: ["*"]
 
-  # Both Dockerfiles pin their base images by digest, so these pull requests
-  # carry the digest forward.
   - package-ecosystem: docker
     directories: ["/", "/ee"]
     schedule:
       interval: weekly
     ignore:
-      # requires-python is >=3.13,<3.14, so a 3.14 base image cannot install
-      # the project. Digest and patch bumps within 3.13 are what we want here.
       - dependency-name: python
         update-types:
           - version-update:semver-major

@@ -276,12 +276,8 @@ async def test_gemini_validation_precedes_one_sanitized_provider_attempt() -> No
             )
 
     assert invalid.status_code == 422
-    # Validation errors on a Gemini route surface as native google.rpc.Status,
-    # not FastAPI's {"detail": ...}.
     assert "detail" not in invalid.json()
     assert invalid.json()["error"]["status"] == "INVALID_ARGUMENT"
-    # The upstream status is preserved, not collapsed to 503, and the sanitized
-    # body is a native Gemini error envelope.
     assert failed.status_code == 500
     assert failed.json() == {
         "error": {

@@ -576,10 +576,6 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         assert "--revision-suffix=rel-$SHORT_SHA" in steps[step_id]["args"]
         assert command in steps[step_id]["args"]
 
-    # This repository is public. The deployment identity lives on the Cloud
-    # Build trigger, not in the file, so a project id, a service account, a
-    # bucket or a secret prefix must never reappear here. These substitutions
-    # stay declared, because the build steps reference them, and stay empty.
     for name in (
         "_DEPLOY_PROJECT_ID",
         "_DEPLOY_TRIGGER_ID",

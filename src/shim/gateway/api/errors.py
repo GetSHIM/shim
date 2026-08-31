@@ -145,9 +145,6 @@ def _native_error_response(
             }
         }
     elif provider == "google":
-        # Native Gemini errors follow google.rpc.Status: a numeric HTTP code, a
-        # message, and the canonical status enum. The request id rides the
-        # x-goog-request-id header, not the body.
         content = {
             "error": {
                 "code": status_code,
