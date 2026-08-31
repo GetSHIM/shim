@@ -15,6 +15,14 @@ from shim.gateway.api.errors import (
 )
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 
+_OPENAI_ERROR_TYPES = {
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    409: "conflict_error",
+    429: "rate_limit_error",
+}
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
@@ -107,20 +115,9 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
     if provider == "openai":
         assert set(payload) == {"error"}
         assert set(payload["error"]) == {"message", "type", "param", "code"}
-        assert payload["error"]["type"] == (
-            "rate_limit_error"
-            if status_code == 429
-            else "authentication_error"
-            if status_code == 401
-            else "permission_error"
-            if status_code == 403
-            else "not_found_error"
-            if status_code == 404
-            else "conflict_error"
-            if status_code == 409
-            else "invalid_request_error"
-            if status_code < 500
-            else "server_error"
+        assert payload["error"]["type"] == _OPENAI_ERROR_TYPES.get(
+            status_code,
+            "invalid_request_error" if status_code < 500 else "server_error",
         )
     else:
         assert set(payload) == {"type", "error", "request_id"}
@@ -152,7 +149,6 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
             "The Google request failed.",
             "UNAVAILABLE",
         ),
-        # The real upstream status survives instead of collapsing to 502/503.
         (
             "PROVIDER_UNAVAILABLE",
             True,
@@ -189,8 +185,7 @@ def test_google_errors_use_native_gemini_envelope(
     )
 
     assert response.status_code == status_code
-    payload = json.loads(bytes(response.body))
-    assert "detail" not in payload
+    payload = json.loads(response.body)
     assert payload == {
         "error": {"code": status_code, "message": message, "status": status}
     }
@@ -206,8 +201,6 @@ def test_unconfigured_provider_reports_setup_not_outage(
     provider: str,
     provider_label: str,
 ) -> None:
-    # A workspace with no provider credential must not be told the provider
-    # call "failed" — that reads as an outage and hides the real fix.
     response = provider_error_response(
         ProviderCallError(
             status_code=503,
@@ -216,9 +209,7 @@ def test_unconfigured_provider_reports_setup_not_outage(
             provider=provider,
         )
     )
-    payload = json.loads(bytes(response.body))
-    # All three native envelopes carry the human message at error.message; only
-    # the surrounding envelope shape differs.
+    payload = json.loads(response.body)
     message = payload["error"]["message"]
     assert message == (
         f"No {provider_label} credential is configured for this gateway. "
@@ -230,9 +221,6 @@ def test_unconfigured_provider_reports_setup_not_outage(
 
 
 def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
-    # An error raised on a Gemini route — e.g. admission MODEL_NOT_PRICED — must
-    # surface as a native google.rpc.Status body, not FastAPI's {"detail": ...},
-    # so a Gemini client parses it as a Gemini error.
     response = native_gateway_error_response(
         path="/v1beta/models/gemini-2.0-flash:generateContent",
         request_headers={},
@@ -244,8 +232,7 @@ def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
     )
 
     assert response is not None
-    payload = json.loads(bytes(response.body))
-    assert "detail" not in payload
+    payload = json.loads(response.body)
     assert payload == {
         "error": {
             "code": 400,

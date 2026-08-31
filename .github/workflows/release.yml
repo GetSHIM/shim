@@ -1,19 +1,9 @@
-# A tag produces artifacts: a multi-architecture image, an SBOM, a signed
-# provenance attestation and a GitHub release.
-#
-# This workflow does not deploy. Production is reached by the Cloud Build
-# trigger that watches the same tag, and the two stay separate on purpose:
-# publishing a release and rolling the hosted service are different decisions,
-# and a community contribution must never reach production on its own.
 name: release
 
 on:
   push:
     tags: ["v*"]
 
-# The workflow itself needs nothing. Every write lives on the job that needs
-# it, which is what a leaked step in a third-party action would have to get
-# past first.
 permissions:
   contents: read
 
@@ -22,16 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: write # create the release
-      packages: write # push to ghcr.io
-      id-token: write # sign the provenance attestation
-      attestations: write # record it against the image
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      # ponytail: arm64 is emulated through QEMU. A release runs rarely, so the
-      # extra minutes cost nothing; if they ever do, build arm64 natively on
-      # ubuntu-24.04-arm and merge the two manifests.
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
@@ -45,8 +34,6 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           echo "value=$version" >> "$GITHUB_OUTPUT"
-          # A version carrying a hyphen is a candidate. It gets its own tag and
-          # publishes the whole pipeline for real, but it must not move latest.
           {
             echo "tags<<TAGS"
             echo "ghcr.io/getshim/shim:$version"
@@ -76,13 +63,6 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-      # The attestation is already in the registry and in the GitHub
-      # attestations API, which is where `gh attestation verify` reads it. A
-      # copy travels with the release as well, for two reasons: an air-gapped
-      # reviewer can verify without calling either API, and an automated
-      # supply-chain audit that reads release assets can see the signature at
-      # all. The extension follows the bundle's own format, because that is
-      # what those tools match on.
       - name: Copy the provenance bundle into the release
         id: bundle
         run: |
@@ -94,8 +74,6 @@ jobs:
           cp "$src" "$dest"
           echo "path=$dest" >> "$GITHUB_OUTPUT"
 
-      # The published image must start, because the README asks a reader to run
-      # exactly this command.
       - name: Smoke the published image
         run: |
           container=shim-release-smoke
@@ -110,8 +88,6 @@ jobs:
           docker logs "$container"
           exit 1
 
-      # Enterprise buyers ask for this file by name, and the Cyber Resilience
-      # Act expects it alongside the release.
       - name: Generate the SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -124,7 +100,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Every 0.x release is alpha, and the repository says so out loud.
           case "$GITHUB_REF_NAME" in
             v0.*) maturity=--prerelease ;;
             *) maturity= ;;

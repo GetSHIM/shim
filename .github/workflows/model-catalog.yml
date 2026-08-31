@@ -5,9 +5,6 @@ on:
     - cron: "17 5 * * *"
   workflow_dispatch:
 
-# Nothing above job level. The one job that opens a pull request asks for the
-# writes it needs, and a scheduled workflow is exactly the kind that should not
-# hand a broad token to every step it runs.
 permissions:
   contents: read
 
@@ -20,12 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # push the automation branch
-      pull-requests: write # open the catalog update
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -48,6 +46,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
             git fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
           fi

@@ -7,7 +7,7 @@ import re
 import sys
 from typing import Any
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger.json import JsonFormatter
 import sentry_sdk
 from sentry_sdk.types import Event, Hint
 
@@ -25,7 +25,7 @@ def configure_logging(log_level: str) -> None:
         handler = logging.StreamHandler(sys.stdout)
         handler.set_name(_HANDLER_NAME)
         handler.setFormatter(
-            jsonlogger.JsonFormatter(
+            JsonFormatter(
                 "%(asctime)s %(levelname)s %(name)s %(message)s",
                 rename_fields={"levelname": "level", "asctime": "timestamp"},
             )

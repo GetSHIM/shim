@@ -1,11 +1,3 @@
-# Static analysis. Scorecard grades the SAST check on whether a recognised
-# analyser runs, and a security product that ships no static analysis of its
-# own is a hard question to answer in a procurement review.
-#
-# The default query suite runs here on purpose. security-extended finds more
-# and reports more, and a two-person team that stops reading its own alerts is
-# worse off than one that reads every alert it gets. Widen it once the default
-# suite is quiet.
 name: CodeQL
 
 on:
