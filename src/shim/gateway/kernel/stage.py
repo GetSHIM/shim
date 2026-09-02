@@ -7,7 +7,7 @@ from typing import Protocol, TypeVar
 
 
 InputT = TypeVar("InputT", contravariant=True)
-OutputT = TypeVar("OutputT", covariant=True)
+OutputT = TypeVar("OutputT")
 TraceValue = str | int | float | bool | None
 
 
