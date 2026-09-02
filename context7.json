@@ -1,10 +1,22 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/getshim/shim",
+  "public_key": "pk_eqj9q0ShIB4cCj3bsAwgx",
   "projectTitle": "shim",
   "description": "B2B AI gateway that applies PII redaction, admission control, cost accounting and error policy to OpenAI, Anthropic and Google traffic without rewriting the payload.",
   "folders": [],
-  "excludeFolders": ["src", "ee", "tests", "scripts", "architecture", ".github"],
-  "excludeFiles": ["docs/MIGRATION_PROGRESS.md", "AGENTS.md"],
+  "excludeFolders": [
+    "src",
+    "ee",
+    "tests",
+    "scripts",
+    "architecture",
+    ".github"
+  ],
+  "excludeFiles": [
+    "docs/MIGRATION_PROGRESS.md",
+    "AGENTS.md"
+  ],
   "rules": [
     "shim is a drop-in base URL, not an SDK. Keep the provider's own SDK and set base_url to the shim host plus /v1.",
     "Authenticate to shim with SHIM_API_KEY via 'Authorization: Bearer'. Provider keys stay on the shim side (OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY) or are passed per request as 'x-provider-key'. The shim key is never forwarded to a provider.",
