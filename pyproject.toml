@@ -1,6 +1,6 @@
 [project]
 name = "shim-gateway"
-version = "0.1.2"
+version = "0.1.3"
 description = "One trust boundary for your AI traffic, without rewriting the payload"
 authors = [{ name = "shim Engineering" }]
 readme = "README.md"
