@@ -27,3 +27,7 @@ AUDIT_WORKER_LAG_SECONDS = Gauge(
     "audit_worker_lag_seconds",
     "Age of the oldest undelivered audit event observed by the worker.",
 )
+LICENSE_DAYS_REMAINING = Gauge(
+    "license_days_remaining",
+    "Days until the enterprise licence expires; negative inside the grace period.",
+)

@@ -255,7 +255,9 @@ Persistence tests require PostgreSQL and Redis. The canonical Alembic config is
 `LICENSE` and `NOTICE` apply Apache-2.0 outside `ee/`. `ee/LICENSE` and
 `ee/NOTICE` apply Elastic-2.0 under `ee/` and name the licensor. Both package
 manifests declare the matching SPDX expression and legal files; CI verifies
-those files in wheel and sdist metadata. No runtime licence validator exists.
+those files in wheel and sdist metadata. Production enterprise boots verify an
+offline `SHIM_LICENSE_KEY` in `shim_enterprise.core.license`; no other runtime
+licence validator exists.
 
 The public repository uses this mixed-licence package split. It is live in
 production; deployment and verification evidence is recorded in

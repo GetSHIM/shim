@@ -19,6 +19,7 @@ class Settings(CommunitySettings):
     DATABASE_MAX_OVERFLOW: int = Field(default=1, ge=0)
     REDIS_URL: RedisDsn
     SECRET_KEY: str = Field(min_length=16)
+    SHIM_LICENSE_KEY: str | None = None
     ENCRYPTION_KEY: str | None = None
     SECRET_BACKEND: Literal[
         "fernet",

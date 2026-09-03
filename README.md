@@ -161,6 +161,7 @@ Files outside `ee/` are licensed under the Apache License 2.0 in
 [`ee/NOTICE`](ee/NOTICE). `shim-enterprise` depends on the separately licensed
 `shim-gateway` distribution.
 
-There is no CLA, no runtime licence check, and no enterprise bootstrap
-validator. Add one only when an approved contribution or commercial policy
-requires it.
+There is no CLA. Running `shim-enterprise` with `ENVIRONMENT=production`
+requires `SHIM_LICENSE_KEY`, an Ed25519-signed licence verified offline against
+a public key shipped in the package. `shim-gateway` needs no licence and never
+checks for one.

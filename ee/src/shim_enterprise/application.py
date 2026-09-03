@@ -23,6 +23,7 @@ from shim_enterprise.cache.loop_detection import LoopDetectionService
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.core.license import verify_license
 from shim.core.http import install_http_middleware
 from shim.gateway.api.errors import gateway_exception_handler
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
@@ -55,6 +56,13 @@ logger = logging.getLogger(__name__)
 
 def create_enterprise_app() -> FastAPI:
     configure_logging(settings.LOG_LEVEL)
+    if settings.ENVIRONMENT == "production":
+        active_license = verify_license(settings.SHIM_LICENSE_KEY)
+        logger.info(
+            "shim licence accepted customer=%s expires=%s",
+            active_license.customer,
+            active_license.expires,
+        )
     configure_error_reporting(
         sentry_dsn=settings.SENTRY_DSN,
         environment=settings.ENVIRONMENT,

@@ -92,5 +92,11 @@ feeds cost accounting, so it reaches `main` through review.
 
 Preserve the mixed-licence boundary: Apache-2.0 applies outside `ee/`, and
 Elastic-2.0 applies under `ee/`. Keep both packages' `license`, `license-files`,
-`LICENSE`, and `NOTICE` declarations aligned. Do not add a CLA, runtime licence
-check, or new commercial terms without an approved policy.
+`LICENSE`, and `NOTICE` declarations aligned. Do not add a CLA or new commercial
+terms without an approved policy.
+
+The enterprise licence gate is approved and lives in
+`shim_enterprise.core.license`. `create_enterprise_app` verifies
+`SHIM_LICENSE_KEY` offline when `ENVIRONMENT` is `production`. Keep it to that
+one call site: no per-feature premium flags, no network call, no check in the
+community package or in the workers.
