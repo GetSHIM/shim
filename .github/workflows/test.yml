@@ -321,7 +321,7 @@ jobs:
               } <= {
                   path.name for path in paths if "control_mappings" in path.parts
               }
-          assert "shim-gateway==0.1.2" in metadata.get_all("Requires-Dist", [])
+          assert "shim-gateway==0.1.3" in metadata.get_all("Requires-Dist", [])
           PY
       - name: Smoke clean enterprise wheel installation
         run: |

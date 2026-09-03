@@ -51,7 +51,7 @@ Every tagged release publishes an SPDX SBOM and a signed build provenance
 attestation. Verify the image before you trust it:
 
 ```
-gh attestation verify oci://ghcr.io/getshim/shim:0.1.2 --owner GetSHIM
+gh attestation verify oci://ghcr.io/getshim/shim:0.1.3 --owner GetSHIM
 ```
 
 A failed verification means the image did not come from this repository's
