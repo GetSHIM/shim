@@ -157,7 +157,8 @@ create_enterprise_app
 
 Enterprise adds behavior through explicit construction. Public code must not
 contain commercial feature flags, licence checks, optional enterprise imports,
-or plugin discovery.
+or plugin discovery. The licence check lives in the enterprise application
+factory alone; the community distribution is the unlicensed tier.
 
 ## Capability ownership
 
@@ -272,9 +273,11 @@ enterprise distribution carries its own terms and depends on the separately
 licensed community distribution. The enterprise image contains both installed
 packages and both packages' metadata.
 
-No CLA, runtime licence check, or bootstrap validator is part of this
-architecture. Add one only after the owner adopts a contribution or commercial
-policy that requires it.
+No CLA is part of this architecture. `create_enterprise_app` verifies an
+Ed25519-signed `SHIM_LICENSE_KEY` when `ENVIRONMENT` is `production`, offline
+and against a public key shipped in the package. A missing or forged key stops
+the boot; an expired key boots for thirty more days behind a warning log and
+the `license_days_remaining` gauge. No other bootstrap validator exists.
 
 ## Agent-friendly enforcement
 
