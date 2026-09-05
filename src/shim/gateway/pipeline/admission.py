@@ -131,8 +131,7 @@ class AdmissionStage:
                 },
             )
         input_tokens = _estimate_input_tokens(payload)
-        candidate_count = _candidate_count(payload)
-        output_tokens = per_candidate_output_tokens * candidate_count
+        output_tokens = per_candidate_output_tokens * candidate_count(value)
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
         if tier.rate_limit_rpm is not None and not await self.rate_limiter.allow(
@@ -206,13 +205,16 @@ def _estimate_input_tokens(payload: Mapping[str, object]) -> int:
     return max(1, len(serialized.encode("utf-8", errors="backslashreplace")))
 
 
-def _candidate_count(payload: Mapping[str, object]) -> int:
-    generation_config = payload.get("generationConfig")
-    candidate = (
-        generation_config.get("candidateCount")
-        if isinstance(generation_config, Mapping)
-        else payload.get("n", 1)
-    )
+def candidate_count(prepared: PreparedInference) -> int:
+    if prepared.provider == "google":
+        config = prepared.payload.get("generationConfig")
+        candidate = (
+            config.get("candidateCount", 1) if isinstance(config, Mapping) else 1
+        )
+    elif prepared.provider == "openai" and prepared.protocol == "chat":
+        candidate = prepared.payload.get("n", 1)
+    else:
+        candidate = 1
     count = (
         candidate
         if isinstance(candidate, int) and not isinstance(candidate, bool)

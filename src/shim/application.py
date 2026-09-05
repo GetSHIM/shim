@@ -121,6 +121,8 @@ def create_community_app(
         try:
             yield
         finally:
+            await application.state.gateway_service.kernel.postprocessor.drain()
+            await usage.aclose()
             if owns_http_client:
                 await client.aclose()
 

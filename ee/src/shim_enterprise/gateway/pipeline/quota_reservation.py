@@ -97,7 +97,7 @@ class AccountingPolicyLoader:
             select(TierDefinition)
             .where(TierDefinition.slug == api_key.tier)
             .execution_options(populate_existing=True)
-            .with_for_update()
+            .with_for_update(read=True)
         )
         tier = (await session.execute(tier_statement)).scalar_one_or_none()
         if tier is None:

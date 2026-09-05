@@ -6,6 +6,8 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 import hashlib
+import heapq
+from itertools import count
 import time
 from typing import Literal, Protocol
 
@@ -39,6 +41,8 @@ class _FixedWindowCounters:
         self.max_entries = max_entries
         self.clock = clock
         self.windows: OrderedDict[Hashable, tuple[int, float]] = OrderedDict()
+        self._expirations: list[tuple[float, int, Hashable]] = []
+        self._sequence = count()
 
     def increment(self, key: Hashable, *, amount: int, window_seconds: int) -> int:
         now = self.clock()
@@ -52,15 +56,25 @@ class _FixedWindowCounters:
             while len(self.windows) >= self.max_entries:
                 self.windows.popitem(last=False)
             count = amount
-            self.windows[key] = (count, now + window_seconds)
+            expires_at = now + window_seconds
+            self.windows[key] = (count, expires_at)
+            heapq.heappush(self._expirations, (expires_at, next(self._sequence), key))
+            if len(self._expirations) > 2 * self.max_entries:
+                self._expirations = [
+                    (expiry, next(self._sequence), item)
+                    for item, (_, expiry) in self.windows.items()
+                ]
+                heapq.heapify(self._expirations)
             return count
         count = current[0] + amount
         self.windows[key] = (count, current[1])
         return count
 
     def _discard_expired(self, now: float) -> None:
-        for key, (_, expires_at) in tuple(self.windows.items()):
-            if expires_at <= now:
+        while self._expirations and self._expirations[0][0] <= now:
+            expires_at, _, key = heapq.heappop(self._expirations)
+            current = self.windows.get(key)
+            if current is not None and current[1] == expires_at:
                 del self.windows[key]
 
 

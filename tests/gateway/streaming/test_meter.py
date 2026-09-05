@@ -258,3 +258,17 @@ def test_responses_terminal_events_are_classified(
     )
 
     assert stream_meter.terminal_hint == expected
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        b'data: {"error":{"code":504,"status":"PROVIDER_TIMEOUT","message":"unavailable"}}\n\n',
+        b'data: {"type":"error","code":"PROVIDER_TIMEOUT","error":{"message":"unavailable"}}\n\n',
+        b'event: error\ndata: {"type":"error","error":{"type":"api_error","code":"PROVIDER_TIMEOUT","message":"The provider timed out."}}\n\n',
+    ],
+)
+def test_timeout_codes_are_independent_of_error_prose(event):
+    stream_meter = meter()
+    stream_meter.observe_sse(event)
+    assert stream_meter.terminal_hint == "timeout"

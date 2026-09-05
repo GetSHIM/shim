@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from time import perf_counter
@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
+from shim.gateway.pipeline.admission import candidate_count
 from shim.gateway.pipeline.provider_execution import ProviderNonStream, ProviderStream
 from shim.gateway.streaming import (
     StreamFinalization,
@@ -52,9 +53,18 @@ class ResponsePostprocessor:
         heartbeat_interval_seconds: float,
         output_hash_salt: str | None,
     ) -> None:
+        self._finalization_tasks: set[asyncio.Task[Any]] = set()
         self.usage = usage
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.output_hash_salt = output_hash_salt
+
+    async def drain(self, timeout_seconds: float = 5.0) -> None:
+        if self._finalization_tasks:
+            _, pending = await asyncio.wait(
+                tuple(self._finalization_tasks), timeout=timeout_seconds
+            )
+            for task in pending:
+                task.cancel()
 
     async def finalize(
         self,
@@ -96,7 +106,7 @@ class ResponsePostprocessor:
         lifecycle_status = _lifecycle_status(
             response.payload,
             provider=provider,
-            expected_candidates=_expected_candidates(prepared),
+            expected_candidates=candidate_count(prepared),
         )
         response_model = response.payload.get("model")
         settlement_model = (
@@ -125,11 +135,6 @@ class ResponsePostprocessor:
                 ),
             ).inc()
             PROVIDER_LATENCY_MS.labels(**labels).observe(response.latency_ms)
-        body = json.dumps(
-            response.payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
         gateway_response = JSONResponse(
             content=response.payload,
             headers=_gateway_headers(prepared, response.request_id),
@@ -152,7 +157,9 @@ class ResponsePostprocessor:
                     ),
                     estimated=not fully_actual,
                     output_hash=(
-                        content_ref(self.output_hash_salt, body)
+                        content_ref(
+                            self.output_hash_salt, bytes(gateway_response.body).decode()
+                        )
                         if self.output_hash_salt is not None
                         else None
                     ),
@@ -211,7 +218,7 @@ class ResponsePostprocessor:
                 provider=str(prepared.provider),
                 requested_model=prepared.model,
                 prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
-                expected_candidates=_expected_candidates(prepared),
+                expected_candidates=candidate_count(prepared),
                 output_hash_salt=self.output_hash_salt,
             ),
             finalizer=finalize_stream,
@@ -219,6 +226,7 @@ class ResponsePostprocessor:
             stream_heartbeat_recorder=record_stream_heartbeat,
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
             terminal_observer=observe_terminal,
+            finalization_tasks=self._finalization_tasks,
         )
 
 
@@ -339,21 +347,6 @@ def _token_count(value: Any) -> int | None:
 def _sum_counts(*values: int | None) -> int | None:
     present = [value for value in values if value is not None]
     return sum(present) if present else None
-
-
-def _expected_candidates(prepared: PreparedInference) -> int:
-    if prepared.provider == "openai" and prepared.protocol == "chat":
-        count = prepared.payload.get("n", 1)
-    elif prepared.provider == "google":
-        config = prepared.payload.get("generationConfig")
-        count = config.get("candidateCount", 1) if isinstance(config, Mapping) else 1
-    else:
-        count = 1
-    return (
-        count
-        if isinstance(count, int) and not isinstance(count, bool) and count > 0
-        else 1
-    )
 
 
 def _gateway_headers(

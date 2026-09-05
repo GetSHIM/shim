@@ -19,7 +19,7 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderStream,
 )
 from shim.gateway.streaming.sse import encode_data
-from shim.privacy.deanonymizer import _split_placeholder_prefix
+from shim.privacy.deanonymizer import restore_fragment
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.secrets.credentials import ProviderCredentialResolver
 
@@ -206,7 +206,7 @@ class GoogleExecution:
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as exc:
-            if state["recorded"]:
+            if state["recorded"] and not isinstance(exc, ValueError):
                 return
             await self._record_error(exc)
             state["recorded"] = True
@@ -289,11 +289,9 @@ class GoogleStreamRestorer:
         return value
 
     def _restore_fragment(self, key: tuple[object, ...], fragment: str) -> str:
-        text = self._buffers.pop(key, "") + fragment
-        ready, carry = _split_placeholder_prefix(text, self._verification_map)
-        if carry:
-            self._buffers[key] = carry
-        return self._scrubber.deanonymize(ready, self._verification_map)
+        return restore_fragment(
+            self._buffers, key, fragment, self._verification_map, self._scrubber
+        )
 
     def _flush_candidate(
         self,
@@ -481,7 +479,8 @@ def _stream_error(error: ProviderCallError) -> bytes:
 
 async def _close_client(client: genai.Client) -> None:
     try:
-        await client.aio.aclose()
+        async with asyncio.timeout(5):
+            await client.aio.aclose()
     except Exception:
         pass
     try:
@@ -492,6 +491,7 @@ async def _close_client(client: genai.Client) -> None:
 
 async def _close_stream(stream) -> None:
     try:
-        await stream.aclose()
+        async with asyncio.timeout(5):
+            await stream.aclose()
     except Exception:
         pass

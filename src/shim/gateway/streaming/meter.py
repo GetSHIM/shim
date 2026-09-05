@@ -218,7 +218,19 @@ class StreamMeter:
         if payload.get("code") == "PRIVACY_STATE_UNAVAILABLE":
             self._set_terminal_hint("internal_error")
             return
-        if "timeout" in lowered:
+        error = payload.get("error")
+        error_fields = error if isinstance(error, dict) else {}
+        codes = {
+            str(payload.get("code", "")).casefold(),
+            str(error_fields.get("code", "")).casefold(),
+            str(error_fields.get("type", "")).casefold(),
+            str(error_fields.get("status", "")).casefold(),
+        }
+        if (
+            codes
+            & {"provider_timeout", "timeout", "timeout_error", "deadline_exceeded"}
+            or "timeout" in lowered
+        ):
             self._set_terminal_hint("timeout")
             return
         if "cancel" in lowered:
@@ -230,11 +242,7 @@ class StreamMeter:
             "message_incomplete",
             "response.failed",
         } or isinstance(payload.get("error"), dict):
-            error = payload.get("error")
-            error_text = json.dumps(error).lower()
-            if "timeout" in error_text:
-                self._set_terminal_hint("timeout")
-            elif "cancel" in error_text:
+            if codes & {"cancelled", "canceled", "stream_cancelled"}:
                 self._set_terminal_hint("cancelled")
             else:
                 self._set_terminal_hint("provider_error")

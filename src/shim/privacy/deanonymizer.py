@@ -226,11 +226,9 @@ class AnthropicStreamRestorer:
         ]
 
     def _restore_fragment(self, key: tuple[object, ...], fragment: str) -> str:
-        text = self._buffers.pop(key, "") + fragment
-        ready, carry = _split_placeholder_prefix(text, self._verification_map)
-        if carry:
-            self._buffers[key] = carry
-        return self._scrubber.deanonymize(ready, self._verification_map)
+        return restore_fragment(
+            self._buffers, key, fragment, self._verification_map, self._scrubber
+        )
 
     def _flush_events(self, index: object | None = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
@@ -347,11 +345,9 @@ class OpenAIStreamRestorer:
         )
 
     def _restore_fragment(self, key: tuple[object, ...], fragment: str) -> str:
-        text = self._buffers.pop(key, "") + fragment
-        ready, carry = _split_placeholder_prefix(text, self._verification_map)
-        if carry:
-            self._buffers[key] = carry
-        return self._scrubber.deanonymize(ready, self._verification_map)
+        return restore_fragment(
+            self._buffers, key, fragment, self._verification_map, self._scrubber
+        )
 
     def _drop_buffers(self, event_prefix: str, item_id: object) -> None:
         for key in tuple(self._buffers):
@@ -382,6 +378,20 @@ class OpenAIStreamRestorer:
                 function["arguments"] = str(function.get("arguments") or "") + restored
 
 
+def restore_fragment(
+    buffers: dict[tuple[object, ...], str],
+    key: tuple[object, ...],
+    fragment: str,
+    placeholders: Mapping[str, str],
+    scrubber: PIIScrubberService,
+) -> str:
+    text = buffers.pop(key, "") + fragment
+    ready, carry = _split_placeholder_prefix(text, placeholders)
+    if carry:
+        buffers[key] = carry
+    return scrubber.deanonymize(ready, placeholders)
+
+
 def _split_placeholder_prefix(
     text: str,
     placeholders: Mapping[str, str],
@@ -390,10 +400,15 @@ def _split_placeholder_prefix(
     if last_open < 0:
         return text, ""
     tail = text[last_open:]
-    compact_tail = "<" + "".join(tail[1:].split())
+    identifier = tail[1:].strip()
+    compact_tail = "<" + identifier
+    if tail[-1:].isspace() and identifier and f"{compact_tail}>" not in placeholders:
+        return text, ""
     if any(
         len(compact_tail) < len(placeholder) and placeholder.startswith(compact_tail)
         for placeholder in placeholders
     ):
+        if len(tail) > 256:
+            raise ValueError("provider placeholder suffix exceeds 256 characters")
         return text[:last_open], tail
     return text, ""

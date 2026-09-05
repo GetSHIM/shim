@@ -135,6 +135,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await application.state.gateway_service.kernel.postprocessor.drain()
         await http_client.aclose()
         await cache.close()
         await engine.dispose()

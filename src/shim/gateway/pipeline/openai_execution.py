@@ -131,7 +131,8 @@ class OpenAIExecution:
                     return
                 state["closed"] = True
                 try:
-                    await result.close()
+                    async with asyncio.timeout(5):
+                        await result.close()
                 except Exception:
                     pass
                 finally:
@@ -326,7 +327,7 @@ class OpenAIExecution:
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except Exception as exc:
-            if state["recorded"]:
+            if state["recorded"] and not isinstance(exc, ValueError):
                 yield b"data: [DONE]\n\n"
                 return
             await self._record_error(exc)

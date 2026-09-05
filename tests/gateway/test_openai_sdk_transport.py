@@ -1050,3 +1050,41 @@ def test_provider_boundary_defaults_match_sdk_limits() -> None:
         assert defaults[f"{provider}_READ_TIMEOUT_SECONDS"].default == 600
         assert defaults[f"{provider}_WRITE_TIMEOUT_SECONDS"].default == 600
         assert defaults[f"{provider}_POOL_TIMEOUT_SECONDS"].default == 600
+
+
+@pytest.mark.asyncio
+async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error():
+    async def chunks():
+        yield SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "<" + " " * 256},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        )
+
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http, SimpleNamespace(save=AsyncMock()))
+        wire = b"".join(
+            [
+                event
+                async for event in execution._chat_stream(
+                    chunks(),
+                    _prepared(
+                        {"stream": True},
+                        protocol="chat",
+                        tenant="11111111-1111-1111-1111-111111111111",
+                        mapping={"<EMAIL_ADDRESS_a1>": "alice@example.com"},
+                    ),
+                    {"closed": False, "recorded": False},
+                    AsyncMock(),
+                )
+            ]
+        )
+    assert b"PROVIDER_UNAVAILABLE" in wire
+    assert b"[DONE]" not in wire
+    assert b"alice@example.com" not in wire

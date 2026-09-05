@@ -86,7 +86,7 @@ async def test_api_lifespan_does_not_start_continuous_reconciliation(
     monkeypatch,
 ) -> None:
     cache = SimpleNamespace(close=AsyncMock())
-    kernel = SimpleNamespace()
+    kernel = SimpleNamespace(postprocessor=SimpleNamespace(drain=AsyncMock()))
     create_gateway_kernel = Mock(return_value=kernel)
     engine = SimpleNamespace(dispose=AsyncMock())
     connect_cache = AsyncMock()
@@ -110,6 +110,7 @@ async def test_api_lifespan_does_not_start_continuous_reconciliation(
     assert create_gateway_kernel.call_args.args[1].is_closed
     connect_cache.assert_awaited_once_with(cache)
     create_task.assert_not_called()
+    kernel.postprocessor.drain.assert_awaited_once()
     cache.close.assert_awaited_once()
     engine.dispose.assert_awaited_once()
     shutdown_tracing.assert_called_once()

@@ -1506,3 +1506,148 @@ async def test_audit_intent_outbox_reference_is_tenant_scoped(db) -> None:
                     },
                 )
         assert "fk_audit_intent_org_outbox_event" in str(reference_error.value.orig)
+
+
+@pytest.mark.asyncio
+async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
+    from sqlalchemy.dialects import postgresql
+    from shim_enterprise.gateway.pipeline.quota_reservation import (
+        AccountingPolicyLoader,
+    )
+
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    scalar_one_or_none=lambda: SimpleNamespace(tier="free")
+                ),
+                SimpleNamespace(
+                    scalar_one_or_none=lambda: SimpleNamespace(
+                        slug="free",
+                        daily_request_limit=10,
+                        monthly_request_limit=100,
+                        monthly_token_limit=1000,
+                    )
+                ),
+            ]
+        )
+    )
+    policy = await AccountingPolicyLoader().quota(session, _prepared())
+    statements = [
+        str(call.args[0].compile(dialect=postgresql.dialect()))
+        for call in session.execute.await_args_list
+    ]
+    assert statements[0].endswith("FOR UPDATE")
+    assert statements[1].endswith("FOR SHARE")
+    assert policy.daily_request_limit == 10
+
+
+@pytest.mark.asyncio
+async def test_shared_tier_allows_independent_reservations_but_fences_edits(
+    async_engine,
+):
+    from sqlalchemy import update
+    from shim_enterprise.billing.ledger import QuotaLimitExceeded
+    from shim_enterprise.gateway.pipeline.quota_reservation import (
+        AccountingPolicyLoader,
+    )
+    from shim_enterprise.tenants.models import TierDefinition
+
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    slug = f"lock-test-{uuid4().hex}"
+    async with factory.begin() as setup:
+        setup.add(
+            TierDefinition(
+                slug=slug,
+                name="Lock test",
+                rate_limit_rpm=60,
+                rate_limit_tpm=1000,
+                daily_request_limit=1,
+                monthly_request_limit=1,
+                monthly_token_limit=1000,
+            )
+        )
+        await setup.flush()
+        tenants = [await _create_tenant(setup, label) for label in ("lock-a", "lock-b")]
+        await setup.execute(
+            update(ApiKey)
+            .where(ApiKey.id.in_([key for _, _, key in tenants]))
+            .values(tier=slug)
+        )
+
+    async def reserve(session, tenant):
+        prepared = _prepared()
+        prepared.tenant_id, _, prepared.api_key_id = tenant
+        policy = await AccountingPolicyLoader().quota(session, prepared)
+        now = datetime.now(timezone.utc)
+        await DurableAccountingRepository().reserve_quota(
+            session,
+            QuotaReservationCommand(
+                tenant_id=prepared.tenant_id,
+                api_key_id=prepared.api_key_id,
+                request_id=prepared.request_id,
+                requested_model=prepared.model,
+                source_endpoint="chat.completions",
+                started_at=now,
+                reconciliation_due_at=now + timedelta(minutes=2),
+                estimated_input_tokens=1,
+                maximum_output_tokens=1,
+                policy=policy,
+            ),
+        )
+        return policy
+
+    try:
+        async with factory() as first, factory() as second, factory() as contender:
+            await reserve(first, tenants[0])
+            await second.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            # This must succeed while the first tenant still holds its tier lock.
+            snapshot = await reserve(second, tenants[1])
+            assert snapshot.daily_request_limit == 1
+
+            await contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError) as same_key:
+                await reserve(contender, tenants[0])
+            assert same_key.value.orig.sqlstate == "55P03"
+            await contender.rollback()
+            await first.commit()
+            with pytest.raises(QuotaLimitExceeded):
+                await reserve(contender, tenants[0])
+            await contender.rollback()
+
+            tier_update = (
+                update(TierDefinition)
+                .where(TierDefinition.slug == slug)
+                .values(daily_request_limit=2, monthly_request_limit=2)
+            )
+            await contender.execute(text("SET LOCAL lock_timeout = '100ms'"))
+            with pytest.raises(DBAPIError) as policy_edit:
+                await contender.execute(tier_update)
+            assert policy_edit.value.orig.sqlstate == "55P03"
+            await contender.rollback()
+            await second.rollback()
+            await contender.execute(tier_update)
+            await contender.commit()
+            revised = await reserve(contender, tenants[1])
+            assert (revised.daily_request_limit, revised.monthly_request_limit) == (
+                2,
+                2,
+            )
+            assert revised.version != snapshot.version
+    finally:
+        async with factory.begin() as cleanup:
+            ids = [organization for organization, _, _ in tenants]
+            for model in (
+                UsageLedger,
+                RequestLifecycle,
+                QuotaPeriodUsage,
+                ApiKey,
+                User,
+            ):
+                await cleanup.execute(
+                    delete(model).where(model.organization_id.in_(ids))
+                )
+            await cleanup.execute(delete(Organization).where(Organization.id.in_(ids)))
+            await cleanup.execute(
+                delete(TierDefinition).where(TierDefinition.slug == slug)
+            )

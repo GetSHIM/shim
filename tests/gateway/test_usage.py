@@ -66,6 +66,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
     await lifecycle.heartbeat_stream(prepared)
     await lifecycle.finalize(prepared, _terminal())
 
+    await lifecycle.aclose()
     lines = stream.getvalue().splitlines()
     assert len(lines) == 1
     assert "secret-body" not in lines[0]
@@ -108,11 +109,13 @@ async def test_local_usage_uses_null_cost_for_unsupported_model() -> None:
     stream = StringIO()
     prepared = _prepared(model="private-model")
 
-    await LocalUsageLifecycle(stream).finalize(
+    lifecycle = LocalUsageLifecycle(stream)
+    await lifecycle.finalize(
         prepared,
         _terminal(model="private-model"),
     )
 
+    await lifecycle.aclose()
     assert json.loads(stream.getvalue())["estimated_cost_usd"] is None
 
 
@@ -120,12 +123,99 @@ async def test_local_usage_uses_null_cost_for_unsupported_model() -> None:
 async def test_local_failure_writes_one_terminal_event() -> None:
     stream = StringIO()
 
-    await LocalUsageLifecycle(stream).fail(
+    lifecycle = LocalUsageLifecycle(stream)
+    await lifecycle.fail(
         _prepared(),
         reason="provider_rejected_without_usage",
     )
 
+    await lifecycle.aclose()
     event = json.loads(stream.getvalue())
     assert event["outcome"] == "provider_rejected_without_usage"
     assert event["completion_tokens"] == 0
     assert len(stream.getvalue().splitlines()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["write", "flush"])
+async def test_local_sink_failure_does_not_fail_settlement(failure):
+    class BrokenSink(StringIO):
+        def write(self, value):
+            if failure == "write":
+                raise OSError("private sink detail")
+            return super().write(value)
+
+        def flush(self):
+            if failure == "flush":
+                raise OSError("private sink detail")
+
+    lifecycle = LocalUsageLifecycle(BrokenSink())
+    await lifecycle.finalize(_prepared(), _terminal())
+    await lifecycle.aclose()
+    assert lifecycle.write_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_blocked_sink_keeps_event_loop_and_buffer_bounded():
+    import asyncio
+    from threading import Event
+
+    entered = Event()
+    release = Event()
+
+    class BlockedSink(StringIO):
+        def write(self, value):
+            entered.set()
+            release.wait(2)
+            return super().write(value)
+
+    lifecycle = LocalUsageLifecycle(BlockedSink(), capacity=2)
+    try:
+        await lifecycle.finalize(_prepared(), _terminal())
+        assert await asyncio.to_thread(entered.wait, 1)
+        for _ in range(10):
+            await lifecycle.finalize(_prepared(), _terminal())
+        assert lifecycle._queue.qsize() == 2
+        assert lifecycle.dropped_events == 8
+        await asyncio.wait_for(asyncio.sleep(0), 0.1)
+        await lifecycle.aclose(timeout_seconds=0.01)
+    finally:
+        release.set()
+        await lifecycle.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("salt", [None, "hash-salt"])
+async def test_nonstream_hash_is_optional_without_changing_response(monkeypatch, salt):
+    from unittest.mock import AsyncMock, Mock
+    from fastapi.responses import JSONResponse
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+    from shim.privacy.classification import content_ref
+
+    payload = {
+        "nested": {"content": "İstanbul 🌍"},
+        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+    }
+    expected = JSONResponse(payload)
+    prepared = _prepared()
+    prepared.protocol = "chat"
+    prepared.admission.maximum_output_tokens = 10
+    usage = SimpleNamespace(finalize=AsyncMock())
+    dumps = Mock(wraps=json.dumps)
+    monkeypatch.setattr(json, "dumps", dumps)
+    response = await module.ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=salt
+    ).finalize(prepared, ProviderNonStream(payload, "upstream-id"), stream_session=None)
+    assert response.body == expected.body
+    assert response.headers["x-request-id"] == "upstream-id"
+    usage.finalize.assert_awaited_once()
+    terminal = usage.finalize.await_args.args[1]
+    assert dumps.call_count == 1
+    assert terminal.usage.output_hash == (
+        content_ref(
+            salt, json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+        if salt is not None
+        else None
+    )

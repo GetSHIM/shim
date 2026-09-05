@@ -1027,3 +1027,24 @@ def test_chat_stream_restores_split_tool_arguments(
         for chunk in (first, second)
     )
     assert arguments == "alice@example.com"
+
+
+def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubber):
+    from shim.privacy.deanonymizer import restore_fragment
+
+    placeholder, mapping = scrubber.scrub("alice@example.com")
+    for token in (placeholder, "<  " + placeholder[1:-1] + "  >"):
+        for split in range(len(token) + 1):
+            buffers = {}
+            output = restore_fragment(buffers, (0,), token[:split], mapping, scrubber)
+            output += restore_fragment(buffers, (0,), token[split:], mapping, scrubber)
+            assert output == "alice@example.com"
+            assert not buffers
+    buffers = {}
+    assert restore_fragment(buffers, (0,), "<", mapping, scrubber) == ""
+    with pytest.raises(ValueError, match="256"):
+        for _ in range(256):
+            restore_fragment(buffers, (0,), " ", mapping, scrubber)
+            assert len(buffers.get((0,), "")) <= 256
+    for literal in ("1 < 2", "<UNKNOWN>", "<EM AIL", "plain text"):
+        assert restore_fragment({}, (0,), literal, mapping, scrubber) == literal
