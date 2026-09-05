@@ -76,3 +76,23 @@ async def test_in_memory_admission_rejects_invalid_bounds() -> None:
             limit=2,
             window_seconds=1,
         )
+
+
+def test_expiry_index_handles_mixed_windows_and_bounds_evicted_entries():
+    from shim.gateway.admission import _FixedWindowCounters
+
+    now = 0.0
+    counters = _FixedWindowCounters(max_entries=3, clock=lambda: now)
+    counters.increment("long", amount=1, window_seconds=100)
+    counters.increment("short", amount=1, window_seconds=1)
+    counters.increment("medium", amount=1, window_seconds=20)
+    now = 1.0
+    counters.increment("new", amount=1, window_seconds=10)
+    assert list(counters.windows) == ["long", "medium", "new"]
+    for index in range(100):
+        counters.increment(index % 5, amount=1, window_seconds=10)
+        assert len(counters.windows) <= 3
+        assert len(counters._expirations) <= 6
+    now = 12.0
+    assert counters.increment("fresh", amount=1, window_seconds=1) == 1
+    assert list(counters.windows) == ["fresh"]

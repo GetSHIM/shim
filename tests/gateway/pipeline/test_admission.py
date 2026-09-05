@@ -247,3 +247,36 @@ def test_admission_rejects_invalid_injected_bounds(limits: dict[str, int]) -> No
             loop_detector=SimpleNamespace(check_exact_repeat=AsyncMock()),
             **values,
         )
+
+
+@pytest.mark.parametrize(
+    "provider,protocol,payload,expected",
+    [
+        ("openai", "chat", {"n": 3, "generationConfig": {}}, 3),
+        ("openai", "responses", {"n": 3}, 1),
+        ("anthropic", "messages", {"n": 3}, 1),
+        ("google", "generate_content", {"n": 3}, 1),
+        ("google", "generate_content", {"generationConfig": {"candidateCount": 2}}, 2),
+        *[("openai", "chat", {"n": value}, 1) for value in (True, "3", None)],
+    ],
+)
+def test_native_candidate_counts(provider, protocol, payload, expected):
+    from shim.gateway.pipeline.admission import candidate_count
+
+    assert (
+        candidate_count(
+            SimpleNamespace(provider=provider, protocol=protocol, payload=payload)
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize("count", [0, -1, 10_001])
+def test_native_candidate_count_rejects_out_of_bounds(count):
+    from shim.gateway.pipeline.admission import candidate_count
+
+    with pytest.raises(HTTPException) as error:
+        candidate_count(
+            SimpleNamespace(provider="openai", protocol="chat", payload={"n": count})
+        )
+    assert error.value.status_code == 400

@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from threading import Lock
+from queue import Full, Queue, ShutDown
+from threading import Thread
 from typing import Literal, Protocol, TextIO, TypeAlias
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
 from shim.gateway.kernel.result import AdmissionState, PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
+from shim.observability.metrics import LOCAL_USAGE_DROPPED_TOTAL
+
+
+logger = logging.getLogger(__name__)
 
 
 UsageFailureReason: TypeAlias = Literal[
@@ -61,11 +68,37 @@ class UsageLifecycle(Protocol):
 
 
 class LocalUsageLifecycle:
-    """Write one redacted JSONL event for each terminal local request."""
+    """Queue redacted JSONL events; drop newest on overflow or sink failure."""
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(self, stream: TextIO, *, capacity: int = 1024) -> None:
+        if capacity < 1:
+            raise ValueError("event queue capacity must be positive")
         self._stream = stream
-        self._write_lock = Lock()
+        self._queue: Queue[str] = Queue(maxsize=capacity)
+        self._writer: Thread | None = None
+        self.dropped_events = 0
+        self.write_failures = 0
+
+    async def aclose(self, timeout_seconds: float = 5.0) -> None:
+        self._queue.shutdown()
+        if self._writer is not None:
+            await asyncio.to_thread(self._writer.join, timeout_seconds)
+
+    def _write_events(self) -> None:
+        while True:
+            try:
+                line = self._queue.get()
+            except ShutDown:
+                return
+            try:
+                self._stream.write(f"{line}\n")
+                self._stream.flush()
+            except Exception as exc:
+                self.write_failures += 1
+                LOCAL_USAGE_DROPPED_TOTAL.labels(reason="sink_failure").inc()
+                logger.warning("Local usage event dropped type=%s", type(exc).__name__)
+            finally:
+                self._queue.task_done()
 
     async def admit(
         self,
@@ -185,6 +218,13 @@ class LocalUsageLifecycle:
             ),
         }
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-        with self._write_lock:
-            self._stream.write(f"{line}\n")
-            self._stream.flush()
+        try:
+            self._queue.put_nowait(line)
+        except (Full, ShutDown):
+            # Drop newest telemetry; authoritative enterprise accounting is separate.
+            self.dropped_events += 1
+            LOCAL_USAGE_DROPPED_TOTAL.labels(reason="queue_unavailable").inc()
+            return
+        if self._writer is None:
+            self._writer = Thread(target=self._write_events, daemon=True)
+            self._writer.start()

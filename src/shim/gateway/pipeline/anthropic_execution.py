@@ -147,7 +147,8 @@ class AnthropicExecution:
                     return
                 state["closed"] = True
                 try:
-                    await result.close()
+                    async with asyncio.timeout(5):
+                        await result.close()
                 except Exception:
                     pass
                 finally:
@@ -334,6 +335,7 @@ def _error_event(error: ProviderCallError) -> bytes:
         "type": "error",
         "error": {
             "type": "api_error",
+            "code": error.error_code,
             "message": message,
         },
     }

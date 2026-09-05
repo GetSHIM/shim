@@ -161,3 +161,10 @@ def _model_family(model: str) -> str:
         if folded.startswith(prefix):
             return f"{prefix}-*"
     return "other"
+
+
+LOCAL_USAGE_DROPPED_TOTAL = Counter(
+    "shim_local_usage_dropped_total",
+    "Non-durable local usage events dropped by the bounded writer.",
+    ["reason"],
+)

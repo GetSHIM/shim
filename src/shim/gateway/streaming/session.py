@@ -22,7 +22,7 @@ from .meter import StreamMeter
 
 logger = logging.getLogger(__name__)
 
-_DETACHED_FINALIZERS: set[asyncio.Task[Any]] = set()
+_PROVIDER_CLOSE_TIMEOUT_SECONDS = 5.0
 
 TerminalObserver = Callable[[StreamTerminalStatus], None]
 
@@ -47,7 +47,11 @@ class StreamSession:
         clock: Callable[[], datetime] | None = None,
         parent_context: Context | None = None,
         terminal_observer: TerminalObserver | None = None,
+        finalization_tasks: set[asyncio.Task[Any]] | None = None,
     ) -> None:
+        self._finalization_tasks = (
+            finalization_tasks if finalization_tasks is not None else set()
+        )
         self.meter = meter
         self._finalizer = finalizer
         self._stream_start_recorder = stream_start_recorder
@@ -109,8 +113,7 @@ class StreamSession:
         finally:
             if self._terminal is None:
                 self.meter.finish()
-                await self._close_provider_stream()
-                await self._finalize_safely("client_disconnected")
+                await self._cleanup("client_disconnected")
 
     async def record_stream_start(self) -> None:
         if self._stream_started:
@@ -180,7 +183,12 @@ class StreamSession:
         finally:
             terminal = terminal or "client_disconnected"
             self.meter.finish()
+            await self._cleanup(terminal)
+
+    async def _cleanup(self, terminal: StreamTerminalStatus) -> None:
+        try:
             await self._close_provider_stream()
+        finally:
             await self._finalize_safely(terminal)
 
     async def _rendered_chunks(self) -> AsyncIterator[bytes]:
@@ -234,10 +242,11 @@ class StreamSession:
         task = asyncio.create_task(
             self.finalize(terminal_status, error_message=error_message)
         )
+        self._finalization_tasks.add(task)
+        task.add_done_callback(self._finalization_tasks.discard)
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            _DETACHED_FINALIZERS.add(task)
             task.add_done_callback(_observe_detached_finalizer)
             logger.debug("Stream finalization continuing after response cancellation")
             raise
@@ -250,19 +259,18 @@ class StreamSession:
     async def _close_provider_stream(self) -> None:
         if self._provider_stream is None or self._provider_closed:
             return
-        self._provider_closed = True
         close = self._provider_close or getattr(self._provider_stream, "aclose", None)
         if close is None:
             close = getattr(self._provider_stream, "close", None)
         if not callable(close):
             return
         try:
-            result = close()
-            if isawaitable(result):
-                await result
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
+            async with asyncio.timeout(_PROVIDER_CLOSE_TIMEOUT_SECONDS):
+                result = close()
+                if isawaitable(result):
+                    await result
+            self._provider_closed = True
+        except Exception as exc:
             logger.debug("Provider stream close failed type=%s", type(exc).__name__)
 
     def _terminal_from_hint(self) -> StreamTerminalStatus:
@@ -307,7 +315,6 @@ class StreamSession:
 
 
 def _observe_detached_finalizer(task: asyncio.Task[Any]) -> None:
-    _DETACHED_FINALIZERS.discard(task)
     if task.cancelled():
         logger.error(
             "Detached stream finalization was cancelled; durable stale recovery retained"

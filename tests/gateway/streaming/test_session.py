@@ -229,3 +229,67 @@ async def test_failed_finalization_retries_the_same_terminal_record() -> None:
     assert terminal.terminal_status == "completed"
     assert finalizer.await_count == 2
     assert finalizer.await_args_list[0].args == finalizer.await_args_list[1].args
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_close", [False, True])
+async def test_blocked_provider_close_cannot_prevent_finalization(
+    monkeypatch, cancel_close
+):
+    monkeypatch.setattr(
+        "shim.gateway.streaming.session._PROVIDER_CLOSE_TIMEOUT_SECONDS", 0.01
+    )
+    entered = asyncio.Event()
+
+    async def close():
+        entered.set()
+        await asyncio.Event().wait()
+
+    finalizer = AsyncMock()
+    session = _session(finalizer)
+    session.bind(SimpleNamespace(), close=close)
+    task = asyncio.create_task(session.aclose())
+    await entered.wait()
+    if cancel_close:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await asyncio.wait_for(task, 1)
+    finalizer.assert_awaited_once()
+    assert not session._provider_closed
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_cancelled_response_finalizer():
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def finalize(terminal):
+        entered.set()
+        await release.wait()
+
+    processor = ResponsePostprocessor(
+        SimpleNamespace(), heartbeat_interval_seconds=30, output_hash_salt=None
+    )
+    session = StreamSession(
+        meter=StreamMeter(
+            provider="openai", requested_model="gpt-5.6-luna", prompt_tokens_estimated=1
+        ),
+        finalizer=finalize,
+        stream_start_recorder=AsyncMock(),
+        finalization_tasks=processor._finalization_tasks,
+    )
+    session.bind(SimpleNamespace(aclose=AsyncMock()))
+    task = asyncio.create_task(session.aclose())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert processor._finalization_tasks
+    release.set()
+    await processor.drain()
+    assert session.terminal_status == "client_disconnected"
+    assert not processor._finalization_tasks
