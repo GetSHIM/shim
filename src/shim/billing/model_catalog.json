@@ -149,6 +149,13 @@
         "output_per_million": "3.75",
         "release_date": "2026-08-13"
       },
+      "gemini-3.8-flash": {
+        "input_per_million": "0.75",
+        "max_output_tokens": 65536,
+        "name": "Gemini 3.8 Flash",
+        "output_per_million": "3.75",
+        "release_date": "2026-09-02"
+      },
       "gemini-flash-latest": {
         "input_per_million": "0.75",
         "max_output_tokens": 65536,
@@ -249,26 +256,12 @@
         "output_per_million": "14",
         "release_date": "2025-12-11"
       },
-      "gpt-5.2-chat-latest": {
-        "input_per_million": "1.75",
-        "max_output_tokens": 16384,
-        "name": "GPT-5.2 Chat",
-        "output_per_million": "14",
-        "release_date": "2025-12-11"
-      },
       "gpt-5.2-pro": {
         "input_per_million": "21",
         "max_output_tokens": 128000,
         "name": "GPT-5.2 Pro",
         "output_per_million": "168",
         "release_date": "2025-12-11"
-      },
-      "gpt-5.3-chat-latest": {
-        "input_per_million": "1.75",
-        "max_output_tokens": 16384,
-        "name": "GPT-5.3 Chat (latest)",
-        "output_per_million": "14",
-        "release_date": "2026-03-03"
       },
       "gpt-5.3-codex": {
         "input_per_million": "1.75",
@@ -378,6 +371,16 @@
         "output_per_million": "12",
         "release_date": "2026-07-09"
       },
+      "gpt-6-astra": {
+        "input_per_million": "12.5",
+        "large_context_input_per_million": "25",
+        "large_context_output_per_million": "75",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6 Astra",
+        "output_per_million": "50",
+        "release_date": "2026-09-04"
+      },
       "o3": {
         "input_per_million": "2",
         "max_output_tokens": 100000,
@@ -395,5 +398,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:16c23d760d834fcd775b5d46"
+  "version": "models.dev:be88249f35fe42eee2361223"
 }
