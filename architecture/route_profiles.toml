@@ -73,7 +73,6 @@ enterprise = [
   { method = "POST", path = "/api/v1/management/providers/{secret_id}/verify" },
   { method = "POST", path = "/api/v1/management/team/invites" },
   { method = "POST", path = "/api/v1/management/team/invites/accept" },
-  { method = "POST", path = "/api/v1/webhooks/lemonsqueezy" },
   { method = "POST", path = "/v1/chat/completions" },
   { method = "POST", path = "/v1/messages" },
   { method = "POST", path = "/v1/responses" },

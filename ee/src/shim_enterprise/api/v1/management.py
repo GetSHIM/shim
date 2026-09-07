@@ -75,7 +75,6 @@ from shim_enterprise.tenants.models import (
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import move_user_from_bootstrap
-from shim_enterprise.tenants.subscriptions import checkout_urls
 
 
 router = APIRouter()
@@ -258,11 +257,7 @@ class SubscriptionView(BaseModel):
     plan: Literal["free", "managed", "agency", "enterprise"]
     status: str
     source: str | None
-    current_period_end: datetime | None
-    cancel_at_period_end: bool
     entitlements: dict[str, bool]
-    checkout_urls: dict[str, dict[Literal["monthly", "yearly"], str]]
-    customer_portal_url: str | None
 
 
 class TeamMemberView(BaseModel):
@@ -644,11 +639,6 @@ async def get_subscription(
         raise HTTPException(
             status_code=503, detail="Organization tier is not configured"
         )
-    purchase_urls = (
-        checkout_urls(organization.id, user.id)
-        if user.role == "owner" and organization.tier == "free"
-        else {}
-    )
     return SubscriptionView(
         plan=cast(
             Literal["free", "managed", "agency", "enterprise"],
@@ -656,13 +646,7 @@ async def get_subscription(
         ),
         status=organization.billing_status,
         source=organization.billing_source,
-        current_period_end=organization.current_period_end,
-        cancel_at_period_end=organization.cancel_at_period_end,
         entitlements={key: bool(value) for key, value in tier.features.items()},
-        checkout_urls=purchase_urls,
-        customer_portal_url=(
-            organization.customer_portal_url if user.role == "owner" else None
-        ),
     )
 
 

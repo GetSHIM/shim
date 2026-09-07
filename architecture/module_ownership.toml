@@ -215,7 +215,6 @@ enterprise = [
   "ee/src/shim_enterprise/api/v1/management.py",
   "ee/src/shim_enterprise/api/v1/router.py",
   "ee/src/shim_enterprise/api/v1/scan.py",
-  "ee/src/shim_enterprise/api/v1/subscriptions.py",
   "ee/src/shim_enterprise/application.py",
   "ee/src/shim_enterprise/billing/__init__.py",
   "ee/src/shim_enterprise/billing/ledger.py",
@@ -295,9 +294,9 @@ enterprise = [
   "ee/src/shim_enterprise/shared_results/models.py",
   "ee/src/shim_enterprise/tenants/__init__.py",
   "ee/src/shim_enterprise/tenants/models.py",
+  "ee/src/shim_enterprise/tenants/plans.py",
   "ee/src/shim_enterprise/tenants/policy.py",
   "ee/src/shim_enterprise/tenants/service.py",
-  "ee/src/shim_enterprise/tenants/subscriptions.py",
   "ee/src/shim_enterprise/workers/__init__.py",
   "ee/src/shim_enterprise/workers/ai_act.py",
   "ee/src/shim_enterprise/workers/compliance.py",
@@ -335,9 +334,9 @@ enterprise = [
   "ee/tests/secrets/test_ciphertext_compatibility.py",
   "ee/tests/secrets/test_store.py",
   "ee/tests/shared_results/test_api.py",
+  "ee/tests/tenants/test_plans.py",
   "ee/tests/tenants/test_policy.py",
   "ee/tests/tenants/test_service.py",
-  "ee/tests/tenants/test_subscriptions.py",
 ]
 
 # Transitional Python files that contain or exercise both ownership regions.

@@ -145,7 +145,7 @@ class OrganizationInvite(Base, TimestampMixin):
 
 
 class BillingWebhookReceipt(Base, TimestampMixin):
-    """Durable Lemon Squeezy delivery idempotency record."""
+    """Historical billing delivery receipt retained after integration retirement."""
 
     __tablename__ = "billing_webhook_receipts"
     __table_args__ = (

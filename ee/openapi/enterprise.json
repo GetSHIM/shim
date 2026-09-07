@@ -7758,49 +7758,6 @@
       },
       "SubscriptionView": {
         "properties": {
-          "cancel_at_period_end": {
-            "title": "Cancel At Period End",
-            "type": "boolean"
-          },
-          "checkout_urls": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "propertyNames": {
-                "enum": [
-                  "monthly",
-                  "yearly"
-                ]
-              },
-              "type": "object"
-            },
-            "title": "Checkout Urls",
-            "type": "object"
-          },
-          "current_period_end": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Period End"
-          },
-          "customer_portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Portal Url"
-          },
           "entitlements": {
             "additionalProperties": {
               "type": "boolean"
@@ -7838,11 +7795,7 @@
           "plan",
           "status",
           "source",
-          "current_period_end",
-          "cancel_at_period_end",
-          "entitlements",
-          "checkout_urls",
-          "customer_portal_url"
+          "entitlements"
         ],
         "title": "SubscriptionView",
         "type": "object"
@@ -12710,31 +12663,6 @@
         "summary": "View Shared Result",
         "tags": [
           "shared-results"
-        ]
-      }
-    },
-    "/api/v1/webhooks/lemonsqueezy": {
-      "post": {
-        "operationId": "lemonsqueezy_webhook_api_v1_webhooks_lemonsqueezy_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Lemonsqueezy Webhook Api V1 Webhooks Lemonsqueezy Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Lemonsqueezy Webhook",
-        "tags": [
-          "webhooks"
         ]
       }
     },

@@ -105,7 +105,7 @@ create_enterprise_app
 |-- ManagedProviderCredentialResolver
 |-- DurableUsageLifecycle and accounting coordinator
 |-- enterprise scan pipeline and error composition
-|-- management, subscription, shared-result, compliance, and AI Act routes
+|-- management, shared-result, compliance, and AI Act routes
 `-- database, Redis, tracing, metrics, and lifecycle hooks
 ```
 
@@ -126,7 +126,7 @@ The exact method/path inventories live in `architecture/route_profiles.toml`.
 | Profile | Surface | Contract |
 | --- | --- | --- |
 | Community | OpenAI Chat and Responses; Anthropic Messages; Gemini generate and stream; model discovery; local scan; health | `openapi/community.json` |
-| Enterprise | Community provider routes plus durable scan usage, management, subscriptions, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
+| Enterprise | Community provider routes plus durable scan usage, management, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
 
 `/metrics` is intentionally excluded from OpenAPI. Enterprise provider routes
 must preserve the community provider request, response, selector, error, and

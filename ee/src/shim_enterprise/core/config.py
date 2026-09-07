@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Literal, Self
-from urllib.parse import urlsplit
 
 from pydantic import EmailStr, Field, RedisDsn, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
@@ -30,16 +29,6 @@ class Settings(CommunitySettings):
 
     SUPABASE_URL: str
     SUPABASE_KEY: str | None = None
-
-    LEMON_SQUEEZY_SIGNING_SECRET: str | None = None
-    LEMON_SQUEEZY_SOLO_PRO_MONTHLY_VARIANT_ID: str | None = None
-    LEMON_SQUEEZY_SOLO_PRO_YEARLY_VARIANT_ID: str | None = None
-    LEMON_SQUEEZY_AGENCY_MONTHLY_VARIANT_ID: str | None = None
-    LEMON_SQUEEZY_AGENCY_YEARLY_VARIANT_ID: str | None = None
-    LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL: str | None = None
-    LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL: str | None = None
-    LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL: str | None = None
-    LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL: str | None = None
 
     MANUAL_TEST_DASHBOARD_ENABLED: bool = False
     SHIM_TEST_USER_EMAIL: str | None = None
@@ -73,24 +62,6 @@ class Settings(CommunitySettings):
     OVERSIGHT_DEFAULT_TTL_SECONDS: int = Field(default=3_600, ge=1)
 
     model_config = SettingsConfigDict(env_file="ee/.env")
-
-    @field_validator(
-        "LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL",
-        "LEMON_SQUEEZY_SOLO_PRO_YEARLY_CHECKOUT_URL",
-        "LEMON_SQUEEZY_AGENCY_MONTHLY_CHECKOUT_URL",
-        "LEMON_SQUEEZY_AGENCY_YEARLY_CHECKOUT_URL",
-        mode="before",
-    )
-    @classmethod
-    def validate_checkout_url(cls, value: object) -> object:
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("checkout URL must be an absolute HTTPS URL")
-        parsed = urlsplit(value)
-        if parsed.scheme != "https" or parsed.hostname is None:
-            raise ValueError("checkout URL must be an absolute HTTPS URL")
-        return value
 
     @field_validator("COMPLIANCE_EMAIL_FROM", mode="before")
     @classmethod
