@@ -56,7 +56,10 @@ denial is surfaced instead of swallowed; best-effort failure retains recovery
 and a sanitized error log. Database unavailability cannot guarantee new durable
 evidence, and best-effort mode must not be described as lossless.
 
-The audit worker and existing chain verifier remain the inspection path.
+After worker delivery, the tenant-scoped `GET /v1/compliance/audit/logs` response
+exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
+status. Unknown historical fields remain null. The existing chain verifier
+continues to verify this evidence.
 Decision evidence does not create a configurable policy engine, a
 content archive, signatures, or an independent trust anchor.
 

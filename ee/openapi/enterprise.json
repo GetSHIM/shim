@@ -781,6 +781,45 @@
       },
       "AuditLogRead": {
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "actor_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "api_key",
+                  "user_jwt",
+                  "internal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Type"
+          },
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
           "completion_tokens": {
             "minimum": 0.0,
             "title": "Completion Tokens",
@@ -847,6 +886,17 @@
             "title": "Latency Ms",
             "type": "integer"
           },
+          "lifecycle_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Status"
+          },
           "model": {
             "anyOf": [
               {
@@ -879,6 +929,14 @@
             },
             "title": "Pii Entities",
             "type": "object"
+          },
+          "policy_verdicts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Policy Verdicts",
+            "type": "array"
           },
           "prev_hash": {
             "title": "Prev Hash",

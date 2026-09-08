@@ -19,6 +19,7 @@ from shim.gateway.pipeline.authenticate import GatewayInvocation, GatewayRequest
 from shim.gateway.pipeline.provider_execution import ProviderNonStream
 from shim.gateway.request_policy import RequestPolicyContext, ResolvedRequestPolicy
 from shim_enterprise.ai_act.audit_writer import write_audit_row
+from shim_enterprise.ai_act.api import list_audit_logs
 from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.ai_act.verify import verify_chain
 from shim_enterprise.billing.ledger import (
@@ -293,6 +294,22 @@ async def test_pre_admission_denial_is_durable_private_and_idempotent(
     verification = await verify_chain(db, test_api_key.organization_id)
     assert verification["ok"] is True
     assert verification["rows_checked"] == 1
+    page = await list_audit_logs(
+        request_id=event.aggregate_id,
+        event_type=None,
+        start=None,
+        end=None,
+        limit=50,
+        offset=0,
+        current_user=SimpleNamespace(organization_id=test_api_key.organization_id),
+        session=db,
+    )
+    assert page.total == 1
+    assert page.items[0].policy_verdicts == event.payload["policy_verdicts"]
+    assert page.items[0].api_key_id == test_api_key.id
+    assert page.items[0].actor is None
+    assert page.items[0].actor_type == "api_key"
+    assert page.items[0].lifecycle_status == "rejected"
 
 
 @pytest.mark.asyncio
