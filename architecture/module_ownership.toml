@@ -307,6 +307,7 @@ enterprise = [
   "ee/src/shim_enterprise/workers/ai_act.py",
   "ee/src/shim_enterprise/workers/compliance.py",
   "ee/src/shim_enterprise/workers/outbox.py",
+  "ee/src/shim_enterprise/workers/readiness.py",
   "ee/src/shim_enterprise/workers/reconciliation.py",
   "ee/tests/ai_act/test_audit_chain.py",
   "ee/tests/ai_act/test_control_plane.py",
@@ -347,6 +348,7 @@ enterprise = [
   "ee/tests/tenants/test_policy.py",
   "ee/tests/tenants/test_service.py",
   "ee/tests/tenants/test_teams.py",
+  "ee/tests/workers/test_readiness.py",
 ]
 
 # Transitional Python files that contain or exercise both ownership regions.

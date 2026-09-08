@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal, Self
 from uuid import UUID
 from urllib.parse import urlsplit
@@ -59,6 +60,8 @@ class Settings(CommunitySettings):
 
     DEFAULT_MONTHLY_TOKEN_LIMIT: int = Field(default=1_000_000, ge=0)
 
+    WORKER_HEARTBEAT_PATH: Path | None = None
+
     GATEWAY_RECONCILIATION_GRACE_SECONDS: int = Field(default=120, ge=30, le=3_600)
     GATEWAY_RECONCILIATION_INTERVAL_SECONDS: int = Field(default=30, ge=5, le=3_600)
     GATEWAY_RECONCILIATION_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
@@ -86,6 +89,13 @@ class Settings(CommunitySettings):
     OVERSIGHT_DEFAULT_TTL_SECONDS: int = Field(default=3_600, ge=1)
 
     model_config = SettingsConfigDict(env_file="ee/.env")
+
+    @field_validator("WORKER_HEARTBEAT_PATH")
+    @classmethod
+    def validate_heartbeat_path(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("worker heartbeat path must be absolute")
+        return value
 
     @field_validator("COMPLIANCE_EMAIL_FROM", mode="before")
     @classmethod

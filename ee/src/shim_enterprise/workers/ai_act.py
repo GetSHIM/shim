@@ -19,6 +19,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
+from shim_enterprise.workers.readiness import write_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ class MaintenanceSummary:
     oversight_created: int = 0
     oversight_expired: int = 0
     archive_eligible: int = 0
+    errors: int = 0
 
 
 class AuditMaintenanceWorker:
@@ -46,10 +48,10 @@ class AuditMaintenanceWorker:
 
     async def run_once(self, *, anchor_date: date | None = None) -> MaintenanceSummary:
         async with self.session_factory.begin() as session:
-            anchored = (
+            anchored, errors = (
                 await self._anchor_tenants(session, anchor_date)
                 if settings.AI_ACT_AUDIT_ANCHOR_ENABLED
-                else 0
+                else (0, 0)
             )
             created = {"created": 0}
             expired = {"expired": 0}
@@ -59,6 +61,7 @@ class AuditMaintenanceWorker:
             archive = await archive_expired(session)
             return MaintenanceSummary(
                 anchored_tenants=anchored,
+                errors=errors,
                 oversight_created=int(created["created"]),
                 oversight_expired=int(expired["expired"]),
                 archive_eligible=int(archive["eligible"]),
@@ -68,7 +71,7 @@ class AuditMaintenanceWorker:
         self,
         session: AsyncSession,
         anchor_date: date | None,
-    ) -> int:
+    ) -> tuple[int, int]:
         target = anchor_date or datetime.now(timezone.utc).date() - timedelta(days=1)
         start = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc)
         tenant_ids = (
@@ -79,21 +82,24 @@ class AuditMaintenanceWorker:
                 )
             )
         ).scalars()
-        anchored = 0
+        anchored = errors = 0
         for tenant_id in tenant_ids:
             try:
                 async with session.begin_nested():
                     anchor = await write_anchor(session, tenant_id, target)
             except Exception as exc:
+                errors += 1
                 logger.error("Tenant anchor failed type=%s", type(exc).__name__)
             else:
                 anchored += int(anchor is not None)
-        return anchored
+        return anchored, errors
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
                 summary = await self.run_once()
+                if not summary.errors:
+                    write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "ai_act")
                 logger.info("Audit maintenance completed summary=%s", summary)
             except asyncio.CancelledError:
                 raise
