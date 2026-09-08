@@ -64,11 +64,13 @@ networkPolicy:
 # DATABASE_URL/REDIS_URL are supplied in existingSecret in either configuration.
 postgres:
   enabled: false
-  image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  # PostgreSQL 16 Alpine
+  image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
   storage: 5Gi
   storageClassName: ""
 redis:
   enabled: false
-  image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+  # Redis Stack 7.4.0-v8
+  image: redis/redis-stack-server@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
   storage: 1Gi
   storageClassName: ""

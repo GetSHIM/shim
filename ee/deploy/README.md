@@ -10,8 +10,8 @@ digests and its matching chart, not a mutable `latest` tag.
 
 - Kubernetes 1.28 or later, Helm, a default storage class when using test services,
   and an ingress controller when exposing the supplied Ingress.
-- A dedicated namespace, customer DNS/TLS, PostgreSQL, Redis Stack (the existing
-  cache requires its modules), OIDC, and Vault KV v2.
+- A dedicated namespace, customer DNS/TLS, PostgreSQL, Redis, OIDC, and Vault KV v2.
+  The pinned test image is Redis Stack; the runtime uses standard Redis commands.
 - The current signed `SHIM_LICENSE_KEY`. Licence validation remains offline and
   runs only at production API startup; this package adds no capacity terms.
 - Read [identity setup](../docs/ON_PREM_IDENTITY.md) for OIDC client registration,
