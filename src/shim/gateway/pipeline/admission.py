@@ -68,9 +68,23 @@ class AdmissionStage:
             and value.protocol == "responses"
             and value.model == UNSPECIFIED_PROVIDER_MODEL
         )
-        if not unspecified_openai_response_model and not DEFAULT_PRICE_BOOK.supports(
-            value.model, str(value.provider)
-        ):
+        model_denied = (
+            value.target is None
+            and not unspecified_openai_response_model
+            and not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+        )
+        value.record_verdict(
+            "gateway.model_catalog",
+            stage="admission",
+            outcome="skip"
+            if value.target is not None
+            else ("deny" if model_denied else "allow"),
+            reason_code="DEPLOYMENT_AUTHORIZED"
+            if value.target is not None
+            else ("MODEL_NOT_PRICED" if model_denied else "MODEL_SUPPORTED"),
+            policy_version=DEFAULT_PRICE_BOOK.version,
+        )
+        if model_denied:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -86,7 +100,7 @@ class AdmissionStage:
             else None
         )
         model_output_limit = DEFAULT_PRICE_BOOK.maximum_output_tokens(
-            value.model,
+            value.pricing_model,
             str(value.provider),
         )
         # Reserve the ceiling when omitted without changing provider defaults.
@@ -103,11 +117,16 @@ class AdmissionStage:
             ),
             ("provider_default", model_output_limit),
         )
+        if value.protocol == "count_tokens":
+            per_candidate_output_tokens = 0
         minimum_output_tokens = (
             0
-            if value.provider == "anthropic"
-            and value.protocol == "messages"
-            and output_token_field == "max_tokens"
+            if value.protocol == "count_tokens"
+            or (
+                value.provider == "anthropic"
+                and value.protocol == "messages"
+                and output_token_field == "max_tokens"
+            )
             else 1
         )
         if (
@@ -134,30 +153,38 @@ class AdmissionStage:
         output_tokens = per_candidate_output_tokens * candidate_count(value)
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
-        if tier.rate_limit_rpm is not None and not await self.rate_limiter.allow(
-            key_hash,
-            limit=tier.rate_limit_rpm,
-            window_seconds=60,
+        for dimension, limit, key, amount in (
+            ("requests", tier.rate_limit_rpm, key_hash, 1),
+            ("tokens", tier.rate_limit_tpm, f"tpm:{key_hash}", input_tokens),
         ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": "requests"},
+            denied = limit is not None and not await self.rate_limiter.allow(
+                key,
+                limit=limit,
+                window_seconds=60,
+                amount=amount,
             )
-        if tier.rate_limit_tpm is not None and not await self.rate_limiter.allow(
-            f"tpm:{key_hash}",
-            limit=tier.rate_limit_tpm,
-            window_seconds=60,
-            amount=input_tokens,
-        ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": "tokens"},
+            value.record_verdict(
+                f"rate.{dimension}",
+                stage="admission",
+                outcome="deny" if denied else "allow" if limit is not None else "skip",
+                reason_code="RATE_LIMIT_EXCEEDED"
+                if denied
+                else "RATE_LIMIT_PASSED"
+                if limit is not None
+                else "RATE_LIMIT_UNLIMITED",
+                policy={"limit": limit, "window_seconds": 60},
             )
+            if denied:
+                raise HTTPException(
+                    status_code=429,
+                    detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": dimension},
+                )
         repeat_material = _repeat_material(
             {
                 **payload,
                 "model": value.model,
                 "provider": str(value.provider),
+                "protocol": value.protocol,
             }
         )
         self.loop_result = await self.loop_detector.check_exact_repeat(
@@ -166,7 +193,20 @@ class AdmissionStage:
             limit=self.loop_repeat_limit,
             window_seconds=self.loop_window_seconds,
         )
-        if self.loop_result.status == "BLOCKED":
+        repeated = self.loop_result.status == "BLOCKED"
+        value.record_verdict(
+            "rate.repeated_requests",
+            stage="admission",
+            outcome="deny" if repeated else "allow",
+            reason_code="REPEATED_REQUEST_LIMIT_EXCEEDED"
+            if repeated
+            else "REPEAT_CHECK_PASSED",
+            policy={
+                "limit": self.loop_repeat_limit,
+                "window_seconds": self.loop_window_seconds,
+            },
+        )
+        if repeated:
             raise HTTPException(
                 status_code=429,
                 detail={
@@ -184,9 +224,11 @@ class AdmissionStage:
             maximum_output_tokens=output_tokens,
             cost_center=attribution.cost_center,
             tags=attribution.tags,
+            repeat_chain_length=self.loop_result.chain_length or None,
         )
-        await self.usage.admit(value, admission)
-        self.reserved = True
+        if value.protocol != "count_tokens":
+            await self.usage.admit(value, admission)
+            self.reserved = True
         return replace(value, admission=admission)
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:

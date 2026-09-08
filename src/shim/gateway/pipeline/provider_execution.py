@@ -45,6 +45,7 @@ class ProviderStream:
     request_id: str | None
     close: Callable[[], Awaitable[None]]
     prefetched_events: tuple[bytes, ...] = ()
+    started_at_monotonic: float | None = None
 
 
 class ProviderExecutionStage:
@@ -61,8 +62,12 @@ class ProviderExecutionStage:
         self.usage = usage
 
     async def run(self, value: PreparedInference) -> ProviderNonStream | ProviderStream:
+        provider_started_at: float | None = None
+
         async def mark_started() -> None:
+            nonlocal provider_started_at
             await self.usage.mark_provider_started(value)
+            provider_started_at = perf_counter()
 
         started_at = perf_counter()
         try:
@@ -76,7 +81,7 @@ class ProviderExecutionStage:
             raise
         if isinstance(output, ProviderNonStream):
             return replace(output, latency_ms=(perf_counter() - started_at) * 1_000)
-        return output
+        return replace(output, started_at_monotonic=provider_started_at)
 
     def trace_metadata(
         self,

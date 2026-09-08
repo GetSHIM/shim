@@ -149,6 +149,40 @@ class PrivacyStage:
         self.chain_store = chain_store
 
     async def run(self, value: PreparedInference) -> PreparedInference:
+        try:
+            prepared = await self._run(value)
+        except BaseException as error:
+            value.record_verdict(
+                "privacy.input",
+                stage="privacy",
+                outcome="deny"
+                if isinstance(error, HTTPException) and error.status_code < 500
+                else "error",
+                reason_code="PRIVACY_POLICY_BLOCKED"
+                if isinstance(error, HTTPException) and error.status_code < 500
+                else "PRIVACY_UNAVAILABLE",
+                policy=value.pii_config,
+            )
+            raise
+        assert prepared.privacy is not None
+        prepared.record_verdict(
+            "privacy.input",
+            stage="privacy",
+            outcome="mask"
+            if prepared.privacy.pii_detected
+            else "skip"
+            if value.context.privacy_policy.pii_mode == "disabled"
+            else "allow",
+            reason_code="PII_MASKED"
+            if prepared.privacy.pii_detected
+            else "PII_DISABLED"
+            if value.context.privacy_policy.pii_mode == "disabled"
+            else "PII_NOT_DETECTED",
+            policy=value.pii_config,
+        )
+        return prepared
+
+    async def _run(self, value: PreparedInference) -> PreparedInference:
         parent_map: dict[str, str] = {}
         previous_response_id = (
             value.payload.get("previous_response_id")

@@ -78,12 +78,15 @@ class Organization(Base, TimestampMixin):
 
 
 class User(Base, TimestampMixin):
-    """Supabase-authenticated user projected into one mandatory tenant."""
+    """Authenticated identity projected into one mandatory tenant."""
 
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("organization_id", "id", name="uq_users_tenant_id"),
-        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_users_role"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_users_role"
+        ),
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
         Index("ix_users_organization_id", "organization_id"),
     )
 
@@ -93,6 +96,8 @@ class User(Base, TimestampMixin):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
+    oidc_issuer: Mapped[str | None] = mapped_column(String(512))
+    oidc_subject: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     full_name: Mapped[str | None] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(
@@ -118,7 +123,9 @@ class OrganizationInvite(Base, TimestampMixin):
 
     __tablename__ = "organization_invites"
     __table_args__ = (
-        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_invites_role"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_invites_role"
+        ),
         Index("ix_invites_organization_id", "organization_id"),
         Index("ix_invites_token_hash", "token_hash", unique=True),
     )
@@ -145,7 +152,7 @@ class OrganizationInvite(Base, TimestampMixin):
 
 
 class BillingWebhookReceipt(Base, TimestampMixin):
-    """Durable Lemon Squeezy delivery idempotency record."""
+    """Historical billing delivery receipt retained after integration retirement."""
 
     __tablename__ = "billing_webhook_receipts"
     __table_args__ = (
@@ -193,6 +200,77 @@ class TierDefinition(Base, TimestampMixin):
     )
 
 
+class Team(Base, TimestampMixin):
+    """Explicit tenant-owned delegation and quota boundary, not a billing label."""
+
+    __tablename__ = "teams"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_teams_tenant_id"),
+        UniqueConstraint("organization_id", "name", name="uq_teams_tenant_name"),
+        CheckConstraint(
+            "daily_request_limit IS NULL OR daily_request_limit >= 0",
+            name="ck_teams_daily_requests",
+        ),
+        CheckConstraint(
+            "monthly_request_limit IS NULL OR monthly_request_limit >= 0",
+            name="ck_teams_monthly_requests",
+        ),
+        CheckConstraint(
+            "monthly_token_limit IS NULL OR monthly_token_limit >= 0",
+            name="ck_teams_monthly_tokens",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    daily_request_limit: Mapped[int | None] = mapped_column(Integer)
+    monthly_request_limit: Mapped[int | None] = mapped_column(Integer)
+    monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+
+
+class TeamMembership(Base, TimestampMixin):
+    """Membership grants access only within the named tenant and team."""
+
+    __tablename__ = "team_memberships"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "team_id"],
+            ["teams.organization_id", "teams.id"],
+            name="fk_team_memberships_tenant_team",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "user_id"],
+            ["users.organization_id", "users.id"],
+            name="fk_team_memberships_tenant_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "role IN ('member', 'team_admin')", name="ck_team_memberships_role"
+        ),
+        CheckConstraint(
+            "source IN ('local', 'oidc')", name="ck_team_memberships_source"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    team_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), primary_key=True)
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="member", server_default="member"
+    )
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="local", server_default="local"
+    )
+
+
 class ApiKey(Base, TimestampMixin):
     """One-way API-key verifier with enforced tenant/user ownership."""
 
@@ -204,6 +282,11 @@ class ApiKey(Base, TimestampMixin):
             ["users.organization_id", "users.id"],
             name="fk_api_keys_tenant_user",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "team_id"],
+            ["teams.organization_id", "teams.id"],
+            name="fk_api_keys_tenant_team",
         ),
         Index("ix_api_keys_organization_id", "organization_id"),
         Index("ix_api_keys_key_hash", "key_hash", unique=True),
@@ -227,6 +310,8 @@ class ApiKey(Base, TimestampMixin):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cost_center: Mapped[str | None] = mapped_column(String(128))
     team: Mapped[str | None] = mapped_column(String(128))
+    team_id: Mapped[UUID | None] = mapped_column(SqlUUID(as_uuid=True))
+    allowed_models: Mapped[list[str] | None] = mapped_column(JSONB)
     tier: Mapped[str] = mapped_column(
         ForeignKey("tier_definitions.slug"), nullable=False, default="free"
     )
@@ -273,6 +358,7 @@ class ProviderSecret(Base, TimestampMixin):
 
     __tablename__ = "provider_secrets"
     __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_provider_secrets_tenant_id"),
         CheckConstraint(
             "monthly_limit_usd IS NULL OR monthly_limit_usd >= 0",
             name="ck_provider_secret_monthly_limit",
@@ -300,3 +386,59 @@ class ProviderSecret(Base, TimestampMixin):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
+
+
+class ModelDeployment(Base, TimestampMixin):
+    """Tenant-owned alias bound to an administrator-approved serving endpoint."""
+
+    __tablename__ = "model_deployments"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "alias", name="uq_model_deployments_tenant_alias"
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "provider_secret_id"],
+            ["provider_secrets.organization_id", "provider_secrets.id"],
+            ondelete="RESTRICT",
+            name="fk_model_deployments_tenant_secret",
+        ),
+        CheckConstraint(
+            "provider IN ('openai', 'anthropic')", name="ck_model_deployments_provider"
+        ),
+        CheckConstraint(
+            "deployment_kind IN ('internal', 'external')",
+            name="ck_model_deployments_kind",
+        ),
+        CheckConstraint(
+            "health IN ('unknown', 'healthy', 'unhealthy')",
+            name="ck_model_deployments_health",
+        ),
+        CheckConstraint(
+            "timeout_seconds BETWEEN 1 AND 300", name="ck_model_deployments_timeout"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    alias: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    upstream_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    provider_secret_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), nullable=False
+    )
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    deployment_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    declared_version: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner: Mapped[str] = mapped_column(String(200), nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    health: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

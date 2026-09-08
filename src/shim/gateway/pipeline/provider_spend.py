@@ -23,7 +23,9 @@ class ProviderSpendStage:
         credential = self.invocation.provider_credential
         await self.usage.reserve_provider_spend(
             value,
-            ephemeral_byok=credential is not None and credential.available(),
+            ephemeral_byok=value.target is None
+            and credential is not None
+            and credential.available(),
         )
         return value
 

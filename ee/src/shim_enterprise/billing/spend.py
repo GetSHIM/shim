@@ -69,6 +69,7 @@ class BudgetUsage:
     cost_usd: Decimal
     tokens: int
     top_contributors: tuple[dict[str, object], ...]
+    unpriced_requests: int = 0
 
     def fraction_of(self, budget: CostBudget) -> Decimal:
         fractions: list[Decimal] = []
@@ -135,8 +136,16 @@ class BudgetEvaluator:
         period_start: datetime,
     ) -> BudgetUsage:
         spend_filters = self._scope_filters(budget, RequestLifecycle)
+        unpriced = (
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"].as_string()
+            == "unknown"
+        )
+        known_spend = func.coalesce(
+            func.sum(UsageLedger.cost_usd).filter(unpriced.is_not(True)), Decimal("0")
+        )
+        unpriced_count = func.count(UsageLedger.id).filter(unpriced)
         spend_statement = (
-            select(func.coalesce(func.sum(UsageLedger.cost_usd), Decimal("0")))
+            select(known_spend, unpriced_count)
             .select_from(UsageLedger)
             .join(
                 RequestLifecycle,
@@ -169,7 +178,8 @@ class BudgetEvaluator:
         contributor_statement = (
             select(
                 contributor.label("cost_center"),
-                func.sum(UsageLedger.cost_usd).label("cost_usd"),
+                known_spend.label("cost_usd"),
+                unpriced_count.label("unpriced_requests"),
             )
             .select_from(UsageLedger)
             .join(
@@ -184,19 +194,28 @@ class BudgetEvaluator:
                 *spend_filters,
             )
             .group_by(contributor)
-            .order_by(func.sum(UsageLedger.cost_usd).desc())
+            .order_by(known_spend.desc())
             .limit(3)
         )
-        cost = Decimal(str((await session.execute(spend_statement)).scalar_one()))
+        cost, unpriced_requests = (await session.execute(spend_statement)).one()
         tokens = int((await session.execute(quota_statement)).scalar_one())
         contributors = tuple(
             {
                 "cost_center": center or UNTAGGED,
                 "cost_usd": float(Decimal(str(value))),
+                "cost_complete": not count,
+                "unpriced_requests": count,
             }
-            for center, value in (await session.execute(contributor_statement)).all()
+            for center, value, count in (
+                await session.execute(contributor_statement)
+            ).all()
         )
-        return BudgetUsage(cost_usd=cost, tokens=tokens, top_contributors=contributors)
+        return BudgetUsage(
+            cost_usd=Decimal(str(cost)),
+            tokens=tokens,
+            top_contributors=contributors,
+            unpriced_requests=unpriced_requests,
+        )
 
     @staticmethod
     def _scope_filters(
@@ -285,6 +304,9 @@ class BudgetEvaluator:
                         "threshold": float(threshold),
                         "percent_used": float(fraction * 100),
                         "current_usd": float(usage.cost_usd),
+                        "cost_basis": "known_settled_spend",
+                        "cost_complete": not usage.unpriced_requests,
+                        "unpriced_requests": usage.unpriced_requests,
                         "limit_usd": (
                             float(budget.limit_usd)
                             if budget.limit_usd is not None

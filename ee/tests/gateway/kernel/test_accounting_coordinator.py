@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
-from types import SimpleNamespace
+import csv
+import io
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -13,13 +16,20 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shim_enterprise.billing.spend import BudgetEvaluator
 from shim_enterprise.core.config import settings
+from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
-from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
+from shim.gateway.kernel.result import (
+    PreparedInference,
+    ProviderTarget,
+    UNSPECIFIED_PROVIDER_MODEL,
+)
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPersistenceError,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
+    _system_prompt_hash,
 )
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -48,19 +58,26 @@ from shim_enterprise.billing.models import (
     UsageLedger,
 )
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
+from shim_enterprise.observability import analytics_projection, overview
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.outbox.publisher import OutboxMessage
 from shim.privacy.classification import content_ref
 from shim_enterprise.tenants.models import ApiKey, Organization, User
 
 
 def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
-    return SimpleNamespace(
+    prepared = SimpleNamespace(
+        policy_verdicts=[],
         tenant_id=uuid4(),
         api_key_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         provider="openai",
         protocol="chat",
         model="gpt-5.6-luna",
+        pricing_model="gpt-5.6-luna",
+        target=None,
+        deployment_kind="unknown",
+        unpriced=False,
         stream=False,
         context=SimpleNamespace(
             audit_policy=SimpleNamespace(mode=audit_mode),
@@ -76,6 +93,9 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             verification_map={},
         ),
     )
+
+    prepared.record_verdict = MethodType(PreparedInference.record_verdict, prepared)
+    return prepared
 
 
 def _failure_state(
@@ -112,6 +132,165 @@ def _postprocessor(usage) -> ResponsePostprocessor:
         heartbeat_interval_seconds=30,
         output_hash_salt=None,
     )
+
+
+def test_system_prompt_hash_is_keyed_scoped_and_excludes_conversation(
+    monkeypatch,
+) -> None:
+    prepared = _prepared()
+    prepared.payload = {
+        "messages": [
+            {"role": "system", "content": "private instruction"},
+            {"role": "user", "content": "user one"},
+        ]
+    }
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
+    original = _system_prompt_hash(prepared)
+    assert original is not None and original.startswith("hmac-sha256:v1:")
+    assert "private instruction" not in original
+    prepared.payload["messages"][1]["content"] = "user two"
+    prepared.payload["messages"][0] = {
+        "content": "private instruction",
+        "role": "system",
+    }
+    assert _system_prompt_hash(prepared) == original
+    prepared.payload["messages"][0]["content"] += " "
+    assert _system_prompt_hash(prepared) != original
+    prepared.payload["messages"][0]["content"] = "private instruction"
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-two")
+    assert _system_prompt_hash(prepared) != original
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
+    prepared.tenant_id = uuid4()
+    assert _system_prompt_hash(prepared) != original
+    prepared.target = ProviderTarget(
+        str(uuid4()), "https://one.invalid", "one", "secret", 30, "1"
+    )
+    prepared.deployment_kind = "internal"
+    deployment_hash = _system_prompt_hash(prepared)
+    prepared.model = "renamed-alias"
+    prepared.target = replace(
+        prepared.target,
+        base_url="https://two.invalid",
+        upstream_model="two",
+        declared_version="2",
+    )
+    assert _system_prompt_hash(prepared) == deployment_hash
+    prepared.target = replace(prepared.target, deployment_id=str(uuid4()))
+    assert _system_prompt_hash(prepared) != deployment_hash
+    deployment_hash = _system_prompt_hash(prepared)
+    prepared.deployment_kind = "external"
+    assert _system_prompt_hash(prepared) != deployment_hash
+    prepared.payload = {"previous_response_id": "resp_inherited"}
+    assert _system_prompt_hash(prepared) is None
+
+
+@pytest.mark.parametrize(
+    ("protocol", "payload"),
+    [
+        ("responses", {"instructions": "private instruction"}),
+        (
+            "responses",
+            {"input": [{"role": "developer", "content": "private instruction"}]},
+        ),
+        ("messages", {"system": [{"type": "text", "text": "private instruction"}]}),
+        ("count_tokens", {"system": "private instruction"}),
+        (
+            "generate_content",
+            {"systemInstruction": {"parts": [{"text": "private instruction"}]}},
+        ),
+    ],
+)
+def test_system_prompt_hash_covers_explicit_native_instructions(
+    protocol, payload
+) -> None:
+    prepared = _prepared()
+    prepared.protocol = protocol
+    prepared.payload = payload
+    assert _system_prompt_hash(prepared) is not None
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
+    db, test_api_key, monkeypatch
+) -> None:
+    repository = DurableAccountingRepository()
+    request_id = f"req_diagnostics_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            repeat_chain_length=2,
+            system_prompt_hash="hmac-sha256:v1:" + "a" * 64,
+            deployment_kind="internal",
+        ),
+    )
+    command = FinalizationCommand(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        quota_action=TerminalAction.SETTLE,
+        prompt_tokens=20,
+        completion_tokens=3,
+        estimated=True,
+        lifecycle_status="client_disconnected",
+        provider_finish_reasons={"choices.1.finish_reason": "length"},
+        ttft_ms=125.5,
+    )
+    await repository.finalize(db, command)
+    assert (await repository.finalize(db, command)).replayed
+    await db.flush()
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).scalar_one()
+    expected = {
+        "repeat_chain_length": 2,
+        "system_prompt_hash": "hmac-sha256:v1:" + "a" * 64,
+        "deployment_kind": "internal",
+        "provider_finish_reasons": {"choices.1.finish_reason": "length"},
+        "ttft_ms": 125.5,
+    }
+    assert all(
+        lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    assert all(event.payload[key] == value for key, value in expected.items())
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    message = OutboxMessage.from_event(event)
+    await analytics_projection.project_request(message)
+    await analytics_projection.project_request(message)
+    projected = (
+        await db.execute(
+            select(analytics_projection.RequestLog).where(
+                analytics_projection.RequestLog.request_id == request_id
+            )
+        )
+    ).scalar_one()
+    assert all(projected.details[key] == value for key, value in expected.items())
+    assert projected.details["lifecycle_status"] == "client_disconnected"
+    assert projected.details["usage_estimated"] is True
 
 
 async def _create_tenant(
@@ -209,7 +388,7 @@ async def test_unspecified_reservation_is_conservative_and_nonnull() -> None:
     )
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
 
     await DurableAccountingCoordinator(
         repository=repository,
@@ -347,6 +526,8 @@ async def test_disconnected_stream_settles_reserved_usage() -> None:
     terminal = usage.finalize.await_args.args[1]
     assert usage.finalize.await_args.args[0] is prepared
     assert terminal.terminal_status == "client_disconnected"
+    assert terminal.usage.provider_finish_reasons is None
+    assert terminal.usage.ttft_ms is None
 
 
 @pytest.mark.asyncio
@@ -408,6 +589,7 @@ async def test_urgent_reconciliation_signal_commits_short_transaction() -> None:
 async def test_privacy_facts_commit_before_openai_execution() -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     checked = SimpleNamespace(
+        policy_verdicts=[],
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(
@@ -423,7 +605,13 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
     ) as update_lifecycle:
         await DurableAccountingCoordinator().record_privacy(checked, session)
 
-    assert update_lifecycle.await_args.kwargs["values"] == {
+    values = dict(update_lifecycle.await_args.kwargs["values"])
+    assert "policy_verdicts" in str(
+        values.pop("lifecycle_metadata")
+        .compile(compile_kwargs={"literal_binds": False})
+        .params
+    )
+    assert values == {
         "privacy_status": "scrubbed",
         "pii_detected": True,
     }
@@ -501,7 +689,7 @@ async def test_provider_start_session_closes_before_provider_execution() -> None
 @pytest.mark.asyncio
 async def test_nonstream_settlement_uses_the_priced_response_model() -> None:
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(
@@ -525,7 +713,7 @@ async def test_nonstream_settlement_uses_the_priced_response_model() -> None:
 @pytest.mark.asyncio
 async def test_nonstream_settlement_does_not_trust_a_cheaper_response_model() -> None:
     prepared = _prepared()
-    prepared.model = "gpt-5.6"
+    prepared.model = prepared.pricing_model = "gpt-5.6"
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(
@@ -549,7 +737,7 @@ async def test_failed_response_without_a_requested_model_uses_conservative_price
     None
 ):
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(
@@ -565,6 +753,8 @@ async def test_failed_response_without_a_requested_model_uses_conservative_price
     assert terminal.usage.settlement_cost_usd > 0
     assert terminal.usage.pricing_metadata["pricing_resolution"] == "conservative_max"
     assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.provider_finish_reasons == {"status": "failed"}
+    assert terminal.usage.ttft_ms is None
 
 
 @pytest.mark.asyncio
@@ -681,6 +871,7 @@ async def test_failure_before_openai_start_refunds_reserved_money() -> None:
         spend_reserved=True,
         error_code="REQUEST_ABORTED",
         error_message="Request ended before a provider value was delivered.",
+        lifecycle_status="failed",
     )
 
 
@@ -709,6 +900,7 @@ async def test_provider_rejection_refunds_reserved_ceiling() -> None:
         spend_reserved=True,
         error_code="PROVIDER_UNAVAILABLE",
         error_message="The provider rejected the request without usage.",
+        lifecycle_status="failed",
     )
 
 
@@ -742,6 +934,7 @@ async def test_failure_after_openai_start_refunds_unverified_usage(
         spend_reserved=spend_reserved,
         error_code="PROVIDER_USAGE_UNAVAILABLE",
         error_message="Provider execution began but usage could not be verified.",
+        lifecycle_status="failed",
     )
 
 
@@ -814,6 +1007,7 @@ async def test_admission_abort_skips_failure_state_and_refunds_quota_only() -> N
         spend_reserved=False,
         error_code="ADMISSION_ABORTED",
         error_message="Request ended before a provider value was delivered.",
+        lifecycle_status="failed",
     )
 
 
@@ -975,9 +1169,11 @@ async def test_failure_state_uses_durable_provider_marker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pricing_resolution", ["catalog", "unknown"])
 async def test_spend_pricing_metadata_survives_terminal_fallback(
     db,
     test_api_key,
+    pricing_resolution,
 ) -> None:
     repository = DurableAccountingRepository()
     request_id = f"req_pricing_metadata_{uuid4().hex}"
@@ -1004,7 +1200,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     )
     pricing_metadata = {
         "catalog_version": "catalog-v1",
-        "pricing_resolution": "catalog",
+        "pricing_resolution": pricing_resolution,
         "input_per_million": "0.2",
         "output_per_million": "1.2",
     }
@@ -1052,6 +1248,98 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     )
     assert len(events) == 2
     assert all(event.event_metadata["pricing"] == pricing_metadata for event in events)
+    outbox_event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == request_id,
+                OutboxEvent.event_type == "analytics.request_completed",
+            )
+        )
+    ).scalar_one()
+    assert outbox_event.payload["pricing_resolution"] == pricing_resolution
+    values = analytics_projection._projection_values(
+        OutboxMessage.from_event(outbox_event)
+    )
+    assert values["details"]["pricing_resolution"] == pricing_resolution
+    db.add(analytics_projection.RequestLog(**values))
+    await db.flush()
+    page = await management.list_requests(
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        limit=10,
+        offset=0,
+        user=SimpleNamespace(organization_id=test_api_key.organization_id),
+        session=db,
+    )
+    summary_row = (
+        await db.execute(
+            overview._summary_statement(
+                test_api_key.organization_id,
+                datetime.now(timezone.utc) - timedelta(days=1),
+                datetime.now(timezone.utc) + timedelta(days=1),
+            ).where(RequestLifecycle.request_id == request_id)
+        )
+    ).one()
+    overview_summary = overview._summary_from_row(summary_row)
+    assert overview_summary.requests == 1
+    assert overview_summary.cost_complete is (pricing_resolution != "unknown")
+    assert overview_summary.unpriced_requests == (pricing_resolution == "unknown")
+    assert overview_summary.settled_spend_usd == (
+        None if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    budget_usage = await BudgetEvaluator()._aggregate(
+        db,
+        SimpleNamespace(organization_id=test_api_key.organization_id, scope_type="org"),
+        datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    assert budget_usage.unpriced_requests == (pricing_resolution == "unknown")
+    assert budget_usage.cost_usd == (
+        0 if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    assert budget_usage.top_contributors[0]["cost_complete"] is (
+        pricing_resolution != "unknown"
+    )
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+    end = datetime.now(timezone.utc) + timedelta(days=1)
+    user = SimpleNamespace(organization_id=test_api_key.organization_id)
+    billing = await management.billing_usage(start, end, user, db)
+    expected_cost = None if pricing_resolution == "unknown" else 0.00004
+    assert billing.total_cost == expected_cost
+    assert billing.daily_usage[0].cost_usd == expected_cost
+    assert billing.cost_complete is (pricing_resolution != "unknown")
+    assert billing.unpriced_requests == (pricing_resolution == "unknown")
+    breakdown = await management.billing_breakdown(start, end, "model", 100, user, db)
+    assert breakdown.rows[0].cost_usd == (
+        None if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    exported = await management.export_billing_breakdown(
+        start, end, "model", "csv", user, db
+    )
+    csv_row = next(
+        csv.DictReader(io.StringIO(bytes(exported.body).decode("utf-8-sig")))
+    )
+    assert csv_row["cost_usd"] == (
+        "" if pricing_resolution == "unknown" else "0.00004000"
+    )
+    assert csv_row["cost_complete"] == str(pricing_resolution != "unknown")
+    assert csv_row["unpriced_requests"] == str(int(pricing_resolution == "unknown"))
+    assert page.total == 1
+    assert page.items[0].cost_complete is (pricing_resolution != "unknown")
+    assert page.summary.cost_complete is (pricing_resolution != "unknown")
+    if pricing_resolution == "unknown":
+        assert page.items[0].cost_usd is None
+        assert page.summary.unpriced_requests == 1
+        assert page.summary.settled_spend_usd == 0
+    else:
+        assert page.items[0].cost_usd == Decimal("0.00004")
+        assert page.summary.unpriced_requests == 0
+        assert page.summary.settled_spend_usd == Decimal("0.00004")
 
 
 @pytest.mark.asyncio
@@ -1516,10 +1804,19 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
     )
 
     session = SimpleNamespace(
+        scalar=AsyncMock(return_value=SimpleNamespace(role="member")),
         execute=AsyncMock(
             side_effect=[
                 SimpleNamespace(
-                    scalar_one_or_none=lambda: SimpleNamespace(tier="free")
+                    scalar_one_or_none=lambda: SimpleNamespace(
+                        tier="free",
+                        expires_at=None,
+                        is_active=True,
+                        allowed_models=None,
+                        user_id=uuid4(),
+                        organization_id=uuid4(),
+                        team_id=None,
+                    )
                 ),
                 SimpleNamespace(
                     scalar_one_or_none=lambda: SimpleNamespace(
@@ -1530,7 +1827,7 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
                     )
                 ),
             ]
-        )
+        ),
     )
     policy = await AccountingPolicyLoader().quota(session, _prepared())
     statements = [

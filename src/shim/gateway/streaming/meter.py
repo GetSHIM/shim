@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from time import perf_counter
 from typing import Any, Literal
 
 from shim.billing.pricing import (
@@ -48,6 +50,8 @@ class StreamUsageSnapshot:
     pricing_metadata: dict[str, str | int]
     estimated: bool
     output_hash: str | None
+    provider_finish_reasons: dict[str, str] | None = None
+    ttft_ms: float | None = None
 
 
 class StreamMeter:
@@ -66,12 +70,16 @@ class StreamMeter:
         prompt_tokens_estimated: int,
         expected_candidates: int = 1,
         output_hash_salt: str | None = None,
+        started_at_monotonic: float | None = None,
+        monotonic_clock: Callable[[], float] = perf_counter,
+        unpriced: bool = False,
     ) -> None:
         if prompt_tokens_estimated < 0:
             raise ValueError("stream token estimates must be nonnegative")
         if expected_candidates < 1:
             raise ValueError("expected stream candidates must be positive")
         self.provider = provider
+        self.unpriced = unpriced
         self.requested_model = requested_model
         self.prompt_tokens_estimated = prompt_tokens_estimated
         self.expected_candidates = expected_candidates
@@ -80,6 +88,10 @@ class StreamMeter:
         self.response_model: str | None = None
         self.emitted_output_characters = 0
         self.terminal_hint: StreamTerminalHint | None = None
+        self.provider_finish_reasons: dict[str, str] = {}
+        self.started_at_monotonic = started_at_monotonic
+        self._monotonic_clock = monotonic_clock
+        self.ttft_ms: float | None = None
         self._finished_candidates: set[int] = set()
         self._sse_buffer = b""
         self._output_hasher = hashlib.sha256() if output_hash_salt is not None else None
@@ -147,6 +159,7 @@ class StreamMeter:
             prompt,
             completion,
             provider=self.provider,
+            unpriced=self.unpriced,
         )
         return StreamUsageSnapshot(
             prompt_tokens=prompt,
@@ -158,6 +171,7 @@ class StreamMeter:
                 self.provider,
                 input_tokens=prompt,
                 output_tokens=completion,
+                unpriced=self.unpriced,
             ),
             estimated=estimated,
             output_hash=(
@@ -165,6 +179,8 @@ class StreamMeter:
                 if self._output_hasher is not None and self._emitted_wire_bytes > 0
                 else None
             ),
+            provider_finish_reasons=dict(self.provider_finish_reasons) or None,
+            ttft_ms=self.ttft_ms,
         )
 
     def _observe_sse_event(self, event_text: str) -> None:
@@ -195,10 +211,25 @@ class StreamMeter:
         self._capture_terminal_hint(payload_type, payload)
         self._capture_response_model(payload)
         self._capture_usage(payload)
-        self.emitted_output_characters += self._output_delta_characters(
+        self.provider_finish_reasons.update(
+            native_finish_reasons(payload, provider=self.provider) or {}
+        )
+        output_characters = self._output_delta_characters(
             payload_type,
             payload,
         )
+        self.emitted_output_characters += output_characters
+        if (
+            self.ttft_ms is None
+            and self.started_at_monotonic is not None
+            and (
+                output_characters > 0
+                or _initial_or_media_content(payload_type, payload)
+            )
+        ):
+            self.ttft_ms = max(
+                0.0, (self._monotonic_clock() - self.started_at_monotonic) * 1_000
+            )
 
     def _capture_response_model(self, payload: dict[str, Any]) -> None:
         candidates = [payload]
@@ -439,6 +470,161 @@ class StreamMeter:
 def _sum_optional_counts(*values: int | None) -> int | None:
     present = [value for value in values if value is not None]
     return sum(present) if present else None
+
+
+def _initial_or_media_content(event_type: str, payload: Mapping[str, Any]) -> bool:
+    """Recognize content readiness without treating opaque media as text tokens."""
+
+    if event_type == "content_block_start":
+        block = payload.get("content_block")
+        if isinstance(block, Mapping) and any(
+            isinstance(block.get(field), str) and block[field]
+            for field in ("text", "thinking")
+        ):
+            return True
+    field = {
+        "response.audio.delta": "delta",
+        "response.image_generation_call.partial_image": "partial_image_b64",
+    }.get(event_type)
+    if field is not None and isinstance(payload.get(field), str) and payload[field]:
+        return True
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            delta = choice.get("delta") if isinstance(choice, Mapping) else None
+            audio = delta.get("audio") if isinstance(delta, Mapping) else None
+            if (
+                isinstance(audio, Mapping)
+                and isinstance(audio.get("data"), str)
+                and audio["data"]
+            ):
+                return True
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            content = (
+                candidate.get("content") if isinstance(candidate, Mapping) else None
+            )
+            parts = content.get("parts") if isinstance(content, Mapping) else None
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                media = part.get("inlineData") if isinstance(part, Mapping) else None
+                if (
+                    isinstance(media, Mapping)
+                    and isinstance(media.get("data"), str)
+                    and media["data"]
+                ):
+                    return True
+    return False
+
+
+# Only native enum values enter telemetry; free-form provider fields may contain PII.
+_CHAT_REASONS = frozenset(
+    {"stop", "length", "tool_calls", "content_filter", "function_call"}
+)
+_MESSAGE_REASONS = frozenset(
+    {
+        "end_turn",
+        "max_tokens",
+        "stop_sequence",
+        "tool_use",
+        "pause_turn",
+        "refusal",
+        "model_context_window_exceeded",
+    }
+)
+_GOOGLE_REASONS = frozenset(
+    {
+        "STOP",
+        "MAX_TOKENS",
+        "SAFETY",
+        "RECITATION",
+        "LANGUAGE",
+        "OTHER",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "MALFORMED_FUNCTION_CALL",
+        "IMAGE_SAFETY",
+        "UNEXPECTED_TOOL_CALL",
+        "IMAGE_PROHIBITED_CONTENT",
+        "NO_IMAGE",
+        "IMAGE_RECITATION",
+        "IMAGE_OTHER",
+    }
+)
+_GOOGLE_BLOCK_REASONS = frozenset(
+    {
+        "SAFETY",
+        "OTHER",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "IMAGE_SAFETY",
+        "MODEL_ARMOR",
+        "JAILBREAK",
+    }
+)
+
+
+def native_finish_reasons(
+    payload: Mapping[str, Any], *, provider: str
+) -> dict[str, str] | None:
+    """Keep native, candidate-indexed completion facts separate from transport status."""
+
+    reasons: dict[str, str] = {}
+    if provider in {"openai", "google"}:
+        collection, field, allowed = (
+            ("candidates", "finishReason", _GOOGLE_REASONS)
+            if provider == "google"
+            else ("choices", "finish_reason", _CHAT_REASONS)
+        )
+        candidates = payload.get(collection)
+        if isinstance(candidates, list):
+            for position, candidate in enumerate(candidates):
+                if not isinstance(candidate, Mapping):
+                    continue
+                index = candidate.get("index", position)
+                reason = candidate.get(field)
+                if (
+                    isinstance(index, int)
+                    and not isinstance(index, bool)
+                    and 0 <= index < 10_000
+                    and isinstance(reason, str)
+                    and reason in allowed
+                ):
+                    reasons[f"{collection}.{index}.{field}"] = reason
+    if provider == "openai":
+        response = payload.get("response", payload)
+        if isinstance(response, Mapping):
+            status = response.get("status")
+            if isinstance(status, str) and status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "incomplete",
+            }:
+                reasons["status"] = status
+            incomplete = response.get("incomplete_details")
+            reason = (
+                incomplete.get("reason") if isinstance(incomplete, Mapping) else None
+            )
+            if isinstance(reason, str) and reason in {
+                "max_output_tokens",
+                "content_filter",
+            }:
+                reasons["incomplete_details.reason"] = reason
+    elif provider == "anthropic":
+        for value in (payload, payload.get("delta"), payload.get("message")):
+            reason = value.get("stop_reason") if isinstance(value, Mapping) else None
+            if isinstance(reason, str) and reason in _MESSAGE_REASONS:
+                reasons["stop_reason"] = reason
+    elif provider == "google":
+        feedback = payload.get("promptFeedback")
+        reason = feedback.get("blockReason") if isinstance(feedback, Mapping) else None
+        if isinstance(reason, str) and reason in _GOOGLE_BLOCK_REASONS:
+            reasons["promptFeedback.blockReason"] = reason
+    return reasons or None
 
 
 def _google_content_strings(value: Any, *, content: bool = False) -> list[str]:

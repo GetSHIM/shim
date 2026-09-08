@@ -1,3 +1,4 @@
+import csv
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -276,6 +277,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         policy_failed=1,
         p95_completed_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
+        unpriced_requests=0,
     )
     row = SimpleNamespace(
         id=uuid4(),
@@ -352,13 +354,27 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "completion_tokens",
         "usage_estimated",
         "cost_usd",
+        "cost_complete",
         "latency_ms",
         "pii_detected",
         "tags",
         "cost_center",
         "provider",
         "team",
+        "provider_finish_reasons",
+        "repeat_chain_length",
+        "ttft_ms",
+        "system_prompt_hash",
+        "deployment_kind",
     }
+    assert page.items[0].provider_finish_reasons is None
+    assert page.items[0].repeat_chain_length is None
+    assert page.items[0].ttft_ms is None
+    assert page.items[0].system_prompt_hash is None
+    assert page.items[0].deployment_kind is None
+    assert page.items[0].cost_complete is True
+    assert page.summary.cost_complete is True
+    assert page.summary.unpriced_requests == 0
     assert page.items[0].provider == "openai"
     assert page.items[0].usage_estimated is False
     assert page.items[0].team == "platform"
@@ -413,6 +429,7 @@ def test_request_activity_summary_has_null_technical_metrics_without_denominator
             policy_failed=0,
             p95_completed_latency_ms=None,
             settled_spend_usd=Decimal("0"),
+            unpriced_requests=0,
         )
     )
 
@@ -548,7 +565,14 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         timestamp=datetime(2026, 7, 1, tzinfo=timezone.utc),
         path="/v1/responses",
         model="gpt-5-nano",
-        details={"provider": "openai", "lifecycle_status": "completed"},
+        details={
+            "provider": "openai",
+            "lifecycle_status": "completed",
+            "provider_finish_reasons": {"status": "incomplete"},
+            "repeat_chain_length": 2,
+            "ttft_ms": 42.5,
+            "deployment_kind": "internal",
+        },
         prompt_tokens=10,
         completion_tokens=2,
         latency_ms=100,
@@ -583,6 +607,13 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert "'=unsafe" in content
     assert "'+formula" in content
     assert "'@ops" in content
+    exported = list(csv.DictReader(content.splitlines()))[0]
+    assert exported["provider_finish_reasons"] == '{"status": "incomplete"}'
+    assert exported["repeat_chain_length"] == "2"
+    assert exported["ttft_ms"] == "42.5"
+    assert exported["deployment_kind"] == "internal"
+    assert exported["system_prompt_hash"] == ""
+    assert exported["cost_complete"] == "True"
     rows.close.assert_awaited_once()
     statement = session.stream.await_args.args[0]
     compiled = statement.compile(dialect=postgresql.dialect())
@@ -688,6 +719,7 @@ def test_billing_exports_render_safe_csv_and_pdf() -> None:
         prompt_tokens=20,
         completion_tokens=5,
         cost_usd=Decimal("0.12345678"),
+        unpriced_requests=0,
     )
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)

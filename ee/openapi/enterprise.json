@@ -329,6 +329,21 @@
       },
       "ApiKeyInput": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -356,6 +371,18 @@
               }
             ],
             "title": "Team"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
           }
         },
         "required": [
@@ -366,6 +393,21 @@
       },
       "ApiKeyPatch": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -387,6 +429,18 @@
               }
             ],
             "title": "Team"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
           }
         },
         "title": "ApiKeyPatch",
@@ -394,6 +448,20 @@
       },
       "ApiKeyView": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -457,6 +525,18 @@
             ],
             "title": "Team"
           },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
           "tier": {
             "title": "Tier",
             "type": "string"
@@ -471,7 +551,9 @@
           "is_active",
           "expires_at",
           "cost_center",
-          "team"
+          "team",
+          "team_id",
+          "allowed_models"
         ],
         "title": "ApiKeyView",
         "type": "object"
@@ -699,6 +781,45 @@
       },
       "AuditLogRead": {
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "actor_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "api_key",
+                  "user_jwt",
+                  "internal"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Type"
+          },
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
           "completion_tokens": {
             "minimum": 0.0,
             "title": "Completion Tokens",
@@ -765,6 +886,17 @@
             "title": "Latency Ms",
             "type": "integer"
           },
+          "lifecycle_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle Status"
+          },
           "model": {
             "anyOf": [
               {
@@ -797,6 +929,14 @@
             },
             "title": "Pii Entities",
             "type": "object"
+          },
+          "policy_verdicts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Policy Verdicts",
+            "type": "array"
           },
           "prev_hash": {
             "title": "Prev Hash",
@@ -1192,10 +1332,22 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "cost_complete": {
+            "default": true,
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Cost Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "key": {
             "minLength": 1,
@@ -1210,6 +1362,11 @@
           "request_count": {
             "minimum": 0.0,
             "title": "Request Count",
+            "type": "integer"
+          },
+          "unpriced_requests": {
+            "default": 0,
+            "title": "Unpriced Requests",
             "type": "integer"
           }
         },
@@ -1284,6 +1441,11 @@
       },
       "BillingUsageView": {
         "properties": {
+          "cost_complete": {
+            "default": true,
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "daily_usage": {
             "items": {
               "$ref": "#/components/schemas/DailyUsageView"
@@ -1295,8 +1457,20 @@
             "$ref": "#/components/schemas/BillingPeriodView"
           },
           "total_cost": {
-            "title": "Total Cost",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost"
+          },
+          "unpriced_requests": {
+            "default": 0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -2142,8 +2316,29 @@
         "title": "Content",
         "type": "object"
       },
+      "CountTokensRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "title": "CountTokensRequest",
+        "type": "object"
+      },
       "CreatedApiKey": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -2211,6 +2406,18 @@
             ],
             "title": "Team"
           },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
           "tier": {
             "title": "Tier",
             "type": "string"
@@ -2226,6 +2433,8 @@
           "expires_at",
           "cost_center",
           "team",
+          "team_id",
+          "allowed_models",
           "plaintext"
         ],
         "title": "CreatedApiKey",
@@ -2281,7 +2490,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -2310,9 +2520,21 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "cost_complete": {
+            "default": true,
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "title": "Cost Usd",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "date": {
             "format": "date",
@@ -2329,6 +2551,11 @@
           },
           "request_count": {
             "title": "Request Count",
+            "type": "integer"
+          },
+          "unpriced_requests": {
+            "default": 0,
+            "title": "Unpriced Requests",
             "type": "integer"
           }
         },
@@ -4548,6 +4775,59 @@
         "title": "MediaResolution",
         "type": "string"
       },
+      "MembershipInput": {
+        "properties": {
+          "role": {
+            "default": "member",
+            "enum": [
+              "member",
+              "team_admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "title": "MembershipInput",
+        "type": "object"
+      },
+      "MembershipView": {
+        "properties": {
+          "role": {
+            "default": "member",
+            "enum": [
+              "member",
+              "team_admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "local",
+              "oidc"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "team_id": {
+            "format": "uuid",
+            "title": "Team Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "team_id",
+          "source"
+        ],
+        "title": "MembershipView",
+        "type": "object"
+      },
       "MessagesRequest": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -4566,6 +4846,209 @@
         ],
         "title": "Modality",
         "type": "string"
+      },
+      "ModelDeploymentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "title": "Alias",
+            "type": "string"
+          },
+          "base_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "declared_version": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Declared Version",
+            "type": "string"
+          },
+          "deployment_kind": {
+            "enum": [
+              "internal",
+              "external"
+            ],
+            "title": "Deployment Kind",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "owner": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Owner",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "openai",
+              "anthropic"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_secret_id": {
+            "format": "uuid",
+            "title": "Provider Secret Id",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 60,
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "upstream_model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Upstream Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "provider",
+          "upstream_model",
+          "base_url",
+          "provider_secret_id",
+          "deployment_kind",
+          "declared_version",
+          "owner"
+        ],
+        "title": "ModelDeploymentInput",
+        "type": "object"
+      },
+      "ModelDeploymentView": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "title": "Alias",
+            "type": "string"
+          },
+          "base_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "declared_version": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Declared Version",
+            "type": "string"
+          },
+          "deployment_kind": {
+            "enum": [
+              "internal",
+              "external"
+            ],
+            "title": "Deployment Kind",
+            "type": "string"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "health": {
+            "enum": [
+              "unknown",
+              "healthy",
+              "unhealthy"
+            ],
+            "title": "Health",
+            "type": "string"
+          },
+          "health_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health Checked At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Owner",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "openai",
+              "anthropic"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_secret_id": {
+            "format": "uuid",
+            "title": "Provider Secret Id",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "default": 60,
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Timeout Seconds",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "upstream_model": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Upstream Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "provider",
+          "upstream_model",
+          "base_url",
+          "provider_secret_id",
+          "deployment_kind",
+          "declared_version",
+          "owner",
+          "id",
+          "health",
+          "health_checked_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ModelDeploymentView",
+        "type": "object"
       },
       "ModelListView": {
         "properties": {
@@ -5398,6 +5881,10 @@
       },
       "OverviewSummaryView": {
         "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "p95_completed_latency_ms": {
             "anyOf": [
               {
@@ -5421,9 +5908,16 @@
             "type": "integer"
           },
           "settled_spend_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Settled Spend Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled Spend Usd"
           },
           "status_counts": {
             "$ref": "#/components/schemas/OverviewStatusCountsView"
@@ -5445,6 +5939,11 @@
               }
             ],
             "title": "Technical Success Rate"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -5454,6 +5953,8 @@
           "technical_success_rate",
           "p95_completed_latency_ms",
           "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests",
           "status_counts"
         ],
         "title": "OverviewSummaryView",
@@ -5461,26 +5962,44 @@
       },
       "OverviewTrendPointView": {
         "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "requests": {
             "minimum": 0.0,
             "title": "Requests",
             "type": "integer"
           },
           "settled_spend_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Settled Spend Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled Spend Usd"
           },
           "start": {
             "format": "date-time",
             "title": "Start",
             "type": "string"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
           "start",
           "requests",
-          "settled_spend_usd"
+          "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests"
         ],
         "title": "OverviewTrendPointView",
         "type": "object"
@@ -6538,6 +7057,10 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "p95_completed_latency_ms": {
             "anyOf": [
               {
@@ -6595,6 +7118,11 @@
               }
             ],
             "title": "Technical Success Rate"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -6602,6 +7130,8 @@
           "technical_success_rate",
           "p95_completed_latency_ms",
           "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests",
           "prompt_tokens",
           "completion_tokens",
           "pii_detected_requests",
@@ -6630,15 +7160,42 @@
             ],
             "title": "Cost Center"
           },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Cost Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "deployment_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "internal",
+                  "external",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Kind"
           },
           "endpoint": {
             "anyOf": [
@@ -6687,6 +7244,32 @@
             ],
             "title": "Provider"
           },
+          "provider_finish_reasons": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Finish Reasons"
+          },
+          "repeat_chain_length": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repeat Chain Length"
+          },
           "request_id": {
             "title": "Request Id",
             "type": "string"
@@ -6706,6 +7289,17 @@
             "title": "Status",
             "type": "string"
           },
+          "system_prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt Hash"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -6724,6 +7318,18 @@
             ],
             "title": "Team"
           },
+          "ttft_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms"
+          },
           "usage_estimated": {
             "title": "Usage Estimated",
             "type": "boolean"
@@ -6739,6 +7345,7 @@
           "completion_tokens",
           "usage_estimated",
           "cost_usd",
+          "cost_complete",
           "latency_ms",
           "pii_detected",
           "cost_center",
@@ -7758,49 +8365,6 @@
       },
       "SubscriptionView": {
         "properties": {
-          "cancel_at_period_end": {
-            "title": "Cancel At Period End",
-            "type": "boolean"
-          },
-          "checkout_urls": {
-            "additionalProperties": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "propertyNames": {
-                "enum": [
-                  "monthly",
-                  "yearly"
-                ]
-              },
-              "type": "object"
-            },
-            "title": "Checkout Urls",
-            "type": "object"
-          },
-          "current_period_end": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Period End"
-          },
-          "customer_portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Customer Portal Url"
-          },
           "entitlements": {
             "additionalProperties": {
               "type": "boolean"
@@ -7838,13 +8402,63 @@
           "plan",
           "status",
           "source",
-          "current_period_end",
-          "cancel_at_period_end",
-          "entitlements",
-          "checkout_urls",
-          "customer_portal_url"
+          "entitlements"
         ],
         "title": "SubscriptionView",
+        "type": "object"
+      },
+      "TeamInput": {
+        "properties": {
+          "daily_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Request Limit"
+          },
+          "monthly_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Request Limit"
+          },
+          "monthly_token_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Token Limit"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TeamInput",
         "type": "object"
       },
       "TeamInviteInput": {
@@ -7858,7 +8472,8 @@
             "default": "member",
             "enum": [
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -7920,7 +8535,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -7974,7 +8590,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -7997,7 +8614,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -8007,6 +8625,66 @@
           "role"
         ],
         "title": "TeamRolePatch",
+        "type": "object"
+      },
+      "TeamView": {
+        "properties": {
+          "daily_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Request Limit"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "monthly_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Request Limit"
+          },
+          "monthly_token_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Token Limit"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "id"
+        ],
+        "title": "TeamView",
         "type": "object"
       },
       "TextResponseFormat": {
@@ -8737,7 +9415,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -9296,6 +9975,108 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/auth/callback": {
+      "get": {
+        "operationId": "callback_api_v1_auth_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "get": {
+        "operationId": "login_api_v1_auth_login_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "next",
+            "required": false,
+            "schema": {
+              "default": "/dashboard",
+              "title": "Next",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "get_session_api_v1_auth_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Session Api V1 Auth Session Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Session",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/api/v1/compliance/audit/anchor": {
       "post": {
         "operationId": "trigger_anchor_api_v1_compliance_audit_anchor_post",
@@ -10942,6 +11723,54 @@
         ]
       }
     },
+    "/api/v1/management/api-keys/{api_key_id}/rotate": {
+      "post": {
+        "operationId": "rotate_api_key_api_v1_management_api_keys__api_key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "api_key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Api Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rotate Api Key",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/auth/me": {
       "get": {
         "operationId": "current_profile_api_v1_management_auth_me_get",
@@ -11539,6 +12368,186 @@
           }
         ],
         "summary": "Update Budget",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments": {
+      "get": {
+        "operationId": "list_model_deployments_api_v1_management_model_deployments_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelDeploymentView"
+                  },
+                  "title": "Response List Model Deployments Api V1 Management Model Deployments Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Model Deployments",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_model_deployment_api_v1_management_model_deployments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelDeploymentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDeploymentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Model Deployment",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}": {
+      "put": {
+        "operationId": "update_model_deployment_api_v1_management_model_deployments__deployment_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelDeploymentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDeploymentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Model Deployment",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}/health": {
+      "post": {
+        "operationId": "check_model_deployment_health_api_v1_management_model_deployments__deployment_id__health_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDeploymentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Check Model Deployment Health",
         "tags": [
           "management"
         ]
@@ -12645,6 +13654,307 @@
         ]
       }
     },
+    "/api/v1/management/teams": {
+      "get": {
+        "operationId": "list_teams_api_v1_management_teams_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamView"
+                  },
+                  "title": "Response List Teams Api V1 Management Teams Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Teams",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_team_api_v1_management_teams_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Team",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}": {
+      "put": {
+        "operationId": "update_team_api_v1_management_teams__team_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Team",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}/members": {
+      "get": {
+        "operationId": "list_memberships_api_v1_management_teams__team_id__members_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MembershipView"
+                  },
+                  "title": "Response List Memberships Api V1 Management Teams  Team Id  Members Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Memberships",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}/members/{member_id}": {
+      "delete": {
+        "operationId": "remove_membership_api_v1_management_teams__team_id__members__member_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Member Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove Membership",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "set_membership_api_v1_management_teams__team_id__members__member_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Member Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembershipInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Membership",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/tier-info": {
       "get": {
         "operationId": "tier_info_api_v1_management_tier_info_get",
@@ -12710,31 +14020,6 @@
         "summary": "View Shared Result",
         "tags": [
           "shared-results"
-        ]
-      }
-    },
-    "/api/v1/webhooks/lemonsqueezy": {
-      "post": {
-        "operationId": "lemonsqueezy_webhook_api_v1_webhooks_lemonsqueezy_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Lemonsqueezy Webhook Api V1 Webhooks Lemonsqueezy Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Lemonsqueezy Webhook",
-        "tags": [
-          "webhooks"
         ]
       }
     },
@@ -13142,6 +14427,193 @@
           }
         ],
         "summary": "Messages"
+      }
+    },
+    "/v1/messages/count_tokens": {
+      "post": {
+        "operationId": "count_tokens_v1_messages_count_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountTokensRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "529": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "AnthropicAPIKey": []
+          }
+        ],
+        "summary": "Count Tokens"
       }
     },
     "/v1/models": {

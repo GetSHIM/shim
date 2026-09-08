@@ -12,6 +12,7 @@ MANIFEST = ROOT / "architecture/module_ownership.toml"
 OWNERS = ("public", "enterprise", "split")
 PYTHON_ROOTS = (
     "ee/alembic",
+    "ee/deploy/test",
     "ee/scripts",
     "ee/src/shim_enterprise",
     "ee/tests",
@@ -331,6 +332,7 @@ def test_python_ownership_regions_are_canonical() -> None:
         "public": ("scripts/", "src/shim/", "tests/"),
         "enterprise": (
             "ee/alembic/",
+            "ee/deploy/test/",
             "ee/scripts/",
             "ee/src/shim_enterprise/",
             "ee/tests/",

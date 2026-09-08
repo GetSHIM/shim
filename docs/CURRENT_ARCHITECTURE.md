@@ -105,7 +105,7 @@ create_enterprise_app
 |-- ManagedProviderCredentialResolver
 |-- DurableUsageLifecycle and accounting coordinator
 |-- enterprise scan pipeline and error composition
-|-- management, subscription, shared-result, compliance, and AI Act routes
+|-- management, shared-result, compliance, and AI Act routes
 `-- database, Redis, tracing, metrics, and lifecycle hooks
 ```
 
@@ -126,13 +126,18 @@ The exact method/path inventories live in `architecture/route_profiles.toml`.
 | Profile | Surface | Contract |
 | --- | --- | --- |
 | Community | OpenAI Chat and Responses; Anthropic Messages; Gemini generate and stream; model discovery; local scan; health | `openapi/community.json` |
-| Enterprise | Community provider routes plus durable scan usage, management, subscriptions, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
+| Enterprise | Community provider routes plus durable scan usage, management, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
 
 `/metrics` is intentionally excluded from OpenAPI. Enterprise provider routes
 must preserve the community provider request, response, selector, error, and
 stream contracts while adding enterprise authentication and lifecycle policy.
 
 ### Authentication and provider credentials
+
+Enterprise OIDC and Vault deployment contracts are documented in
+[`ee/docs/ON_PREM_IDENTITY.md`](../ee/docs/ON_PREM_IDENTITY.md). The on-prem
+control plane uses configured issuer/subject identities and server-side Redis
+sessions; hosted Supabase remains a separate selected authentication mode.
 
 - OpenAI SDKs carry the shim key in `Authorization: Bearer ...`.
 - Anthropic SDKs carry the shim key in `x-api-key` on Anthropic routes.
@@ -149,7 +154,7 @@ never forwarded wholesale.
 | Provider | Current route family | Native stream terminal |
 | --- | --- | --- |
 | OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events |
-| Anthropic | `/v1/messages`, `/v1/models` | Native named events ending in `message_stop` |
+| Anthropic | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` | Messages use native named events ending in `message_stop`; token counting returns JSON |
 | Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
 
 OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
@@ -159,8 +164,16 @@ details that could contain credentials or PII are discarded. A stream failure
 after headers is emitted as a sanitized terminal event.
 
 `background=true` Responses requests remain unsupported because shim has no
-retrieval lifecycle with which to settle them safely. Explicit model IDs must
-exist in the checked-in model and price catalog.
+retrieval lifecycle with which to settle them safely. Community model IDs must exist in the checked-in model and price catalog.
+Enterprise can resolve tenant aliases through its approved deployment registry;
+`MODEL_DEPLOYMENT_REQUIRED=true` disables catalog fallback. Registry targets
+reuse the native executions with operator-approved destinations and stored
+credential references. Unpriced deployments remain explicit in accounting, and
+monetary caps reject them. See [`MODEL_DEPLOYMENTS.md`](../ee/docs/MODEL_DEPLOYMENTS.md).
+
+Anthropic token counting shares authentication, registry authorization and
+privacy transformation. It persists nonbillable enterprise audit preflight and
+completion without quota/spend reservations or inference lifecycle settlement.
 
 ## Physical ownership
 
@@ -259,8 +272,9 @@ those files in wheel and sdist metadata. Production enterprise boots verify an
 offline `SHIM_LICENSE_KEY` in `shim_enterprise.core.license`; no other runtime
 licence validator exists.
 
-The public repository uses this mixed-licence package split. It is live in
-production; deployment and verification evidence is recorded in
-`MIGRATION_PROGRESS.md`. Production releases are automated from `main` through
-the staged, serialized, exact-revision Cloud Build flow documented in
-`TARGET_ARCHITECTURE.md`.
+Production deployment is triggered by `v<major>.<minor>.<patch>` tags, not by a
+merge to `main`. Cloud Build serializes migration and promotion with a shared
+lock, validates staged gateway and worker revisions, and restores the captured
+traffic splits on promotion failure. Release publication workflows do not deploy.
+See [repository release rules](../AGENTS.md#release-and-deployment) and the
+[customer-operated deployment guide](../ee/deploy/README.md).

@@ -68,6 +68,7 @@ def _prepared(
     )
     return SimpleNamespace(
         payload=payload,
+        target=None,
         tenant_id=TenantId(UUID(tenant)),
         protocol=protocol,
         stream=bool(payload.get("stream")),
@@ -1016,6 +1017,7 @@ async def test_chat_stream_rejects_eof_before_every_choice_finishes() -> None:
                     ),
                     state,
                     close_stream,
+                    execution.circuit,
                 )
             ]
         )
@@ -1082,6 +1084,7 @@ async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error(
                     ),
                     {"closed": False, "recorded": False},
                     AsyncMock(),
+                    execution.circuit,
                 )
             ]
         )

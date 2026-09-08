@@ -1,0 +1,74 @@
+{{- range $name := list "postgres" "redis" }}
+{{- $cfg := index $.Values $name }}
+{{- if $cfg.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - port: {{ if eq $name "postgres" }}5432{{ else }}6379{{ end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $.Release.Name }}-{{ $name }}
+spec:
+  serviceName: {{ $.Release.Name }}-{{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "shim.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ $cfg.image | quote }}
+          imagePullPolicy: IfNotPresent
+          {{- if eq $name "postgres" }}
+          env:
+            - {name: POSTGRES_USER, value: shim}
+            - {name: POSTGRES_DB, value: shim}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            exec: {command: [pg_isready, -U, shim, -d, shim]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+          {{- else }}
+          readinessProbe:
+            exec: {command: [redis-cli, ping]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if $cfg.storageClassName }}
+        storageClassName: {{ $cfg.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $cfg.storage | quote }}
+{{- end }}
+{{- end }}

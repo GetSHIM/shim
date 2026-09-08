@@ -170,7 +170,7 @@ def _gateway_provider(
     headers: Mapping[str, str],
 ) -> str | None:
     normalized = path.rstrip("/")
-    if normalized == "/v1/messages":
+    if normalized in {"/v1/messages", "/v1/messages/count_tokens"}:
         return "anthropic"
     if normalized in {"/v1/chat/completions", "/v1/responses"}:
         return "openai"

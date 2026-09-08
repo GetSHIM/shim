@@ -240,6 +240,11 @@ def _budget_text(payload: dict) -> str:
     return (
         f"shim budget {scope}: {payload.get('percent_used')}% used in "
         f"{payload.get('period')}"
+        + (
+            f" (known spend only; {payload.get('unpriced_requests')} unpriced requests)"
+            if payload.get("cost_complete") is False
+            else ""
+        )
     )
 
 

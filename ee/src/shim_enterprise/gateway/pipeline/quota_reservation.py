@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import desc, func, select, text
 
 from shim_enterprise.core.config import settings
@@ -49,10 +51,20 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
+    persist_token_count_audit,
     AuditIntentRepository,
 )
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
-from shim_enterprise.tenants.models import ApiKey, ProviderSecret, TierDefinition
+from shim_enterprise.gateway.pipeline.outbox import rejection_intent
+from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ProviderSecret,
+    TierDefinition,
+    Team,
+    TeamMembership,
+    User,
+)
 from shim_enterprise.observability.enterprise_metrics import (
     QUOTA_RESERVATION_TOTAL,
     USAGE_SETTLEMENT_TOTAL,
@@ -70,6 +82,55 @@ class AccountingPersistenceError(PersistenceError):
 
 
 logger = logging.getLogger(__name__)
+
+
+def _system_prompt_hash(prepared: PreparedInference) -> str | None:
+    """Hash only explicitly supplied system content, before privacy transformation."""
+
+    payload = prepared.payload
+    material: dict[str, Any] = {}
+    field = {
+        "chat": None,
+        "responses": "instructions",
+        "messages": "system",
+        "count_tokens": "system",
+        "generate_content": "systemInstruction",
+    }[prepared.protocol]
+    if field is not None and payload.get(field) is not None:
+        material[field] = payload[field]
+    if prepared.protocol in {"chat", "responses"}:
+        messages = payload.get("messages" if prepared.protocol == "chat" else "input")
+        if isinstance(messages, list):
+            instructions = [
+                {"role": item["role"], "content": item["content"]}
+                for item in messages
+                if isinstance(item, dict)
+                and item.get("role") in ("system", "developer")
+                and item.get("content") is not None
+            ]
+            if instructions:
+                material["messages"] = instructions
+    if not material:
+        return None
+    canonical = json.dumps(
+        [
+            "shim.system_prompt.v1",
+            str(prepared.tenant_id),
+            prepared.protocol,
+            {
+                "deployment_id": prepared.target.deployment_id
+                if prepared.target
+                else None,
+                "deployment_kind": prepared.deployment_kind,
+            },
+            material,
+        ],
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
+    return "hmac-sha256:v1:" + hmac.digest(key, canonical, "sha256").hex()
 
 
 class AccountingPolicyLoader:
@@ -93,6 +154,68 @@ class AccountingPolicyLoader:
         if api_key is None:
             raise AccountingPersistenceError("accounting API key no longer exists")
 
+        now = datetime.now(timezone.utc)
+        expiry = api_key.expires_at
+        if expiry is not None and expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if not api_key.is_active or (expiry is not None and expiry <= now):
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+        if (
+            api_key.allowed_models is not None
+            and prepared.model not in api_key.allowed_models
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "MODEL_NOT_ALLOWED",
+                    "message": "Model is not allowed by API-key policy.",
+                },
+            )
+        owner = await session.scalar(
+            select(User).where(
+                User.id == api_key.user_id,
+                User.organization_id == api_key.organization_id,
+                User.is_active.is_(True),
+                User.role != "auditor",
+            )
+        )
+        if owner is None:
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+        team_policy = None
+        if api_key.team_id is not None:
+            if owner.role not in {"owner", "admin"} and not await session.scalar(
+                select(TeamMembership.user_id).where(
+                    TeamMembership.organization_id == api_key.organization_id,
+                    TeamMembership.team_id == api_key.team_id,
+                    TeamMembership.user_id == owner.id,
+                )
+            ):
+                raise HTTPException(
+                    status_code=403, detail="API-key owner is no longer a team member"
+                )
+            team = await session.scalar(
+                select(Team)
+                .where(
+                    Team.organization_id == api_key.organization_id,
+                    Team.id == api_key.team_id,
+                )
+                .with_for_update(read=True)
+            )
+            if team is None:
+                raise AccountingPersistenceError("accounting team no longer exists")
+            team_policy = QuotaPolicySnapshot(
+                version=self._version(
+                    f"team:{team.id}:{team.updated_at}",
+                    (
+                        team.daily_request_limit,
+                        team.monthly_request_limit,
+                        team.monthly_token_limit,
+                    ),
+                ),
+                daily_request_limit=team.daily_request_limit,
+                monthly_request_limit=team.monthly_request_limit,
+                monthly_token_limit=team.monthly_token_limit,
+            )
         tier_statement = (
             select(TierDefinition)
             .where(TierDefinition.slug == api_key.tier)
@@ -108,10 +231,15 @@ class AccountingPolicyLoader:
                 policy.monthly_token_limit,
             )
             return QuotaPolicySnapshot(
-                version=self._version("quota-default", values),
+                version=self._version(
+                    "quota-default",
+                    (*values, team_policy.version if team_policy else None),
+                ),
                 daily_request_limit=values[0],
                 monthly_request_limit=values[1],
                 monthly_token_limit=values[2],
+                team_id=api_key.team_id,
+                team_policy=team_policy,
             )
 
         values = (
@@ -122,11 +250,13 @@ class AccountingPolicyLoader:
         return QuotaPolicySnapshot(
             version=self._version(
                 f"quota:{tier.slug}:{getattr(tier, 'updated_at', None)}",
-                values,
+                (*values, team_policy.version if team_policy else None),
             ),
             daily_request_limit=values[0],
             monthly_request_limit=values[1],
             monthly_token_limit=values[2],
+            team_id=api_key.team_id,
+            team_policy=team_policy,
         )
 
     async def spend(
@@ -146,6 +276,11 @@ class AccountingPolicyLoader:
             .where(
                 ProviderSecret.organization_id == prepared.tenant_id,
                 ProviderSecret.provider == str(prepared.provider),
+                *(
+                    [ProviderSecret.id == UUID(prepared.target.credential_reference)]
+                    if prepared.target
+                    else []
+                ),
             )
             .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
             .limit(1)
@@ -204,9 +339,17 @@ class DurableAccountingCoordinator:
         admission: AdmissionState,
         session: AsyncSession,
     ) -> ReservationResult:
+        policy: QuotaPolicySnapshot | None = None
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
+                prepared.record_verdict(
+                    "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="allow",
+                    reason_code="QUOTA_RESERVED",
+                    policy_version=policy.version,
+                )
                 result = await self.repository.reserve_quota(
                     session,
                     QuotaReservationCommand(
@@ -226,7 +369,15 @@ class DurableAccountingCoordinator:
                         tags=admission.tags,
                         team=prepared.policy.team,
                         stream=prepared.stream,
+                        repeat_chain_length=admission.repeat_chain_length,
+                        system_prompt_hash=_system_prompt_hash(prepared),
+                        deployment_kind=prepared.deployment_kind,
                         policy=policy,
+                        audit_policy_mode=prepared.context.audit_policy.mode,
+                        policy_verdicts=tuple(
+                            verdict.model_dump(mode="json")
+                            for verdict in prepared.policy_verdicts
+                        ),
                     ),
                 )
                 await session.commit()
@@ -234,13 +385,30 @@ class DurableAccountingCoordinator:
                 QUOTA_RESERVATION_TOTAL.labels(status=outcome).inc()
                 span.set_attribute("status", outcome)
                 return result
-            except QuotaLimitExceeded:
+            except (QuotaLimitExceeded, HTTPException) as error:
                 await session.rollback()
+                access_denied = isinstance(error, HTTPException)
+                prepared.record_verdict(
+                    "api_key.access" if access_denied else "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="deny",
+                    reason_code=(
+                        "API_KEY_ACCESS_DENIED" if access_denied else "QUOTA_EXCEEDED"
+                    ),
+                    policy_version=policy.version if policy is not None else None,
+                )
                 QUOTA_RESERVATION_TOTAL.labels(status="rejected").inc()
                 span.set_attribute("status", "rejected")
                 raise
             except Exception as exc:
                 await session.rollback()
+                prepared.record_verdict(
+                    "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="error",
+                    reason_code="QUOTA_UNAVAILABLE",
+                    policy_version=policy.version if policy is not None else None,
+                )
                 QUOTA_RESERVATION_TOTAL.labels(status="failed").inc()
                 span.set_attribute("status", "failed")
                 if isinstance(exc, AccountingPersistenceError):
@@ -263,11 +431,21 @@ class DurableAccountingCoordinator:
                 prepared,
                 ephemeral_byok,
             )
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="allow",
+                reason_code="SPEND_UNLIMITED"
+                if policy.monthly_limit_usd is None
+                else "SPEND_RESERVED",
+                policy_version=policy.version,
+            )
             estimated_cost = compute_cost_usd(
-                prepared.model,
+                prepared.pricing_model,
                 prepared.admission.estimated_input_tokens,
                 prepared.admission.maximum_output_tokens,
                 str(prepared.provider),
+                unpriced=prepared.unpriced,
             )
             input_hash = content_ref(
                 settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY,
@@ -280,13 +458,14 @@ class DurableAccountingCoordinator:
                 request_id=prepared.request_id,
                 requested_model=prepared.model,
                 provider=provider,
-                provider_model=prepared.model,
+                provider_model=prepared.pricing_model,
                 estimated_cost_usd=estimated_cost,
                 pricing_metadata=DEFAULT_PRICE_BOOK.resolved_price_metadata(
-                    prepared.model,
+                    prepared.pricing_model,
                     str(prepared.provider),
                     input_tokens=prepared.admission.estimated_input_tokens,
                     output_tokens=prepared.admission.maximum_output_tokens,
+                    unpriced=prepared.unpriced,
                 ),
                 cache_status="bypass",
                 audit_policy_mode=prepared.context.audit_policy.mode,
@@ -295,17 +474,39 @@ class DurableAccountingCoordinator:
                 pii_entities=dict(
                     cast(Mapping[str, int], privacy_facts["pii_entities"])
                 ),
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
             )
+            if prepared.unpriced and policy.monthly_limit_usd is not None:
+                raise SpendLimitExceeded("MODEL_PRICE_UNKNOWN")
             result = await self.repository.reserve_provider_spend(
                 session,
                 command,
             )
             await session.commit()
             return result
-        except SpendLimitExceeded:
+        except SpendLimitExceeded as exc:
             await session.rollback()
             if command is None:
                 raise
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="deny",
+                reason_code="MODEL_PRICE_UNKNOWN"
+                if str(exc) == "MODEL_PRICE_UNKNOWN"
+                else "SPEND_LIMIT_EXCEEDED",
+                policy_version=command.policy.version,
+            )
+            command = replace(
+                command,
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
+            )
             try:
                 await self.repository.write_spend_denial_preflight(session, command)
                 await session.commit()
@@ -322,6 +523,13 @@ class DurableAccountingCoordinator:
             raise
         except Exception as exc:
             await session.rollback()
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="error",
+                reason_code="SPEND_UNAVAILABLE",
+                policy_version=command.policy.version if command is not None else None,
+            )
             if isinstance(exc, AuditIntentPersistenceError):
                 raise
             if isinstance(exc, AccountingPersistenceError):
@@ -344,6 +552,15 @@ class DurableAccountingCoordinator:
                 values={
                     "privacy_status": privacy_facts["privacy_status"],
                     "pii_detected": privacy_facts["pii_detected"],
+                    "lifecycle_metadata": RequestLifecycle.lifecycle_metadata.op("||")(
+                        {
+                            "policy_verdicts": [
+                                verdict.model_dump(mode="json")
+                                for verdict in prepared.policy_verdicts
+                            ],
+                            "pii_entities": dict(prepared.privacy.pii_entities),
+                        }
+                    ),
                 },
             )
             if lifecycle is None:
@@ -534,6 +751,10 @@ class DurableAccountingCoordinator:
                 lifecycle_status=lifecycle_status,
                 terminal_error_code=error_code,
                 terminal_error_message=error_message,
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
             ),
         )
 
@@ -548,6 +769,81 @@ class DurableUsageLifecycle:
     ) -> None:
         self.accounting = accounting
         self.session_factory = session_factory
+
+    async def reject(self, prepared: PreparedInference) -> None:
+        mode = prepared.context.audit_policy.mode
+        if mode == "off":
+            return
+        try:
+            async with self.session_factory() as session:
+                lifecycle = await RequestLifecycleRepository.get(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                )
+                if lifecycle is not None:
+                    # Admission may have committed before its acknowledgement failed.
+                    verdict = prepared.policy_verdicts[-1]
+                    await self.accounting.refund(
+                        session,
+                        prepared,
+                        spend_reserved=False,
+                        error_code=verdict.reason_code,
+                        lifecycle_status="rejected"
+                        if verdict.outcome == "deny"
+                        else "failed",
+                    )
+                    return
+                intent = rejection_intent(prepared)
+                outbox = await OutboxWriter().append(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    values=intent.persistence_values(),
+                )
+                await AuditIntentRepository.create(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    values={
+                        "request_id": str(prepared.request_id),
+                        "actor_type": prepared.context.actor_type,
+                        "api_key_id": prepared.api_key_id,
+                        "user_id": prepared.context.user_id,
+                        "event_type": "completion",
+                        "audit_policy_mode": mode,
+                        "provider": str(prepared.provider),
+                        "model": intent.payload["model"],
+                        "lifecycle_status": intent.payload["extra"]["lifecycle_status"],
+                        "outbox_event_id": outbox.id,
+                    },
+                )
+                await session.commit()
+        except Exception as error:
+            if mode == "strict":
+                raise AuditIntentPersistenceError(
+                    "required rejection audit failed"
+                ) from error
+            logger.error(
+                "Rejection audit could not be persisted type=%s", type(error).__name__
+            )
+
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None:
+        if prepared.context.audit_policy.mode == "off":
+            return
+        async with self.session_factory() as session:
+            try:
+                await persist_token_count_audit(
+                    session, prepared, input_tokens, datetime.now(timezone.utc)
+                )
+                await session.commit()
+            except Exception as exc:
+                await session.rollback()
+                if prepared.context.audit_policy.mode == "strict":
+                    raise AuditIntentPersistenceError(
+                        "required token-count audit failed"
+                    ) from exc
+                logger.warning("Token-count audit failed type=%s", type(exc).__name__)
 
     async def admit(
         self,
@@ -611,6 +907,8 @@ class DurableUsageLifecycle:
                         terminal_error_code=terminal.error_code,
                         terminal_error_message=terminal.error_message,
                         output_hash=usage.output_hash,
+                        provider_finish_reasons=usage.provider_finish_reasons,
+                        ttft_ms=usage.ttft_ms,
                         completed_at=terminal.completed_at,
                     ),
                 )
@@ -669,13 +967,26 @@ class DurableUsageLifecycle:
                         error_message = (
                             "Request ended before a provider value was delivered."
                         )
+                denied = next(
+                    (
+                        verdict
+                        for verdict in reversed(prepared.policy_verdicts)
+                        if verdict.outcome == "deny"
+                    ),
+                    None,
+                )
                 await self.accounting.refund(
                     session,
                     prepared,
                     spend_reserved=spend_reserved,
-                    error_code=error_code,
+                    error_code=denied.reason_code if denied is not None else error_code,
                     error_message=error_message,
+                    lifecycle_status="rejected" if denied is not None else "failed",
                 )
+        except AuditIntentPersistenceError:
+            if prepared.context.audit_policy.mode == "strict":
+                raise
+            logger.error("Rejected request audit unavailable; stale recovery retained")
         except Exception as exc:
             logger.error(
                 "Durable accounting finalization failed; stale recovery retained "

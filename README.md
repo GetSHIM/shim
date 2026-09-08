@@ -120,6 +120,7 @@ Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and
 `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
 
 To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
+For customer-operated enterprise installations, see [deployment and recovery](ee/deploy/README.md).
 
 ## Limitations
 
@@ -142,7 +143,6 @@ To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 
 - [Developer guide](DEVELOPER_GUIDE.md)
 - [Current architecture](docs/CURRENT_ARCHITECTURE.md)
-- [Target architecture](docs/TARGET_ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](https://github.com/GetSHIM/shim/security/policy)
 

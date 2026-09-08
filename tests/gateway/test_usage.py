@@ -17,14 +17,19 @@ from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
     started_at = datetime.now(timezone.utc) - timedelta(milliseconds=12)
     return SimpleNamespace(
+        policy_verdicts=[],
         request_id="req_local",
         provider="openai",
         model=model,
+        pricing_model=model,
+        target=None,
+        unpriced=False,
         tenant_id="tenant-private",
         api_key_id="key-private",
         headers={"authorization": "credential-private"},
         context=SimpleNamespace(started_at=started_at),
-        admission=SimpleNamespace(estimated_input_tokens=11),
+        admission=SimpleNamespace(estimated_input_tokens=11, repeat_chain_length=1),
+        deployment_kind="unknown",
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -87,6 +92,12 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated_cost_usd",
         "estimated",
         "privacy_counts",
+        "provider_finish_reasons",
+        "ttft_ms",
+        "repeat_chain_length",
+        "system_prompt_hash",
+        "deployment_kind",
+        "policy_verdicts",
     }
     latency_ms = event.pop("latency_ms")
     assert event == {
@@ -100,6 +111,12 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated_cost_usd": "0.0000106",
         "estimated": False,
         "privacy_counts": {"EMAIL_ADDRESS": 1},
+        "provider_finish_reasons": None,
+        "ttft_ms": None,
+        "repeat_chain_length": 1,
+        "system_prompt_hash": None,
+        "deployment_kind": "unknown",
+        "policy_verdicts": [],
     }
     assert latency_ms >= 0
 
@@ -133,6 +150,8 @@ async def test_local_failure_writes_one_terminal_event() -> None:
     event = json.loads(stream.getvalue())
     assert event["outcome"] == "provider_rejected_without_usage"
     assert event["completion_tokens"] == 0
+    assert event["provider_finish_reasons"] is None
+    assert event["ttft_ms"] is None
     assert len(stream.getvalue().splitlines()) == 1
 
 

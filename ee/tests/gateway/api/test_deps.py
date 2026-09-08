@@ -378,7 +378,7 @@ async def test_verified_identity_sync_failure_is_service_unavailable(
     )
 
     calls = (
-        (enterprise_deps.get_current_user, (bearer, session)),
+        (enterprise_deps.get_current_user, (_request(), bearer, session)),
         (
             enterprise_deps.get_scan_principal,
             (
@@ -409,7 +409,7 @@ async def test_identity_provider_failure_is_service_unavailable(
     )
 
     calls = (
-        (enterprise_deps.get_current_user, (bearer, session)),
+        (enterprise_deps.get_current_user, (_request(), bearer, session)),
         (
             enterprise_deps.get_scan_principal,
             (
@@ -445,3 +445,28 @@ async def test_identity_verifier_rejects_bad_tokens_but_propagates_outages() -> 
     )
     with pytest.raises(RuntimeError, match="auth service unavailable"):
         await unavailable_verifier.verify("valid-looking-token")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,allowed",
+    [
+        ("/api/v1/compliance/audit/verify", True),
+        ("/api/v1/compliance/reports/audit", True),
+        ("/api/v1/compliance/reports/kvkk", True),
+        ("/api/v1/management/api-keys", False),
+        ("/api/v1/compliance/reports/kvkk/anything", False),
+    ],
+)
+async def test_auditor_only_allows_read_only_posts(monkeypatch, path, allowed):
+    user = SimpleNamespace(role="auditor", is_active=True)
+    monkeypatch.setattr(
+        enterprise_deps, "get_invite_user", AsyncMock(return_value=user)
+    )
+    request = Request({"type": "http", "method": "POST", "path": path, "headers": []})
+    if allowed:
+        assert await enterprise_deps.get_current_user(request, None, None) is user
+    else:
+        with pytest.raises(HTTPException) as error:
+            await enterprise_deps.get_current_user(request, None, None)
+        assert error.value.status_code == 403

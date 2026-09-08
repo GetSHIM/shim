@@ -1,0 +1,34 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "shim.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "shim.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "shim.security" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ required "gateway.image is required" .Values.gateway.image | quote }}
+          command: [alembic, -c, ee/alembic.ini, upgrade, head]
+          securityContext:
+            {{- include "shim.containerSecurity" . | nindent 12 }}
+          {{- include "shim.backendEnv" . | nindent 10 }}
+          {{- include "shim.mounts" . | nindent 10 }}
+          resources: {{ toYaml .Values.gateway.resources | nindent 12 }}
+      {{- include "shim.volumes" . | nindent 6 }}
+{{- end }}

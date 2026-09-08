@@ -18,6 +18,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
+from shim_enterprise.workers.readiness import write_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,8 @@ class ComplianceSweepWorker:
         while not stop_event.is_set():
             try:
                 summary = await self.run_once()
+                if not summary.errors:
+                    write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "compliance")
                 logger.info("Compliance sweep completed summary=%s", summary)
             except asyncio.CancelledError:
                 raise

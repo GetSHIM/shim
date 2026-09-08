@@ -131,7 +131,7 @@ async def test_missing_models_raise_native_sanitized_sdk_errors() -> None:
 
     assert openai_error.value.response.json() == {
         "error": {
-            "message": "The requested model is not in the public catalog.",
+            "message": "The requested model is not available.",
             "type": "not_found_error",
             "param": None,
             "code": "MODEL_NOT_FOUND",
@@ -141,7 +141,7 @@ async def test_missing_models_raise_native_sanitized_sdk_errors() -> None:
         "type": "error",
         "error": {
             "type": "not_found_error",
-            "message": "The requested model is not in the public catalog.",
+            "message": "The requested model is not available.",
         },
     }
     assert openai_missing not in openai_error.value.response.text

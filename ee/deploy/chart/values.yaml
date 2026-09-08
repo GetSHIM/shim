@@ -1,0 +1,76 @@
+# Supply immutable release image references and pre-created secrets.
+existingSecret: ""
+imagePullSecrets: []
+
+gateway:
+  image: ""
+  replicas: 1
+  env:
+    ENVIRONMENT: production
+    AUTH_MODE: oidc
+    SECRET_BACKEND: vault
+    MODEL_DEPLOYMENT_REQUIRED: "true"
+    SENTRY_DSN: ""
+    OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+dashboard:
+  image: ""
+  existingSecret: ""
+  env: {}
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+workers:
+  outbox: true
+  reconciliation: true
+  compliance: true
+  ai_act: true
+
+workerReadinessMaxAgeSeconds:
+  outbox: 120
+  reconciliation: 180
+  compliance: 900
+  ai_act: 7500
+
+migration:
+  enabled: true
+  activeDeadlineSeconds: 300
+
+# A Vault Agent or your secret controller refreshes this token Secret.
+vault:
+  tokenSecretName: ""
+  tokenSecretKey: token
+
+# PEM bundle including all required public/private roots. Never disable TLS checks.
+caBundleConfigMap: ""
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecretName: ""
+  annotations: {}
+
+networkPolicy:
+  enabled: true
+  # Add only required IdP, Vault, database, model or proxy destinations.
+  extraEgress: []
+
+# Local test services only; production normally uses customer-operated services.
+# DATABASE_URL/REDIS_URL are supplied in existingSecret in either configuration.
+postgres:
+  enabled: false
+  # PostgreSQL 16 Alpine
+  image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  storage: 5Gi
+  storageClassName: ""
+redis:
+  enabled: false
+  # Redis Stack 7.4.0-v8
+  image: redis/redis-stack-server@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
+  storage: 1Gi
+  storageClassName: ""

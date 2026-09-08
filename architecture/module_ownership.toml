@@ -18,7 +18,7 @@ forbidden_public_import_roots = [
 # Exact community symbols consumed by enterprise runtime code. Any new entry is
 # a deliberate expansion of the supported cross-license API.
 [enterprise_public_api]
-"shim.api.v1.chat" = ["router"]
+"shim.api.v1.chat" = ["model_record", "router"]
 "shim.api.v1.gemini" = ["router"]
 "shim.api.v1.messages" = ["router"]
 "shim.api.v1.responses" = ["router"]
@@ -54,7 +54,7 @@ forbidden_public_import_roots = [
   "validate_actor_identity",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
-"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference"]
+"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "UNSPECIFIED_PROVIDER_MODEL"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
 "shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
@@ -62,7 +62,7 @@ forbidden_public_import_roots = [
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
 "shim.gateway.request_policy" = ["RequestPolicyContext", "ResolvedRequestPolicy"]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
-"shim.gateway.usage" = ["UsageFailureReason", "UsageLimitExceeded"]
+"shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded"]
 "shim.observability.logging" = [
   "configure_error_reporting",
   "configure_logging",
@@ -184,6 +184,7 @@ public = [
   "tests/gateway/test_openai_sdk_transport.py",
   "tests/gateway/test_provider_error_fidelity.py",
   "tests/gateway/test_request_policy.py",
+  "tests/gateway/test_token_count.py",
   "tests/gateway/test_usage.py",
   "tests/observability/test_sanitization.py",
   "tests/secrets/test_credentials.py",
@@ -193,8 +194,15 @@ public = [
 enterprise = [
   "ee/alembic/env.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
+  "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
+  "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
+  "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
+  "ee/deploy/test/fixtures.py",
+  "ee/deploy/test/run.py",
+  "ee/deploy/test/test_reuse.py",
   "ee/scripts/activate_plan.py",
+  "ee/scripts/offline_bundle.py",
   "ee/scripts/sign_license.py",
   "ee/src/shim_enterprise/__init__.py",
   "ee/src/shim_enterprise/ai_act/__init__.py",
@@ -215,7 +223,6 @@ enterprise = [
   "ee/src/shim_enterprise/api/v1/management.py",
   "ee/src/shim_enterprise/api/v1/router.py",
   "ee/src/shim_enterprise/api/v1/scan.py",
-  "ee/src/shim_enterprise/api/v1/subscriptions.py",
   "ee/src/shim_enterprise/application.py",
   "ee/src/shim_enterprise/billing/__init__.py",
   "ee/src/shim_enterprise/billing/ledger.py",
@@ -287,6 +294,7 @@ enterprise = [
   "ee/src/shim_enterprise/secrets/gcp_secret_manager.py",
   "ee/src/shim_enterprise/secrets/migration.py",
   "ee/src/shim_enterprise/secrets/store.py",
+  "ee/src/shim_enterprise/secrets/vault.py",
   "ee/src/shim_enterprise/services/__init__.py",
   "ee/src/shim_enterprise/services/gateway/__init__.py",
   "ee/src/shim_enterprise/services/gateway/enterprise.py",
@@ -294,14 +302,19 @@ enterprise = [
   "ee/src/shim_enterprise/shared_results/api.py",
   "ee/src/shim_enterprise/shared_results/models.py",
   "ee/src/shim_enterprise/tenants/__init__.py",
+  "ee/src/shim_enterprise/tenants/audit.py",
+  "ee/src/shim_enterprise/tenants/deployments.py",
   "ee/src/shim_enterprise/tenants/models.py",
+  "ee/src/shim_enterprise/tenants/oidc.py",
+  "ee/src/shim_enterprise/tenants/plans.py",
   "ee/src/shim_enterprise/tenants/policy.py",
   "ee/src/shim_enterprise/tenants/service.py",
-  "ee/src/shim_enterprise/tenants/subscriptions.py",
+  "ee/src/shim_enterprise/tenants/teams.py",
   "ee/src/shim_enterprise/workers/__init__.py",
   "ee/src/shim_enterprise/workers/ai_act.py",
   "ee/src/shim_enterprise/workers/compliance.py",
   "ee/src/shim_enterprise/workers/outbox.py",
+  "ee/src/shim_enterprise/workers/readiness.py",
   "ee/src/shim_enterprise/workers/reconciliation.py",
   "ee/tests/ai_act/test_audit_chain.py",
   "ee/tests/ai_act/test_control_plane.py",
@@ -325,6 +338,7 @@ enterprise = [
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
+  "ee/tests/gateway/pipeline/test_decisions.py",
   "ee/tests/gateway/pipeline/test_scan.py",
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",
@@ -332,12 +346,18 @@ enterprise = [
   "ee/tests/outbox/test_dead_letter.py",
   "ee/tests/outbox/test_publisher.py",
   "ee/tests/outbox/test_worker.py",
+  "ee/tests/scripts/test_offline_bundle.py",
   "ee/tests/secrets/test_ciphertext_compatibility.py",
   "ee/tests/secrets/test_store.py",
+  "ee/tests/secrets/test_vault.py",
   "ee/tests/shared_results/test_api.py",
+  "ee/tests/tenants/test_deployments.py",
+  "ee/tests/tenants/test_oidc.py",
+  "ee/tests/tenants/test_plans.py",
   "ee/tests/tenants/test_policy.py",
   "ee/tests/tenants/test_service.py",
-  "ee/tests/tenants/test_subscriptions.py",
+  "ee/tests/tenants/test_teams.py",
+  "ee/tests/workers/test_readiness.py",
 ]
 
 # Transitional Python files that contain or exercise both ownership regions.
