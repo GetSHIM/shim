@@ -2885,7 +2885,13 @@ async def create_model_deployment(
     session.add(row)
     try:
         await session.flush()
-        await _audit(session, user, "tenant.model_deployment_created", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.model_deployment_created",
+            str(row.id),
+            details={"configuration": payload.model_dump(mode="json")},
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -2911,7 +2917,13 @@ async def update_model_deployment(
         setattr(row, field, value)
     row.health, row.health_checked_at = "unknown", None
     try:
-        await _audit(session, user, "tenant.model_deployment_updated", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.model_deployment_updated",
+            str(row.id),
+            details={"configuration": payload.model_dump(mode="json")},
+        )
         await session.commit()
     except IntegrityError:
         await session.rollback()
@@ -2970,7 +2982,13 @@ async def check_model_deployment_health(
         )
     row.health = "healthy" if healthy else "unhealthy"
     row.health_checked_at = datetime.now(timezone.utc)
-    await _audit(session, user, "tenant.model_deployment_health_checked", str(row.id))
+    await _audit(
+        session,
+        user,
+        "tenant.model_deployment_health_checked",
+        str(row.id),
+        details={"health": row.health, "declared_version": row.declared_version},
+    )
     await session.commit()
     await session.refresh(row)
     return row

@@ -292,6 +292,16 @@ async def persist_token_count_audit(
                         else {}
                     ),
                     "operation_type": "token_count",
+                    "deployment_kind": prepared.deployment_kind,
+                    **(
+                        {
+                            "deployment_id": prepared.target.deployment_id,
+                            "declared_version": prepared.target.declared_version,
+                            "provider_model": prepared.target.upstream_model,
+                        }
+                        if prepared.target is not None
+                        else {}
+                    ),
                     "billable_execution": False,
                 },
             },

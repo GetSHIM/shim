@@ -348,6 +348,8 @@ async def test_registry_denials_are_audited_and_money_cap_cannot_be_bypassed(
         _,
         _,
     ):
+        omitted = await client.post("/v1/responses", json={"input": "hello"})
+        assert omitted.status_code == 403
         payload = {"model": "missing", "messages": []}
         assert (
             await client.post("/v1/chat/completions", json=payload)
@@ -623,6 +625,8 @@ async def test_registered_anthropic_native_messages_and_nonbillable_token_count(
         event = await db.get(OutboxEvent, intent.outbox_event_id)
         assert event.payload["event_type"] == "token_count"
         assert event.payload["extra"]["billable_execution"] is False
+        assert event.payload["extra"]["deployment_id"] == str(row.id)
+        assert event.payload["extra"]["deployment_kind"] == "internal"
         assert "alice@example.com" not in json.dumps(event.payload)
     else:
         assert (
@@ -679,3 +683,101 @@ async def test_strict_token_count_audit_failure_never_creates_billable_usage(
             )
         )
     ).all() == []
+
+
+@pytest.mark.asyncio
+async def test_registry_management_requires_admin_and_audits_configuration(
+    db, test_api_key, test_user_with_org, origins
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    rows = await _deployments(db, test_api_key)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    payload = {
+        "alias": "registered-model",
+        "provider": "openai",
+        "upstream_model": "custom-v1",
+        "base_url": "https://a.internal/v1",
+        "provider_secret_id": str(rows[0].provider_secret_id),
+        "deployment_kind": "internal",
+        "declared_version": "sha256:v1",
+        "owner": "Platform",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/model-deployments")).status_code == 403
+        assert (
+            await client.post("/model-deployments", json=payload)
+        ).status_code == 403
+        test_user_with_org.role = "owner"
+        created = await client.post("/model-deployments", json=payload)
+        assert created.status_code == 201, created.text
+        deployment_id = created.json()["id"]
+        updated = await client.put(
+            f"/model-deployments/{deployment_id}",
+            json={**payload, "declared_version": "sha256:v2", "enabled": False},
+        )
+        assert updated.status_code == 200 and updated.json()["id"] == deployment_id
+        invalid = await client.post(
+            "/api-keys",
+            json={"name": "unknown model", "allowed_models": ["missing-alias"]},
+        )
+        assert invalid.status_code == 422
+        disabled = await client.post(
+            "/api-keys",
+            json={"name": "disabled model", "allowed_models": ["registered-model"]},
+        )
+        assert disabled.status_code == 422
+        known = await client.post(
+            "/api-keys", json={"name": "known model", "allowed_models": ["internal-a"]}
+        )
+        assert known.status_code == 200, known.text
+        assert known.json()["allowed_models"] == ["internal-a"]
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    configs = {
+        event.payload["endpoint"]: event.payload["extra"]["configuration"]
+        for event in events
+        if "configuration" in event.payload.get("extra", {})
+    }
+    assert configs["tenant.model_deployment_created"]["declared_version"] == "sha256:v1"
+    assert configs["tenant.model_deployment_updated"]["declared_version"] == "sha256:v2"
+    assert configs["tenant.model_deployment_created"]["provider_secret_id"] == str(
+        rows[0].provider_secret_id
+    )
+    assert all("key" not in config for config in configs.values())
+
+
+@pytest.mark.asyncio
+async def test_disabled_registry_alias_cannot_fall_back_to_public_catalog(
+    db, test_api_key, origins, monkeypatch
+):
+    rows = await _deployments(db, test_api_key)
+    rows[1].alias, rows[1].enabled = "gpt-5.6-luna", False
+    await db.flush()
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_REQUIRED", False)
+    calls = []
+    async with _gateway(db, test_api_key, lambda request: calls.append(request)) as (
+        client,
+        _,
+        _,
+    ):
+        catalog = await client.get("/v1/models")
+        assert "gpt-5.6-luna" not in {row["id"] for row in catalog.json()["data"]}
+        denied = await client.post(
+            "/v1/chat/completions", json={"model": "gpt-5.6-luna", "messages": []}
+        )
+        assert denied.status_code == 403
+    assert calls == []
