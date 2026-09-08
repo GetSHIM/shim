@@ -13,6 +13,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shim_enterprise.billing.spend import BudgetEvaluator
 from shim_enterprise.core.config import settings
 from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
@@ -1264,6 +1265,18 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     assert overview_summary.unpriced_requests == (pricing_resolution == "unknown")
     assert overview_summary.settled_spend_usd == (
         None if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    budget_usage = await BudgetEvaluator()._aggregate(
+        db,
+        SimpleNamespace(organization_id=test_api_key.organization_id, scope_type="org"),
+        datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    assert budget_usage.unpriced_requests == (pricing_resolution == "unknown")
+    assert budget_usage.cost_usd == (
+        0 if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    assert budget_usage.top_contributors[0]["cost_complete"] is (
+        pricing_resolution != "unknown"
     )
     assert page.total == 1
     assert page.items[0].cost_complete is (pricing_resolution != "unknown")

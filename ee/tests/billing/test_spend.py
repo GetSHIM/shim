@@ -20,6 +20,7 @@ from shim_enterprise.billing.spend import (
     validate_budget_notification_config,
 )
 from shim.gateway.contracts.ids import TenantId
+from shim_enterprise.outbox.handlers import _budget_text
 
 
 def test_header_tags_define_primary_and_complete_attribution() -> None:
@@ -638,3 +639,32 @@ async def test_billing_breakdown_reads_settlements_without_request_log(
         group_by="tag",
         limit=100,
     )
+
+
+@pytest.mark.asyncio
+async def test_budget_alert_labels_incomplete_known_spend(monkeypatch) -> None:
+    append = AsyncMock()
+    monkeypatch.setattr("shim_enterprise.billing.spend.OutboxWriter.append", append)
+    await BudgetEvaluator._enqueue_alert(
+        AsyncMock(),
+        SimpleNamespace(
+            id=uuid4(),
+            organization_id=uuid4(),
+            scope_type="org",
+            scope_value=None,
+            limit_usd=10,
+            limit_tokens=None,
+            notify_targets=[{"kind": "webhook"}],
+        ),
+        BudgetUsage(Decimal("8"), 50, (), unpriced_requests=2),
+        fraction=Decimal("0.8"),
+        threshold=Decimal("0.8"),
+        period_key="2026-09",
+        now=datetime.now(timezone.utc),
+    )
+    payload = append.await_args.kwargs["values"]["payload"]
+    assert payload["current_usd"] == 8
+    assert payload["cost_basis"] == "known_settled_spend"
+    assert payload["cost_complete"] is False
+    assert payload["unpriced_requests"] == 2
+    assert "known spend only; 2 unpriced requests" in _budget_text(payload)

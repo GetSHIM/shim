@@ -99,6 +99,11 @@ Overview summary and trend costs are null whenever their period includes an
 unpriced settlement, with the same completeness flag and request count. Empty
 periods retain known zero costs.
 
+Budget alerts retain a known-settlement subtotal in `current_usd` and label it
+`cost_basis: known_settled_spend`, with `cost_complete` and `unpriced_requests`.
+Their contributor rows have the same completeness markers. Threshold evaluation
+uses known spend and settled tokens; missing prices cannot imply full coverage.
+
 Analytics `details` and audit completion `extra` also carry `pricing_resolution`.
 Their existing numeric cost fields reflect the ledger placeholder when it is
 unknown; consumers must inspect that marker. Refunds and requests without a
