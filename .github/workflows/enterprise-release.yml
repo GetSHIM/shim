@@ -69,12 +69,6 @@ jobs:
           tags: ghcr.io/getshim/shim-enterprise:${{ env.VERSION }}-${{ matrix.arch }}
           provenance: mode=max
           sbom: true
-      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
-        with:
-          image: ghcr.io/getshim/shim-enterprise@${{ steps.build.outputs.digest }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-          upload-artifact: false
       - name: Sign the image and its offline delivery files
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.RELEASE_COSIGN_PRIVATE_KEY }}
@@ -89,7 +83,8 @@ jobs:
           cosign sign --yes --key env://COSIGN_PRIVATE_KEY --use-signing-config=false --tlog-upload=false "$IMAGE@$DIGEST"
           docker pull --platform "linux/$ARCH" "$IMAGE@$DIGEST"
           docker save --platform "linux/$ARCH" --output "$delivery/image.tar" "$IMAGE@$DIGEST"
-          cp sbom.spdx.json "$delivery/"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .SBOM}}' | \
+            jq -e '.SPDX' > "$delivery/sbom.spdx.json"
           cp LICENSE "$delivery/community-LICENSE"
           cp NOTICE "$delivery/community-NOTICE"
           cp ee/LICENSE "$delivery/enterprise-LICENSE"
