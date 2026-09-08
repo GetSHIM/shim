@@ -193,6 +193,7 @@ def test_system_prompt_hash_is_keyed_scoped_and_excludes_conversation(
             {"input": [{"role": "developer", "content": "private instruction"}]},
         ),
         ("messages", {"system": [{"type": "text", "text": "private instruction"}]}),
+        ("count_tokens", {"system": "private instruction"}),
         (
             "generate_content",
             {"systemInstruction": {"parts": [{"text": "private instruction"}]}},

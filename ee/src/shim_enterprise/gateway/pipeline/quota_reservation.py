@@ -93,6 +93,7 @@ def _system_prompt_hash(prepared: PreparedInference) -> str | None:
         "chat": None,
         "responses": "instructions",
         "messages": "system",
+        "count_tokens": "system",
         "generate_content": "systemInstruction",
     }[prepared.protocol]
     if field is not None and payload.get(field) is not None:
