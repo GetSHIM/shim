@@ -361,6 +361,7 @@ assert set(application.openapi()["paths"]) == {
     "/health",
     "/v1/chat/completions",
     "/v1/messages",
+    "/v1/messages/count_tokens",
     "/v1/models",
     "/v1/models/{model_id}",
     "/v1/responses",

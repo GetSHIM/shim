@@ -46,6 +46,10 @@ class UsageLifecycle(Protocol):
 
     async def record_privacy(self, prepared: PreparedInference) -> None: ...
 
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None: ...
+
     async def reserve_provider_spend(
         self,
         prepared: PreparedInference,
@@ -128,6 +132,11 @@ class LocalUsageLifecycle:
         )
 
     async def record_privacy(self, prepared: PreparedInference) -> None:
+        pass
+
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None:
         pass
 
     async def reserve_provider_spend(

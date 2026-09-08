@@ -51,6 +51,7 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
+    persist_token_count_audit,
     AuditIntentRepository,
 )
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
@@ -823,6 +824,25 @@ class DurableUsageLifecycle:
             logger.error(
                 "Rejection audit could not be persisted type=%s", type(error).__name__
             )
+
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None:
+        if prepared.context.audit_policy.mode == "off":
+            return
+        async with self.session_factory() as session:
+            try:
+                await persist_token_count_audit(
+                    session, prepared, input_tokens, datetime.now(timezone.utc)
+                )
+                await session.commit()
+            except Exception as exc:
+                await session.rollback()
+                if prepared.context.audit_policy.mode == "strict":
+                    raise AuditIntentPersistenceError(
+                        "required token-count audit failed"
+                    ) from exc
+                logger.warning("Token-count audit failed type=%s", type(exc).__name__)
 
     async def admit(
         self,

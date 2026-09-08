@@ -62,7 +62,9 @@ class PreparedInference:
     context: GatewayContext
     payload: dict[str, Any]
     provider: ProviderId
-    protocol: Literal["chat", "responses", "messages", "generate_content"]
+    protocol: Literal[
+        "chat", "responses", "messages", "count_tokens", "generate_content"
+    ]
     model: str
     stream: bool
     policy: _RequestPolicyContext
@@ -129,5 +131,6 @@ class PreparedInference:
             "chat": "chat.completions",
             "responses": "responses",
             "messages": "messages",
+            "count_tokens": "messages.count_tokens",
             "generate_content": "generateContent",
         }[self.protocol]

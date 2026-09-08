@@ -30,7 +30,9 @@ class GatewayService:
         *,
         payload: dict[str, Any],
         provider: Literal["openai", "anthropic", "google"],
-        protocol: Literal["chat", "responses", "messages", "generate_content"],
+        protocol: Literal[
+            "chat", "responses", "messages", "count_tokens", "generate_content"
+        ],
         model: str,
         stream: bool,
         headers: dict[str, str],

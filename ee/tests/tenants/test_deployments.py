@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -199,9 +200,7 @@ async def _gateway(db, key, handler):
             lifecycle = DurableUsageLifecycle(DurableAccountingCoordinator(), factory)
             kernel.usage = kernel.postprocessor.usage = lifecycle
             circuits = {
-                f"https://{host}.internal/v1": InMemoryCircuitBreaker(
-                    failure_threshold=1
-                )
+                host + ".internal": InMemoryCircuitBreaker(failure_threshold=1)
                 for host in ("a", "b")
             }
             for provider in ("openai", "anthropic"):
@@ -209,7 +208,9 @@ async def _gateway(db, key, handler):
                 execution.credential_resolver = ManagedProviderCredentialResolver(
                     provider, store, factory
                 )
-                execution.circuit_for_target = lambda url: circuits[url]
+                execution.circuit_for_target = lambda url: circuits[
+                    urlsplit(url).hostname
+                ]
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app),
                 base_url="http://shim.test",
@@ -508,3 +509,173 @@ async def test_health_headers_are_bounded_and_output_view_survives_policy_change
                 }
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["json", "sse", "count_tokens"])
+async def test_registered_anthropic_native_messages_and_nonbillable_token_count(
+    db, test_api_key, origins, operation
+):
+    rows = await _deployments(db, test_api_key)
+    row = rows[0]
+    secret = await db.get(ProviderSecret, row.provider_secret_id)
+    secret.provider = row.provider = "anthropic"
+    row.base_url = "https://a.internal"
+    row.upstream_model = "private-claude"
+    await db.flush()
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        assert request.headers["x-api-key"] == "key-a"
+        assert json.loads(request.content)["model"] == "private-claude"
+        assert "alice@example.com" not in request.content.decode()
+        if operation == "count_tokens":
+            assert request.url.path == "/v1/messages/count_tokens"
+            return httpx.Response(
+                200, json={"input_tokens": 17}, headers={"request-id": "count-1"}
+            )
+        assert request.url.path == "/v1/messages"
+        message = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "model": "private-claude",
+            "content": [],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 4, "output_tokens": 2},
+        }
+        if operation == "json":
+            return httpx.Response(200, json=message)
+        events = [
+            {
+                "type": "message_start",
+                "message": {
+                    **message,
+                    "stop_reason": None,
+                    "usage": {"input_tokens": 4, "output_tokens": 0},
+                },
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 2},
+            },
+            {"type": "message_stop"},
+        ]
+        return httpx.Response(
+            200,
+            text="".join(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                for event in events
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        payload = {
+            "model": row.alias,
+            "messages": [{"role": "user", "content": "alice@example.com"}],
+        }
+        if operation != "count_tokens":
+            payload.update(max_tokens=10, stream=operation == "sse")
+        response = await client.post(
+            "/v1/messages/count_tokens"
+            if operation == "count_tokens"
+            else "/v1/messages",
+            json=payload,
+        )
+        assert response.status_code == 200, response.text
+        if operation == "sse":
+            assert "event: message_stop" in response.text
+        elif operation == "count_tokens":
+            assert response.json() == {"input_tokens": 17}
+            assert response.headers["request-id"] == "count-1"
+        else:
+            assert response.json()["model"] == "private-claude"
+    assert len(calls) == 1
+    ledger = (
+        await db.scalars(
+            select(UsageLedger).where(
+                UsageLedger.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    if operation == "count_tokens":
+        assert ledger == []
+        assert (
+            await db.scalars(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.organization_id == test_api_key.organization_id
+                )
+            )
+        ).all() == []
+        intent = (
+            await db.scalars(
+                select(AuditIntent).where(
+                    AuditIntent.organization_id == test_api_key.organization_id,
+                    AuditIntent.event_type == "completion",
+                )
+            )
+        ).one()
+        assert intent.usage_summary == {"input_tokens": 17, "billable_executions": 0}
+        event = await db.get(OutboxEvent, intent.outbox_event_id)
+        assert event.payload["event_type"] == "token_count"
+        assert event.payload["extra"]["billable_execution"] is False
+        assert "alice@example.com" not in json.dumps(event.payload)
+    else:
+        assert (
+            len([entry for entry in ledger if entry.event_type == "spend_settlement"])
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["preflight", "completion"])
+async def test_strict_token_count_audit_failure_never_creates_billable_usage(
+    db, test_api_key, origins, monkeypatch, phase
+):
+    from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentRepository
+
+    rows = await _deployments(db, test_api_key)
+    secret = await db.get(ProviderSecret, rows[0].provider_secret_id)
+    secret.provider = rows[0].provider = "anthropic"
+    rows[0].base_url = "https://a.internal"
+    await db.flush()
+    original_create = AuditIntentRepository.create
+
+    async def create(session, *, organization_id, values):
+        if values["event_type"] == phase:
+            raise RuntimeError("audit storage unavailable")
+        return await original_create(
+            session, organization_id=organization_id, values=values
+        )
+
+    monkeypatch.setattr(AuditIntentRepository, "create", create)
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(200, json={"input_tokens": 17})
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        response = await client.post(
+            "/v1/messages/count_tokens", json={"model": rows[0].alias, "messages": []}
+        )
+    assert response.status_code == 503
+    assert len(calls) == (0 if phase == "preflight" else 1)
+    assert (
+        await db.scalars(
+            select(UsageLedger).where(
+                UsageLedger.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all() == []
+    assert (
+        await db.scalars(
+            select(RequestLifecycle).where(
+                RequestLifecycle.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all() == []

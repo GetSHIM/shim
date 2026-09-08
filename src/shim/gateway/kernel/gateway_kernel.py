@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from fastapi import HTTPException
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import LoopDetector
@@ -18,6 +18,7 @@ from shim.gateway.pipeline.privacy import PrivacyStage
 from shim.gateway.pipeline.provider_spend import ProviderSpendStage
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
+    ProviderNonStream,
     ProviderExecutionStage,
 )
 from shim.gateway.streaming import StreamSession
@@ -194,6 +195,32 @@ class GatewayKernel:
                 ),
                 prepared,
             )
+            if prepared.protocol == "count_tokens":
+                await self.usage.record_token_count(prepared, None)
+
+                async def token_count_started() -> None:
+                    pass
+
+                counted = await execution.execute(
+                    invocation=invocation,
+                    prepared=prepared,
+                    provider_start_callback=token_count_started,
+                )
+                assert isinstance(counted, ProviderNonStream)
+                input_tokens = counted.payload.get("input_tokens")
+                if (
+                    not isinstance(input_tokens, int)
+                    or isinstance(input_tokens, bool)
+                    or input_tokens < 0
+                ):
+                    raise ProviderCallError(
+                        502, "PROVIDER_UNAVAILABLE", False, provider="anthropic"
+                    )
+                await self.usage.record_token_count(prepared, input_tokens)
+                headers = {"X-Shim-Request-Id": str(prepared.request_id)}
+                if counted.request_id:
+                    headers["request-id"] = counted.request_id
+                return JSONResponse(content=counted.payload, headers=headers)
             await self.usage.record_privacy(prepared)
             prepared = await run_stage(
                 ProviderSpendStage(invocation, self.usage),
@@ -227,7 +254,20 @@ class GatewayKernel:
                 and error.status_code < 500
                 else "request_aborted"
             )
-            await self._fail_safely(prepared, reason=reason)
+            if prepared.protocol != "count_tokens":
+                await self._fail_safely(prepared, reason=reason)
+            elif not isinstance(error, UsageAuditPersistenceError):
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "gateway.token_count",
+                        stage="privacy",
+                        outcome="error",
+                        reason_code="TOKEN_COUNT_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
             raise
 
     async def _fail_safely(

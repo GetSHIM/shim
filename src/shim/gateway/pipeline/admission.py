@@ -117,11 +117,16 @@ class AdmissionStage:
             ),
             ("provider_default", model_output_limit),
         )
+        if value.protocol == "count_tokens":
+            per_candidate_output_tokens = 0
         minimum_output_tokens = (
             0
-            if value.provider == "anthropic"
-            and value.protocol == "messages"
-            and output_token_field == "max_tokens"
+            if value.protocol == "count_tokens"
+            or (
+                value.provider == "anthropic"
+                and value.protocol == "messages"
+                and output_token_field == "max_tokens"
+            )
             else 1
         )
         if (
@@ -179,6 +184,7 @@ class AdmissionStage:
                 **payload,
                 "model": value.model,
                 "provider": str(value.provider),
+                "protocol": value.protocol,
             }
         )
         self.loop_result = await self.loop_detector.check_exact_repeat(
@@ -220,8 +226,9 @@ class AdmissionStage:
             tags=attribution.tags,
             repeat_chain_length=self.loop_result.chain_length or None,
         )
-        await self.usage.admit(value, admission)
-        self.reserved = True
+        if value.protocol != "count_tokens":
+            await self.usage.admit(value, admission)
+            self.reserved = True
         return replace(value, admission=admission)
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:

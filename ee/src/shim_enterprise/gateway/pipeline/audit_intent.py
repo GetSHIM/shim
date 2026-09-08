@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim_enterprise.billing.models import AuditIntent
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.contracts.audit import validate_audit_intent
+from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.contracts.context import AuditPolicy
 from shim.gateway.contracts.ids import ApiKeyId, RequestId, TenantId, UserId
 from shim.gateway.contracts.inference import ScanVerdict
@@ -241,3 +242,78 @@ async def persist_scan_audit_completion(
         },
     )
     return completion.id
+
+
+async def persist_token_count_audit(
+    session: AsyncSession,
+    prepared: PreparedInference,
+    input_tokens: int | None,
+    completed_at: datetime,
+) -> None:
+    """Record auxiliary provider tokenization without an inference ledger entry."""
+    mode = prepared.context.audit_policy.mode
+    if mode == "off":
+        return
+    entities = dict(prepared.privacy.pii_entities) if prepared.privacy else {}
+    phase = "preflight" if input_tokens is None else "completion"
+    usage = {"billable_executions": 0}
+    if input_tokens is not None:
+        usage["input_tokens"] = input_tokens
+    event = await OutboxWriter().append(
+        session,
+        organization_id=prepared.tenant_id,
+        values={
+            "event_type": "audit.chain_append_requested",
+            "aggregate_type": "request",
+            "aggregate_id": str(prepared.request_id),
+            "idempotency_key": f"request:{prepared.request_id}:outbox:token_count:{phase}",
+            "status": "pending",
+            "next_attempt_at": completed_at,
+            "payload": {
+                "organization_id": str(prepared.tenant_id),
+                "api_key_id": str(prepared.api_key_id),
+                "request_id": str(prepared.request_id),
+                "event_type": "token_count_started"
+                if input_tokens is None
+                else "token_count",
+                "provider": str(prepared.provider),
+                "model": prepared.model,
+                "endpoint": "messages.count_tokens",
+                "pii_entities": entities,
+                "pii_detected": bool(entities),
+                "policy_verdicts": [
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ],
+                "extra": {
+                    **(
+                        {"input_tokens": input_tokens}
+                        if input_tokens is not None
+                        else {}
+                    ),
+                    "operation_type": "token_count",
+                    "billable_execution": False,
+                },
+            },
+        },
+    )
+    await AuditIntentRepository.create(
+        session,
+        organization_id=prepared.tenant_id,
+        values={
+            "request_id": str(prepared.request_id),
+            "event_type": phase,
+            "actor_type": prepared.context.actor_type,
+            "api_key_id": prepared.api_key_id,
+            "user_id": None,
+            "audit_policy_mode": mode,
+            "pii_entities": entities,
+            "provider": str(prepared.provider),
+            "model": prepared.model,
+            "usage_summary": usage,
+            "lifecycle_status": "provider_pending"
+            if input_tokens is None
+            else "completed",
+            "outbox_event_id": event.id,
+        },
+    )

@@ -128,7 +128,12 @@ class AnthropicExecution:
             raise
         try:
             beta = _beta_enabled(invocation)
-            create = client.beta.messages.create if beta else client.messages.create
+            messages = client.beta.messages if beta else client.messages
+            create = (
+                messages.count_tokens
+                if prepared.protocol == "count_tokens"
+                else messages.create
+            )
             kwargs = sdk_create_kwargs(
                 create,
                 prepared.payload,

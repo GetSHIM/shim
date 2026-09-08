@@ -184,6 +184,7 @@ public = [
   "tests/gateway/test_openai_sdk_transport.py",
   "tests/gateway/test_provider_error_fidelity.py",
   "tests/gateway/test_request_policy.py",
+  "tests/gateway/test_token_count.py",
   "tests/gateway/test_usage.py",
   "tests/observability/test_sanitization.py",
   "tests/secrets/test_credentials.py",
