@@ -367,13 +367,16 @@ class DurableAccountingCoordinator:
                 QUOTA_RESERVATION_TOTAL.labels(status=outcome).inc()
                 span.set_attribute("status", outcome)
                 return result
-            except (QuotaLimitExceeded, HTTPException):
+            except (QuotaLimitExceeded, HTTPException) as error:
                 await session.rollback()
+                access_denied = isinstance(error, HTTPException)
                 prepared.record_verdict(
-                    "quota.requests_and_tokens",
+                    "api_key.access" if access_denied else "quota.requests_and_tokens",
                     stage="admission",
                     outcome="deny",
-                    reason_code="QUOTA_EXCEEDED",
+                    reason_code=(
+                        "API_KEY_ACCESS_DENIED" if access_denied else "QUOTA_EXCEEDED"
+                    ),
                     policy_version=policy.version if policy is not None else None,
                 )
                 QUOTA_RESERVATION_TOTAL.labels(status="rejected").inc()

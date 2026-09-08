@@ -38,6 +38,7 @@ from shim_enterprise.billing.models import (
 from shim_enterprise.tenants.models import ApiKey, Organization, User
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim_enterprise.gateway.pipeline.quota_reservation import (
+    AccountingPolicyLoader,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
 )
@@ -203,6 +204,39 @@ def gateway(db, key, case, *, audit_mode="strict"):
         metadata=GatewayRequestMetadata(endpoint="/v1/chat/completions"),
     )
     return kernel, invocation, execution
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_key_access_denial_is_not_recorded_as_exhausted_quota(
+    decision_db, revoked
+):
+    db, key = decision_db
+    stored = await db.get(ApiKey, key.id)
+    stored.allowed_models = ["different-model"]
+    stored.is_active = not revoked
+    await db.commit()
+    kernel, invocation, execution = gateway(db, key, "allow")
+    kernel.usage.accounting.policy_loader = AccountingPolicyLoader()
+    with pytest.raises(HTTPException) as caught:
+        await kernel._execute(invocation)
+    assert caught.value.status_code == (401 if revoked else 403)
+    execution.execute.assert_not_awaited()
+    event = await db.scalar(
+        select(OutboxEvent).where(OutboxEvent.organization_id == key.organization_id)
+    )
+    denied = [v for v in event.payload["policy_verdicts"] if v["outcome"] == "deny"]
+    assert [(v["rule_id"], v["reason_code"]) for v in denied] == [
+        ("api_key.access", "API_KEY_ACCESS_DENIED")
+    ]
+    assert (
+        await db.scalar(
+            select(RequestLifecycle.id).where(
+                RequestLifecycle.organization_id == key.organization_id
+            )
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
