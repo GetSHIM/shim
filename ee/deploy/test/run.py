@@ -7,11 +7,13 @@ import base64
 from datetime import UTC, datetime, timedelta
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
+import sys
 import tempfile
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -46,6 +48,23 @@ def certificates(directory):
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(days=2))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
         .sign(key, hashes.SHA256())
     )
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -54,6 +73,11 @@ def certificates(directory):
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "fixture")]))
         .issuer_name(name)
         .public_key(leaf_key.public_key())
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()),
+            critical=False,
+        )
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - timedelta(minutes=5))
         .not_valid_after(now + timedelta(days=2))
@@ -116,10 +140,6 @@ def run(args):
         args.gateway_image,
         args.dashboard_image,
         args.node_image,
-        KEYCLOAK,
-        VAULT,
-        values["postgres"]["image"],
-        values["redis"]["image"],
     ]
     for image in images:
         probe = subprocess.run(
@@ -156,6 +176,9 @@ def run(args):
     (directory / "Dockerfile").write_text(
         f"FROM {args.gateway_image}\nLABEL shim.test-only=true\nCOPY license_public_key.pem /app/.venv/lib/python3.13/site-packages/shim_enterprise/core/license_public_key.pem\n"
     )
+    (directory / ".dockerignore").write_text(
+        "*\n!Dockerfile\n!license_public_key.pem\n"
+    )
     command("docker", "build", "--network=none", "-t", overlay, str(directory))
     assert original_image == command(
         "docker",
@@ -166,56 +189,161 @@ def run(args):
         "{{.Id}}",
         capture=True,
     )
-    # A reachable control makes the later negative connectivity result meaningful.
-    command(
-        "docker",
-        "run",
-        "--rm",
-        "--entrypoint",
-        "python",
-        args.gateway_image,
-        "-c",
-        "import socket; socket.create_connection(('1.1.1.1',443),timeout=10).close(); print('PASS external connectivity control')",
-    )
     existing = command("kind", "get", "clusters", capture=True).splitlines()
-    if args.cluster in existing:
+    if args.cluster in existing and not args.reuse_empty_cluster:
         raise SystemExit(
             f"Cluster {args.cluster} already exists; explicitly remove that disposable cluster before running"
         )
     network = args.cluster + "-isolated"
     kubeconfig = directory / "kubeconfig"
-    command("docker", "network", "create", "--internal", network)
+    if args.cluster not in existing:
+        command("docker", "network", "create", network)
+    subnet = command(
+        "docker",
+        "network",
+        "inspect",
+        network,
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        capture=True,
+    )
     environment = os.environ | {"KIND_EXPERIMENTAL_DOCKER_NETWORK": network}
     try:
-        command(
-            "kind",
-            "create",
-            "cluster",
-            "--name",
-            args.cluster,
-            "--image",
-            args.node_image,
-            "--kubeconfig",
-            str(kubeconfig),
-            env=environment,
+        if args.cluster in existing:
+            kubeconfig.write_text(
+                command(
+                    "kind", "get", "kubeconfig", "--name", args.cluster, capture=True
+                )
+            )
+            workloads = json.loads(
+                command(
+                    "kubectl",
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "get",
+                    "deployments,statefulsets,jobs",
+                    "-n",
+                    "default",
+                    "-o",
+                    "json",
+                    capture=True,
+                )
+            )
+            assert not workloads["items"], (
+                "Refusing to reuse a cluster containing application workloads"
+            )
+        else:
+            command(
+                "kind",
+                "create",
+                "cluster",
+                "--name",
+                args.cluster,
+                "--image",
+                args.node_image,
+                "--kubeconfig",
+                str(kubeconfig),
+                "--retain",
+                env=environment,
+            )
+        platform = command(
+            "docker",
+            "image",
+            "inspect",
+            args.gateway_image,
+            "--format",
+            "{{.Os}}/{{.Architecture}}",
+            capture=True,
         )
+        runtime_images = {}
+        image_evidence = {}
+        for image in [overlay, args.dashboard_image]:
+            alias = "docker.io/library/shim-smoke-runtime:" + uuid4().hex
+            runtime_images[image] = alias
+            print(f"Loading {image} for {platform}", flush=True)
+            with subprocess.Popen(
+                ["docker", "image", "save", "--platform", platform, image],
+                stdout=subprocess.PIPE,
+            ) as exporting:
+                subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "--privileged",
+                        "-i",
+                        args.cluster + "-control-plane",
+                        "ctr",
+                        "--namespace=k8s.io",
+                        "images",
+                        "import",
+                        "--platform",
+                        platform,
+                        "--index-name",
+                        alias,
+                        "--digests",
+                        "--snapshotter=overlayfs",
+                        "-",
+                    ],
+                    stdin=exporting.stdout,
+                    stdout=sys.stdout,
+                    check=True,
+                )
+                exporting.stdout.close()
+                if exporting.wait() != 0:
+                    raise RuntimeError(f"Image export failed: {image}")
         for image in [
-            overlay,
-            args.dashboard_image,
             KEYCLOAK,
             VAULT,
             values["postgres"]["image"],
             values["redis"]["image"],
         ]:
-            command(
-                "kind",
-                "load",
-                "docker-image",
-                image,
-                "--name",
-                args.cluster,
-                env=environment,
+            first = image.split("/", 1)[0]
+            alias = (
+                image
+                if "." in first
+                else ("docker.io/" if "/" in image else "docker.io/library/") + image
             )
+            if "@" in alias:
+                repository, digest = alias.split("@", 1)
+                alias = (
+                    repository.rsplit(":", 1)[0] + "@" + digest
+                    if ":" in repository.rsplit("/", 1)[-1]
+                    else alias
+                )
+            runtime_images[image] = alias
+            print(
+                f"Pulling pinned fixture {alias} into node for {platform}", flush=True
+            )
+            command(
+                "docker",
+                "exec",
+                args.cluster + "-control-plane",
+                "ctr",
+                "--namespace=k8s.io",
+                "images",
+                "pull",
+                "--platform",
+                platform,
+                alias,
+                capture=True,
+            )
+        for source, alias in runtime_images.items():
+            info = json.loads(
+                command(
+                    "docker",
+                    "exec",
+                    args.cluster + "-control-plane",
+                    "crictl",
+                    "inspecti",
+                    alias,
+                    capture=True,
+                )
+            )
+            image_evidence[source] = {
+                "runtime_reference": alias,
+                "runtime_image_id": info["status"]["id"],
+                "platform": platform,
+            }
 
         def kubectl(*parts, **kwargs):
             return command(
@@ -227,6 +355,114 @@ def run(args):
                 *parts,
                 **kwargs,
             )
+
+        node = args.cluster + "-control-plane"
+        command(
+            "docker",
+            "exec",
+            node,
+            "timeout",
+            "10",
+            "bash",
+            "-c",
+            "exec 3<>/dev/tcp/1.1.1.1/443",
+        )
+        print("PASS node public-IP connectivity before isolation", flush=True)
+        for binary, destinations in (
+            ("iptables", [subnet, "10.244.0.0/16", "10.96.0.0/12"]),
+            ("ip6tables", []),
+        ):
+            command("docker", "exec", node, binary, "-N", "SHIM_SMOKE_EGRESS")
+            command(
+                "docker",
+                "exec",
+                node,
+                binary,
+                "-A",
+                "SHIM_SMOKE_EGRESS",
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+                "-j",
+                "RETURN",
+            )
+            command(
+                "docker",
+                "exec",
+                node,
+                binary,
+                "-A",
+                "SHIM_SMOKE_EGRESS",
+                "-o",
+                "lo",
+                "-j",
+                "RETURN",
+            )
+            for destination in destinations:
+                command(
+                    "docker",
+                    "exec",
+                    node,
+                    binary,
+                    "-A",
+                    "SHIM_SMOKE_EGRESS",
+                    "-d",
+                    destination,
+                    "-j",
+                    "RETURN",
+                )
+            command(
+                "docker",
+                "exec",
+                node,
+                binary,
+                "-A",
+                "SHIM_SMOKE_EGRESS",
+                "-j",
+                "REJECT",
+            )
+            for chain in ("OUTPUT", "FORWARD"):
+                command(
+                    "docker",
+                    "exec",
+                    node,
+                    binary,
+                    "-I",
+                    chain,
+                    "1",
+                    "-j",
+                    "SHIM_SMOKE_EGRESS",
+                )
+        # Cluster service DNS remains; no upstream DNS forwarding leaves the node.
+        dns = json.loads(
+            kubectl(
+                "-n",
+                "kube-system",
+                "get",
+                "configmap",
+                "coredns",
+                "-o",
+                "json",
+                capture=True,
+            )
+        )
+        dns["data"]["Corefile"] = re.sub(
+            r"(?m)^\s*forward \. /etc/resolv.conf(?: \{[^}]*\})?\n",
+            "\n",
+            dns["data"]["Corefile"],
+        )
+        assert "forward ." not in dns["data"]["Corefile"]
+        kubectl("-n", "kube-system", "apply", "-f", "-", data=json.dumps(dns))
+        kubectl("-n", "kube-system", "rollout", "restart", "deployment/coredns")
+        kubectl(
+            "-n",
+            "kube-system",
+            "rollout",
+            "status",
+            "deployment/coredns",
+            "--timeout=120s",
+        )
 
         def apply(document):
             kubectl("apply", "-f", "-", data=json.dumps(document))
@@ -381,7 +617,7 @@ def run(args):
         tls_volume = {"name": "tls", "secret": {"secretName": "smoke-tls"}}
         fixture(
             "keycloak",
-            KEYCLOAK,
+            runtime_images[KEYCLOAK],
             [8443],
             [
                 "/opt/keycloak/bin/kc.sh",
@@ -402,7 +638,7 @@ def run(args):
         )
         fixture(
             "vault",
-            VAULT,
+            runtime_images[VAULT],
             [8200],
             [
                 "vault",
@@ -415,7 +651,7 @@ def run(args):
         )
         fixture(
             "fixture",
-            overlay,
+            runtime_images[overlay],
             [8443, 8444, 8445],
             ["python", "/fixture/fixtures.py", "serve"],
             mounts=[tls_mount, {"name": "script", "mountPath": "/fixture"}],
@@ -454,12 +690,20 @@ def run(args):
         apply(resource("Secret", "smoke-config", stringData=backend))
         overrides = {
             "existingSecret": "smoke-config",
-            "gateway": {"image": overlay},
-            "dashboard": {"image": args.dashboard_image},
+            "gateway": {"image": runtime_images[overlay]},
+            "dashboard": {"image": runtime_images[args.dashboard_image]},
             "vault": {"tokenSecretName": "smoke-vault-token"},
             "caBundleConfigMap": "smoke-ca",
-            "postgres": {"enabled": True, "storage": "1Gi"},
-            "redis": {"enabled": True, "storage": "1Gi"},
+            "postgres": {
+                "enabled": True,
+                "storage": "1Gi",
+                "image": runtime_images[values["postgres"]["image"]],
+            },
+            "redis": {
+                "enabled": True,
+                "storage": "1Gi",
+                "image": runtime_images[values["redis"]["image"]],
+            },
         }
         (directory / "values.json").write_text(json.dumps(overrides))
         command(
@@ -485,28 +729,24 @@ def run(args):
             "ai-act",
         ):
             kubectl("rollout", "status", "deployment/smoke-" + name, "--timeout=180s")
-        # Provision a test organization only after the actual migration Job succeeds.
-        kubectl(
-            "exec",
-            "statefulset/smoke-postgres",
-            "--",
-            "psql",
-            "-U",
-            "shim",
-            "-d",
-            "shim",
-            "-c",
-            f"INSERT INTO organizations(id,name,slug,tier) VALUES('{organization}','Isolated chart smoke','isolated-chart-smoke','enterprise')",
-        )
-        kubectl(
+        # Exercise the documented operator bootstrap, then roll out the real tenant UUID.
+        organization = kubectl(
             "exec",
             "deployment/smoke-gateway",
             "--",
             "python",
             "ee/scripts/activate_plan.py",
-            organization,
+            "--create-name",
+            "Isolated chart smoke",
             "enterprise",
-        )
+            capture=True,
+        ).splitlines()[-1]
+        backend["OIDC_ORGANIZATION_ID"] = str(UUID(organization))
+        apply(resource("Secret", "smoke-config", stringData=backend))
+        for name in ("gateway", "outbox", "reconciliation", "compliance", "ai-act"):
+            kubectl("rollout", "restart", "deployment/smoke-" + name)
+        for name in ("gateway", "outbox", "reconciliation", "compliance", "ai-act"):
+            kubectl("rollout", "status", "deployment/smoke-" + name, "--timeout=180s")
         kubectl(
             "exec",
             "-i",
@@ -525,6 +765,16 @@ def run(args):
             "/tmp/fixtures.py",
             "smoke",
         )
+        (directory / "asset-audit.json").write_text(
+            kubectl(
+                "exec",
+                "deployment/smoke-gateway",
+                "--",
+                "cat",
+                "/tmp/shim-asset-audit.json",
+                capture=True,
+            )
+        )
         (directory / "result.json").write_text(
             json.dumps(
                 {
@@ -532,7 +782,8 @@ def run(args):
                     "gateway_source_image": original_image,
                     "dashboard_image": args.dashboard_image,
                     "test_overlay_image": overlay,
-                    "internet_isolation": "Docker internal network; gateway public-IP runtime probes",
+                    "images": image_evidence,
+                    "internet_isolation": "Node IPv4/IPv6 OUTPUT+FORWARD firewall; no upstream DNS; gateway public-IP runtime probes",
                     "production_license_unchanged": True,
                 },
                 indent=2,
@@ -560,7 +811,15 @@ def run(args):
             )
             (directory / "resources.txt").write_text(result.stdout + result.stderr)
         if not args.keep:
-            command("kind", "delete", "cluster", "--name", args.cluster)
+            command(
+                "kind",
+                "delete",
+                "cluster",
+                "--name",
+                args.cluster,
+                "--kubeconfig",
+                str(kubeconfig),
+            )
             command("docker", "network", "rm", network)
         print(
             f"Test-only image {overlay}; never publish it. Remove local test material with trash {directory} after review."
@@ -578,12 +837,19 @@ def main():
     parser.add_argument("--chart", type=Path, default=HERE.parent / "chart")
     parser.add_argument("--cluster", default="shim-on-prem-smoke")
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument(
+        "--reuse-empty-cluster",
+        action="store_true",
+        help="Continue a failed image preload only; refuses application workloads",
+    )
     args = parser.parse_args()
     if any(
         any(char.isspace() for char in image) or image.startswith("-")
         for image in (args.gateway_image, args.dashboard_image, args.node_image)
     ):
         parser.error("Image references must be single Docker image names")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,30}", args.cluster):
+        parser.error("Use a lowercase disposable cluster name, at most 31 characters")
     run(args)
 
 

@@ -5,12 +5,15 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
+import re
 import socket
 import ssl
 import sys
 import threading
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -28,13 +31,19 @@ class Fixture(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.respond()
 
+    do_PUT = do_POST
+    do_PATCH = do_POST
+
     def respond(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         port = self.server.server_port
         if port in {8443, 8444}:
-            origin = (
-                "http://smoke-dashboard:3000" if port == 8443 else "http://vault:8200"
-            )
+            if port == 8444:
+                origin = "http://vault:8200"
+            elif self.path.startswith(("/v1/", "/v1beta/")):
+                origin = "http://smoke-gateway:8000"
+            else:
+                origin = "http://smoke-dashboard:3000"
             headers = {
                 key: value
                 for key, value in self.headers.items()
@@ -57,14 +66,61 @@ class Fixture(BaseHTTPRequestHandler):
         else:
             assert self.command == "POST", "Only native model POSTs are expected"
             payload = json.loads(body)
-            assert payload["messages"] and not payload.get("stream"), (
-                "Nonstream smoke contract"
-            )
+            assert payload["messages"], "Messages required"
             if self.path == "/openai/chat/completions":
                 assert (
                     self.headers.get("Authorization")
                     == "Bearer disposable-model-secret"
                 )
+                if payload.get("stream"):
+                    chunk = {
+                        "id": "chatcmpl-smoke-stream",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": payload["model"],
+                    }
+                    frames = [
+                        chunk
+                        | {
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "role": "assistant",
+                                        "content": "internal openai fixture",
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ]
+                        },
+                        chunk
+                        | {
+                            "choices": [
+                                {"index": 0, "delta": {}, "finish_reason": "stop"}
+                            ]
+                        },
+                        chunk
+                        | {
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": 7,
+                                "completion_tokens": 4,
+                                "total_tokens": 11,
+                            },
+                        },
+                    ]
+                    output = (
+                        "".join(
+                            "data: " + json.dumps(frame) + "\n\n" for frame in frames
+                        )
+                        + "data: [DONE]\n\n"
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(output)))
+                    self.end_headers()
+                    self.wfile.write(output)
+                    return
                 result_body = {
                     "id": "chatcmpl-smoke",
                     "object": "chat.completion",
@@ -131,6 +187,59 @@ class LoginForm(HTMLParser):
             self.fields[values["name"]] = values.get("value", "")
 
 
+class AssetLinks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.urls = set()
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag in {"script", "img"} and values.get("src"):
+            self.urls.add(values["src"])
+        if (
+            tag == "link"
+            and values.get("href")
+            and values.get("rel") in {"stylesheet", "preload", "modulepreload", "icon"}
+        ):
+            self.urls.add(values["href"])
+
+
+def assets(client, response):
+    parser = AssetLinks()
+    parser.feed(response.text)
+    pending = {urljoin(str(response.url), url) for url in parser.urls}
+    visited = {}
+    while pending:
+        url = pending.pop()
+        if url.startswith("data:") or url in visited:
+            continue
+        assert urlsplit(url).netloc == "fixture:8443", f"Unexpected asset host: {url}"
+        asset = client.get(url)
+        assert asset.is_success, f"Asset HTTP {asset.status_code}: {url}"
+        visited[url] = asset.status_code
+        if "text/css" in asset.headers.get("content-type", ""):
+            pending.update(
+                urljoin(url, match.strip("\"' "))
+                for match in re.findall(r"url\(([^)]+)\)", asset.text)
+            )
+    assert any(".js" in url for url in visited) and any(
+        ".css" in url for url in visited
+    )
+    Path("/tmp/shim-asset-audit.json").write_text(
+        json.dumps(
+            {
+                "kind": "static HTML/CSS dependency fetch, not browser execution",
+                "assets": visited,
+            },
+            indent=2,
+        )
+    )
+    print(
+        f"PASS {len(visited)} declared local HTML/CSS/JS/font assets (static fetch, not browser)",
+        flush=True,
+    )
+
+
 def denied():
     for address in ("1.1.1.1", "8.8.8.8"):
         try:
@@ -160,6 +269,7 @@ def smoke():
         )
         response.raise_for_status()
         assert response.url.path == "/dashboard", response.url.path
+        assets(client, response)
         assert client.cookies.get("shim_session")
         session = client.get(origin + "/api/v1/auth/session")
         session.raise_for_status()
@@ -177,6 +287,9 @@ def smoke():
             "POST", "/management/api-keys", json={"name": "isolated chart smoke"}
         )
         key = created["plaintext"]
+        request_ids = set()
+        aliases = {}
+        run_id = uuid4().hex[:8]
         for provider, upstream in (
             ("openai", "gpt-4o-mini"),
             ("anthropic", "claude-3-5-haiku-latest"),
@@ -186,7 +299,7 @@ def smoke():
                 "/management/providers",
                 json={"provider": provider, "key": "disposable-model-secret"},
             )
-            alias = "smoke-" + provider
+            alias = aliases[provider] = f"smoke-{provider}-{run_id}"
             api(
                 "POST",
                 "/management/model-deployments",
@@ -216,23 +329,25 @@ def smoke():
                 f"{provider}: {response.status_code} {response.text[:300]}"
             )
             assert "internal " in response.text
+            request_ids.add(response.headers["X-Shim-Request-Id"])
         deadline = time.monotonic() + 60
         while True:
             usage = api("GET", "/management/requests")
             audit = api("GET", "/compliance/audit/logs")
-            rows = [
-                row
-                for row in usage["items"]
-                if row["model"] in {"smoke-openai", "smoke-anthropic"}
-            ]
-            request_ids = {row["request_id"] for row in rows}
+            rows = [row for row in usage["items"] if row["request_id"] in request_ids]
             audit_rows = [
-                row for row in audit["items"] if row["request_id"] in request_ids
+                row
+                for row in audit["items"]
+                if row["request_id"] in request_ids
+                and row["event_type"] == "ai_request"
             ]
-            if len(rows) == 2 and len(audit_rows) == 2:
+            if (
+                len(rows) == 2
+                and {row["request_id"] for row in audit_rows} == request_ids
+            ):
                 assert all(
                     row["prompt_tokens"] == 7 and row["completion_tokens"] == 4
-                    for row in rows
+                    for row in rows + audit_rows
                 )
                 assert api("POST", "/compliance/audit/verify", json={})["ok"]
                 break
@@ -242,7 +357,7 @@ def smoke():
         response = client.post(
             "http://smoke-gateway:8000/v1/chat/completions",
             json={
-                "model": "smoke-openai",
+                "model": aliases["openai"],
                 "messages": [{"role": "user", "content": "revoked"}],
             },
             headers={"x-shim-key": key},
