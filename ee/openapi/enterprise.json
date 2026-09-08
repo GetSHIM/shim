@@ -6640,6 +6640,22 @@
             "title": "Created At",
             "type": "string"
           },
+          "deployment_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "internal",
+                  "external",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Kind"
+          },
           "endpoint": {
             "anyOf": [
               {
@@ -6687,6 +6703,32 @@
             ],
             "title": "Provider"
           },
+          "provider_finish_reasons": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Finish Reasons"
+          },
+          "repeat_chain_length": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repeat Chain Length"
+          },
           "request_id": {
             "title": "Request Id",
             "type": "string"
@@ -6706,6 +6748,17 @@
             "title": "Status",
             "type": "string"
           },
+          "system_prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt Hash"
+          },
           "tags": {
             "items": {
               "type": "string"
@@ -6723,6 +6776,18 @@
               }
             ],
             "title": "Team"
+          },
+          "ttft_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms"
           },
           "usage_estimated": {
             "title": "Usage Estimated",

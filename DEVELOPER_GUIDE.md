@@ -126,6 +126,9 @@ assets and require the exact matching `shim-gateway` version.
 
 ## Changing an API or dependency
 
+Diagnostic field semantics and null behavior are documented in
+[`ee/DIAGNOSTIC_METADATA.md`](ee/DIAGNOSTIC_METADATA.md).
+
 1. Trace the route through authentication, `GatewayService`, `GatewayKernel`,
    provider execution, streaming, and usage finalization.
 2. Change the owning product; keep the other product unchanged unless a public

@@ -193,6 +193,9 @@ class QuotaReservationCommand:
     tags: tuple[str, ...] = ()
     team: str | None = None
     stream: bool = False
+    repeat_chain_length: int | None = None
+    system_prompt_hash: str | None = None
+    deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -255,6 +258,8 @@ class FinalizationCommand:
     output_hash: str | None = None
     completed_at: datetime | None = None
     reconciliation_urgent: bool = False
+    provider_finish_reasons: dict[str, str] | None = None
+    ttft_ms: float | None = None
 
     def __post_init__(self) -> None:
         if self.quota_action is TerminalAction.NONE:
@@ -329,6 +334,9 @@ class DurableAccountingRepository:
                     "cost_center": command.cost_center,
                     "tags": list(command.tags),
                     "team": command.team,
+                    "repeat_chain_length": command.repeat_chain_length,
+                    "system_prompt_hash": command.system_prompt_hash,
+                    "deployment_kind": command.deployment_kind,
                 },
             },
         )
@@ -573,6 +581,12 @@ class DurableAccountingRepository:
         )
         if command.provider_model is not None:
             lifecycle.provider_model = command.provider_model
+        if not (all_replayed and lifecycle.reconciled_at is not None):
+            lifecycle.lifecycle_metadata = {
+                **(lifecycle.lifecycle_metadata or {}),
+                "provider_finish_reasons": command.provider_finish_reasons,
+                "ttft_ms": command.ttft_ms,
+            }
         audit_payload = await self._write_audit_completion(
             session,
             lifecycle,
@@ -604,6 +618,7 @@ class DurableAccountingRepository:
 
         lifecycle_values: dict[str, object] = {
             "status": command.lifecycle_status,
+            "lifecycle_metadata": lifecycle.lifecycle_metadata,
             "reconciled_at": completed_at,
             "reconciliation_due_at": None,
             "terminal_error_code": command.terminal_error_code,

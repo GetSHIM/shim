@@ -129,6 +129,16 @@ def _projection_values(message: OutboxMessage) -> dict:
             "provider": payload.get("provider"),
             "lifecycle_status": payload.get("lifecycle_status"),
             "usage_estimated": bool(payload.get("usage_estimated")),
+            **{
+                field: payload.get(field)
+                for field in (
+                    "provider_finish_reasons",
+                    "repeat_chain_length",
+                    "ttft_ms",
+                    "system_prompt_hash",
+                    "deployment_kind",
+                )
+            },
         },
         "cost_center": payload.get("cost_center"),
         "team": payload.get("team"),

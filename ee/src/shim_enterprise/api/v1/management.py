@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import io
+import json
 import logging
 import secrets
 from typing import Any, Literal, cast
@@ -476,6 +477,11 @@ class RequestActivityView(BaseModel):
     cost_center: str | None
     provider: str | None
     team: str | None
+    provider_finish_reasons: dict[str, str] | None = None
+    repeat_chain_length: int | None = Field(default=None, ge=1)
+    ttft_ms: float | None = Field(default=None, ge=0)
+    system_prompt_hash: str | None = None
+    deployment_kind: Literal["internal", "external", "unknown"] | None = None
 
 
 class RequestActivityStatusCountsView(BaseModel):
@@ -1544,6 +1550,16 @@ async def list_requests(
                 cost_center=row.cost_center,
                 provider=_request_provider(row),
                 team=row.team,
+                **{
+                    field: (row.details or {}).get(field)
+                    for field in (
+                        "provider_finish_reasons",
+                        "repeat_chain_length",
+                        "ttft_ms",
+                        "system_prompt_hash",
+                        "deployment_kind",
+                    )
+                },
             )
             for row, cost_usd in rows
         ],
@@ -1640,6 +1656,11 @@ async def export_requests(
                 "tags",
                 "cost_center",
                 "team",
+                "provider_finish_reasons",
+                "repeat_chain_length",
+                "ttft_ms",
+                "system_prompt_hash",
+                "deployment_kind",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -1648,6 +1669,7 @@ async def export_requests(
         )
         try:
             async for row, cost_usd in result:
+                details = row.details or {}
                 output.seek(0)
                 output.truncate(0)
                 writer.writerow(
@@ -1667,6 +1689,17 @@ async def export_requests(
                         ",".join(row.tags or []),
                         row.cost_center,
                         row.team,
+                        (
+                            json.dumps(
+                                details["provider_finish_reasons"], sort_keys=True
+                            )
+                            if details.get("provider_finish_reasons") is not None
+                            else None
+                        ),
+                        details.get("repeat_chain_length"),
+                        details.get("ttft_ms"),
+                        details.get("system_prompt_hash"),
+                        details.get("deployment_kind"),
                     )
                 )
                 yield output.getvalue().encode("utf-8")

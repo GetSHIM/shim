@@ -184,6 +184,7 @@ class AdmissionStage:
             maximum_output_tokens=output_tokens,
             cost_center=attribution.cost_center,
             tags=attribution.tags,
+            repeat_chain_length=self.loop_result.chain_length or None,
         )
         await self.usage.admit(value, admission)
         self.reserved = True

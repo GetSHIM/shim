@@ -20,7 +20,7 @@ from shim.gateway.streaming import (
     StreamSession,
     StreamTerminalStatus,
 )
-from shim.gateway.streaming.meter import StreamUsageSnapshot
+from shim.gateway.streaming.meter import StreamUsageSnapshot, native_finish_reasons
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
     PROVIDER_LATENCY_MS,
@@ -75,6 +75,7 @@ class ResponsePostprocessor:
     ) -> JSONResponse | StreamingResponse:
         if isinstance(response, ProviderStream):
             assert stream_session is not None
+            stream_session.meter.started_at_monotonic = response.started_at_monotonic
             stream_session.bind(
                 response.events,
                 close=response.close,
@@ -156,6 +157,9 @@ class ResponsePostprocessor:
                         output_tokens=completion_tokens,
                     ),
                     estimated=not fully_actual,
+                    provider_finish_reasons=native_finish_reasons(
+                        response.payload, provider=provider
+                    ),
                     output_hash=(
                         content_ref(
                             self.output_hash_salt, bytes(gateway_response.body).decode()

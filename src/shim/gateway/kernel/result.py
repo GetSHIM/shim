@@ -20,6 +20,7 @@ class AdmissionState:
     maximum_output_tokens: int
     cost_center: str
     tags: tuple[str, ...]
+    repeat_chain_length: int | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class PreparedInference:
     pii_config: dict[str, bool] | None
     admission: AdmissionState | None = None
     privacy: PrivacyOutcome | None = None
+    deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
 
     @property
     def request_id(self):

@@ -71,6 +71,10 @@ def audit_completion_intent(
             "audit_event_type": "completion",
             "lifecycle_status": lifecycle_status,
             "usage_estimated": estimated,
+            **{
+                field: (lifecycle.lifecycle_metadata or {}).get(field)
+                for field in _DIAGNOSTIC_FIELDS
+            },
         },
     }
     return GatewayOutboxIntent(
@@ -121,6 +125,7 @@ def analytics_terminal_intent(
         "cost_center": lifecycle_metadata.get("cost_center", "untagged"),
         "team": lifecycle_metadata.get("team"),
         "tags": list(lifecycle_metadata.get("tags") or []),
+        **{field: lifecycle_metadata.get(field) for field in _DIAGNOSTIC_FIELDS},
     }
     return GatewayOutboxIntent(
         event_type=event_type,
@@ -129,3 +134,12 @@ def analytics_terminal_intent(
         payload=MappingProxyType(payload),
         available_at=completed_at,
     )
+
+
+_DIAGNOSTIC_FIELDS = (
+    "provider_finish_reasons",
+    "repeat_chain_length",
+    "ttft_ms",
+    "system_prompt_hash",
+    "deployment_kind",
+)

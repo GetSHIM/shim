@@ -20,6 +20,7 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPersistenceError,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
+    _system_prompt_hash,
 )
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -48,7 +49,9 @@ from shim_enterprise.billing.models import (
     UsageLedger,
 )
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
+from shim_enterprise.observability import analytics_projection
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.outbox.publisher import OutboxMessage
 from shim.privacy.classification import content_ref
 from shim_enterprise.tenants.models import ApiKey, Organization, User
 
@@ -112,6 +115,146 @@ def _postprocessor(usage) -> ResponsePostprocessor:
         heartbeat_interval_seconds=30,
         output_hash_salt=None,
     )
+
+
+def test_system_prompt_hash_is_keyed_scoped_and_excludes_conversation(
+    monkeypatch,
+) -> None:
+    prepared = _prepared()
+    prepared.payload = {
+        "messages": [
+            {"role": "system", "content": "private instruction"},
+            {"role": "user", "content": "user one"},
+        ]
+    }
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
+    original = _system_prompt_hash(prepared)
+    assert original is not None and original.startswith("hmac-sha256:v1:")
+    assert "private instruction" not in original
+    prepared.payload["messages"][1]["content"] = "user two"
+    prepared.payload["messages"][0] = {
+        "content": "private instruction",
+        "role": "system",
+    }
+    assert _system_prompt_hash(prepared) == original
+    prepared.payload["messages"][0]["content"] += " "
+    assert _system_prompt_hash(prepared) != original
+    prepared.payload["messages"][0]["content"] = "private instruction"
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-two")
+    assert _system_prompt_hash(prepared) != original
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
+    prepared.tenant_id = uuid4()
+    assert _system_prompt_hash(prepared) != original
+    prepared.payload = {"previous_response_id": "resp_inherited"}
+    assert _system_prompt_hash(prepared) is None
+
+
+@pytest.mark.parametrize(
+    ("protocol", "payload"),
+    [
+        ("responses", {"instructions": "private instruction"}),
+        (
+            "responses",
+            {"input": [{"role": "developer", "content": "private instruction"}]},
+        ),
+        ("messages", {"system": [{"type": "text", "text": "private instruction"}]}),
+        (
+            "generate_content",
+            {"systemInstruction": {"parts": [{"text": "private instruction"}]}},
+        ),
+    ],
+)
+def test_system_prompt_hash_covers_explicit_native_instructions(
+    protocol, payload
+) -> None:
+    prepared = _prepared()
+    prepared.protocol = protocol
+    prepared.payload = payload
+    assert _system_prompt_hash(prepared) is not None
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
+    db, test_api_key, monkeypatch
+) -> None:
+    repository = DurableAccountingRepository()
+    request_id = f"req_diagnostics_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            repeat_chain_length=2,
+            system_prompt_hash="hmac-sha256:v1:" + "a" * 64,
+            deployment_kind="internal",
+        ),
+    )
+    command = FinalizationCommand(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        quota_action=TerminalAction.SETTLE,
+        prompt_tokens=20,
+        completion_tokens=3,
+        estimated=True,
+        lifecycle_status="client_disconnected",
+        provider_finish_reasons={"choices.1.finish_reason": "length"},
+        ttft_ms=125.5,
+    )
+    await repository.finalize(db, command)
+    assert (await repository.finalize(db, command)).replayed
+    await db.flush()
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).scalar_one()
+    expected = {
+        "repeat_chain_length": 2,
+        "system_prompt_hash": "hmac-sha256:v1:" + "a" * 64,
+        "deployment_kind": "internal",
+        "provider_finish_reasons": {"choices.1.finish_reason": "length"},
+        "ttft_ms": 125.5,
+    }
+    assert all(
+        lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    assert all(event.payload[key] == value for key, value in expected.items())
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    message = OutboxMessage.from_event(event)
+    await analytics_projection.project_request(message)
+    await analytics_projection.project_request(message)
+    projected = (
+        await db.execute(
+            select(analytics_projection.RequestLog).where(
+                analytics_projection.RequestLog.request_id == request_id
+            )
+        )
+    ).scalar_one()
+    assert all(projected.details[key] == value for key, value in expected.items())
+    assert projected.details["lifecycle_status"] == "client_disconnected"
+    assert projected.details["usage_estimated"] is True
 
 
 async def _create_tenant(
@@ -347,6 +490,8 @@ async def test_disconnected_stream_settles_reserved_usage() -> None:
     terminal = usage.finalize.await_args.args[1]
     assert usage.finalize.await_args.args[0] is prepared
     assert terminal.terminal_status == "client_disconnected"
+    assert terminal.usage.provider_finish_reasons is None
+    assert terminal.usage.ttft_ms is None
 
 
 @pytest.mark.asyncio
@@ -565,6 +710,8 @@ async def test_failed_response_without_a_requested_model_uses_conservative_price
     assert terminal.usage.settlement_cost_usd > 0
     assert terminal.usage.pricing_metadata["pricing_resolution"] == "conservative_max"
     assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.provider_finish_reasons == {"status": "failed"}
+    assert terminal.usage.ttft_ms is None
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import csv
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -358,7 +359,17 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "cost_center",
         "provider",
         "team",
+        "provider_finish_reasons",
+        "repeat_chain_length",
+        "ttft_ms",
+        "system_prompt_hash",
+        "deployment_kind",
     }
+    assert page.items[0].provider_finish_reasons is None
+    assert page.items[0].repeat_chain_length is None
+    assert page.items[0].ttft_ms is None
+    assert page.items[0].system_prompt_hash is None
+    assert page.items[0].deployment_kind is None
     assert page.items[0].provider == "openai"
     assert page.items[0].usage_estimated is False
     assert page.items[0].team == "platform"
@@ -548,7 +559,14 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         timestamp=datetime(2026, 7, 1, tzinfo=timezone.utc),
         path="/v1/responses",
         model="gpt-5-nano",
-        details={"provider": "openai", "lifecycle_status": "completed"},
+        details={
+            "provider": "openai",
+            "lifecycle_status": "completed",
+            "provider_finish_reasons": {"status": "incomplete"},
+            "repeat_chain_length": 2,
+            "ttft_ms": 42.5,
+            "deployment_kind": "internal",
+        },
         prompt_tokens=10,
         completion_tokens=2,
         latency_ms=100,
@@ -583,6 +601,12 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert "'=unsafe" in content
     assert "'+formula" in content
     assert "'@ops" in content
+    exported = list(csv.DictReader(content.splitlines()))[0]
+    assert exported["provider_finish_reasons"] == '{"status": "incomplete"}'
+    assert exported["repeat_chain_length"] == "2"
+    assert exported["ttft_ms"] == "42.5"
+    assert exported["deployment_kind"] == "internal"
+    assert exported["system_prompt_hash"] == ""
     rows.close.assert_awaited_once()
     statement = session.stream.await_args.args[0]
     compiled = statement.compile(dialect=postgresql.dialect())

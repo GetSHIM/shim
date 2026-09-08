@@ -149,6 +149,8 @@ class LocalUsageLifecycle:
             ),
             model=usage.provider_model,
             estimated=usage.estimated,
+            provider_finish_reasons=usage.provider_finish_reasons,
+            ttft_ms=usage.ttft_ms,
         )
 
     async def fail(
@@ -194,6 +196,8 @@ class LocalUsageLifecycle:
         cost_usd: Decimal | None,
         model: str,
         estimated: bool,
+        provider_finish_reasons: dict[str, str] | None = None,
+        ttft_ms: float | None = None,
     ) -> None:
         event = {
             "version": 1,
@@ -211,6 +215,15 @@ class LocalUsageLifecycle:
             "completion_tokens": completion_tokens,
             "estimated_cost_usd": str(cost_usd) if cost_usd is not None else None,
             "estimated": estimated,
+            "provider_finish_reasons": provider_finish_reasons,
+            "ttft_ms": ttft_ms,
+            "repeat_chain_length": (
+                prepared.admission.repeat_chain_length
+                if prepared.admission is not None
+                else None
+            ),
+            "system_prompt_hash": None,
+            "deployment_kind": prepared.deployment_kind,
             "privacy_counts": (
                 dict(prepared.privacy.pii_entities)
                 if prepared.privacy is not None

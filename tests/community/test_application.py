@@ -120,6 +120,11 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
     event = json.loads(lines[0])
     assert event["outcome"] == "completed"
     assert event["privacy_counts"] == {"EMAIL_ADDRESS": 1}
+    assert event["provider_finish_reasons"] == {"choices.0.finish_reason": "stop"}
+    assert event["ttft_ms"] is None
+    assert event["repeat_chain_length"] == 1
+    assert event["deployment_kind"] == "unknown"
+    assert event["system_prompt_hash"] is None
     assert EMAIL not in lines[0]
     assert GATEWAY_KEY not in lines[0]
     assert PROVIDER_KEY not in lines[0]
@@ -237,7 +242,11 @@ async def test_community_chat_stream_preserves_native_sse_and_finalizes_once() -
     await upstream.aclose()
     lines = events.getvalue().splitlines()
     assert len(lines) == 1
-    assert json.loads(lines[0])["outcome"] == "completed"
+    event = json.loads(lines[0])
+    assert event["outcome"] == "completed"
+    assert event["provider_finish_reasons"] == {"choices.0.finish_reason": "stop"}
+    assert event["ttft_ms"] >= 0
+    assert event["repeat_chain_length"] == 1
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -70,6 +71,43 @@ class AccountingPersistenceError(PersistenceError):
 
 
 logger = logging.getLogger(__name__)
+
+
+def _system_prompt_hash(prepared: PreparedInference) -> str | None:
+    """Hash only explicitly supplied system content, before privacy transformation."""
+
+    payload = prepared.payload
+    material: dict[str, Any] = {}
+    field = {
+        "chat": None,
+        "responses": "instructions",
+        "messages": "system",
+        "generate_content": "systemInstruction",
+    }[prepared.protocol]
+    if field is not None and payload.get(field) is not None:
+        material[field] = payload[field]
+    if prepared.protocol in {"chat", "responses"}:
+        messages = payload.get("messages" if prepared.protocol == "chat" else "input")
+        if isinstance(messages, list):
+            instructions = [
+                {"role": item["role"], "content": item["content"]}
+                for item in messages
+                if isinstance(item, dict)
+                and item.get("role") in ("system", "developer")
+                and item.get("content") is not None
+            ]
+            if instructions:
+                material["messages"] = instructions
+    if not material:
+        return None
+    canonical = json.dumps(
+        ["shim.system_prompt.v1", str(prepared.tenant_id), prepared.protocol, material],
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
+    return "hmac-sha256:v1:" + hmac.digest(key, canonical, "sha256").hex()
 
 
 class AccountingPolicyLoader:
@@ -226,6 +264,9 @@ class DurableAccountingCoordinator:
                         tags=admission.tags,
                         team=prepared.policy.team,
                         stream=prepared.stream,
+                        repeat_chain_length=admission.repeat_chain_length,
+                        system_prompt_hash=_system_prompt_hash(prepared),
+                        deployment_kind=prepared.deployment_kind,
                         policy=policy,
                     ),
                 )
@@ -611,6 +652,8 @@ class DurableUsageLifecycle:
                         terminal_error_code=terminal.error_code,
                         terminal_error_message=terminal.error_message,
                         output_hash=usage.output_hash,
+                        provider_finish_reasons=usage.provider_finish_reasons,
+                        ttft_ms=usage.ttft_ms,
                         completed_at=terminal.completed_at,
                     ),
                 )
