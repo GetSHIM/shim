@@ -336,6 +336,37 @@ async def test_concurrent_team_quota_reserves_and_refunds_all_scopes(async_engin
                 select(QuotaPeriodUsage).where(QuotaPeriodUsage.team_id == team_id)
             )
             assert counter.reserved_requests == 3 and counter.reserved_tokens == 30
+        async with factory.begin() as session:
+            settled = await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=admitted[1][0],
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=2,
+                    completion_tokens=3,
+                    lifecycle_status="completed",
+                    completed_at=datetime.now(timezone.utc),
+                ),
+            )
+            replay = await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=admitted[1][0],
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=2,
+                    completion_tokens=3,
+                    lifecycle_status="completed",
+                ),
+            )
+            assert replay.replayed and replay.quota_event_id == settled.quota_event_id
+        async with factory() as session:
+            counter = await session.scalar(
+                select(QuotaPeriodUsage).where(QuotaPeriodUsage.team_id == team_id)
+            )
+            assert (counter.reserved_requests, counter.settled_requests) == (2, 1)
+            assert (counter.reserved_tokens, counter.settled_tokens) == (20, 5)
     finally:
         async with factory.begin() as session:
             for model in (

@@ -1508,6 +1508,8 @@ class DurableAccountingRepository:
             reservation.period_allocations,
             key=lambda item: (
                 str(item.get("counter_type")),
+                # Match admission's key-then-team order to avoid lock inversion.
+                bool(item.get("team_id")),
                 str(item.get("period_type")),
                 str(item.get("period_start")),
                 str(item.get("period_row_id")),
