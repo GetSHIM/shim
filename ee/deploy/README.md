@@ -209,13 +209,20 @@ the backup before testing an upgrade:
 ```sh
 helm upgrade --install shim-restore ./chart --namespace shim-recovery \
   --create-namespace --values /secure/restore-values.yaml \
-  --set migration.enabled=false --wait --timeout 10m
+  --set migration.enabled=false \
+  --set workers.outbox=false --set workers.reconciliation=false \
+  --set workers.compliance=false --set workers.ai_act=false \
+  --wait --timeout 10m
 kubectl -n shim-recovery exec deployment/shim-restore-gateway -- \
   alembic -c ee/alembic.ini current --check-heads
 ```
 
 The private restore values must name the recovery runtime Secret and recovery
-services; they must not reuse source database endpoints. Verify login, existing
+services; they must not reuse source database endpoints. Workers start disabled:
+a restored outbox or active connector can repeat external effects from the backup.
+Inspect pending events and connector destinations, isolate external delivery
+targets, and establish replay/idempotency handling before enabling each worker.
+Verify login, existing
 request/ledger/audit visibility, audit-chain verification, Vault-backed model
 access, and a new disposable workload key. Revoke that key after the test.
 Only then rehearse the new chart/images with migrations enabled and repeat the
