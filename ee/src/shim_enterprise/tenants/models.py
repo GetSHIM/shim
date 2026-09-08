@@ -83,7 +83,9 @@ class User(Base, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("organization_id", "id", name="uq_users_tenant_id"),
-        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_users_role"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_users_role"
+        ),
         Index("ix_users_organization_id", "organization_id"),
     )
 
@@ -118,7 +120,9 @@ class OrganizationInvite(Base, TimestampMixin):
 
     __tablename__ = "organization_invites"
     __table_args__ = (
-        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_invites_role"),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_invites_role"
+        ),
         Index("ix_invites_organization_id", "organization_id"),
         Index("ix_invites_token_hash", "token_hash", unique=True),
     )
@@ -193,6 +197,77 @@ class TierDefinition(Base, TimestampMixin):
     )
 
 
+class Team(Base, TimestampMixin):
+    """Explicit tenant-owned delegation and quota boundary, not a billing label."""
+
+    __tablename__ = "teams"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_teams_tenant_id"),
+        UniqueConstraint("organization_id", "name", name="uq_teams_tenant_name"),
+        CheckConstraint(
+            "daily_request_limit IS NULL OR daily_request_limit >= 0",
+            name="ck_teams_daily_requests",
+        ),
+        CheckConstraint(
+            "monthly_request_limit IS NULL OR monthly_request_limit >= 0",
+            name="ck_teams_monthly_requests",
+        ),
+        CheckConstraint(
+            "monthly_token_limit IS NULL OR monthly_token_limit >= 0",
+            name="ck_teams_monthly_tokens",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    daily_request_limit: Mapped[int | None] = mapped_column(Integer)
+    monthly_request_limit: Mapped[int | None] = mapped_column(Integer)
+    monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+
+
+class TeamMembership(Base, TimestampMixin):
+    """Membership grants access only within the named tenant and team."""
+
+    __tablename__ = "team_memberships"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "team_id"],
+            ["teams.organization_id", "teams.id"],
+            name="fk_team_memberships_tenant_team",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "user_id"],
+            ["users.organization_id", "users.id"],
+            name="fk_team_memberships_tenant_user",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "role IN ('member', 'team_admin')", name="ck_team_memberships_role"
+        ),
+        CheckConstraint(
+            "source IN ('local', 'oidc')", name="ck_team_memberships_source"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    team_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), primary_key=True)
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="member", server_default="member"
+    )
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="local", server_default="local"
+    )
+
+
 class ApiKey(Base, TimestampMixin):
     """One-way API-key verifier with enforced tenant/user ownership."""
 
@@ -204,6 +279,11 @@ class ApiKey(Base, TimestampMixin):
             ["users.organization_id", "users.id"],
             name="fk_api_keys_tenant_user",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "team_id"],
+            ["teams.organization_id", "teams.id"],
+            name="fk_api_keys_tenant_team",
         ),
         Index("ix_api_keys_organization_id", "organization_id"),
         Index("ix_api_keys_key_hash", "key_hash", unique=True),
@@ -227,6 +307,8 @@ class ApiKey(Base, TimestampMixin):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cost_center: Mapped[str | None] = mapped_column(String(128))
     team: Mapped[str | None] = mapped_column(String(128))
+    team_id: Mapped[UUID | None] = mapped_column(SqlUUID(as_uuid=True))
+    allowed_models: Mapped[list[str] | None] = mapped_column(JSONB)
     tier: Mapped[str] = mapped_column(
         ForeignKey("tier_definitions.slug"), nullable=False, default="free"
     )

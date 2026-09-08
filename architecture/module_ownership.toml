@@ -193,6 +193,7 @@ public = [
 enterprise = [
   "ee/alembic/env.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
+  "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/sign_license.py",
@@ -293,10 +294,12 @@ enterprise = [
   "ee/src/shim_enterprise/shared_results/api.py",
   "ee/src/shim_enterprise/shared_results/models.py",
   "ee/src/shim_enterprise/tenants/__init__.py",
+  "ee/src/shim_enterprise/tenants/audit.py",
   "ee/src/shim_enterprise/tenants/models.py",
   "ee/src/shim_enterprise/tenants/plans.py",
   "ee/src/shim_enterprise/tenants/policy.py",
   "ee/src/shim_enterprise/tenants/service.py",
+  "ee/src/shim_enterprise/tenants/teams.py",
   "ee/src/shim_enterprise/workers/__init__.py",
   "ee/src/shim_enterprise/workers/ai_act.py",
   "ee/src/shim_enterprise/workers/compliance.py",
@@ -338,6 +341,7 @@ enterprise = [
   "ee/tests/tenants/test_plans.py",
   "ee/tests/tenants/test_policy.py",
   "ee/tests/tenants/test_service.py",
+  "ee/tests/tenants/test_teams.py",
 ]
 
 # Transitional Python files that contain or exercise both ownership regions.

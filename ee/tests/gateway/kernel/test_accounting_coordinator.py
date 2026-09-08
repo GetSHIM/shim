@@ -1678,10 +1678,19 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
     )
 
     session = SimpleNamespace(
+        scalar=AsyncMock(return_value=SimpleNamespace(role="member")),
         execute=AsyncMock(
             side_effect=[
                 SimpleNamespace(
-                    scalar_one_or_none=lambda: SimpleNamespace(tier="free")
+                    scalar_one_or_none=lambda: SimpleNamespace(
+                        tier="free",
+                        expires_at=None,
+                        is_active=True,
+                        allowed_models=None,
+                        user_id=uuid4(),
+                        organization_id=uuid4(),
+                        team_id=None,
+                    )
                 ),
                 SimpleNamespace(
                     scalar_one_or_none=lambda: SimpleNamespace(
@@ -1692,7 +1701,7 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
                     )
                 ),
             ]
-        )
+        ),
     )
     policy = await AccountingPolicyLoader().quota(session, _prepared())
     statements = [

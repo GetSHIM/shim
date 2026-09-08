@@ -329,6 +329,21 @@
       },
       "ApiKeyInput": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -356,6 +371,18 @@
               }
             ],
             "title": "Team"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
           }
         },
         "required": [
@@ -366,6 +393,21 @@
       },
       "ApiKeyPatch": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -387,6 +429,18 @@
               }
             ],
             "title": "Team"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
           }
         },
         "title": "ApiKeyPatch",
@@ -394,6 +448,20 @@
       },
       "ApiKeyView": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -457,6 +525,18 @@
             ],
             "title": "Team"
           },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
           "tier": {
             "title": "Tier",
             "type": "string"
@@ -471,7 +551,9 @@
           "is_active",
           "expires_at",
           "cost_center",
-          "team"
+          "team",
+          "team_id",
+          "allowed_models"
         ],
         "title": "ApiKeyView",
         "type": "object"
@@ -2144,6 +2226,20 @@
       },
       "CreatedApiKey": {
         "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -2211,6 +2307,18 @@
             ],
             "title": "Team"
           },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
           "tier": {
             "title": "Tier",
             "type": "string"
@@ -2226,6 +2334,8 @@
           "expires_at",
           "cost_center",
           "team",
+          "team_id",
+          "allowed_models",
           "plaintext"
         ],
         "title": "CreatedApiKey",
@@ -2281,7 +2391,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -4547,6 +4658,59 @@
         ],
         "title": "MediaResolution",
         "type": "string"
+      },
+      "MembershipInput": {
+        "properties": {
+          "role": {
+            "default": "member",
+            "enum": [
+              "member",
+              "team_admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "title": "MembershipInput",
+        "type": "object"
+      },
+      "MembershipView": {
+        "properties": {
+          "role": {
+            "default": "member",
+            "enum": [
+              "member",
+              "team_admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "local",
+              "oidc"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "team_id": {
+            "format": "uuid",
+            "title": "Team Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "team_id",
+          "source"
+        ],
+        "title": "MembershipView",
+        "type": "object"
       },
       "MessagesRequest": {
         "additionalProperties": {
@@ -7865,6 +8029,60 @@
         "title": "SubscriptionView",
         "type": "object"
       },
+      "TeamInput": {
+        "properties": {
+          "daily_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Request Limit"
+          },
+          "monthly_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Request Limit"
+          },
+          "monthly_token_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Token Limit"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TeamInput",
+        "type": "object"
+      },
       "TeamInviteInput": {
         "properties": {
           "email": {
@@ -7876,7 +8094,8 @@
             "default": "member",
             "enum": [
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -7938,7 +8157,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -7992,7 +8212,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -8015,7 +8236,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -8025,6 +8247,66 @@
           "role"
         ],
         "title": "TeamRolePatch",
+        "type": "object"
+      },
+      "TeamView": {
+        "properties": {
+          "daily_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Request Limit"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "monthly_request_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Request Limit"
+          },
+          "monthly_token_limit": {
+            "anyOf": [
+              {
+                "maximum": 2000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Token Limit"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "id"
+        ],
+        "title": "TeamView",
         "type": "object"
       },
       "TextResponseFormat": {
@@ -8755,7 +9037,8 @@
             "enum": [
               "owner",
               "admin",
-              "member"
+              "member",
+              "auditor"
             ],
             "title": "Role",
             "type": "string"
@@ -10960,6 +11243,54 @@
         ]
       }
     },
+    "/api/v1/management/api-keys/{api_key_id}/rotate": {
+      "post": {
+        "operationId": "rotate_api_key_api_v1_management_api_keys__api_key_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "api_key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Api Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Rotate Api Key",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/auth/me": {
       "get": {
         "operationId": "current_profile_api_v1_management_auth_me_get",
@@ -12658,6 +12989,307 @@
           }
         ],
         "summary": "Update Team Member",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams": {
+      "get": {
+        "operationId": "list_teams_api_v1_management_teams_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TeamView"
+                  },
+                  "title": "Response List Teams Api V1 Management Teams Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Teams",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_team_api_v1_management_teams_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Team",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}": {
+      "put": {
+        "operationId": "update_team_api_v1_management_teams__team_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TeamInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Team",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}/members": {
+      "get": {
+        "operationId": "list_memberships_api_v1_management_teams__team_id__members_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MembershipView"
+                  },
+                  "title": "Response List Memberships Api V1 Management Teams  Team Id  Members Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Memberships",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/teams/{team_id}/members/{member_id}": {
+      "delete": {
+        "operationId": "remove_membership_api_v1_management_teams__team_id__members__member_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Member Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Remove Membership",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "set_membership_api_v1_management_teams__team_id__members__member_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "team_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Team Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "member_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Member Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembershipInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Membership",
         "tags": [
           "management"
         ]

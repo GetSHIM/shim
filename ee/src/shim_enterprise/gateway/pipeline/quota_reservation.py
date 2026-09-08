@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import desc, func, select, text
 
 from shim_enterprise.core.config import settings
@@ -55,7 +56,14 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
 from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
-from shim_enterprise.tenants.models import ApiKey, ProviderSecret, TierDefinition
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ProviderSecret,
+    TierDefinition,
+    Team,
+    TeamMembership,
+    User,
+)
 from shim_enterprise.observability.enterprise_metrics import (
     QUOTA_RESERVATION_TOTAL,
     USAGE_SETTLEMENT_TOTAL,
@@ -133,6 +141,68 @@ class AccountingPolicyLoader:
         if api_key is None:
             raise AccountingPersistenceError("accounting API key no longer exists")
 
+        now = datetime.now(timezone.utc)
+        expiry = api_key.expires_at
+        if expiry is not None and expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if not api_key.is_active or (expiry is not None and expiry <= now):
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+        if (
+            api_key.allowed_models is not None
+            and prepared.model not in api_key.allowed_models
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "MODEL_NOT_ALLOWED",
+                    "message": "Model is not allowed by API-key policy.",
+                },
+            )
+        owner = await session.scalar(
+            select(User).where(
+                User.id == api_key.user_id,
+                User.organization_id == api_key.organization_id,
+                User.is_active.is_(True),
+                User.role != "auditor",
+            )
+        )
+        if owner is None:
+            raise HTTPException(status_code=401, detail="Invalid API Key")
+        team_policy = None
+        if api_key.team_id is not None:
+            if owner.role not in {"owner", "admin"} and not await session.scalar(
+                select(TeamMembership.user_id).where(
+                    TeamMembership.organization_id == api_key.organization_id,
+                    TeamMembership.team_id == api_key.team_id,
+                    TeamMembership.user_id == owner.id,
+                )
+            ):
+                raise HTTPException(
+                    status_code=403, detail="API-key owner is no longer a team member"
+                )
+            team = await session.scalar(
+                select(Team)
+                .where(
+                    Team.organization_id == api_key.organization_id,
+                    Team.id == api_key.team_id,
+                )
+                .with_for_update(read=True)
+            )
+            if team is None:
+                raise AccountingPersistenceError("accounting team no longer exists")
+            team_policy = QuotaPolicySnapshot(
+                version=self._version(
+                    f"team:{team.id}:{team.updated_at}",
+                    (
+                        team.daily_request_limit,
+                        team.monthly_request_limit,
+                        team.monthly_token_limit,
+                    ),
+                ),
+                daily_request_limit=team.daily_request_limit,
+                monthly_request_limit=team.monthly_request_limit,
+                monthly_token_limit=team.monthly_token_limit,
+            )
         tier_statement = (
             select(TierDefinition)
             .where(TierDefinition.slug == api_key.tier)
@@ -148,10 +218,15 @@ class AccountingPolicyLoader:
                 policy.monthly_token_limit,
             )
             return QuotaPolicySnapshot(
-                version=self._version("quota-default", values),
+                version=self._version(
+                    "quota-default",
+                    (*values, team_policy.version if team_policy else None),
+                ),
                 daily_request_limit=values[0],
                 monthly_request_limit=values[1],
                 monthly_token_limit=values[2],
+                team_id=api_key.team_id,
+                team_policy=team_policy,
             )
 
         values = (
@@ -162,11 +237,13 @@ class AccountingPolicyLoader:
         return QuotaPolicySnapshot(
             version=self._version(
                 f"quota:{tier.slug}:{getattr(tier, 'updated_at', None)}",
-                values,
+                (*values, team_policy.version if team_policy else None),
             ),
             daily_request_limit=values[0],
             monthly_request_limit=values[1],
             monthly_token_limit=values[2],
+            team_id=api_key.team_id,
+            team_policy=team_policy,
         )
 
     async def spend(
@@ -290,7 +367,7 @@ class DurableAccountingCoordinator:
                 QUOTA_RESERVATION_TOTAL.labels(status=outcome).inc()
                 span.set_attribute("status", outcome)
                 return result
-            except QuotaLimitExceeded:
+            except (QuotaLimitExceeded, HTTPException):
                 await session.rollback()
                 prepared.record_verdict(
                     "quota.requests_and_tokens",

@@ -157,6 +157,8 @@ class QuotaPolicySnapshot:
     daily_request_limit: int | None
     monthly_request_limit: int | None
     monthly_token_limit: int | None
+    team_id: UUID | None = None
+    team_policy: QuotaPolicySnapshot | None = None
 
     def __post_init__(self) -> None:
         limits = (
@@ -877,16 +879,41 @@ class DurableAccountingRepository:
         session: AsyncSession,
         command: QuotaReservationCommand,
     ) -> list[dict[str, object]]:
+        allocations = await self._reserve_scoped_quota_periods(
+            session, command, command.policy
+        )
+        if (
+            command.policy.team_id is not None
+            and command.policy.team_policy is not None
+        ):
+            allocations.extend(
+                await self._reserve_scoped_quota_periods(
+                    session,
+                    command,
+                    command.policy.team_policy,
+                    team_id=command.policy.team_id,
+                )
+            )
+        return allocations
+
+    async def _reserve_scoped_quota_periods(
+        self,
+        session: AsyncSession,
+        command: QuotaReservationCommand,
+        policy: QuotaPolicySnapshot,
+        *,
+        team_id: UUID | None = None,
+    ) -> list[dict[str, object]]:
         token_delta = command.estimated_input_tokens + command.maximum_output_tokens
         periods: list[tuple[str, date, date, int | None, int | None, int]] = []
         request_date = command.started_at.astimezone(timezone.utc).date()
-        if command.policy.daily_request_limit is not None:
+        if policy.daily_request_limit is not None:
             periods.append(
                 (
                     "daily",
                     request_date,
                     request_date + timedelta(days=1),
-                    command.policy.daily_request_limit,
+                    policy.daily_request_limit,
                     None,
                     0,
                 )
@@ -900,8 +927,8 @@ class DurableAccountingRepository:
                 "monthly",
                 month_start,
                 month_end,
-                command.policy.monthly_request_limit,
-                command.policy.monthly_token_limit,
+                policy.monthly_request_limit,
+                policy.monthly_token_limit,
                 token_delta,
             )
         )
@@ -925,12 +952,14 @@ class DurableAccountingRepository:
                 token_delta=tokens,
                 request_limit=request_limit,
                 token_limit=token_limit,
+                team_id=team_id,
             )
             if row is None:
                 raise QuotaLimitExceeded(f"{period_type} quota exceeded")
             allocations.append(
                 {
                     "counter_type": "quota",
+                    "team_id": str(team_id) if team_id else None,
                     "period_row_id": str(row.id),
                     "period_type": period_type,
                     "period_start": start.isoformat(),
@@ -953,10 +982,12 @@ class DurableAccountingRepository:
         token_delta: int,
         request_limit: int | None,
         token_limit: int | None,
+        team_id: UUID | None = None,
     ) -> QuotaPeriodUsage | None:
         statement = insert(QuotaPeriodUsage).values(
             organization_id=command.tenant_id,
-            api_key_id=command.api_key_id,
+            api_key_id=command.api_key_id if team_id is None else None,
+            team_id=team_id,
             period_type=period_type,
             period_start=period_start,
             period_end=period_end,
@@ -969,10 +1000,15 @@ class DurableAccountingRepository:
         statement = statement.on_conflict_do_update(
             index_elements=[
                 QuotaPeriodUsage.organization_id,
-                QuotaPeriodUsage.api_key_id,
+                QuotaPeriodUsage.api_key_id
+                if team_id is None
+                else QuotaPeriodUsage.team_id,
                 QuotaPeriodUsage.period_type,
                 QuotaPeriodUsage.period_start,
             ],
+            index_where=QuotaPeriodUsage.team_id.is_not(None)
+            if team_id is not None
+            else None,
             set_={
                 "reserved_requests": (
                     QuotaPeriodUsage.reserved_requests + excluded.reserved_requests
