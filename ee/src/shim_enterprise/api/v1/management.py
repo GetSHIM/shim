@@ -542,7 +542,8 @@ class RequestActivityView(BaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     usage_estimated: bool
-    cost_usd: Decimal = Field(ge=0)
+    cost_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
     latency_ms: int = Field(ge=0)
     pii_detected: bool
     tags: list[str] = Field(default_factory=list)
@@ -573,6 +574,8 @@ class RequestActivitySummaryView(BaseModel):
     technical_success_rate: float | None = Field(ge=0, le=1)
     p95_completed_latency_ms: int | None = Field(ge=0)
     settled_spend_usd: Decimal = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     pii_detected_requests: int = Field(ge=0)
@@ -1891,7 +1894,8 @@ async def list_requests(
                 prompt_tokens=row.prompt_tokens,
                 completion_tokens=row.completion_tokens,
                 usage_estimated=_request_usage_estimated(row.details),
-                cost_usd=Decimal(str(cost_usd)),
+                cost_usd=Decimal(str(cost_usd)) if cost_usd is not None else None,
+                cost_complete=cost_usd is not None,
                 latency_ms=row.latency_ms,
                 pii_detected=row.pii_detected,
                 tags=list(row.tags or []),
@@ -2009,6 +2013,7 @@ async def export_requests(
                 "ttft_ms",
                 "system_prompt_hash",
                 "deployment_kind",
+                "cost_complete",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -2031,7 +2036,7 @@ async def export_requests(
                         _request_activity_status(row.details),
                         row.prompt_tokens,
                         row.completion_tokens,
-                        Decimal(str(cost_usd)),
+                        Decimal(str(cost_usd)) if cost_usd is not None else None,
                         row.latency_ms,
                         row.pii_detected,
                         ",".join(row.tags or []),
@@ -2048,6 +2053,7 @@ async def export_requests(
                         details.get("ttft_ms"),
                         details.get("system_prompt_hash"),
                         details.get("deployment_kind"),
+                        cost_usd is not None,
                     )
                 )
                 yield output.getvalue().encode("utf-8")
@@ -2263,9 +2269,27 @@ def _request_settled_spend(tenant_id: UUID):
             UsageLedger.organization_id == tenant_id,
             UsageLedger.request_id == RequestLog.request_id,
             UsageLedger.event_type == "spend_settlement",
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"]
+            .as_string()
+            .is_distinct_from("unknown"),
         )
         .correlate(RequestLog)
         .scalar_subquery()
+    )
+
+
+def _request_unpriced_spend(tenant_id: UUID):
+    return (
+        select(UsageLedger.id)
+        .where(
+            UsageLedger.organization_id == tenant_id,
+            UsageLedger.request_id == RequestLog.request_id,
+            UsageLedger.event_type == "spend_settlement",
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"].as_string()
+            == "unknown",
+        )
+        .correlate(RequestLog)
+        .exists()
     )
 
 
@@ -2288,6 +2312,9 @@ def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
     return (
         select(
             func.count(RequestLog.id).label("requests"),
+            func.count(RequestLog.id)
+            .filter(_request_unpriced_spend(tenant_id))
+            .label("unpriced_requests"),
             *(
                 func.count(RequestLog.id)
                 .filter(lifecycle_status == status_name)
@@ -2351,6 +2378,8 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         ),
         p95_completed_latency_ms=round(float(p95)) if p95 is not None else None,
         settled_spend_usd=Decimal(str(row.settled_spend_usd or 0)),
+        cost_complete=not row.unpriced_requests,
+        unpriced_requests=int(row.unpriced_requests or 0),
         prompt_tokens=int(row.prompt_tokens or 0),
         completion_tokens=int(row.completion_tokens or 0),
         pii_detected_requests=int(row.pii_detected_requests or 0),
@@ -2366,7 +2395,10 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
     return (
         select(
             RequestLog,
-            func.coalesce(spend, Decimal("0")).label("cost_usd"),
+            case(
+                (_request_unpriced_spend(tenant_id), None),
+                else_=func.coalesce(spend, Decimal("0")),
+            ).label("cost_usd"),
         )
         .where(*filters)
         .order_by(RequestLog.timestamp.desc(), RequestLog.id.desc())

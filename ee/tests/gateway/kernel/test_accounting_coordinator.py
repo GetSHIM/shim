@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.config import settings
+from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
 from shim_enterprise.gateway.pipeline.quota_reservation import (
@@ -1140,9 +1141,11 @@ async def test_failure_state_uses_durable_provider_marker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("pricing_resolution", ["catalog", "unknown"])
 async def test_spend_pricing_metadata_survives_terminal_fallback(
     db,
     test_api_key,
+    pricing_resolution,
 ) -> None:
     repository = DurableAccountingRepository()
     request_id = f"req_pricing_metadata_{uuid4().hex}"
@@ -1169,7 +1172,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     )
     pricing_metadata = {
         "catalog_version": "catalog-v1",
-        "pricing_resolution": "catalog",
+        "pricing_resolution": pricing_resolution,
         "input_per_million": "0.2",
         "output_per_million": "1.2",
     }
@@ -1217,6 +1220,46 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     )
     assert len(events) == 2
     assert all(event.event_metadata["pricing"] == pricing_metadata for event in events)
+    outbox_event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == request_id,
+                OutboxEvent.event_type == "analytics.request_completed",
+            )
+        )
+    ).scalar_one()
+    assert outbox_event.payload["pricing_resolution"] == pricing_resolution
+    values = analytics_projection._projection_values(
+        OutboxMessage.from_event(outbox_event)
+    )
+    assert values["details"]["pricing_resolution"] == pricing_resolution
+    db.add(analytics_projection.RequestLog(**values))
+    await db.flush()
+    page = await management.list_requests(
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        limit=10,
+        offset=0,
+        user=SimpleNamespace(organization_id=test_api_key.organization_id),
+        session=db,
+    )
+    assert page.total == 1
+    assert page.items[0].cost_complete is (pricing_resolution != "unknown")
+    assert page.summary.cost_complete is (pricing_resolution != "unknown")
+    if pricing_resolution == "unknown":
+        assert page.items[0].cost_usd is None
+        assert page.summary.unpriced_requests == 1
+        assert page.summary.settled_spend_usd == 0
+    else:
+        assert page.items[0].cost_usd == Decimal("0.00004")
+        assert page.summary.unpriced_requests == 0
+        assert page.summary.settled_spend_usd == Decimal("0.00004")
 
 
 @pytest.mark.asyncio

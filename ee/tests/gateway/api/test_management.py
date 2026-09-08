@@ -277,6 +277,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         policy_failed=1,
         p95_completed_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
+        unpriced_requests=0,
     )
     row = SimpleNamespace(
         id=uuid4(),
@@ -353,6 +354,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "completion_tokens",
         "usage_estimated",
         "cost_usd",
+        "cost_complete",
         "latency_ms",
         "pii_detected",
         "tags",
@@ -370,6 +372,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert page.items[0].ttft_ms is None
     assert page.items[0].system_prompt_hash is None
     assert page.items[0].deployment_kind is None
+    assert page.items[0].cost_complete is True
+    assert page.summary.cost_complete is True
+    assert page.summary.unpriced_requests == 0
     assert page.items[0].provider == "openai"
     assert page.items[0].usage_estimated is False
     assert page.items[0].team == "platform"
@@ -424,6 +429,7 @@ def test_request_activity_summary_has_null_technical_metrics_without_denominator
             policy_failed=0,
             p95_completed_latency_ms=None,
             settled_spend_usd=Decimal("0"),
+            unpriced_requests=0,
         )
     )
 
@@ -607,6 +613,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["ttft_ms"] == "42.5"
     assert exported["deployment_kind"] == "internal"
     assert exported["system_prompt_hash"] == ""
+    assert exported["cost_complete"] == "True"
     rows.close.assert_awaited_once()
     statement = session.stream.await_args.args[0]
     compiled = statement.compile(dialect=postgresql.dialect())

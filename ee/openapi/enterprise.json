@@ -6993,6 +6993,10 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "p95_completed_latency_ms": {
             "anyOf": [
               {
@@ -7050,6 +7054,11 @@
               }
             ],
             "title": "Technical Success Rate"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -7057,6 +7066,8 @@
           "technical_success_rate",
           "p95_completed_latency_ms",
           "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests",
           "prompt_tokens",
           "completion_tokens",
           "pii_detected_requests",
@@ -7085,10 +7096,21 @@
             ],
             "title": "Cost Center"
           },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "cost_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Cost Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "created_at": {
             "format": "date-time",
@@ -7259,6 +7281,7 @@
           "completion_tokens",
           "usage_estimated",
           "cost_usd",
+          "cost_complete",
           "latency_ms",
           "pii_detected",
           "cost_center",

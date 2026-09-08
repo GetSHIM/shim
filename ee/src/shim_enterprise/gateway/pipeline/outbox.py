@@ -76,6 +76,7 @@ def audit_completion_intent(
             "audit_event_type": "completion",
             "lifecycle_status": lifecycle_status,
             "usage_estimated": estimated,
+            "pricing_resolution": _pricing_resolution(spend_event),
             **{
                 field: (lifecycle.lifecycle_metadata or {}).get(field)
                 for field in _DIAGNOSTIC_FIELDS
@@ -177,6 +178,7 @@ def analytics_terminal_intent(
         "cost_usd": float(
             spend_event.cost_usd if spend_event is not None else Decimal("0")
         ),
+        "pricing_resolution": _pricing_resolution(spend_event),
         "lifecycle_status": lifecycle_status,
         "usage_estimated": quota_event.estimated
         or (spend_event is not None and spend_event.estimated),
@@ -201,3 +203,11 @@ _DIAGNOSTIC_FIELDS = (
     "system_prompt_hash",
     "deployment_kind",
 )
+
+
+def _pricing_resolution(spend_event: Any | None) -> str | None:
+    if spend_event is None or spend_event.event_type != "spend_settlement":
+        return None
+    return ((spend_event.event_metadata or {}).get("pricing") or {}).get(
+        "pricing_resolution"
+    )

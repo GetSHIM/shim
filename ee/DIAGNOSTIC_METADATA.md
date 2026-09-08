@@ -85,6 +85,23 @@ old outbox messages read as null without invented backfills. The community
 JSONL event also contains them, with `system_prompt_hash: null` because community
 has no configured installation hashing key.
 
+## Unpriced deployment costs
+
+An unknown deployment price is not a free request. A terminal spend settlement
+marked `event_metadata.pricing.pricing_resolution = "unknown"` is exposed by the
+request API as `cost_usd: null` and `cost_complete: false`; CSV exports use an
+empty cost cell and `cost_complete: False`. The request summary reports
+`unpriced_requests`, `cost_complete`, and a `settled_spend_usd` subtotal containing
+only priced settlements. These checks read the tenant-scoped ledger directly,
+so missing projection metadata cannot turn an unknown settlement into zero.
+
+Analytics `details` and audit completion `extra` also carry `pricing_resolution`.
+Their existing numeric cost fields reflect the ledger placeholder when it is
+unknown; consumers must inspect that marker. Refunds and requests without a
+spend settlement have known settled cost zero. Pricing completeness does not
+claim provider-invoice accuracy or actual token measurement; `usage_estimated`
+continues to describe token fallback independently.
+
 To verify the contract, run the streaming/community tests and
 `ee/tests/gateway/kernel/test_accounting_coordinator.py` plus
 `ee/tests/gateway/api/test_management.py` against disposable PostgreSQL/Redis.
