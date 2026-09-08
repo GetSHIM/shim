@@ -197,6 +197,8 @@ enterprise = [
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
   "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
+  "ee/deploy/test/fixtures.py",
+  "ee/deploy/test/run.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/offline_bundle.py",
   "ee/scripts/sign_license.py",

@@ -1,0 +1,75 @@
+name: Isolated on-prem chart smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      dashboard_image:
+        description: Prebuilt OIDC dashboard image with immutable sha256 digest (runner must have pull access)
+        type: string
+        required: true
+      dashboard_version:
+        description: Dashboard source commit/version recorded for this acceptance run
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          enable-cache: false
+      - name: Install pinned local cluster tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location -o kind-linux-amd64 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          curl --fail --silent --show-error --location -o kind-linux-amd64.sha256sum https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum
+          sha256sum --check kind-linux-amd64.sha256sum
+          sudo install -m 0755 kind-linux-amd64 /usr/local/bin/kind
+          curl --fail --silent --show-error --location -o helm.tar.gz https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz
+          curl --fail --silent --show-error --location -o helm.sha256 https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz.sha256sum
+          mv helm.tar.gz helm-v4.2.4-linux-amd64.tar.gz
+          sha256sum --check helm.sha256
+          tar -xzf helm-v4.2.4-linux-amd64.tar.gz
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+          kubectl version --client
+      - name: Validate dashboard artifact and build enterprise runtime
+        env:
+          DASHBOARD_IMAGE: ${{ inputs.dashboard_image }}
+          DASHBOARD_VERSION: ${{ inputs.dashboard_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DASHBOARD_IMAGE" =~ @sha256:[0-9a-f]{64}$ ]]
+          docker pull "$DASHBOARD_IMAGE"
+          printf 'Dashboard source: %s\n' "$DASHBOARD_VERSION" >> "$GITHUB_STEP_SUMMARY"
+          docker build --network=default -f ee/Dockerfile --target runtime -t shim-enterprise:isolated-ci .
+      - name: Run real services on an internet-isolated cluster
+        env:
+          DASHBOARD_IMAGE: ${{ inputs.dashboard_image }}
+        run: |
+          uv run --locked --all-packages ruff check ee/deploy/test
+          uv run --locked --all-packages ruff format --check ee/deploy/test
+          uv run --locked --all-packages python ee/deploy/test/run.py --gateway-image shim-enterprise:isolated-ci --dashboard-image "$DASHBOARD_IMAGE"
+      - name: Save non-secret evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: isolated-chart-evidence
+          path: |
+            /tmp/shim-chart-smoke-*/result.json
+            /tmp/shim-chart-smoke-*/resources.txt
+          if-no-files-found: warn
