@@ -496,7 +496,7 @@ class DailyUsageView(BaseModel):
     request_count: int
     prompt_tokens: int
     completion_tokens: int
-    cost_usd: float
+    cost_usd: float | None
     unpriced_requests: int = 0
     cost_complete: bool = True
 
@@ -504,7 +504,7 @@ class DailyUsageView(BaseModel):
 class BillingUsageView(BaseModel):
     period: BillingPeriodView
     daily_usage: list[DailyUsageView]
-    total_cost: float
+    total_cost: float | None
     unpriced_requests: int = 0
     cost_complete: bool = True
 
@@ -675,7 +675,7 @@ class BillingBreakdownRow(BaseModel):
     request_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cost_usd: Decimal = Field(ge=0)
+    cost_usd: Decimal | None = Field(ge=0)
 
 
 class BillingBreakdownView(BaseModel):
@@ -2095,12 +2095,15 @@ async def billing_usage(
             ),
         )
     rows = [record.as_public_record() for record in records]
+    unpriced_requests = sum(record.unpriced_requests for record in records)
     return BillingUsageView(
         period=BillingPeriodView(start=start, end=end),
         daily_usage=[DailyUsageView.model_validate(row) for row in rows],
-        total_cost=sum(float(record.cost_usd) for record in records),
-        unpriced_requests=sum(record.unpriced_requests for record in records),
-        cost_complete=all(record.unpriced_requests == 0 for record in records),
+        total_cost=None
+        if unpriced_requests
+        else sum(float(record.cost_usd) for record in records),
+        unpriced_requests=unpriced_requests,
+        cost_complete=not unpriced_requests,
     )
 
 
@@ -2445,7 +2448,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
                 record.request_count,
                 record.prompt_tokens,
                 record.completion_tokens,
-                record.cost_usd,
+                None if record.unpriced_requests else record.cost_usd,
                 record.unpriced_requests,
                 record.unpriced_requests == 0,
             )
@@ -2501,7 +2504,7 @@ def _billing_breakdown_pdf(
                         str(record.prompt_tokens + record.completion_tokens),
                         str(record.cost_usd)
                         if record.unpriced_requests == 0
-                        else f"{record.cost_usd} (incomplete)",
+                        else f"Unknown ({record.unpriced_requests} unpriced)",
                     ]
                     for record in records
                 ],

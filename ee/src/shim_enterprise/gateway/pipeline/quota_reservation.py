@@ -111,7 +111,18 @@ def _system_prompt_hash(prepared: PreparedInference) -> str | None:
     if not material:
         return None
     canonical = json.dumps(
-        ["shim.system_prompt.v1", str(prepared.tenant_id), prepared.protocol, material],
+        [
+            "shim.system_prompt.v1",
+            str(prepared.tenant_id),
+            prepared.protocol,
+            {
+                "deployment_id": prepared.target.deployment_id
+                if prepared.target
+                else None,
+                "deployment_kind": prepared.deployment_kind,
+            },
+            material,
+        ],
         sort_keys=True,
         ensure_ascii=True,
         separators=(",", ":"),

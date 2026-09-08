@@ -52,7 +52,7 @@ facts or TTFT; the existing `usage_estimated` field describes accounting fallbac
 
 The enterprise quota reservation computes the digest before input privacy
 transformation. Hash material is the JSON array
-`["shim.system_prompt.v1", tenant_id, protocol, instructions]`:
+`["shim.system_prompt.v1", tenant_id, protocol, deployment, instructions]`:
 
 - Chat: only `role` and `content` from ordered system/developer messages.
 - Responses: explicit `instructions` and ordered system/developer `input` messages.
@@ -63,8 +63,11 @@ Canonical JSON sorts object keys, uses compact separators and ASCII escapes,
 and preserves array order, content whitespace, and Unicode without normalization.
 The HMAC key is `COMPLIANCE_HASH_SALT`, falling back to `SECRET_KEY`. Keep that
 key secret and unique per installation. Comparisons are scoped to that key,
-tenant, protocol, and algorithm version; changing the key ends comparability
-with earlier digests. Model names and user conversation content are excluded.
+tenant, protocol, deployment identity/kind, and algorithm version; changing the key ends comparability
+with earlier digests. The deployment scope uses its stable registry UUID and internal/external/unknown
+kind; unregistered requests use a null UUID. Alias, endpoint, upstream model and
+declared-version edits preserve comparability for the same deployment ID/kind.
+Model names and user conversation content are excluded.
 An explicitly empty instruction differs from an absent instruction. Provider-held
 prompts, previous responses, and cached instructions are not reconstructed.
 
@@ -98,6 +101,11 @@ so missing projection metadata cannot turn an unknown settlement into zero.
 Overview summary and trend costs are null whenever their period includes an
 unpriced settlement, with the same completeness flag and request count. Empty
 periods retain known zero costs.
+
+Billing daily and grouped rows expose null costs for groups with an unpriced
+settlement. Billing usage totals are also null when incomplete. CSV exports use
+empty cost cells plus completeness/count columns; PDF exports label those
+groups `Unknown` with the number of unpriced requests.
 
 Budget alerts retain a known-settlement subtotal in `current_usd` and label it
 `cost_basis: known_settled_spend`, with `cost_complete` and `unpriced_requests`.

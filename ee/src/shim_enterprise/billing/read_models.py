@@ -37,7 +37,7 @@ class DailyUsage:
             "request_count": self.request_count,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
-            "cost_usd": float(self.cost_usd),
+            "cost_usd": None if self.unpriced_requests else float(self.cost_usd),
             "unpriced_requests": self.unpriced_requests,
             "cost_complete": self.unpriced_requests == 0,
         }
@@ -61,7 +61,7 @@ class BillingBreakdown:
             "request_count": self.request_count,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
-            "cost_usd": self.cost_usd,
+            "cost_usd": None if self.unpriced_requests else self.cost_usd,
             "unpriced_requests": self.unpriced_requests,
             "cost_complete": self.unpriced_requests == 0,
         }

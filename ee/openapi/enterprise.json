@@ -1338,9 +1338,16 @@
             "type": "boolean"
           },
           "cost_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Cost Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "key": {
             "minLength": 1,
@@ -1450,8 +1457,15 @@
             "$ref": "#/components/schemas/BillingPeriodView"
           },
           "total_cost": {
-            "title": "Total Cost",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Cost"
           },
           "unpriced_requests": {
             "default": 0,
@@ -2505,8 +2519,15 @@
             "type": "boolean"
           },
           "cost_usd": {
-            "title": "Cost Usd",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "date": {
             "format": "date",

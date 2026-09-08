@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import csv
+import io
 from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -17,7 +20,11 @@ from shim_enterprise.billing.spend import BudgetEvaluator
 from shim_enterprise.core.config import settings
 from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
-from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
+from shim.gateway.kernel.result import (
+    PreparedInference,
+    ProviderTarget,
+    UNSPECIFIED_PROVIDER_MODEL,
+)
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPersistenceError,
     DurableAccountingCoordinator,
@@ -69,6 +76,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         model="gpt-5.6-luna",
         pricing_model="gpt-5.6-luna",
         target=None,
+        deployment_kind="unknown",
         unpriced=False,
         stream=False,
         context=SimpleNamespace(
@@ -154,6 +162,24 @@ def test_system_prompt_hash_is_keyed_scoped_and_excludes_conversation(
     monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
     prepared.tenant_id = uuid4()
     assert _system_prompt_hash(prepared) != original
+    prepared.target = ProviderTarget(
+        str(uuid4()), "https://one.invalid", "one", "secret", 30, "1"
+    )
+    prepared.deployment_kind = "internal"
+    deployment_hash = _system_prompt_hash(prepared)
+    prepared.model = "renamed-alias"
+    prepared.target = replace(
+        prepared.target,
+        base_url="https://two.invalid",
+        upstream_model="two",
+        declared_version="2",
+    )
+    assert _system_prompt_hash(prepared) == deployment_hash
+    prepared.target = replace(prepared.target, deployment_id=str(uuid4()))
+    assert _system_prompt_hash(prepared) != deployment_hash
+    deployment_hash = _system_prompt_hash(prepared)
+    prepared.deployment_kind = "external"
+    assert _system_prompt_hash(prepared) != deployment_hash
     prepared.payload = {"previous_response_id": "resp_inherited"}
     assert _system_prompt_hash(prepared) is None
 
@@ -1278,6 +1304,30 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     assert budget_usage.top_contributors[0]["cost_complete"] is (
         pricing_resolution != "unknown"
     )
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+    end = datetime.now(timezone.utc) + timedelta(days=1)
+    user = SimpleNamespace(organization_id=test_api_key.organization_id)
+    billing = await management.billing_usage(start, end, user, db)
+    expected_cost = None if pricing_resolution == "unknown" else 0.00004
+    assert billing.total_cost == expected_cost
+    assert billing.daily_usage[0].cost_usd == expected_cost
+    assert billing.cost_complete is (pricing_resolution != "unknown")
+    assert billing.unpriced_requests == (pricing_resolution == "unknown")
+    breakdown = await management.billing_breakdown(start, end, "model", 100, user, db)
+    assert breakdown.rows[0].cost_usd == (
+        None if pricing_resolution == "unknown" else Decimal("0.00004")
+    )
+    exported = await management.export_billing_breakdown(
+        start, end, "model", "csv", user, db
+    )
+    csv_row = next(
+        csv.DictReader(io.StringIO(bytes(exported.body).decode("utf-8-sig")))
+    )
+    assert csv_row["cost_usd"] == (
+        "" if pricing_resolution == "unknown" else "0.00004000"
+    )
+    assert csv_row["cost_complete"] == str(pricing_resolution != "unknown")
+    assert csv_row["unpriced_requests"] == str(int(pricing_resolution == "unknown"))
     assert page.total == 1
     assert page.items[0].cost_complete is (pricing_resolution != "unknown")
     assert page.summary.cost_complete is (pricing_resolution != "unknown")
