@@ -72,12 +72,14 @@ class StreamMeter:
         output_hash_salt: str | None = None,
         started_at_monotonic: float | None = None,
         monotonic_clock: Callable[[], float] = perf_counter,
+        unpriced: bool = False,
     ) -> None:
         if prompt_tokens_estimated < 0:
             raise ValueError("stream token estimates must be nonnegative")
         if expected_candidates < 1:
             raise ValueError("expected stream candidates must be positive")
         self.provider = provider
+        self.unpriced = unpriced
         self.requested_model = requested_model
         self.prompt_tokens_estimated = prompt_tokens_estimated
         self.expected_candidates = expected_candidates
@@ -157,6 +159,7 @@ class StreamMeter:
             prompt,
             completion,
             provider=self.provider,
+            unpriced=self.unpriced,
         )
         return StreamUsageSnapshot(
             prompt_tokens=prompt,
@@ -168,6 +171,7 @@ class StreamMeter:
                 self.provider,
                 input_tokens=prompt,
                 output_tokens=completion,
+                unpriced=self.unpriced,
             ),
             estimated=estimated,
             output_hash=(

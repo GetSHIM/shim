@@ -116,13 +116,14 @@ class ResponsePostprocessor:
             and lifecycle_status == "completed"
             and isinstance(response_model, str)
             and DEFAULT_PRICE_BOOK.supports(response_model, provider)
-            else prepared.model
+            else prepared.pricing_model
         )
         settlement_cost = compute_cost_usd(
             settlement_model,
             prompt_tokens,
             completion_tokens,
             provider=provider,
+            unpriced=prepared.unpriced,
         )
         if response.latency_ms is not None:
             labels = {
@@ -155,6 +156,7 @@ class ResponsePostprocessor:
                         provider,
                         input_tokens=prompt_tokens,
                         output_tokens=completion_tokens,
+                        unpriced=prepared.unpriced,
                     ),
                     estimated=not fully_actual,
                     provider_finish_reasons=native_finish_reasons(
@@ -220,7 +222,8 @@ class ResponsePostprocessor:
         return StreamSession(
             meter=StreamMeter(
                 provider=str(prepared.provider),
-                requested_model=prepared.model,
+                requested_model=prepared.pricing_model,
+                unpriced=prepared.unpriced,
                 prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
                 expected_candidates=candidate_count(prepared),
                 output_hash_salt=self.output_hash_salt,

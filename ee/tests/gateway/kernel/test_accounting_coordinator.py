@@ -65,6 +65,9 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         provider="openai",
         protocol="chat",
         model="gpt-5.6-luna",
+        pricing_model="gpt-5.6-luna",
+        target=None,
+        unpriced=False,
         stream=False,
         context=SimpleNamespace(
             audit_policy=SimpleNamespace(mode=audit_mode),
@@ -356,7 +359,7 @@ async def test_unspecified_reservation_is_conservative_and_nonnull() -> None:
     )
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
 
     await DurableAccountingCoordinator(
         repository=repository,
@@ -657,7 +660,7 @@ async def test_provider_start_session_closes_before_provider_execution() -> None
 @pytest.mark.asyncio
 async def test_nonstream_settlement_uses_the_priced_response_model() -> None:
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(
@@ -681,7 +684,7 @@ async def test_nonstream_settlement_uses_the_priced_response_model() -> None:
 @pytest.mark.asyncio
 async def test_nonstream_settlement_does_not_trust_a_cheaper_response_model() -> None:
     prepared = _prepared()
-    prepared.model = "gpt-5.6"
+    prepared.model = prepared.pricing_model = "gpt-5.6"
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(
@@ -705,7 +708,7 @@ async def test_failed_response_without_a_requested_model_uses_conservative_price
     None
 ):
     prepared = _prepared()
-    prepared.model = UNSPECIFIED_PROVIDER_MODEL
+    prepared.model = prepared.pricing_model = UNSPECIFIED_PROVIDER_MODEL
     usage = SimpleNamespace(finalize=AsyncMock())
 
     await _postprocessor(usage).finalize(

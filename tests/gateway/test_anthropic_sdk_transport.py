@@ -36,6 +36,8 @@ settings = CommunitySettings(_env_file=None)
 def _prepared(payload: dict, mapping: dict[str, str] | None = None):
     return SimpleNamespace(
         payload=payload,
+        protocol="messages",
+        target=None,
         tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),
         stream=bool(payload.get("stream")),
         privacy=PrivacyOutcome(

@@ -358,6 +358,7 @@ class ProviderSecret(Base, TimestampMixin):
 
     __tablename__ = "provider_secrets"
     __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_provider_secrets_tenant_id"),
         CheckConstraint(
             "monthly_limit_usd IS NULL OR monthly_limit_usd >= 0",
             name="ck_provider_secret_monthly_limit",
@@ -385,3 +386,59 @@ class ProviderSecret(Base, TimestampMixin):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
+
+
+class ModelDeployment(Base, TimestampMixin):
+    """Tenant-owned alias bound to an administrator-approved serving endpoint."""
+
+    __tablename__ = "model_deployments"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "alias", name="uq_model_deployments_tenant_alias"
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "provider_secret_id"],
+            ["provider_secrets.organization_id", "provider_secrets.id"],
+            ondelete="RESTRICT",
+            name="fk_model_deployments_tenant_secret",
+        ),
+        CheckConstraint(
+            "provider IN ('openai', 'anthropic')", name="ck_model_deployments_provider"
+        ),
+        CheckConstraint(
+            "deployment_kind IN ('internal', 'external')",
+            name="ck_model_deployments_kind",
+        ),
+        CheckConstraint(
+            "health IN ('unknown', 'healthy', 'unhealthy')",
+            name="ck_model_deployments_health",
+        ),
+        CheckConstraint(
+            "timeout_seconds BETWEEN 1 AND 300", name="ck_model_deployments_timeout"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    alias: Mapped[str] = mapped_column(String(200), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    upstream_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    provider_secret_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), nullable=False
+    )
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    deployment_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    declared_version: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner: Mapped[str] = mapped_column(String(200), nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    health: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

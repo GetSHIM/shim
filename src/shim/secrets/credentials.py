@@ -65,6 +65,8 @@ class ProviderCredentialResolver(Protocol):
         self,
         tenant_id: TenantId,
         credential: EphemeralProviderCredential | None,
+        *,
+        reference: str | None = None,
     ) -> str | None: ...
 
 
@@ -87,8 +89,12 @@ class EnvironmentProviderCredentialResolver:
         self,
         tenant_id: TenantId,
         credential: EphemeralProviderCredential | None,
+        *,
+        reference: str | None = None,
     ) -> str | None:
         del tenant_id
+        if reference is not None:
+            raise ValueError("local credentials do not support managed references")
         if credential is not None and credential.provider != self.provider:
             raise ValueError("credential does not match the selected provider")
         injected = credential.consume() if credential is not None else None

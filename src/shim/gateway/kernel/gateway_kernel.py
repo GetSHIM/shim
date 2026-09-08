@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 import logging
 from typing import Any
 
@@ -54,6 +54,8 @@ class GatewayKernel:
         usage: UsageLifecycle,
         heartbeat_interval_seconds: float = 30,
         output_hash_salt: str | None = None,
+        prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
+        | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -71,6 +73,7 @@ class GatewayKernel:
         )
         self.chain_store = chain_store
         self.policy_resolver = policy_resolver
+        self.prepare_inference = prepare_inference
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -131,6 +134,23 @@ class GatewayKernel:
             if authenticate_stage.prepared is not None:
                 await self.usage.reject(authenticate_stage.prepared)
             raise
+        if self.prepare_inference is not None:
+            try:
+                prepared = await self.prepare_inference(prepared)
+            except BaseException:
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "deployment.registry",
+                        stage="admission",
+                        outcome="error",
+                        reason_code="DEPLOYMENT_REGISTRY_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
+                raise
+
         if prepared_observer is not None:
             prepared_observer(prepared)
         admission_stage = AdmissionStage(

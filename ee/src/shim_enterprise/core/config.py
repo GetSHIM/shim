@@ -14,6 +14,10 @@ from shim.core.community_config import CommunitySettings
 
 
 class Settings(CommunitySettings):
+    MODEL_DEPLOYMENT_REQUIRED: bool = False
+    MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
+    MODEL_DEPLOYMENT_CA_BUNDLE: str | None = None
+
     API_PREFIX: Literal["/api/v1"] = "/api/v1"
 
     DATABASE_URL: str

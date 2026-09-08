@@ -51,6 +51,7 @@ class OpenAIExecution:
         *,
         credential_resolver: ProviderCredentialResolver,
         circuit: CircuitBreaker,
+        circuit_for_target: Callable[[str], CircuitBreaker] | None = None,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
         chain_store: PrivacyContinuationStore,
@@ -61,6 +62,7 @@ class OpenAIExecution:
         self.http_client = http_client
         self.chain_store = chain_store
         self.circuit = circuit
+        self.circuit_for_target = circuit_for_target
         self.settings = settings
         self.timeout = httpx.Timeout(
             connect=settings.OPENAI_CONNECT_TIMEOUT_SECONDS,
@@ -76,30 +78,44 @@ class OpenAIExecution:
         prepared: PreparedInference,
         provider_start_callback: Callable[[], Awaitable[None]],
     ) -> ProviderNonStream | ProviderStream:
+        circuit = (
+            self.circuit_for_target(prepared.target.base_url)
+            if prepared.target is not None and self.circuit_for_target is not None
+            else self.circuit
+        )
         if prepared.privacy is None:
             raise RuntimeError("privacy stage must run before OpenAI execution")
         try:
             api_key = await self.credential_resolver.resolve(
                 prepared.tenant_id,
                 invocation.provider_credential,
+                **(
+                    {"reference": prepared.target.credential_reference}
+                    if prepared.target
+                    else {}
+                ),
             )
         except Exception:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
             raise _error(503, "PROVIDER_NOT_CONFIGURED", False)
-        if not await self.circuit.acquire_call():
+        if not await circuit.acquire_call():
             raise _error(503, "PROVIDER_UNAVAILABLE", True)
         try:
             client = AsyncOpenAI(
                 api_key=api_key,
-                base_url=self.settings.OPENAI_BASE_URL or "https://api.openai.com/v1",
-                timeout=self.timeout,
+                base_url=prepared.target.base_url
+                if prepared.target
+                else (self.settings.OPENAI_BASE_URL or "https://api.openai.com/v1"),
+                timeout=prepared.target.timeout_seconds
+                if prepared.target
+                else self.timeout,
                 max_retries=0,
                 http_client=self.http_client,
             )
             await provider_start_callback()
         except BaseException:
-            await self.circuit.release_probe()
+            await circuit.release_probe()
             raise
         try:
             create = (
@@ -116,10 +132,10 @@ class OpenAIExecution:
                 kwargs["extra_headers"] = headers
             result = await create(**kwargs)
         except asyncio.CancelledError:
-            await self.circuit.release_probe()
+            await circuit.release_probe()
             raise
         except Exception as exc:
-            await self._record_error(exc)
+            await self._record_error(exc, circuit)
             raise _public_error(exc) from None
 
         if prepared.stream:
@@ -137,12 +153,12 @@ class OpenAIExecution:
                     pass
                 finally:
                     if not state["recorded"]:
-                        await self.circuit.release_probe()
+                        await circuit.release_probe()
 
             events = (
-                self._responses_stream(result, prepared, state, close_stream)
+                self._responses_stream(result, prepared, state, close_stream, circuit)
                 if prepared.protocol == "responses"
-                else self._chat_stream(result, prepared, state, close_stream)
+                else self._chat_stream(result, prepared, state, close_stream, circuit)
             )
             return ProviderStream(
                 events=events,
@@ -154,7 +170,7 @@ class OpenAIExecution:
         if _is_openai_failure(payload) and not (
             prepared.protocol == "responses" and payload.get("status") == "failed"
         ):
-            await self.circuit.record_failure()
+            await circuit.record_failure()
             raise _error(
                 502,
                 "PROVIDER_UNAVAILABLE",
@@ -162,9 +178,9 @@ class OpenAIExecution:
                 request_id=getattr(result, "_request_id", None),
             )
         if prepared.protocol == "responses" and payload.get("status") == "failed":
-            await self.circuit.record_failure()
+            await circuit.record_failure()
         else:
-            await self.circuit.record_success()
+            await circuit.record_success()
         response_id = payload.get("id")
         if prepared.protocol == "responses" and isinstance(response_id, str):
             await self.chain_store.save(
@@ -190,6 +206,7 @@ class OpenAIExecution:
         prepared: PreparedInference,
         state: dict[str, bool],
         close_stream: Callable[[], Awaitable[None]],
+        circuit: CircuitBreaker,
     ) -> AsyncIterator[bytes]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
@@ -210,7 +227,7 @@ class OpenAIExecution:
                     )
                 if _is_openai_failure(payload) and event_type != "response.failed":
                     if not state["recorded"]:
-                        await self.circuit.record_failure()
+                        await circuit.record_failure()
                         state["recorded"] = True
                     yield _responses_error_event(
                         "PROVIDER_UNAVAILABLE",
@@ -237,15 +254,15 @@ class OpenAIExecution:
                     event_type in {"response.completed", "response.incomplete"}
                     and not state["recorded"]
                 ):
-                    await self.circuit.record_success()
+                    await circuit.record_success()
                     state["recorded"] = True
                 elif (
                     event_type in {"error", "response.failed"} and not state["recorded"]
                 ):
-                    await self.circuit.record_failure()
+                    await circuit.record_failure()
                     state["recorded"] = True
                 elif event_type == "response.cancelled" and not state["recorded"]:
-                    await self.circuit.record_success()
+                    await circuit.record_success()
                     state["recorded"] = True
                 yield encode_responses_event(restored)
                 if event_type in {
@@ -257,13 +274,13 @@ class OpenAIExecution:
                 }:
                     return
             if not state["recorded"]:
-                await self.circuit.record_failure()
+                await circuit.record_failure()
                 state["recorded"] = True
         except (asyncio.CancelledError, GeneratorExit):
             raise
         except PrivacyContinuationUnavailableError:
             if not state["recorded"]:
-                await self.circuit.record_success()
+                await circuit.record_success()
                 state["recorded"] = True
             yield _responses_error_event(
                 "PRIVACY_STATE_UNAVAILABLE",
@@ -271,7 +288,7 @@ class OpenAIExecution:
                 next_sequence_number,
             )
         except Exception as exc:
-            await self._record_error(exc)
+            await self._record_error(exc, circuit)
             state["recorded"] = True
             error = _public_error(exc)
             yield _responses_error_event(
@@ -288,6 +305,7 @@ class OpenAIExecution:
         prepared: PreparedInference,
         state: dict[str, bool],
         close_stream: Callable[[], Awaitable[None]],
+        circuit: CircuitBreaker,
     ) -> AsyncIterator[bytes]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
@@ -301,7 +319,7 @@ class OpenAIExecution:
                 payload = _dump_sdk(chunk)
                 if _is_openai_failure(payload):
                     if not state["recorded"]:
-                        await self.circuit.record_failure()
+                        await circuit.record_failure()
                         state["recorded"] = True
                     yield _chat_error_event(
                         _error(
@@ -314,14 +332,14 @@ class OpenAIExecution:
                     return
                 finished_choices.update(_finished_chat_choices(payload))
                 if len(finished_choices) >= expected_choices and not state["recorded"]:
-                    await self.circuit.record_success()
+                    await circuit.record_success()
                     state["recorded"] = True
                 restored = restorer.restore_chat_chunk(payload)
                 yield encode_data(restored)
             if len(finished_choices) >= expected_choices:
                 yield b"data: [DONE]\n\n"
             else:
-                await self.circuit.record_failure()
+                await circuit.record_failure()
                 state["recorded"] = True
                 yield _chat_error_event(_error(502, "PROVIDER_UNAVAILABLE", False))
         except (asyncio.CancelledError, GeneratorExit):
@@ -330,21 +348,21 @@ class OpenAIExecution:
             if state["recorded"] and not isinstance(exc, ValueError):
                 yield b"data: [DONE]\n\n"
                 return
-            await self._record_error(exc)
+            await self._record_error(exc, circuit)
             state["recorded"] = True
             yield _chat_error_event(_public_error(exc))
         finally:
             await close_stream()
 
-    async def _record_error(self, exc: Exception) -> None:
+    async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
         if (
             isinstance(exc, APIStatusError)
             and exc.status_code < 500
             and exc.status_code not in {408, 409, 429}
         ):
-            await self.circuit.record_success()
+            await circuit.record_success()
         else:
-            await self.circuit.record_failure()
+            await circuit.record_failure()
 
 
 def _dump_sdk(value: Any) -> dict[str, Any]:

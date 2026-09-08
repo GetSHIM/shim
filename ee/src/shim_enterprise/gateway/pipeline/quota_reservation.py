@@ -263,6 +263,11 @@ class AccountingPolicyLoader:
             .where(
                 ProviderSecret.organization_id == prepared.tenant_id,
                 ProviderSecret.provider == str(prepared.provider),
+                *(
+                    [ProviderSecret.id == UUID(prepared.target.credential_reference)]
+                    if prepared.target
+                    else []
+                ),
             )
             .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
             .limit(1)
@@ -423,10 +428,11 @@ class DurableAccountingCoordinator:
                 policy_version=policy.version,
             )
             estimated_cost = compute_cost_usd(
-                prepared.model,
+                prepared.pricing_model,
                 prepared.admission.estimated_input_tokens,
                 prepared.admission.maximum_output_tokens,
                 str(prepared.provider),
+                unpriced=prepared.unpriced,
             )
             input_hash = content_ref(
                 settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY,
@@ -439,13 +445,14 @@ class DurableAccountingCoordinator:
                 request_id=prepared.request_id,
                 requested_model=prepared.model,
                 provider=provider,
-                provider_model=prepared.model,
+                provider_model=prepared.pricing_model,
                 estimated_cost_usd=estimated_cost,
                 pricing_metadata=DEFAULT_PRICE_BOOK.resolved_price_metadata(
-                    prepared.model,
+                    prepared.pricing_model,
                     str(prepared.provider),
                     input_tokens=prepared.admission.estimated_input_tokens,
                     output_tokens=prepared.admission.maximum_output_tokens,
+                    unpriced=prepared.unpriced,
                 ),
                 cache_status="bypass",
                 audit_policy_mode=prepared.context.audit_policy.mode,
@@ -459,13 +466,15 @@ class DurableAccountingCoordinator:
                     for verdict in prepared.policy_verdicts
                 ),
             )
+            if prepared.unpriced and policy.monthly_limit_usd is not None:
+                raise SpendLimitExceeded("MODEL_PRICE_UNKNOWN")
             result = await self.repository.reserve_provider_spend(
                 session,
                 command,
             )
             await session.commit()
             return result
-        except SpendLimitExceeded:
+        except SpendLimitExceeded as exc:
             await session.rollback()
             if command is None:
                 raise
@@ -473,7 +482,9 @@ class DurableAccountingCoordinator:
                 "spend.provider_monthly",
                 stage="provider_spend",
                 outcome="deny",
-                reason_code="SPEND_LIMIT_EXCEEDED",
+                reason_code="MODEL_PRICE_UNKNOWN"
+                if str(exc) == "MODEL_PRICE_UNKNOWN"
+                else "SPEND_LIMIT_EXCEEDED",
                 policy_version=command.policy.version,
             )
             command = replace(

@@ -712,6 +712,7 @@ def test_billing_exports_render_safe_csv_and_pdf() -> None:
         prompt_tokens=20,
         completion_tokens=5,
         cost_usd=Decimal("0.12345678"),
+        unpriced_requests=0,
     )
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)

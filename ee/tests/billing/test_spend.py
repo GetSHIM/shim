@@ -513,6 +513,7 @@ async def test_billing_breakdown_is_tenant_scoped_and_exact(
                     prompt_tokens=20,
                     completion_tokens=5,
                     cost_usd=Decimal("0.12345678"),
+                    unpriced_requests=0,
                 )
             ]
         )

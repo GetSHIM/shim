@@ -18,7 +18,7 @@ forbidden_public_import_roots = [
 # Exact community symbols consumed by enterprise runtime code. Any new entry is
 # a deliberate expansion of the supported cross-license API.
 [enterprise_public_api]
-"shim.api.v1.chat" = ["router"]
+"shim.api.v1.chat" = ["model_record", "router"]
 "shim.api.v1.gemini" = ["router"]
 "shim.api.v1.messages" = ["router"]
 "shim.api.v1.responses" = ["router"]
@@ -54,7 +54,7 @@ forbidden_public_import_roots = [
   "validate_actor_identity",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
-"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference"]
+"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "UNSPECIFIED_PROVIDER_MODEL"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
 "shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
@@ -196,6 +196,7 @@ enterprise = [
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
+  "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/sign_license.py",
   "ee/src/shim_enterprise/__init__.py",
@@ -297,6 +298,7 @@ enterprise = [
   "ee/src/shim_enterprise/shared_results/models.py",
   "ee/src/shim_enterprise/tenants/__init__.py",
   "ee/src/shim_enterprise/tenants/audit.py",
+  "ee/src/shim_enterprise/tenants/deployments.py",
   "ee/src/shim_enterprise/tenants/models.py",
   "ee/src/shim_enterprise/tenants/oidc.py",
   "ee/src/shim_enterprise/tenants/plans.py",
@@ -343,6 +345,7 @@ enterprise = [
   "ee/tests/secrets/test_store.py",
   "ee/tests/secrets/test_vault.py",
   "ee/tests/shared_results/test_api.py",
+  "ee/tests/tenants/test_deployments.py",
   "ee/tests/tenants/test_oidc.py",
   "ee/tests/tenants/test_plans.py",
   "ee/tests/tenants/test_policy.py",

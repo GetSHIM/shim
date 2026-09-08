@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+from uuid import UUID
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -212,11 +213,13 @@ class ManagedProviderCredentialResolver:
         self,
         tenant_id: TenantId,
         credential: EphemeralProviderCredential | None,
+        *,
+        reference: str | None = None,
     ) -> str | None:
         if credential is not None and credential.provider != self.provider:
             raise ValueError("credential does not match the selected provider")
         injected = credential.consume() if credential is not None else None
-        if injected:
+        if injected and reference is None:
             return injected
 
         from shim_enterprise.tenants.models import ProviderSecret
@@ -229,6 +232,11 @@ class ManagedProviderCredentialResolver:
                         .where(
                             ProviderSecret.organization_id == tenant_id,
                             ProviderSecret.provider == self.provider,
+                            *(
+                                [ProviderSecret.id == UUID(reference)]
+                                if reference is not None
+                                else []
+                            ),
                         )
                         .order_by(
                             desc(ProviderSecret.created_at), desc(ProviderSecret.id)

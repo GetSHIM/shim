@@ -28,6 +28,7 @@ class DailyUsage:
     prompt_tokens: int
     completion_tokens: int
     cost_usd: Decimal
+    unpriced_requests: int = 0
 
     def as_public_record(self) -> dict[str, object]:
         return {
@@ -37,6 +38,8 @@ class DailyUsage:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cost_usd": float(self.cost_usd),
+            "unpriced_requests": self.unpriced_requests,
+            "cost_complete": self.unpriced_requests == 0,
         }
 
 
@@ -50,6 +53,7 @@ class BillingBreakdown:
     prompt_tokens: int
     completion_tokens: int
     cost_usd: Decimal
+    unpriced_requests: int = 0
 
     def as_public_record(self) -> dict[str, object]:
         return {
@@ -58,6 +62,8 @@ class BillingBreakdown:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "cost_usd": self.cost_usd,
+            "unpriced_requests": self.unpriced_requests,
+            "cost_complete": self.unpriced_requests == 0,
         }
 
 
@@ -81,10 +87,26 @@ class BillingReadModels:
         # are additional provenance facts and must not count the request twice.
         is_usage = UsageLedger.event_type == "quota_settlement"
         is_spend = UsageLedger.event_type == "spend_settlement"
+        unpriced_requests = func.sum(
+            case(
+                (
+                    is_spend
+                    & (
+                        UsageLedger.event_metadata["pricing"][
+                            "pricing_resolution"
+                        ].as_string()
+                        == "unknown"
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ).label("unpriced_requests")
         usage_date = func.date(func.timezone("UTC", UsageLedger.created_at))
         statement = (
             select(
                 usage_date.label("usage_date"),
+                unpriced_requests,
                 UsageLedger.requested_model.label("model"),
                 func.sum(case((is_usage, UsageLedger.request_count), else_=0)).label(
                     "request_count"
@@ -118,6 +140,7 @@ class BillingReadModels:
                 prompt_tokens=int(row.prompt_tokens or 0),
                 completion_tokens=int(row.completion_tokens or 0),
                 cost_usd=Decimal(str(row.cost_usd or 0)),
+                unpriced_requests=int(row.unpriced_requests or 0),
             )
             for row in rows
         ]
@@ -184,6 +207,21 @@ class BillingReadModels:
 
         is_usage = UsageLedger.event_type == "quota_settlement"
         is_spend = UsageLedger.event_type == "spend_settlement"
+        unpriced_requests = func.sum(
+            case(
+                (
+                    is_spend
+                    & (
+                        UsageLedger.event_metadata["pricing"][
+                            "pricing_resolution"
+                        ].as_string()
+                        == "unknown"
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        ).label("unpriced_requests")
         request_count = func.sum(
             case((is_usage, UsageLedger.request_count), else_=0)
         ).label("request_count")
@@ -199,6 +237,7 @@ class BillingReadModels:
         statement = (
             select(
                 group_key.label("key"),
+                unpriced_requests,
                 request_count,
                 prompt_tokens,
                 completion_tokens,
@@ -225,6 +264,7 @@ class BillingReadModels:
                 prompt_tokens=int(row.prompt_tokens or 0),
                 completion_tokens=int(row.completion_tokens or 0),
                 cost_usd=Decimal(str(row.cost_usd or 0)),
+                unpriced_requests=int(row.unpriced_requests or 0),
             )
             for row in rows
         ]

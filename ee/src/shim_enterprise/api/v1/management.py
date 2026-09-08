@@ -68,6 +68,7 @@ from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import (
     ApiKey,
+    ModelDeployment,
     OrganizationInvite,
     Organization,
     ProviderSecret,
@@ -75,6 +76,10 @@ from shim_enterprise.tenants.models import (
     Team,
     TeamMembership,
     User,
+)
+from shim_enterprise.tenants.deployments import (
+    require_model_aliases,
+    validate_deployment_url,
 )
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
 from shim_enterprise.tenants.teams import member_team_ids, require_team
@@ -492,12 +497,16 @@ class DailyUsageView(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     cost_usd: float
+    unpriced_requests: int = 0
+    cost_complete: bool = True
 
 
 class BillingUsageView(BaseModel):
     period: BillingPeriodView
     daily_usage: list[DailyUsageView]
     total_cost: float
+    unpriced_requests: int = 0
+    cost_complete: bool = True
 
 
 KNOWN_REQUEST_ACTIVITY_STATUSES = (
@@ -653,6 +662,8 @@ class OverviewDashboardView(BaseModel):
 
 
 class BillingBreakdownRow(BaseModel):
+    unpriced_requests: int = 0
+    cost_complete: bool = True
     key: str = Field(min_length=1)
     request_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
@@ -1223,6 +1234,7 @@ async def create_api_key(
         await require_team(session, user, payload.team_id)
     elif user.role == "member" and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
+    await require_model_aliases(session, _tenant_id(user), payload.allowed_models)
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -1287,6 +1299,8 @@ async def update_api_key(
         _require_role(user, "owner", "admin")
         if patch.team_id is not None:
             await require_team(session, user, patch.team_id, administer=True)
+    if "allowed_models" in patch.model_fields_set:
+        await require_model_aliases(session, _tenant_id(user), patch.allowed_models)
     for field, value in patch.model_dump(exclude_unset=True).items():
         setattr(api_key, field, value)
     await _audit(
@@ -2075,6 +2089,8 @@ async def billing_usage(
         period=BillingPeriodView(start=start, end=end),
         daily_usage=[DailyUsageView.model_validate(row) for row in rows],
         total_cost=sum(float(record.cost_usd) for record in records),
+        unpriced_requests=sum(record.unpriced_requests for record in records),
+        cost_complete=all(record.unpriced_requests == 0 for record in records),
     )
 
 
@@ -2375,7 +2391,15 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
-        ("key", "request_count", "prompt_tokens", "completion_tokens", "cost_usd")
+        (
+            "key",
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost_usd",
+            "unpriced_requests",
+            "cost_complete",
+        )
     )
     for record in records:
         writer.writerow(
@@ -2386,6 +2410,8 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
                 record.prompt_tokens,
                 record.completion_tokens,
                 record.cost_usd,
+                record.unpriced_requests,
+                record.unpriced_requests == 0,
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -2437,7 +2463,9 @@ def _billing_breakdown_pdf(
                         record.key,
                         str(record.request_count),
                         str(record.prompt_tokens + record.completion_tokens),
-                        str(record.cost_usd),
+                        str(record.cost_usd)
+                        if record.unpriced_requests == 0
+                        else f"{record.cost_usd} (incomplete)",
                     ]
                     for record in records
                 ],
@@ -2739,3 +2767,189 @@ def _validate_sync_window(start: datetime, end: datetime) -> None:
             status_code=422,
             detail="synchronous operations are limited to 31 days",
         )
+
+
+class ModelDeploymentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(
+        min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    )
+    provider: Literal["openai", "anthropic"]
+    upstream_model: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(min_length=1, max_length=2048)
+    provider_secret_id: UUID
+    timeout_seconds: int = Field(default=60, ge=1, le=300)
+    deployment_kind: Literal["internal", "external"]
+    declared_version: str = Field(min_length=1, max_length=200)
+    owner: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+
+    @field_validator("upstream_model", "declared_version", "owner")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("Value must be nonblank without surrounding whitespace")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def approved_destination(cls, value: str) -> str:
+        return validate_deployment_url(value)
+
+
+class ModelDeploymentView(ModelDeploymentInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("base_url")
+    @classmethod
+    def approved_destination(cls, value: str) -> str:
+        # Operators must still be able to inspect a now-disallowed deployment.
+        return value
+
+    id: UUID
+    health: Literal["unknown", "healthy", "unhealthy"]
+    health_checked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@router.get("/model-deployments", response_model=list[ModelDeploymentView])
+async def list_model_deployments(
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return (
+        (
+            await session.execute(
+                select(ModelDeployment)
+                .where(
+                    ModelDeployment.organization_id == _tenant_id(user),
+                )
+                .order_by(ModelDeployment.alias)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@router.post("/model-deployments", response_model=ModelDeploymentView, status_code=201)
+async def create_model_deployment(
+    payload: ModelDeploymentInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
+    if secret.provider != payload.provider:
+        raise HTTPException(422, detail="Credential provider does not match deployment")
+    row = ModelDeployment(organization_id=_tenant_id(user), **payload.model_dump())
+    session.add(row)
+    try:
+        await session.flush()
+        await _audit(session, user, "tenant.model_deployment_created", str(row.id))
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            409, detail="Model alias already exists or credential is unavailable"
+        ) from None
+    await session.refresh(row)
+    return row
+
+
+@router.put("/model-deployments/{deployment_id}", response_model=ModelDeploymentView)
+async def update_model_deployment(
+    deployment_id: UUID,
+    payload: ModelDeploymentInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await _owned_model_deployment(session, user, deployment_id)
+    secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
+    if secret.provider != payload.provider:
+        raise HTTPException(422, detail="Credential provider does not match deployment")
+    for field, value in payload.model_dump().items():
+        setattr(row, field, value)
+    row.health, row.health_checked_at = "unknown", None
+    try:
+        await _audit(session, user, "tenant.model_deployment_updated", str(row.id))
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            409, detail="Model alias already exists or credential is unavailable"
+        ) from None
+    await session.refresh(row)
+    return row
+
+
+@router.post(
+    "/model-deployments/{deployment_id}/health", response_model=ModelDeploymentView
+)
+async def check_model_deployment_health(
+    deployment_id: UUID,
+    request: Request,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await _owned_model_deployment(session, user, deployment_id)
+    secret = await _owned_provider_secret(session, user, row.provider_secret_id)
+    try:
+        base_url = validate_deployment_url(row.base_url)
+    except ValueError:
+        raise HTTPException(
+            503, detail="Deployment origin is no longer approved"
+        ) from None
+    checked_version = row.updated_at
+    secret_ref, provider, tenant_id = secret.secret_ref, row.provider, _tenant_id(user)
+    # Finish the read transaction before secret-store or provider I/O.
+    await session.commit()
+    healthy = False
+    try:
+        credential = await get_secret_store().get_secret(
+            TenantId(tenant_id),
+            SecretRef(secret_ref),
+            expected_purpose=f"provider:{provider}:api-key",
+        )
+        headers = (
+            {"Authorization": f"Bearer {credential}"}
+            if provider == "openai"
+            else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
+        )
+        path = "/models" if provider == "openai" else "/v1/models"
+        # Stream headers only: an unhealthy server cannot force an unbounded body read.
+        async with request.app.state.http_client.stream(
+            "GET", base_url + path, headers=headers, timeout=5, follow_redirects=False
+        ) as response:
+            healthy = response.status_code == 200
+    except (httpx.HTTPError, ValueError):
+        healthy = False
+    row = await _owned_model_deployment(session, user, deployment_id)
+    if row.updated_at != checked_version:
+        raise HTTPException(
+            409, detail="Deployment changed during health check; check again"
+        )
+    row.health = "healthy" if healthy else "unhealthy"
+    row.health_checked_at = datetime.now(timezone.utc)
+    await _audit(session, user, "tenant.model_deployment_health_checked", str(row.id))
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def _owned_model_deployment(
+    session: AsyncSession, user: User, deployment_id: UUID
+) -> ModelDeployment:
+    row = (
+        await session.execute(
+            select(ModelDeployment)
+            .where(
+                ModelDeployment.id == deployment_id,
+                ModelDeployment.organization_id == _tenant_id(user),
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, detail="Model deployment not found")
+    return row

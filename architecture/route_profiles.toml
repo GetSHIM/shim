@@ -13,6 +13,10 @@ community = [
   { method = "POST", path = "/v1beta/models/{model}:streamGenerateContent" },
 ]
 enterprise = [
+  { method = "GET", path = "/api/v1/management/model-deployments" },
+  { method = "POST", path = "/api/v1/management/model-deployments" },
+  { method = "PUT", path = "/api/v1/management/model-deployments/{deployment_id}" },
+  { method = "POST", path = "/api/v1/management/model-deployments/{deployment_id}/health" },
   { method = "DELETE", path = "/api/v1/compliance/connectors/{connector_id}" },
   { method = "DELETE", path = "/api/v1/compliance/forward-targets/{target_id}" },
   { method = "DELETE", path = "/api/v1/compliance/oversight/policies/{policy_id}" },

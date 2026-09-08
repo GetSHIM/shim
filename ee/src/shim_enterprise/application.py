@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 import logging
 
 import httpx
+import ssl
+from hashlib import sha256
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
@@ -46,6 +48,7 @@ from shim_enterprise.secrets.store import (
 )
 from shim_enterprise.services.gateway.enterprise import EnterpriseGatewayService
 from shim_enterprise.tenants.oidc import install_oidc
+from shim_enterprise.tenants.deployments import DeploymentResolver
 from shim_enterprise.tenants.policy import (
     TenantPolicyService,
     TenantRequestPolicyResolver,
@@ -89,6 +92,7 @@ def create_enterprise_app() -> FastAPI:
     )
     install_oidc(application)
     application.state.cache = cache
+    application.state.model_catalog = DeploymentResolver(AsyncSessionLocal).catalog
     application.state.gateway_authenticator = DatabaseGatewayAuthenticator(
         AsyncSessionLocal
     )
@@ -126,7 +130,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         write=settings.OPENAI_WRITE_TIMEOUT_SECONDS,
         pool=settings.OPENAI_POOL_TIMEOUT_SECONDS,
     )
-    http_client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+    http_client = httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=False,
+        verify=ssl.create_default_context(cafile=settings.MODEL_DEPLOYMENT_CA_BUNDLE),
+    )
     application.state.http_client = http_client
     pii_scrubber = PIIScrubberService()
     application.state.gateway_service = EnterpriseGatewayService(
@@ -167,6 +175,9 @@ def _create_gateway_kernel(
                     "openai", secret_store, AsyncSessionLocal
                 ),
                 circuit=RedisCircuitBreaker("openai", cache=cache),
+                circuit_for_target=lambda url: RedisCircuitBreaker(
+                    "openai-" + sha256(url.encode()).hexdigest()[:40], cache=cache
+                ),
                 settings=settings,
                 chain_store=chain_store,
                 **dependencies,
@@ -176,6 +187,9 @@ def _create_gateway_kernel(
                     "anthropic", secret_store, AsyncSessionLocal
                 ),
                 circuit=RedisCircuitBreaker("anthropic", cache=cache),
+                circuit_for_target=lambda url: RedisCircuitBreaker(
+                    "anthropic-" + sha256(url.encode()).hexdigest()[:40], cache=cache
+                ),
                 settings=settings,
                 **dependencies,
             ),
@@ -190,6 +204,7 @@ def _create_gateway_kernel(
         },
         chain_store=chain_store,
         policy_resolver=policy_resolver,
+        prepare_inference=DeploymentResolver(AsyncSessionLocal).resolve,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
         loop_repeat_limit=settings.LOOP_REPEAT_LIMIT,

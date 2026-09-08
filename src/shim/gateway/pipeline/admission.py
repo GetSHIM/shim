@@ -69,14 +69,19 @@ class AdmissionStage:
             and value.model == UNSPECIFIED_PROVIDER_MODEL
         )
         model_denied = (
-            not unspecified_openai_response_model
+            value.target is None
+            and not unspecified_openai_response_model
             and not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
         )
         value.record_verdict(
             "gateway.model_catalog",
             stage="admission",
-            outcome="deny" if model_denied else "allow",
-            reason_code="MODEL_NOT_PRICED" if model_denied else "MODEL_SUPPORTED",
+            outcome="skip"
+            if value.target is not None
+            else ("deny" if model_denied else "allow"),
+            reason_code="DEPLOYMENT_AUTHORIZED"
+            if value.target is not None
+            else ("MODEL_NOT_PRICED" if model_denied else "MODEL_SUPPORTED"),
             policy_version=DEFAULT_PRICE_BOOK.version,
         )
         if model_denied:
@@ -95,7 +100,7 @@ class AdmissionStage:
             else None
         )
         model_output_limit = DEFAULT_PRICE_BOOK.maximum_output_tokens(
-            value.model,
+            value.pricing_model,
             str(value.provider),
         )
         # Reserve the ceiling when omitted without changing provider defaults.

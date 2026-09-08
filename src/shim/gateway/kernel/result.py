@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import AwareDatetime, Field
 
 from shim.billing.pricing import (
+    DEFAULT_PRICE_BOOK,
     UNSPECIFIED_PROVIDER_MODEL as UNSPECIFIED_PROVIDER_MODEL,
 )
 from shim.gateway.contracts.context import GatewayContext
@@ -31,6 +32,18 @@ class PolicyVerdict(FrozenContractModel):
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
     effective_at: AwareDatetime
+
+
+@dataclass(frozen=True)
+class ProviderTarget:
+    """Operator-approved invocation destination; never populated from request JSON."""
+
+    deployment_id: str
+    base_url: str
+    upstream_model: str
+    credential_reference: str
+    timeout_seconds: float
+    declared_version: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +70,7 @@ class PreparedInference:
     admission: AdmissionState | None = None
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
+    target: ProviderTarget | None = None
     policy_verdicts: list[PolicyVerdict] = field(default_factory=list)
 
     def record_verdict(
@@ -85,6 +99,16 @@ class PreparedInference:
                 reason_code=reason_code,
                 effective_at=datetime.now(timezone.utc),
             )
+        )
+
+    @property
+    def pricing_model(self) -> str:
+        return self.target.upstream_model if self.target is not None else self.model
+
+    @property
+    def unpriced(self) -> bool:
+        return self.target is not None and not DEFAULT_PRICE_BOOK.supports(
+            self.pricing_model, str(self.provider)
         )
 
     @property
