@@ -78,7 +78,7 @@ class Organization(Base, TimestampMixin):
 
 
 class User(Base, TimestampMixin):
-    """Supabase-authenticated user projected into one mandatory tenant."""
+    """Authenticated identity projected into one mandatory tenant."""
 
     __tablename__ = "users"
     __table_args__ = (
@@ -86,6 +86,7 @@ class User(Base, TimestampMixin):
         CheckConstraint(
             "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_users_role"
         ),
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
         Index("ix_users_organization_id", "organization_id"),
     )
 
@@ -95,6 +96,8 @@ class User(Base, TimestampMixin):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
+    oidc_issuer: Mapped[str | None] = mapped_column(String(512))
+    oidc_subject: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     full_name: Mapped[str | None] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(

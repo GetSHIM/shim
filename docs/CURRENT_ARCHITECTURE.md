@@ -134,6 +134,11 @@ stream contracts while adding enterprise authentication and lifecycle policy.
 
 ### Authentication and provider credentials
 
+Enterprise OIDC and Vault deployment contracts are documented in
+[`ee/docs/ON_PREM_IDENTITY.md`](../ee/docs/ON_PREM_IDENTITY.md). The on-prem
+control plane uses configured issuer/subject identities and server-side Redis
+sessions; hosted Supabase remains a separate selected authentication mode.
+
 - OpenAI SDKs carry the shim key in `Authorization: Bearer ...`.
 - Anthropic SDKs carry the shim key in `x-api-key` on Anthropic routes.
 - `x-shim-key` is the explicit provider-independent gateway-key header.

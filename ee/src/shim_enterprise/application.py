@@ -45,6 +45,7 @@ from shim_enterprise.secrets.store import (
     get_secret_store,
 )
 from shim_enterprise.services.gateway.enterprise import EnterpriseGatewayService
+from shim_enterprise.tenants.oidc import install_oidc
 from shim_enterprise.tenants.policy import (
     TenantPolicyService,
     TenantRequestPolicyResolver,
@@ -86,6 +87,7 @@ def create_enterprise_app() -> FastAPI:
         RequestValidationError,
         gateway_exception_handler,
     )
+    install_oidc(application)
     application.state.cache = cache
     application.state.gateway_authenticator = DatabaseGatewayAuthenticator(
         AsyncSessionLocal

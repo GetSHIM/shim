@@ -300,7 +300,7 @@ class JwtIdentityVerifier:
 
     @staticmethod
     def _build_client() -> Any:
-        if not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
             raise RuntimeError("SUPABASE_KEY is required for JWT verification")
         from supabase import create_client
 

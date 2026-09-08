@@ -15,6 +15,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.database import AsyncSessionLocal, get_db
+from shim_enterprise.core.config import settings
+from shim_enterprise.tenants.oidc import current_oidc_user
 from shim.gateway.auth import authentication_error, select_gateway_credential
 from shim.gateway.contracts.ids import ApiKeyId, UserId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
@@ -201,6 +203,17 @@ async def get_scan_principal(
     """Authenticate scan callers without accepting caller-supplied tenancy."""
 
     token = select_gateway_credential(request.headers)
+    if settings.AUTH_MODE == "oidc" and (
+        token is None
+        or not token.startswith(API_KEY_PREFIX)
+        and "x-shim-key" not in request.headers
+    ):
+        user = await current_oidc_user(request, session, token)
+        return AuthenticatedPrincipal(
+            actor_type="user_jwt",
+            user_id=UserId(user.id),
+            authenticated_at=datetime.now(timezone.utc),
+        )
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -234,6 +247,7 @@ async def get_scan_principal(
 
 
 async def get_invite_user(
+    request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
@@ -243,6 +257,14 @@ async def get_invite_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if settings.AUTH_MODE == "oidc":
+        if "/invites" in request.url.path:
+            raise HTTPException(
+                403, "OIDC membership is managed by your identity provider"
+            )
+        return await current_oidc_user(
+            request, session, bearer.credentials if bearer else None
+        )
     if bearer is None:
         raise credentials_exception
 
@@ -254,10 +276,22 @@ async def get_invite_user(
 
 
 async def get_current_user(
+    request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
-    user = await get_invite_user(bearer, session)
+    user = await get_invite_user(request, bearer, session)
+    if (
+        user.role == "auditor"
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and (request.method, request.url.path)
+        not in {
+            ("POST", "/api/v1/compliance/audit/verify"),
+            ("POST", "/api/v1/compliance/reports/audit"),
+            ("POST", "/api/v1/compliance/reports/kvkk"),
+        }
+    ):
+        raise HTTPException(403, "Auditor access is read-only")
     if not user.is_active:
         logger.warning("Rejected deactivated user")
         raise HTTPException(
