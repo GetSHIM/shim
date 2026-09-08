@@ -154,7 +154,7 @@ never forwarded wholesale.
 | Provider | Current route family | Native stream terminal |
 | --- | --- | --- |
 | OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events |
-| Anthropic | `/v1/messages`, `/v1/models` | Native named events ending in `message_stop` |
+| Anthropic | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` | Messages use native named events ending in `message_stop`; token counting returns JSON |
 | Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
 
 OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
@@ -164,8 +164,16 @@ details that could contain credentials or PII are discarded. A stream failure
 after headers is emitted as a sanitized terminal event.
 
 `background=true` Responses requests remain unsupported because shim has no
-retrieval lifecycle with which to settle them safely. Explicit model IDs must
-exist in the checked-in model and price catalog.
+retrieval lifecycle with which to settle them safely. Community model IDs must exist in the checked-in model and price catalog.
+Enterprise can resolve tenant aliases through its approved deployment registry;
+`MODEL_DEPLOYMENT_REQUIRED=true` disables catalog fallback. Registry targets
+reuse the native executions with operator-approved destinations and stored
+credential references. Unpriced deployments remain explicit in accounting, and
+monetary caps reject them. See [`MODEL_DEPLOYMENTS.md`](../ee/docs/MODEL_DEPLOYMENTS.md).
+
+Anthropic token counting shares authentication, registry authorization and
+privacy transformation. It persists nonbillable enterprise audit preflight and
+completion without quota/spend reservations or inference lifecycle settlement.
 
 ## Physical ownership
 
