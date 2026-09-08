@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-dashboard
+  labels:
+    {{- include "shim.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: dashboard
+  template:
+    metadata:
+      labels:
+        {{- include "shim.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "shim.security" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dashboard
+          image: {{ required "dashboard.image is required" .Values.dashboard.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "shim.containerSecurity" . | nindent 12 }}
+          {{- with .Values.dashboard.existingSecret }}
+          envFrom:
+            - secretRef: {name: {{ . | quote }}}
+          {{- end }}
+          env:
+            - {name: HOSTNAME, value: "0.0.0.0"}
+            - {name: PORT, value: "3000"}
+            - {name: AUTH_MODE, value: oidc}
+            - {name: NEXT_TELEMETRY_DISABLED, value: "1"}
+            - name: SHIM_API_URL
+              value: {{ printf "http://%s-gateway:8000" .Release.Name | quote }}
+            {{- range $key, $value := .Values.dashboard.env }}
+            - name: {{ $key }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+            {{- if .Values.caBundleConfigMap }}
+            - {name: NODE_EXTRA_CA_CERTS, value: /var/run/shim-ca/ca.pem}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 3000}
+          startupProbe:
+            httpGet: {path: /login, port: http}
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: http}
+            periodSeconds: 15
+          resources: {{ toYaml .Values.dashboard.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: cache, mountPath: /app/.next/cache}
+            {{- if .Values.caBundleConfigMap }}
+            - {name: ca-bundle, mountPath: /var/run/shim-ca, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: cache
+          emptyDir: {sizeLimit: 256Mi}
+        {{- if .Values.caBundleConfigMap }}
+        - name: ca-bundle
+          configMap: {name: {{ .Values.caBundleConfigMap | quote }}}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-dashboard
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: dashboard
+  ports:
+    - {name: http, port: 3000, targetPort: http}

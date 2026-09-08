@@ -1,0 +1,102 @@
+{{- $root := . -}}
+{{- $processes := dict "gateway" true -}}
+{{- range $name, $enabled := .Values.workers -}}
+{{- $_ := set $processes $name $enabled -}}
+{{- end -}}
+{{- range $name, $enabled := $processes }}
+{{- if $enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $root.Release.Name }}-{{ $name | replace "_" "-" }}
+  labels:
+    {{- include "shim.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ if eq $name "gateway" }}{{ $root.Values.gateway.replicas }}{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "shim.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "shim.security" $root | nindent 8 }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $root.Values.migration.enabled }}
+      initContainers:
+        - name: schema-ready
+          image: {{ required "gateway.image is required" $root.Values.gateway.image | quote }}
+          command: [sh, -c]
+          args:
+            - >-
+              for attempt in $(seq 1 150); do
+                alembic -c ee/alembic.ini current --check-heads && exit 0;
+                sleep 2;
+              done; exit 1
+          securityContext:
+            {{- include "shim.containerSecurity" $root | nindent 12 }}
+          {{- include "shim.backendEnv" $root | nindent 10 }}
+          {{- include "shim.mounts" $root | nindent 10 }}
+      {{- end }}
+      containers:
+        - name: {{ $name | replace "_" "-" }}
+          image: {{ required "gateway.image is required" $root.Values.gateway.image | quote }}
+          imagePullPolicy: IfNotPresent
+          {{- if ne $name "gateway" }}
+          command: [python, -m, {{ printf "shim_enterprise.workers.%s" $name | quote }}]
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -m
+                - shim_enterprise.workers.readiness
+                - --path
+                - /tmp/shim-worker.json
+                - --worker
+                - {{ $name | quote }}
+                - --max-age-seconds
+                - {{ index $root.Values.workerReadinessMaxAgeSeconds $name | toString | quote }}
+            periodSeconds: 15
+            timeoutSeconds: 3
+          {{- else }}
+          ports:
+            - {name: http, containerPort: 8000}
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            failureThreshold: 30
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 15
+          {{- end }}
+          securityContext:
+            {{- include "shim.containerSecurity" $root | nindent 12 }}
+          {{- include "shim.backendEnv" $root | nindent 10 }}
+          {{- include "shim.mounts" $root | nindent 10 }}
+          resources: {{ toYaml $root.Values.gateway.resources | nindent 12 }}
+      {{- include "shim.volumes" $root | nindent 6 }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-gateway
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: gateway
+  ports:
+    - {name: http, port: 8000, targetPort: http}
