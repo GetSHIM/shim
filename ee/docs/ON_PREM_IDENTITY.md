@@ -26,6 +26,7 @@ remains available with `AUTH_MODE=supabase`; the OIDC path needs neither
 | `OIDC_ORGANIZATION_ID` | Operator-provisioned organization UUID |
 | `OIDC_GROUPS_CLAIM` | Top-level group array claim; defaults to `groups` |
 | `OIDC_GROUP_ROLE_MAP` | JSON, e.g. `{"/shim/owners":"owner","/shim/users":"member"}` |
+| `OIDC_TEAM_GROUP_MAP` | Optional JSON group-to-team mapping, e.g. `{"/shim/platform":{"team_id":"<UUID>","role":"team_admin"}}`; teams must already belong to the configured organization |
 | `OIDC_SESSION_SECONDS` | Absolute session lifetime; default 28,800, maximum 86,400 |
 | `OIDC_REVALIDATE_SECONDS` | Refresh/group revalidation interval; default 60, maximum 300 |
 | `OIDC_API_AUDIENCE` | Optional, distinct API audience for direct bearer access; absent disables it |
@@ -72,8 +73,20 @@ Recovery uses the customer's identity-provider administrator: restore access to
 a configured owner group, then sign in again. No local password backdoor,
 email invitation, or implicit first-user privilege escalation is added. Human
 OIDC session revocation and application API-key revocation are separate
-lifecycles; revoke workload keys through the administration API when retiring
-an integration.
+lifecycles: removing a human from IdP groups does not revoke workload keys they
+created. Revoke workload keys through the administration API when retiring an
+integration; local account deactivation also blocks its keys.
+
+To retire a person, a remaining organization owner calls
+`DELETE /api/v1/management/team/members/{user_id}` (with their own authenticated
+session and the dashboard Origin). This deactivates the local account and
+revokes every active key owned by that account in one transaction. It refuses
+to remove the last owner: provision another mapped owner first. Remove the
+person's IdP groups as well; later IdP login cannot reactivate the local account.
+To retire only an integration, call
+`DELETE /api/v1/management/api-keys/{api_key_id}`. Verify the retired key returns
+HTTP 401 on an authenticated gateway request before closing the offboarding
+record. A group-only change intentionally leaves workload keys usable.
 
 Keycloak: map a group-membership claim to both ID/access tokens and enable
 verified email for permitted users. Full group paths avoid colliding leaf names.

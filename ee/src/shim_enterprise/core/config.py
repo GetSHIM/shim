@@ -90,6 +90,23 @@ class Settings(CommunitySettings):
 
     model_config = SettingsConfigDict(env_file="ee/.env")
 
+    @field_validator("OIDC_TEAM_GROUP_MAP")
+    @classmethod
+    def validate_oidc_team_mapping(
+        cls, value: dict[str, dict[str, str]]
+    ) -> dict[str, dict[str, str]]:
+        for group, mapping in value.items():
+            if (
+                not group
+                or set(mapping) != {"team_id", "role"}
+                or mapping["role"] not in {"member", "team_admin"}
+            ):
+                raise ValueError(
+                    "OIDC team mappings require group, team_id, and member/team_admin role"
+                )
+            UUID(mapping["team_id"])
+        return value
+
     @field_validator("WORKER_HEARTBEAT_PATH")
     @classmethod
     def validate_heartbeat_path(cls, value: Path | None) -> Path | None:

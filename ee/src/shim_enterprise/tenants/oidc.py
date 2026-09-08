@@ -30,6 +30,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
 router = APIRouter(prefix="/auth", tags=["identity"])
 SESSION_COOKIE = "shim_session"
@@ -207,7 +208,9 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
     user.role = role
     try:
         await session.flush()
-        # Team synchronization is wired to the tenant-owned helper in T07.
+        await synchronize_oidc_teams(
+            session, user, groups, settings.OIDC_TEAM_GROUP_MAP
+        )
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
@@ -450,8 +453,11 @@ async def logout(request: Request) -> Response:
     if session_id:
         await _redis(request).delete(_session_key(session_id))
     request.session.clear()
-    client = await _client(request)
-    endpoint = (await client.load_server_metadata()).get("end_session_endpoint")
+    try:
+        client = await _client(request)
+        endpoint = (await client.load_server_metadata()).get("end_session_endpoint")
+    except (httpx.HTTPError, HTTPException, ValueError, OAuthError):
+        endpoint = None
     logout_url = (
         endpoint
         + "?"

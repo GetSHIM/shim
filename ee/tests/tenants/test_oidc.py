@@ -54,6 +54,8 @@ def test_oidc_configuration_needs_no_supabase(oidc_config):
     assert Settings(**values).SUPABASE_URL is None
     for invalid in (
         {"OIDC_GROUP_ROLE_MAP": {}},
+        {"OIDC_TEAM_GROUP_MAP": {"group": {"team_id": "invalid", "role": "member"}}},
+        {"OIDC_TEAM_GROUP_MAP": {"group": {"team_id": str(uuid4()), "role": "owner"}}},
         {"OIDC_API_AUDIENCE": "dashboard"},
         {"OIDC_REDIRECT_URI": "https://other.internal/api/v1/auth/callback"},
         {"AUTH_MODE": "supabase"},
@@ -64,7 +66,7 @@ def test_oidc_configuration_needs_no_supabase(oidc_config):
 
 @pytest.mark.asyncio
 async def test_identity_binding_role_removal_and_email_collision(
-    db, test_org, test_user_with_org, monkeypatch, oidc_config
+    db, test_org, test_user_with_org, test_tier, monkeypatch, oidc_config
 ):
     monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
     claims = dict(
@@ -91,8 +93,16 @@ async def test_identity_binding_role_removal_and_email_collision(
     ):
         with pytest.raises(HTTPException):
             await oidc.synchronize_user(db, claims | changed)
-    user.is_active = False
-    await db.flush()
+    from shim_enterprise.api.v1.management import remove_team_member
+    from shim_enterprise.tenants.service import authenticate_api_key, create_api_key
+
+    plaintext, _ = await create_api_key(db, user_id=user.id, name="workload")
+    with pytest.raises(HTTPException):
+        await oidc.synchronize_user(db, claims | {"groups": []})
+    assert await authenticate_api_key(db, plaintext) is not None
+    test_user_with_org.role = "owner"
+    await remove_team_member(user.id, test_user_with_org, db)
+    assert await authenticate_api_key(db, plaintext) is None
     with pytest.raises(HTTPException, match="inactive"):
         await oidc.synchronize_user(db, claims)
 
@@ -305,7 +315,55 @@ async def test_authorization_code_pkce_cookie_refresh_csrf_and_logout(
             )
             assert await cache.redis.get(key) is None
             assert (await browser.get("/api/v1/auth/session")).status_code == 401
+            browser.cookies.set(oidc.SESSION_COOKIE, "revoked-session")
+            monkeypatch.setattr(
+                oidc,
+                "_client",
+                AsyncMock(side_effect=httpx.ConnectError("IdP unavailable")),
+            )
+            response = await browser.post(
+                "/api/v1/auth/logout", headers={"origin": "https://shim.internal"}
+            )
+            assert response.status_code == 200 and response.json() == {
+                "logout_url": "/login"
+            }
+            assert "Max-Age=0" in response.headers["set-cookie"]
     finally:
         if key:
             await cache.redis.delete(key, key + ":refresh")
         await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_login_projects_and_removes_oidc_team_membership(
+    db, test_org, monkeypatch, oidc_config
+):
+    from sqlalchemy import select
+    from shim_enterprise.tenants.models import Team, TeamMembership
+
+    team = Team(id=uuid4(), organization_id=test_org.id, name="OIDC team")
+    db.add(team)
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_TEAM_GROUP_MAP",
+        {"/shim/team": {"team_id": str(team.id), "role": "team_admin"}},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="team-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members", "/shim/team"],
+    )
+    user = await oidc.synchronize_user(db, claims)
+    membership = await db.scalar(
+        select(TeamMembership).where(TeamMembership.user_id == user.id)
+    )
+    assert membership.role == "team_admin" and membership.source == "oidc"
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/members"]})
+    assert (
+        await db.scalar(select(TeamMembership).where(TeamMembership.user_id == user.id))
+        is None
+    )
