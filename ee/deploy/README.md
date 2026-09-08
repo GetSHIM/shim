@@ -161,6 +161,72 @@ For disaster recovery, restore the backup into a separate database, confirm its
 revision and integrity, restore the corresponding secrets, then test a compatible
 application before switching customer traffic. Rehearse this on disposable data.
 
+### PostgreSQL restore rehearsal
+
+Use a separate database and recovery application, leaving the source database and
+customer traffic untouched. These commands use PostgreSQL client tools matching
+the source server's major version. Configure private libpq service profiles
+(`~/.pg_service.conf`, mode 0600): `shim-source` for the source database,
+`shim-restore-admin` for a maintenance database with database-creation permission,
+and `shim-restored` for the new `shim_restore` database as the application owner
+`shim`. Put passwords in a private `~/.pgpass` or your credential helper; do not
+put them in command arguments. Use the customer's TLS verification settings in
+all three profiles. The application SQLAlchemy URL (`postgresql+asyncpg://...`)
+is not a libpq connection string.
+
+```sh
+umask 077
+PGSERVICE=shim-source pg_dump --format=custom --no-owner --no-acl \
+  --file=/secure/shim-before-upgrade.dump
+PGSERVICE=shim-source psql --no-psqlrc --tuples-only \
+  --command='SELECT version_num FROM alembic_version;'
+PGSERVICE=shim-restore-admin createdb --owner=shim shim_restore
+pg_restore --exit-on-error --no-owner --no-acl \
+  --dbname='service=shim-restored' /secure/shim-before-upgrade.dump
+PGSERVICE=shim-restored psql --no-psqlrc --tuples-only \
+  --command='SELECT version_num FROM alembic_version;'
+```
+
+The destination must be new and empty; do not add `--clean` against a live
+database. `pg_dump` takes a consistent logical snapshot while the source remains
+online. Record its time and archive checksum with the image digests and Alembic
+revision. This archive omits cluster-level roles, grants and tablespaces: restore
+those through customer database administration. Compare critical record counts
+and audit-chain verification with the captured source evidence; merely listing
+an archive or seeing `pg_restore` exit successfully is insufficient.
+
+Create recovery configuration pointing `DATABASE_URL` to `shim_restore`, with an
+isolated Redis instance or database index. Preserve the backed-up organization
+UUID, `SECRET_KEY`, any existing encryption key, and the corresponding Vault
+secret versions. Register a separate recovery dashboard/callback origin with
+the customer IdP, and provision its DNS, TLS, namespace secrets and permitted
+network destinations. Use the exact chart and application images recorded with
+the backup before testing an upgrade:
+
+```sh
+helm upgrade --install shim-restore ./chart --namespace shim-recovery \
+  --create-namespace --values /secure/restore-values.yaml \
+  --set migration.enabled=false --wait --timeout 10m
+kubectl -n shim-recovery exec deployment/shim-restore-gateway -- \
+  alembic -c ee/alembic.ini current --check-heads
+```
+
+The private restore values must name the recovery runtime Secret and recovery
+services; they must not reuse source database endpoints. Verify login, existing
+request/ledger/audit visibility, audit-chain verification, Vault-backed model
+access, and a new disposable workload key. Revoke that key after the test.
+Only then rehearse the new chart/images with migrations enabled and repeat the
+checks. An application rollback is a separate upgrade to previously verified,
+current-schema-compatible images with `migration.enabled=false`; it does not
+restore database contents. A successful same-schema restart does not establish
+compatibility across a future schema change.
+
+Keep the source installation available until recovery evidence is reviewed and
+traffic cutover is explicitly scheduled. Backups contain sensitive tenant data:
+retain or dispose of the private archive and recovery resources under customer
+policy. This logical database rehearsal does not test Vault disaster recovery,
+IdP recovery, point-in-time recovery, or a different PostgreSQL major version.
+
 Troubleshooting starts with `kubectl -n shim get pods,jobs`, the migration Job
 logs, and the affected process logs. Schema init failures mean the expected
 migration has not completed. Login failures usually indicate issuer/client/redirect,
