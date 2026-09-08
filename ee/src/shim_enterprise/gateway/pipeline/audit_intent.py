@@ -18,12 +18,13 @@ from shim.gateway.contracts.context import AuditPolicy
 from shim.gateway.contracts.ids import ApiKeyId, RequestId, TenantId, UserId
 from shim.gateway.contracts.inference import ScanVerdict
 from shim.gateway.contracts.principal import ActorType
+from shim.gateway.usage import UsageAuditPersistenceError
 from shim.observability.metrics import bounded_label
 from shim.observability.tracing import start_span
 from shim_enterprise.outbox.publisher import OutboxWriter
 
 
-class AuditIntentPersistenceError(RuntimeError):
+class AuditIntentPersistenceError(UsageAuditPersistenceError):
     """A required audit intent could not be persisted durably."""
 
 

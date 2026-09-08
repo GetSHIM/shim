@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.config import settings
 import shim.gateway.pipeline.postprocess as postprocess_module
-from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
+from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPersistenceError,
     DurableAccountingCoordinator,
@@ -57,7 +57,8 @@ from shim_enterprise.tenants.models import ApiKey, Organization, User
 
 
 def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
-    return SimpleNamespace(
+    prepared = SimpleNamespace(
+        policy_verdicts=[],
         tenant_id=uuid4(),
         api_key_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -79,6 +80,9 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             verification_map={},
         ),
     )
+
+    prepared.record_verdict = MethodType(PreparedInference.record_verdict, prepared)
+    return prepared
 
 
 def _failure_state(
@@ -553,6 +557,7 @@ async def test_urgent_reconciliation_signal_commits_short_transaction() -> None:
 async def test_privacy_facts_commit_before_openai_execution() -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     checked = SimpleNamespace(
+        policy_verdicts=[],
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(
@@ -568,7 +573,13 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
     ) as update_lifecycle:
         await DurableAccountingCoordinator().record_privacy(checked, session)
 
-    assert update_lifecycle.await_args.kwargs["values"] == {
+    values = dict(update_lifecycle.await_args.kwargs["values"])
+    assert "policy_verdicts" in str(
+        values.pop("lifecycle_metadata")
+        .compile(compile_kwargs={"literal_binds": False})
+        .params
+    )
+    assert values == {
         "privacy_status": "scrubbed",
         "pii_detected": True,
     }
@@ -828,6 +839,7 @@ async def test_failure_before_openai_start_refunds_reserved_money() -> None:
         spend_reserved=True,
         error_code="REQUEST_ABORTED",
         error_message="Request ended before a provider value was delivered.",
+        lifecycle_status="failed",
     )
 
 
@@ -856,6 +868,7 @@ async def test_provider_rejection_refunds_reserved_ceiling() -> None:
         spend_reserved=True,
         error_code="PROVIDER_UNAVAILABLE",
         error_message="The provider rejected the request without usage.",
+        lifecycle_status="failed",
     )
 
 
@@ -889,6 +902,7 @@ async def test_failure_after_openai_start_refunds_unverified_usage(
         spend_reserved=spend_reserved,
         error_code="PROVIDER_USAGE_UNAVAILABLE",
         error_message="Provider execution began but usage could not be verified.",
+        lifecycle_status="failed",
     )
 
 
@@ -961,6 +975,7 @@ async def test_admission_abort_skips_failure_state_and_refunds_quota_only() -> N
         spend_reserved=False,
         error_code="ADMISSION_ABORTED",
         error_message="Request ended before a provider value was delivered.",
+        lifecycle_status="failed",
     )
 
 

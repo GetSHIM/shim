@@ -21,7 +21,12 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderExecutionStage,
 )
 from shim.gateway.streaming import StreamSession
-from shim.gateway.usage import UsageFailureReason, UsageLifecycle, UsageLimitExceeded
+from shim.gateway.usage import (
+    UsageAuditPersistenceError,
+    UsageFailureReason,
+    UsageLifecycle,
+    UsageLimitExceeded,
+)
 from shim.observability.metrics import REQUESTS_TOTAL, bounded_label
 from shim.observability.tracing import start_span
 from shim.privacy.continuation import PrivacyContinuationStore
@@ -119,10 +124,13 @@ class GatewayKernel:
                 retryable=True,
                 provider=invocation.provider,
             )
-        prepared = await run_stage(
-            AuthenticateStage(self.policy_resolver),
-            invocation,
-        )
+        authenticate_stage = AuthenticateStage(self.policy_resolver)
+        try:
+            prepared = await run_stage(authenticate_stage, invocation)
+        except BaseException:
+            if authenticate_stage.prepared is not None:
+                await self.usage.reject(authenticate_stage.prepared)
+            raise
         if prepared_observer is not None:
             prepared_observer(prepared)
         admission_stage = AdmissionStage(
@@ -136,9 +144,25 @@ class GatewayKernel:
         )
         try:
             prepared = await run_stage(admission_stage, prepared)
-        except BaseException:
+        except BaseException as error:
             if admission_stage.reserved:
                 await self._fail_safely(prepared, reason="admission_aborted")
+            else:
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "gateway.admission",
+                        stage="admission",
+                        outcome="deny"
+                        if isinstance(error, HTTPException) and error.status_code < 500
+                        else "error",
+                        reason_code="INVALID_REQUEST"
+                        if isinstance(error, HTTPException) and error.status_code < 500
+                        else "ADMISSION_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
             raise
 
         stream_session: StreamSession | None = None
@@ -194,5 +218,7 @@ class GatewayKernel:
     ) -> None:
         try:
             await self.usage.fail(prepared, reason=reason)
+        except UsageAuditPersistenceError:
+            raise
         except Exception as exc:
             logger.error("Usage recovery failed type=%s", type(exc).__name__)

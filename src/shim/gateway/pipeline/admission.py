@@ -68,9 +68,18 @@ class AdmissionStage:
             and value.protocol == "responses"
             and value.model == UNSPECIFIED_PROVIDER_MODEL
         )
-        if not unspecified_openai_response_model and not DEFAULT_PRICE_BOOK.supports(
-            value.model, str(value.provider)
-        ):
+        model_denied = (
+            not unspecified_openai_response_model
+            and not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+        )
+        value.record_verdict(
+            "gateway.model_catalog",
+            stage="admission",
+            outcome="deny" if model_denied else "allow",
+            reason_code="MODEL_NOT_PRICED" if model_denied else "MODEL_SUPPORTED",
+            policy_version=DEFAULT_PRICE_BOOK.version,
+        )
+        if model_denied:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -134,25 +143,32 @@ class AdmissionStage:
         output_tokens = per_candidate_output_tokens * candidate_count(value)
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
-        if tier.rate_limit_rpm is not None and not await self.rate_limiter.allow(
-            key_hash,
-            limit=tier.rate_limit_rpm,
-            window_seconds=60,
+        for dimension, limit, key, amount in (
+            ("requests", tier.rate_limit_rpm, key_hash, 1),
+            ("tokens", tier.rate_limit_tpm, f"tpm:{key_hash}", input_tokens),
         ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": "requests"},
+            denied = limit is not None and not await self.rate_limiter.allow(
+                key,
+                limit=limit,
+                window_seconds=60,
+                amount=amount,
             )
-        if tier.rate_limit_tpm is not None and not await self.rate_limiter.allow(
-            f"tpm:{key_hash}",
-            limit=tier.rate_limit_tpm,
-            window_seconds=60,
-            amount=input_tokens,
-        ):
-            raise HTTPException(
-                status_code=429,
-                detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": "tokens"},
+            value.record_verdict(
+                f"rate.{dimension}",
+                stage="admission",
+                outcome="deny" if denied else "allow" if limit is not None else "skip",
+                reason_code="RATE_LIMIT_EXCEEDED"
+                if denied
+                else "RATE_LIMIT_PASSED"
+                if limit is not None
+                else "RATE_LIMIT_UNLIMITED",
+                policy={"limit": limit, "window_seconds": 60},
             )
+            if denied:
+                raise HTTPException(
+                    status_code=429,
+                    detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": dimension},
+                )
         repeat_material = _repeat_material(
             {
                 **payload,
@@ -166,7 +182,20 @@ class AdmissionStage:
             limit=self.loop_repeat_limit,
             window_seconds=self.loop_window_seconds,
         )
-        if self.loop_result.status == "BLOCKED":
+        repeated = self.loop_result.status == "BLOCKED"
+        value.record_verdict(
+            "rate.repeated_requests",
+            stage="admission",
+            outcome="deny" if repeated else "allow",
+            reason_code="REPEATED_REQUEST_LIMIT_EXCEEDED"
+            if repeated
+            else "REPEAT_CHECK_PASSED",
+            policy={
+                "limit": self.loop_repeat_limit,
+                "window_seconds": self.loop_window_seconds,
+            },
+        )
+        if repeated:
             raise HTTPException(
                 status_code=429,
                 detail={

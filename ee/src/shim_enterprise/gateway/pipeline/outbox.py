@@ -8,6 +8,9 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.gateway.kernel.result import PreparedInference
+
 
 @dataclass(frozen=True, slots=True)
 class GatewayOutboxIntent:
@@ -60,7 +63,9 @@ def audit_completion_intent(
         "completion_tokens": quota_event.completion_tokens,
         "pii_detected": bool(preflight.pii_entities),
         "pii_entities": dict(preflight.pii_entities or {}),
-        "policy_verdicts": [],
+        "policy_verdicts": list(
+            (lifecycle.lifecycle_metadata or {}).get("policy_verdicts", [])
+        ),
         "is_cache_hit": lifecycle.cache_status == "hit",
         "latency_ms": max(
             0,
@@ -75,6 +80,7 @@ def audit_completion_intent(
                 field: (lifecycle.lifecycle_metadata or {}).get(field)
                 for field in _DIAGNOSTIC_FIELDS
             },
+            "actor_type": lifecycle.actor_type,
         },
     }
     return GatewayOutboxIntent(
@@ -83,6 +89,58 @@ def audit_completion_intent(
         idempotency_key=f"request:{lifecycle.request_id}:outbox:audit.completion",
         payload=MappingProxyType(payload),
         available_at=completed_at,
+    )
+
+
+def rejection_intent(prepared: PreparedInference) -> GatewayOutboxIntent:
+    """A tenant-authenticated request denied before accounting admission."""
+    verdicts = [verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts]
+    completed_at = prepared.policy_verdicts[-1].effective_at
+    return GatewayOutboxIntent(
+        event_type="audit.chain_append_requested",
+        aggregate_id=str(prepared.request_id),
+        idempotency_key=f"request:{prepared.request_id}:outbox:audit.completion",
+        available_at=completed_at,
+        payload=MappingProxyType(
+            {
+                "organization_id": str(prepared.tenant_id),
+                "request_id": str(prepared.request_id),
+                "api_key_id": str(prepared.api_key_id)
+                if prepared.api_key_id is not None
+                else None,
+                "actor": str(prepared.context.user_id)
+                if prepared.context.user_id is not None
+                else None,
+                "event_type": "ai_request",
+                "provider": str(prepared.provider),
+                "model": prepared.model
+                if DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
+                else None,
+                "endpoint": prepared.source_endpoint,
+                "policy_verdicts": verdicts,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cost_usd": 0.0,
+                "latency_ms": max(
+                    0,
+                    int(
+                        (completed_at - prepared.context.started_at).total_seconds()
+                        * 1000
+                    ),
+                ),
+                "extra": {
+                    "audit_event_type": "completion",
+                    "actor_type": prepared.context.actor_type,
+                    "lifecycle_status": "rejected"
+                    if any(
+                        verdict.outcome == "deny"
+                        for verdict in prepared.policy_verdicts
+                    )
+                    else "failed",
+                    "admitted": False,
+                },
+            }
+        ),
     )
 
 

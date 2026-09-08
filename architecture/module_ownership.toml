@@ -62,7 +62,7 @@ forbidden_public_import_roots = [
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
 "shim.gateway.request_policy" = ["RequestPolicyContext", "ResolvedRequestPolicy"]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
-"shim.gateway.usage" = ["UsageFailureReason", "UsageLimitExceeded"]
+"shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded"]
 "shim.observability.logging" = [
   "configure_error_reporting",
   "configure_logging",
@@ -324,6 +324,7 @@ enterprise = [
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
+  "ee/tests/gateway/pipeline/test_decisions.py",
   "ee/tests/gateway/pipeline/test_scan.py",
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import hmac
 import json
@@ -53,6 +53,8 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentRepository,
 )
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
+from shim_enterprise.gateway.pipeline.outbox import rejection_intent
+from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.tenants.models import ApiKey, ProviderSecret, TierDefinition
 from shim_enterprise.observability.enterprise_metrics import (
     QUOTA_RESERVATION_TOTAL,
@@ -242,9 +244,17 @@ class DurableAccountingCoordinator:
         admission: AdmissionState,
         session: AsyncSession,
     ) -> ReservationResult:
+        policy: QuotaPolicySnapshot | None = None
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
+                prepared.record_verdict(
+                    "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="allow",
+                    reason_code="QUOTA_RESERVED",
+                    policy_version=policy.version,
+                )
                 result = await self.repository.reserve_quota(
                     session,
                     QuotaReservationCommand(
@@ -268,6 +278,11 @@ class DurableAccountingCoordinator:
                         system_prompt_hash=_system_prompt_hash(prepared),
                         deployment_kind=prepared.deployment_kind,
                         policy=policy,
+                        audit_policy_mode=prepared.context.audit_policy.mode,
+                        policy_verdicts=tuple(
+                            verdict.model_dump(mode="json")
+                            for verdict in prepared.policy_verdicts
+                        ),
                     ),
                 )
                 await session.commit()
@@ -277,11 +292,25 @@ class DurableAccountingCoordinator:
                 return result
             except QuotaLimitExceeded:
                 await session.rollback()
+                prepared.record_verdict(
+                    "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="deny",
+                    reason_code="QUOTA_EXCEEDED",
+                    policy_version=policy.version if policy is not None else None,
+                )
                 QUOTA_RESERVATION_TOTAL.labels(status="rejected").inc()
                 span.set_attribute("status", "rejected")
                 raise
             except Exception as exc:
                 await session.rollback()
+                prepared.record_verdict(
+                    "quota.requests_and_tokens",
+                    stage="admission",
+                    outcome="error",
+                    reason_code="QUOTA_UNAVAILABLE",
+                    policy_version=policy.version if policy is not None else None,
+                )
                 QUOTA_RESERVATION_TOTAL.labels(status="failed").inc()
                 span.set_attribute("status", "failed")
                 if isinstance(exc, AccountingPersistenceError):
@@ -303,6 +332,15 @@ class DurableAccountingCoordinator:
                 session,
                 prepared,
                 ephemeral_byok,
+            )
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="allow",
+                reason_code="SPEND_UNLIMITED"
+                if policy.monthly_limit_usd is None
+                else "SPEND_RESERVED",
+                policy_version=policy.version,
             )
             estimated_cost = compute_cost_usd(
                 prepared.model,
@@ -336,6 +374,10 @@ class DurableAccountingCoordinator:
                 pii_entities=dict(
                     cast(Mapping[str, int], privacy_facts["pii_entities"])
                 ),
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
             )
             result = await self.repository.reserve_provider_spend(
                 session,
@@ -347,6 +389,20 @@ class DurableAccountingCoordinator:
             await session.rollback()
             if command is None:
                 raise
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="deny",
+                reason_code="SPEND_LIMIT_EXCEEDED",
+                policy_version=command.policy.version,
+            )
+            command = replace(
+                command,
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
+            )
             try:
                 await self.repository.write_spend_denial_preflight(session, command)
                 await session.commit()
@@ -363,6 +419,13 @@ class DurableAccountingCoordinator:
             raise
         except Exception as exc:
             await session.rollback()
+            prepared.record_verdict(
+                "spend.provider_monthly",
+                stage="provider_spend",
+                outcome="error",
+                reason_code="SPEND_UNAVAILABLE",
+                policy_version=command.policy.version if command is not None else None,
+            )
             if isinstance(exc, AuditIntentPersistenceError):
                 raise
             if isinstance(exc, AccountingPersistenceError):
@@ -385,6 +448,15 @@ class DurableAccountingCoordinator:
                 values={
                     "privacy_status": privacy_facts["privacy_status"],
                     "pii_detected": privacy_facts["pii_detected"],
+                    "lifecycle_metadata": RequestLifecycle.lifecycle_metadata.op("||")(
+                        {
+                            "policy_verdicts": [
+                                verdict.model_dump(mode="json")
+                                for verdict in prepared.policy_verdicts
+                            ],
+                            "pii_entities": dict(prepared.privacy.pii_entities),
+                        }
+                    ),
                 },
             )
             if lifecycle is None:
@@ -575,6 +647,10 @@ class DurableAccountingCoordinator:
                 lifecycle_status=lifecycle_status,
                 terminal_error_code=error_code,
                 terminal_error_message=error_message,
+                policy_verdicts=tuple(
+                    verdict.model_dump(mode="json")
+                    for verdict in prepared.policy_verdicts
+                ),
             ),
         )
 
@@ -589,6 +665,62 @@ class DurableUsageLifecycle:
     ) -> None:
         self.accounting = accounting
         self.session_factory = session_factory
+
+    async def reject(self, prepared: PreparedInference) -> None:
+        mode = prepared.context.audit_policy.mode
+        if mode == "off":
+            return
+        try:
+            async with self.session_factory() as session:
+                lifecycle = await RequestLifecycleRepository.get(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                )
+                if lifecycle is not None:
+                    # Admission may have committed before its acknowledgement failed.
+                    verdict = prepared.policy_verdicts[-1]
+                    await self.accounting.refund(
+                        session,
+                        prepared,
+                        spend_reserved=False,
+                        error_code=verdict.reason_code,
+                        lifecycle_status="rejected"
+                        if verdict.outcome == "deny"
+                        else "failed",
+                    )
+                    return
+                intent = rejection_intent(prepared)
+                outbox = await OutboxWriter().append(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    values=intent.persistence_values(),
+                )
+                await AuditIntentRepository.create(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    values={
+                        "request_id": str(prepared.request_id),
+                        "actor_type": prepared.context.actor_type,
+                        "api_key_id": prepared.api_key_id,
+                        "user_id": prepared.context.user_id,
+                        "event_type": "completion",
+                        "audit_policy_mode": mode,
+                        "provider": str(prepared.provider),
+                        "model": intent.payload["model"],
+                        "lifecycle_status": intent.payload["extra"]["lifecycle_status"],
+                        "outbox_event_id": outbox.id,
+                    },
+                )
+                await session.commit()
+        except Exception as error:
+            if mode == "strict":
+                raise AuditIntentPersistenceError(
+                    "required rejection audit failed"
+                ) from error
+            logger.error(
+                "Rejection audit could not be persisted type=%s", type(error).__name__
+            )
 
     async def admit(
         self,
@@ -712,13 +844,26 @@ class DurableUsageLifecycle:
                         error_message = (
                             "Request ended before a provider value was delivered."
                         )
+                denied = next(
+                    (
+                        verdict
+                        for verdict in reversed(prepared.policy_verdicts)
+                        if verdict.outcome == "deny"
+                    ),
+                    None,
+                )
                 await self.accounting.refund(
                     session,
                     prepared,
                     spend_reserved=spend_reserved,
-                    error_code=error_code,
+                    error_code=denied.reason_code if denied is not None else error_code,
                     error_message=error_message,
+                    lifecycle_status="rejected" if denied is not None else "failed",
                 )
+        except AuditIntentPersistenceError:
+            if prepared.context.audit_policy.mode == "strict":
+                raise
+            logger.error("Rejected request audit unavailable; stale recovery retained")
         except Exception as exc:
             logger.error(
                 "Durable accounting finalization failed; stale recovery retained "

@@ -17,6 +17,7 @@ from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
     started_at = datetime.now(timezone.utc) - timedelta(milliseconds=12)
     return SimpleNamespace(
+        policy_verdicts=[],
         request_id="req_local",
         provider="openai",
         model=model,
@@ -93,6 +94,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "repeat_chain_length",
         "system_prompt_hash",
         "deployment_kind",
+        "policy_verdicts",
     }
     latency_ms = event.pop("latency_ms")
     assert event == {
@@ -111,6 +113,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "repeat_chain_length": 1,
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
+        "policy_verdicts": [],
     }
     assert latency_ms >= 0
 

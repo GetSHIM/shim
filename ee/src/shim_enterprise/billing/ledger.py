@@ -23,7 +23,10 @@ from shim_enterprise.billing.models import (
     SpendPeriodUsage,
     UsageLedger,
 )
-from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentRepository
+from shim_enterprise.gateway.pipeline.audit_intent import (
+    AuditIntentPersistenceError,
+    AuditIntentRepository,
+)
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.gateway.pipeline.outbox import (
@@ -196,6 +199,8 @@ class QuotaReservationCommand:
     repeat_chain_length: int | None = None
     system_prompt_hash: str | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
+    audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
+    policy_verdicts: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -221,6 +226,7 @@ class SpendReservationCommand:
     policy: SpendPolicySnapshot
     input_hash: str | None = None
     pii_entities: dict[str, int] | None = None
+    policy_verdicts: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.estimated_cost_usd < 0:
@@ -260,6 +266,7 @@ class FinalizationCommand:
     reconciliation_urgent: bool = False
     provider_finish_reasons: dict[str, str] | None = None
     ttft_ms: float | None = None
+    policy_verdicts: tuple[dict[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
         if self.quota_action is TerminalAction.NONE:
@@ -337,6 +344,8 @@ class DurableAccountingRepository:
                     "repeat_chain_length": command.repeat_chain_length,
                     "system_prompt_hash": command.system_prompt_hash,
                     "deployment_kind": command.deployment_kind,
+                    "audit_policy_mode": command.audit_policy_mode,
+                    "policy_verdicts": list(command.policy_verdicts),
                 },
             },
         )
@@ -470,7 +479,7 @@ class DurableAccountingRepository:
             session,
             command,
             lifecycle_status="spend_denied",
-            usage_summary={"denial_reason": "spend_limit_exceeded"},
+            usage_summary={"spend_denied": 1},
         )
 
     async def finalize(
@@ -586,6 +595,11 @@ class DurableAccountingRepository:
                 **(lifecycle.lifecycle_metadata or {}),
                 "provider_finish_reasons": command.provider_finish_reasons,
                 "ttft_ms": command.ttft_ms,
+            }
+        if command.policy_verdicts is not None and not all_replayed:
+            lifecycle.lifecycle_metadata = {
+                **(lifecycle.lifecycle_metadata or {}),
+                "policy_verdicts": list(command.policy_verdicts),
             }
         audit_payload = await self._write_audit_completion(
             session,
@@ -1112,8 +1126,6 @@ class DurableAccountingRepository:
         lifecycle_status: str = "provider_pending",
         usage_summary: Mapping[str, object] | None = None,
     ) -> None:
-        if command.audit_policy_mode == "off":
-            return
         lifecycle = await RequestLifecycleRepository.get(
             session,
             organization_id=command.tenant_id,
@@ -1121,6 +1133,12 @@ class DurableAccountingRepository:
         )
         if lifecycle is None:
             raise AccountingConflictError("audit preflight requires a lifecycle")
+        lifecycle.lifecycle_metadata = {
+            **(lifecycle.lifecycle_metadata or {}),
+            "policy_verdicts": list(command.policy_verdicts),
+        }
+        if command.audit_policy_mode == "off":
+            return
         await AuditIntentRepository.create(
             session,
             organization_id=command.tenant_id,
@@ -1152,54 +1170,81 @@ class DurableAccountingRepository:
         output_hash: str | None,
         completed_at: datetime,
     ) -> dict[str, Any] | None:
-        preflight = await AuditIntentRepository.fetch(
-            session,
-            organization_id=TenantId(lifecycle.organization_id),
-            request_id=RequestId(lifecycle.request_id),
-            event_type="preflight",
-        )
-        if preflight is None:
-            return None
+        try:
+            preflight = await AuditIntentRepository.fetch(
+                session,
+                organization_id=TenantId(lifecycle.organization_id),
+                request_id=RequestId(lifecycle.request_id),
+                event_type="preflight",
+            )
+            if preflight is None:
+                metadata = lifecycle.lifecycle_metadata or {}
+                mode = metadata.get("audit_policy_mode", "off")
+                if mode == "off":
+                    return None
+                # Admission may end before the usual provider-spend preflight exists.
+                preflight = await AuditIntentRepository.create(
+                    session,
+                    organization_id=TenantId(lifecycle.organization_id),
+                    values={
+                        "request_id": lifecycle.request_id,
+                        "actor_type": lifecycle.actor_type,
+                        "api_key_id": lifecycle.api_key_id,
+                        "user_id": lifecycle.user_id,
+                        "event_type": "preflight",
+                        "audit_policy_mode": mode,
+                        "pii_entities": metadata.get("pii_entities", {}),
+                        "provider": lifecycle.provider,
+                        "model": lifecycle.requested_model,
+                        "lifecycle_status": "accepted",
+                    },
+                )
 
-        intent = audit_completion_intent(
-            lifecycle,
-            preflight,
-            quota_event,
-            spend_event,
-            lifecycle_status=lifecycle_status,
-            output_hash=output_hash,
-            completed_at=completed_at,
-        )
-        outbox = await OutboxWriter().append(
-            session,
-            organization_id=TenantId(lifecycle.organization_id),
-            values=intent.persistence_values(),
-        )
-        await AuditIntentRepository.create(
-            session,
-            organization_id=TenantId(lifecycle.organization_id),
-            values={
-                "request_id": lifecycle.request_id,
-                "actor_type": lifecycle.actor_type,
-                "api_key_id": lifecycle.api_key_id,
-                "user_id": lifecycle.user_id,
-                "event_type": "completion",
-                "audit_policy_mode": preflight.audit_policy_mode,
-                "input_hash": preflight.input_hash,
-                "output_hash": output_hash,
-                "pii_entities": dict(preflight.pii_entities or {}),
-                "provider": lifecycle.provider,
-                "model": lifecycle.provider_model or lifecycle.requested_model,
-                "usage_summary": {
-                    "prompt_tokens": quota_event.prompt_tokens,
-                    "completion_tokens": quota_event.completion_tokens,
-                    "total_tokens": quota_event.total_tokens,
+            intent = audit_completion_intent(
+                lifecycle,
+                preflight,
+                quota_event,
+                spend_event,
+                lifecycle_status=lifecycle_status,
+                output_hash=output_hash,
+                completed_at=completed_at,
+            )
+            outbox = await OutboxWriter().append(
+                session,
+                organization_id=TenantId(lifecycle.organization_id),
+                values=intent.persistence_values(),
+            )
+            await AuditIntentRepository.create(
+                session,
+                organization_id=TenantId(lifecycle.organization_id),
+                values={
+                    "request_id": lifecycle.request_id,
+                    "actor_type": lifecycle.actor_type,
+                    "api_key_id": lifecycle.api_key_id,
+                    "user_id": lifecycle.user_id,
+                    "event_type": "completion",
+                    "audit_policy_mode": preflight.audit_policy_mode,
+                    "input_hash": preflight.input_hash,
+                    "output_hash": output_hash,
+                    "pii_entities": dict(preflight.pii_entities or {}),
+                    "provider": lifecycle.provider,
+                    "model": lifecycle.provider_model or lifecycle.requested_model,
+                    "usage_summary": {
+                        "prompt_tokens": quota_event.prompt_tokens,
+                        "completion_tokens": quota_event.completion_tokens,
+                        "total_tokens": quota_event.total_tokens,
+                    },
+                    "lifecycle_status": lifecycle_status,
+                    "outbox_event_id": outbox.id,
                 },
-                "lifecycle_status": lifecycle_status,
-                "outbox_event_id": outbox.id,
-            },
-        )
-        return dict(outbox.payload)
+            )
+            return dict(outbox.payload)
+        except AuditIntentPersistenceError:
+            raise
+        except Exception as error:
+            raise AuditIntentPersistenceError(
+                "audit completion persistence failed"
+            ) from error
 
     async def _enqueue_analytics_projection(
         self,

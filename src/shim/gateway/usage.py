@@ -31,7 +31,13 @@ class UsageLimitExceeded(RuntimeError):
     """An authoritative usage policy denied admission."""
 
 
+class UsageAuditPersistenceError(RuntimeError):
+    """Required audit evidence could not be committed before a response."""
+
+
 class UsageLifecycle(Protocol):
+    async def reject(self, prepared: PreparedInference) -> None: ...
+
     async def admit(
         self,
         prepared: PreparedInference,
@@ -106,6 +112,20 @@ class LocalUsageLifecycle:
         admission: AdmissionState,
     ) -> None:
         pass
+
+    async def reject(self, prepared: PreparedInference) -> None:
+        self._write(
+            prepared,
+            outcome="rejected",
+            completed_at=datetime.now(timezone.utc),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost_usd=Decimal("0"),
+            model=prepared.model
+            if DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
+            else "unsupported",
+            estimated=False,
+        )
 
     async def record_privacy(self, prepared: PreparedInference) -> None:
         pass
@@ -229,6 +249,9 @@ class LocalUsageLifecycle:
                 if prepared.privacy is not None
                 else {}
             ),
+            "policy_verdicts": [
+                verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
+            ],
         }
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         try:
