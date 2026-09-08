@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -2957,23 +2958,28 @@ async def check_model_deployment_health(
     await session.commit()
     healthy = False
     try:
-        credential = await get_secret_store().get_secret(
-            TenantId(tenant_id),
-            SecretRef(secret_ref),
-            expected_purpose=f"provider:{provider}:api-key",
-        )
-        headers = (
-            {"Authorization": f"Bearer {credential}"}
-            if provider == "openai"
-            else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
-        )
-        path = "/models" if provider == "openai" else "/v1/models"
-        # Stream headers only: an unhealthy server cannot force an unbounded body read.
-        async with request.app.state.http_client.stream(
-            "GET", base_url + path, headers=headers, timeout=5, follow_redirects=False
-        ) as response:
-            healthy = response.status_code == 200
-    except (httpx.HTTPError, ValueError):
+        async with asyncio.timeout(5):
+            credential = await get_secret_store().get_secret(
+                TenantId(tenant_id),
+                SecretRef(secret_ref),
+                expected_purpose=f"provider:{provider}:api-key",
+            )
+            headers = (
+                {"Authorization": f"Bearer {credential}"}
+                if provider == "openai"
+                else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
+            )
+            path = "/models" if provider == "openai" else "/v1/models"
+            # Stream headers only: an unhealthy server cannot force an unbounded body read.
+            async with request.app.state.http_client.stream(
+                "GET",
+                base_url + path,
+                headers=headers,
+                timeout=5,
+                follow_redirects=False,
+            ) as response:
+                healthy = response.status_code == 200
+    except (httpx.HTTPError, ValueError, TimeoutError):
         healthy = False
     row = await _owned_model_deployment(session, user, deployment_id)
     if row.updated_at != checked_version:

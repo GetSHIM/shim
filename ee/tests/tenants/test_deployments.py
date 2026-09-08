@@ -1,6 +1,7 @@
 """Registered destinations reuse native transports, credentials and accounting."""
 
 from contextlib import asynccontextmanager
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
@@ -781,3 +782,28 @@ async def test_disabled_registry_alias_cannot_fall_back_to_public_catalog(
         )
         assert denied.status_code == 403
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_health_probe_has_a_wall_clock_deadline(
+    db, test_api_key, test_user_with_org, origins, monkeypatch
+):
+    rows = await _deployments(db, test_api_key)
+    real_timeout = asyncio.timeout
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.asyncio.timeout",
+        lambda seconds: real_timeout(0.01),
+    )
+
+    async def delayed_secret(*args, **kwargs):
+        await asyncio.sleep(1)
+        pytest.fail("health deadline was not enforced")
+
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.get_secret_store",
+        lambda: SimpleNamespace(get_secret=delayed_secret),
+    )
+    result = await check_model_deployment_health(
+        rows[0].id, SimpleNamespace(), test_user_with_org, db
+    )
+    assert result.health == "unhealthy"
