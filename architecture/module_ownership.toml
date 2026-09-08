@@ -200,6 +200,7 @@ enterprise = [
   "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
   "ee/deploy/test/fixtures.py",
   "ee/deploy/test/run.py",
+  "ee/deploy/test/test_reuse.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/offline_bundle.py",
   "ee/scripts/sign_license.py",

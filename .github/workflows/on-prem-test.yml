@@ -71,6 +71,7 @@ jobs:
         run: |
           uv run --locked --all-packages ruff check ee/deploy/test
           uv run --locked --all-packages ruff format --check ee/deploy/test
+          uv run --locked --all-packages python -m pytest -q ee/deploy/test/test_reuse.py
           uv run --locked --all-packages python ee/deploy/test/run.py --gateway-image shim-enterprise:isolated-ci --dashboard-image "$DASHBOARD_IMAGE"
       - name: Save non-secret evidence
         if: always()
