@@ -245,6 +245,9 @@ jobs:
         with:
           version: "0.12.5"
           enable-cache: true
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v3.1.3
       - run: uv lock --check
       - run: uv sync --locked --all-packages
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
