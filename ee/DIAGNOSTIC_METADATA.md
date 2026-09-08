@@ -95,6 +95,10 @@ empty cost cell and `cost_complete: False`. The request summary reports
 only priced settlements. These checks read the tenant-scoped ledger directly,
 so missing projection metadata cannot turn an unknown settlement into zero.
 
+Overview summary and trend costs are null whenever their period includes an
+unpriced settlement, with the same completeness flag and request count. Empty
+periods retain known zero costs.
+
 Analytics `details` and audit completion `extra` also carry `pricing_resolution`.
 Their existing numeric cost fields reflect the ledger placeholder when it is
 unknown; consumers must inspect that marker. Refunds and requests without a

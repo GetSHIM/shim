@@ -34,6 +34,8 @@ def _empty_summary() -> OverviewSummaryRecord:
         technical_success_rate=None,
         p95_completed_latency_ms=None,
         settled_spend_usd=Decimal("0"),
+        cost_complete=True,
+        unpriced_requests=0,
         status_counts={
             "completed": 0,
             "provider_error": 0,
@@ -68,6 +70,7 @@ def test_overview_metric_definitions_exclude_policy_and_client_outcomes() -> Non
         policy_failed=1,
         p95_completed_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
+        unpriced_requests=0,
     )
 
     summary = _summary_from_row(row)
@@ -78,6 +81,11 @@ def test_overview_metric_definitions_exclude_policy_and_client_outcomes() -> Non
     assert summary.technical_success_rate == pytest.approx(6 / 9)
     assert summary.p95_completed_latency_ms == 401
     assert summary.settled_spend_usd == Decimal("1.25000000")
+    row.unpriced_requests = 1
+    incomplete = _summary_from_row(row)
+    assert incomplete.settled_spend_usd is None
+    assert incomplete.cost_complete is False
+    assert incomplete.unpriced_requests == 1
     assert _exception_category("failed", spend_denied=True) == "policy_rejection"
     assert _exception_category("client_disconnected", False) == "client_cancelled"
     assert _exception_category("provider_error", False) == "technical_failure"
@@ -89,6 +97,7 @@ def test_overview_trend_zero_fills_utc_buckets() -> None:
             start=datetime(2026, 8, 2),
             requests=2,
             settled_spend_usd=Decimal("0.5"),
+            unpriced_requests=1,
         )
     ]
 
@@ -105,6 +114,9 @@ def test_overview_trend_zero_fills_utc_buckets() -> None:
         "2026-08-03T00:00:00+00:00",
     ]
     assert [point.requests for point in trend] == [0, 2, 0]
+    assert [point.settled_spend_usd for point in trend] == [0, None, 0]
+    assert [point.cost_complete for point in trend] == [True, False, True]
+    assert [point.unpriced_requests for point in trend] == [0, 1, 0]
 
 
 def test_overview_trend_does_not_label_partial_bucket_before_period() -> None:

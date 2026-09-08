@@ -50,7 +50,7 @@ from shim_enterprise.billing.models import (
     UsageLedger,
 )
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
-from shim_enterprise.observability import analytics_projection
+from shim_enterprise.observability import analytics_projection, overview
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim.privacy.classification import content_ref
@@ -1248,6 +1248,22 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
         offset=0,
         user=SimpleNamespace(organization_id=test_api_key.organization_id),
         session=db,
+    )
+    summary_row = (
+        await db.execute(
+            overview._summary_statement(
+                test_api_key.organization_id,
+                datetime.now(timezone.utc) - timedelta(days=1),
+                datetime.now(timezone.utc) + timedelta(days=1),
+            ).where(RequestLifecycle.request_id == request_id)
+        )
+    ).one()
+    overview_summary = overview._summary_from_row(summary_row)
+    assert overview_summary.requests == 1
+    assert overview_summary.cost_complete is (pricing_resolution != "unknown")
+    assert overview_summary.unpriced_requests == (pricing_resolution == "unknown")
+    assert overview_summary.settled_spend_usd == (
+        None if pricing_resolution == "unknown" else Decimal("0.00004")
     )
     assert page.total == 1
     assert page.items[0].cost_complete is (pricing_resolution != "unknown")

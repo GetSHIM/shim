@@ -618,14 +618,18 @@ class OverviewSummaryView(BaseModel):
     policy_rejections: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
     p95_completed_latency_ms: int | None = Field(ge=0)
-    settled_spend_usd: Decimal = Field(ge=0)
+    settled_spend_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
     status_counts: OverviewStatusCountsView
 
 
 class OverviewTrendPointView(BaseModel):
     start: datetime
     requests: int = Field(ge=0)
-    settled_spend_usd: Decimal = Field(ge=0)
+    settled_spend_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
 
 
 class OverviewExceptionView(BaseModel):

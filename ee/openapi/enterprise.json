@@ -5853,6 +5853,10 @@
       },
       "OverviewSummaryView": {
         "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "p95_completed_latency_ms": {
             "anyOf": [
               {
@@ -5876,9 +5880,16 @@
             "type": "integer"
           },
           "settled_spend_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Settled Spend Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled Spend Usd"
           },
           "status_counts": {
             "$ref": "#/components/schemas/OverviewStatusCountsView"
@@ -5900,6 +5911,11 @@
               }
             ],
             "title": "Technical Success Rate"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
@@ -5909,6 +5925,8 @@
           "technical_success_rate",
           "p95_completed_latency_ms",
           "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests",
           "status_counts"
         ],
         "title": "OverviewSummaryView",
@@ -5916,26 +5934,44 @@
       },
       "OverviewTrendPointView": {
         "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
           "requests": {
             "minimum": 0.0,
             "title": "Requests",
             "type": "integer"
           },
           "settled_spend_usd": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
-            "title": "Settled Spend Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled Spend Usd"
           },
           "start": {
             "format": "date-time",
             "title": "Start",
             "type": "string"
+          },
+          "unpriced_requests": {
+            "minimum": 0.0,
+            "title": "Unpriced Requests",
+            "type": "integer"
           }
         },
         "required": [
           "start",
           "requests",
-          "settled_spend_usd"
+          "settled_spend_usd",
+          "cost_complete",
+          "unpriced_requests"
         ],
         "title": "OverviewTrendPointView",
         "type": "object"
