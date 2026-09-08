@@ -6,6 +6,8 @@ import json
 import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 
 RESERVED = {"manifest.json", "manifest.sigstore.json"}
@@ -26,6 +28,60 @@ def filename(value: str) -> str:
     if not NAME.fullmatch(value) or value in RESERVED:
         raise ValueError(f"Invalid artifact name: {value!r}")
     return value
+
+
+def archive_config_digest(path: Path, platform: str) -> str:
+    """Hash saved configuration bytes, including platform and root filesystem IDs."""
+    with tarfile.open(path) as archive:
+
+        def read(name: str) -> bytes:
+            member = archive.getmember(name)
+            if not member.isfile() or member.size > 16 * 1024 * 1024:
+                raise ValueError("Image metadata must be a bounded regular file")
+            stream = archive.extractfile(member)
+            assert stream is not None
+            return stream.read()
+
+        manifest = json.loads(read("manifest.json"))
+        if len(manifest) != 1 or manifest[0].get("RepoTags"):
+            raise ValueError("Archive must contain exactly one untagged image")
+        config_bytes = read(manifest[0]["Config"])
+        config = json.loads(config_bytes)
+        if f"{config['os']}/{config['architecture']}" != platform:
+            raise ValueError("Archive platform does not match bundle platform")
+        if config["rootfs"]["type"] != "layers" or not isinstance(
+            config["rootfs"]["diff_ids"], list
+        ):
+            raise ValueError("Invalid image root filesystem metadata")
+        return "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+
+
+def import_image(directory: Path, image: dict, platform: str) -> None:
+    archive = directory / image["archive"]
+    output = run("docker", "load", "--platform", platform, "--input", str(archive))
+    loaded = re.findall(
+        r"^Loaded image ID: (sha256:[0-9a-f]{64})$", output, re.MULTILINE
+    )
+    if len(loaded) != 1:
+        raise ValueError("Docker did not return exactly one loaded image identity")
+    # containerd may synthesize a new manifest ID when loading a classic archive.
+    # Re-export the returned object instead of assuming any portable daemon ID.
+    with tempfile.TemporaryDirectory(prefix="shim-import-") as temporary:
+        exported = Path(temporary) / "loaded.tar"
+        run(
+            "docker",
+            "save",
+            "--platform",
+            platform,
+            "--output",
+            str(exported),
+            loaded[0],
+        )
+        if archive_config_digest(exported, platform) != image["config_digest"]:
+            raise ValueError(
+                "Loaded image configuration or layers do not match archive"
+            )
+    print(f"Imported {image['name']} as {loaded[0]}")
 
 
 def create(spec_path: Path, directory: Path, key: str) -> None:
@@ -54,9 +110,6 @@ def create(spec_path: Path, directory: Path, key: str) -> None:
         if archive.exists():
             raise ValueError(f"Duplicate artifact: {archive.name}")
         run("docker", "pull", "--platform", spec["platform"], image["source"])
-        image["image_id"] = run(
-            "docker", "image", "inspect", "--format", "{{.Id}}", image["source"]
-        )
         run(
             "docker",
             "save",
@@ -66,9 +119,10 @@ def create(spec_path: Path, directory: Path, key: str) -> None:
             str(archive),
             image["source"],
         )
+        image["config_digest"] = archive_config_digest(archive, spec["platform"])
         image["archive"] = archive.name
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "bundle_id": spec["bundle_id"],
         "platform": spec["platform"],
         "images": images,
@@ -111,7 +165,7 @@ def verify(directory: Path, key: str, expected_id: str) -> dict:
         str(payload),
     )
     manifest = json.loads(payload.read_text())
-    if manifest["schema"] != 1 or manifest["bundle_id"] != expected_id:
+    if manifest["schema"] != 2 or manifest["bundle_id"] != expected_id:
         raise ValueError("Unexpected bundle schema or release ID")
     if manifest["platform"] not in {"linux/amd64", "linux/arm64"}:
         raise ValueError("Unsupported platform")
@@ -125,8 +179,11 @@ def verify(directory: Path, key: str, expected_id: str) -> dict:
     for image in manifest["images"]:
         if image["archive"] not in files or not DIGEST.fullmatch(image["source"]):
             raise ValueError("Invalid image metadata")
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image["image_id"]):
-            raise ValueError("Invalid image configuration digest")
+        config_digest = archive_config_digest(
+            directory / image["archive"], manifest["platform"]
+        )
+        if image["config_digest"] != config_digest:
+            raise ValueError("Image configuration digest does not match archive")
     return manifest
 
 
@@ -152,19 +209,14 @@ def main() -> None:
             manifest = verify(args.directory, args.key, args.expected_id)
             if args.command == "import":
                 for image in manifest["images"]:
-                    run(
-                        "docker",
-                        "load",
-                        "--input",
-                        str(args.directory / image["archive"]),
-                    )
-                    run("docker", "image", "inspect", image["image_id"])
+                    import_image(args.directory, image, manifest["platform"])
             print(f"Verified {manifest['bundle_id']} ({manifest['platform']})")
     except (
         OSError,
         ValueError,
         KeyError,
         TypeError,
+        tarfile.TarError,
         subprocess.CalledProcessError,
     ) as error:
         parser.exit(1, f"Bundle operation failed: {error}\n")

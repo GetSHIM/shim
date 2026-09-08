@@ -103,7 +103,9 @@ python ee/scripts/offline_bundle.py create --spec bundle-spec.json \
 ```
 
 Transfer the resulting directory. Its signed manifest contains file SHA-256s,
-source registry digests, saved image configuration IDs, versions and platform.
+source registry digests, archive-derived configuration digests, versions and
+platform. Manifest schema 2 replaces the pre-release schema 1 `image_id` field;
+rebuild older bundles rather than trusting a source daemon's image ID.
 No image download occurs during verification or import:
 
 ```sh
@@ -115,15 +117,20 @@ python /opt/shim/offline_bundle.py import --directory example-release-1 \
 
 Import rechecks **all** files before the first Docker load. Use a staging directory
 writable only by the operator and do not modify it during verification/import.
-Import checks the loaded configuration ID. Docker save/load does **not** promise
-to retain registry RepoDigests; do not mistake a configuration ID for a registry
-manifest digest. To seed an internal registry, tag each verified `image_id` from
-`manifest.json`, push it, record the new registry digest, and configure Helm with
-that internal immutable reference. Preserve the original signed manifest as the
-mapping evidence. For example:
+Import uses the ID actually returned by Docker, re-exports that object to a
+temporary archive, and checks its configuration digest and platform against the
+original. The configuration digest includes root filesystem layer IDs. Keep
+enough temporary disk space for one image archive. Classic Docker and containerd
+can use different local identities, including a newly synthesized manifest ID.
+Docker save/load does **not** promise to retain registry RepoDigests; neither the
+source image ID nor a config digest is a portable lookup reference. To seed an
+internal registry, tag the verified ID printed by import, push it, record the new
+registry digest, and configure Helm with that internal immutable reference.
+Preserve the original signed manifest and import output as mapping evidence.
+For example:
 
 ```sh
-docker tag sha256:<image_id> registry.internal/shim/backend:0.1.3
+docker tag sha256:<verified-loaded-id> registry.internal/shim/backend:0.1.3
 docker push registry.internal/shim/backend:0.1.3
 # Record the digest returned by push; use registry.internal/shim/backend@sha256:...
 ```
