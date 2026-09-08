@@ -76,7 +76,7 @@ Create a JSON specification beside the local files (replace every placeholder):
   "platform": "linux/amd64",
   "images": [
     {"name": "backend", "version": "0.1.3", "source": "ghcr.io/getshim/shim-enterprise@sha256:<64-hex-digest>"},
-    {"name": "dashboard", "version": "0.1.0", "source": "ghcr.io/getshim/shim-dashboard@sha256:<64-hex-digest>"}
+    {"name": "dashboard", "version": "0.1.0", "source": "ghcr.io/durthvadr/shim-dashboard@sha256:<64-hex-digest>"}
   ],
   "files": ["shim-enterprise-0.1.0.tgz", "OFFLINE_RELEASES.md", "OPERATIONS.md", "backend.spdx.json", "dashboard.spdx.json", "backend.provenance.json", "dashboard.provenance.json"]
 }
