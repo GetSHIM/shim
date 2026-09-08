@@ -38,6 +38,7 @@ workerReadinessMaxAgeSeconds:
 
 migration:
   enabled: true
+  activeDeadlineSeconds: 300
 
 # A Vault Agent or your secret controller refreshes this token Secret.
 vault:

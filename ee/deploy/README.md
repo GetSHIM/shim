@@ -100,7 +100,10 @@ kubectl -n shim exec deployment/shim-gateway -- \
 ```
 
 The migration Job upgrades the database before the applications' schema checks
-allow startup. Provisioning prints the organization UUID; update
+allow startup. Kubernetes retries failed schema init checks. The migration Job's
+default deadline is five minutes; set `migration.activeDeadlineSeconds` from the
+measured migration duration and give Helm a longer timeout for application startup.
+Provisioning prints the organization UUID; update
 `OIDC_ORGANIZATION_ID` in the runtime Secret to that value. Restart all backend
 deployments after changing environment-backed configuration:
 

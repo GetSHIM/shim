@@ -35,13 +35,7 @@ spec:
       initContainers:
         - name: schema-ready
           image: {{ required "gateway.image is required" $root.Values.gateway.image | quote }}
-          command: [sh, -c]
-          args:
-            - >-
-              for attempt in $(seq 1 150); do
-                alembic -c ee/alembic.ini current --check-heads && exit 0;
-                sleep 2;
-              done; exit 1
+          command: [alembic, -c, ee/alembic.ini, current, --check-heads]
           securityContext:
             {{- include "shim.containerSecurity" $root | nindent 12 }}
           {{- include "shim.backendEnv" $root | nindent 10 }}
