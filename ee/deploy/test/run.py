@@ -128,6 +128,57 @@ def test_license(directory):
     )
 
 
+def kind_system_workload(item, cluster):
+    metadata = item["metadata"]
+    namespace = metadata.get("namespace")
+    name = metadata["name"]
+    known = {
+        ("Deployment", "kube-system", "coredns"),
+        ("Deployment", "local-path-storage", "local-path-provisioner"),
+        ("DaemonSet", "kube-system", "kindnet"),
+        ("DaemonSet", "kube-system", "kube-proxy"),
+    }
+    if (item["kind"], namespace, name) in known:
+        return True
+    if item["kind"] == "ReplicaSet":
+        return any(
+            kind == "Deployment"
+            and namespace == ns
+            and re.fullmatch(re.escape(deployment) + r"-[a-z0-9]+", name)
+            for kind, ns, deployment in known
+        )
+    if item["kind"] != "Pod":
+        return False
+    owners = metadata.get("ownerReferences", [])
+    if len(owners) != 1:
+        return False
+    owner = owners[0]
+    if owner["kind"] == "DaemonSet":
+        return ("DaemonSet", namespace, owner["name"]) in known
+    if owner["kind"] == "ReplicaSet":
+        return any(
+            kind == "Deployment"
+            and namespace == ns
+            and re.fullmatch(re.escape(deployment) + r"-[a-z0-9]+", owner["name"])
+            for kind, ns, deployment in known
+        )
+    return (
+        namespace == "kube-system"
+        and owner["kind"] == "Node"
+        and owner["name"] == cluster + "-control-plane"
+        and name
+        in {
+            component + "-" + cluster + "-control-plane"
+            for component in (
+                "etcd",
+                "kube-apiserver",
+                "kube-controller-manager",
+                "kube-scheduler",
+            )
+        }
+    )
+
+
 def run(args):
     chart = args.chart.resolve()
     values = yaml.safe_load((chart / "values.yaml").read_text())
@@ -208,31 +259,34 @@ def run(args):
         capture=True,
     )
     environment = os.environ | {"KIND_EXPERIMENTAL_DOCKER_NETWORK": network}
-    try:
-        if args.cluster in existing:
-            kubeconfig.write_text(
-                command(
-                    "kind", "get", "kubeconfig", "--name", args.cluster, capture=True
-                )
+    if args.cluster in existing:
+        kubeconfig.write_text(
+            command("kind", "get", "kubeconfig", "--name", args.cluster, capture=True)
+        )
+        workloads = json.loads(
+            command(
+                "kubectl",
+                "--kubeconfig",
+                str(kubeconfig),
+                "get",
+                "deployments,statefulsets,jobs,daemonsets,cronjobs,replicasets,pods,persistentvolumeclaims",
+                "--all-namespaces",
+                "-o",
+                "json",
+                capture=True,
             )
-            workloads = json.loads(
-                command(
-                    "kubectl",
-                    "--kubeconfig",
-                    str(kubeconfig),
-                    "get",
-                    "deployments,statefulsets,jobs",
-                    "-n",
-                    "default",
-                    "-o",
-                    "json",
-                    capture=True,
-                )
-            )
-            assert not workloads["items"], (
+        )
+        unexpected = [
+            item
+            for item in workloads["items"]
+            if not kind_system_workload(item, args.cluster)
+        ]
+        if unexpected:
+            raise SystemExit(
                 "Refusing to reuse a cluster containing application workloads"
             )
-        else:
+    try:
+        if args.cluster not in existing:
             command(
                 "kind",
                 "create",
