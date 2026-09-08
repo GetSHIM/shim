@@ -165,6 +165,7 @@ class Fixture(BaseHTTPRequestHandler):
 
 def serve():
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain("/tls/tls.crt", "/tls/tls.key")
     for port in (8443, 8444, 8445):
         server = ThreadingHTTPServer(("0.0.0.0", port), Fixture)
