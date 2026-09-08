@@ -19,7 +19,7 @@ backend repository using an operator database account:
 
 ```bash
 uv run --locked --package shim-enterprise python ee/scripts/activate_plan.py \
-  --create-name 'Pilot bank' enterprise
+  --create-name 'Example organization' enterprise
 ```
 
 The command prints the new organization UUID. It creates the organization,

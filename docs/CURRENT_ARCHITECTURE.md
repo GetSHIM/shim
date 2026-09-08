@@ -272,8 +272,9 @@ those files in wheel and sdist metadata. Production enterprise boots verify an
 offline `SHIM_LICENSE_KEY` in `shim_enterprise.core.license`; no other runtime
 licence validator exists.
 
-The public repository uses this mixed-licence package split. It is live in
-production; deployment and verification evidence is recorded in
-`MIGRATION_PROGRESS.md`. Production releases are automated from `main` through
-the staged, serialized, exact-revision Cloud Build flow documented in
-`TARGET_ARCHITECTURE.md`.
+Production deployment is triggered by `v<major>.<minor>.<patch>` tags, not by a
+merge to `main`. Cloud Build serializes migration and promotion with a shared
+lock, validates staged gateway and worker revisions, and restores the captured
+traffic splits on promotion failure. Release publication workflows do not deploy.
+See [repository release rules](../AGENTS.md#release-and-deployment) and the
+[customer-operated deployment guide](../ee/deploy/README.md).

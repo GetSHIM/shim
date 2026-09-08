@@ -12,8 +12,8 @@ permissions. Local runs use the operator's existing Docker registry login.
 
 ```sh
 uv run --locked --all-packages python ee/deploy/test/run.py \
-  --gateway-image shim-enterprise:phase01 \
-  --dashboard-image shim-dashboard:phase01
+  --gateway-image shim-enterprise:local \
+  --dashboard-image shim-dashboard:local
 ```
 
 Requires Docker, kind 0.33.0, Helm 4.2.4, kubectl compatible with Kubernetes 1.37,

@@ -6,6 +6,11 @@ optional single-instance services are provided for disposable installations.
 The chart has no downloaded chart dependencies. Use the signed release's image
 digests and its matching chart, not a mutable `latest` tag.
 
+Related guides: [identity and Vault](../docs/ON_PREM_IDENTITY.md),
+[organization provisioning](../docs/PROVISIONING.md), [teams and keys](../docs/team-access.md),
+[model deployments](../docs/MODEL_DEPLOYMENTS.md), [diagnostic metadata](../docs/DIAGNOSTIC_METADATA.md),
+[decision evidence](../docs/POLICY_DECISIONS.md), and [offline releases](../docs/OFFLINE_RELEASES.md).
+
 ## Prerequisites
 
 - Kubernetes 1.28 or later, Helm, a default storage class when using test services,

@@ -144,15 +144,14 @@ schema. Retain the previous verified bundle and internal digest inventory for
 recovery. A clean recovery also needs database backups and separately protected
 operator secrets; the release bundle contains neither.
 
-## Evidence and remaining acceptance
+## Verification
 
 `uv run --locked python -m pytest -q ee/tests/scripts/test_offline_bundle.py`
 uses real local cosign keys and rejects archive tampering, manifest tampering,
 an unexpected signer, wrong bundle ID, extra files and symlinks. HTTP(S) requests
 are directed to a refused local proxy; Docker is replaced with a small archive
 fixture. The existing `ee/tests/core/test_license.py` covers missing, invalid,
-valid and expiry/grace boundaries. Capacity reporting is explicitly deferred;
-current licence terms and startup verification are unchanged.
+valid and expiry/grace boundaries. Release verification is separate from the existing startup licence check.
 
 These checks are not the full air-gap rehearsal. Before declaring offline
 readiness, an independent operator must use a clean environment with internet

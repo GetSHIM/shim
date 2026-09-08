@@ -60,8 +60,8 @@ After worker delivery, the tenant-scoped `GET /v1/compliance/audit/logs` respons
 exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
 status. Unknown historical fields remain null. The existing chain verifier
 continues to verify this evidence.
-Decision evidence does not create a configurable policy engine, a
-content archive, signatures, or an independent trust anchor.
+Decision evidence records existing gateway checks. It is not a configurable
+policy engine, content archive, signature or independent trust anchor.
 
 Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,

@@ -14,7 +14,6 @@
     ".github"
   ],
   "excludeFiles": [
-    "docs/MIGRATION_PROGRESS.md",
     "AGENTS.md"
   ],
   "rules": [

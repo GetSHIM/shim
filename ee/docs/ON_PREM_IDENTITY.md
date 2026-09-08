@@ -8,7 +8,7 @@ remains available with `AUTH_MODE=supabase`; the OIDC path needs neither
 ## Bootstrap and configuration
 
 1. Apply migrations and provision an organization using
-   `python ee/scripts/activate_plan.py --create-name 'Pilot organization' enterprise`.
+   `python ee/scripts/activate_plan.py --create-name 'Example organization' enterprise`.
    Record the printed organization UUID. The operator selects capacity separately;
    this guide does not issue a licence or prescribe customer limits.
 2. Create a confidential OIDC client with authorization code flow and PKCE S256.
@@ -95,7 +95,7 @@ explicitly configure a verified email assertion for provisioning. Group-overage
 claims requiring Microsoft Graph are not fetched implicitly: require the group
 array in the token. Actual Entra tenant acceptance remains required. LDAP/AD
 federation belongs in the chosen IdP. Direct LDAP, SCIM, SAML, and local passwords
-are outside this increment.
+are not supported.
 
 ## Vault KV v2
 

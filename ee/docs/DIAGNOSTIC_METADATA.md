@@ -122,3 +122,6 @@ continues to describe token fallback independently.
 To verify the contract, run the streaming/community tests and
 `ee/tests/gateway/kernel/test_accounting_coordinator.py` plus
 `ee/tests/gateway/api/test_management.py` against disposable PostgreSQL/Redis.
+
+The metadata uses existing JSONB storage and adds no database transaction or
+network call. Measure overhead with representative payloads and concurrency.
