@@ -58,7 +58,6 @@ async def _apply_tier(
     ):
         organization.quota_monthly_request_limit = definition.monthly_request_limit
         organization.quota_monthly_token_limit = definition.monthly_token_limit
-    await session.flush()
     await session.execute(
         update(ApiKey)
         .where(

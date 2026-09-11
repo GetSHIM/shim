@@ -1,6 +1,6 @@
 # Cloud subscriptions execution plan
 
-Status: final verification in progress. Owner: Codex. Approved scope: [proposal](CLOUD_SUBSCRIPTIONS_PROPOSAL.md).
+Status: complete for local implementation and verification. Live merchant launch prerequisites are listed below. Owner: Codex. Approved scope: [proposal](CLOUD_SUBSCRIPTIONS_PROPOSAL.md).
 Fixed monthly/yearly subscriptions, monthly included organization quotas, fresh
 launch without legacy subscriber migration. Preserve on-prem operator provisioning.
 
@@ -20,24 +20,25 @@ launch without legacy subscriber migration. Preserve on-prem operator provisioni
   - [x] Deduplicate webhook intents and synchronize latest state with revision checks.
   - [x] Add cloud outbox wiring and periodic reconciliation without inference calls.
   - [x] Keep SDK/commerce storage, tests, migrations and scripts out of on-prem assets.
-- [ ] Cloud/on-prem dashboard composition — dashboard worker.
+- [x] Cloud/on-prem dashboard composition — dashboard worker.
   - [x] Add explicit build profiles independent of authentication selection.
-  - [ ] Preserve plan/interval through login; add pending checkout and portal flows.
-  - [ ] Enforce owner controls and show activation/failure/cancellation/reset information.
+  - [x] Preserve plan/interval through login; add pending checkout and portal flows.
+  - [x] Enforce owner controls and show activation/failure/cancellation/reset information.
   - [x] Exclude cloud commerce imports/routes from on-prem build artifacts.
-  - [ ] Add focused browser tests and verify both builds.
-- [ ] Distribution and contracts — root, with bounded delegation after contracts settle.
+  - [x] Add focused browser tests and verify both builds.
+- [x] Distribution and contracts — root, with bounded delegation after contracts settle.
   - [x] Explicit package/image selection for community, on-prem, and cloud.
   - [x] Extend import/route profiles and generated backend/frontend API contracts.
   - [x] Wire cloud deployment factory, worker, secrets and migrations.
   - [x] Verify customer images/wheels/bundles contain no cloud commerce/Polar runtime.
-- [ ] Verification and documentation — root.
+- [x] Verification and documentation — root.
   - [x] Start isolated local PostgreSQL/Redis and apply migrations.
   - [x] Run focused unit/integration, SDK transport, authorization and concurrency checks.
-  - [ ] Run required backend gate, dashboard typecheck/lint/API checks and builds.
+  - [x] Run required backend gate, dashboard typecheck/lint/API checks and builds.
   - [x] Review money/security paths and integration independently; resolve findings.
   - [x] Update architecture, provisioning, roadmap and runbook with verified behavior.
   - [x] Record evidence and external Polar sandbox/production prerequisites accurately.
+  - [x] Complete the user-requested focused code-cleanup pass and its checks.
 
 ## Agreed HTTP contract
 
@@ -69,44 +70,68 @@ integration. Dashboard worker exclusively owns `SHIM_LP` until handback.
 Workers report new Python file paths for root's atomic manifest update and do
 not edit root-owned manifests concurrently. Local commits are authorized for verified milestones; no pushing, merging or deployment.
 
-## Evidence
+## Verification evidence
 
-- Shared quota/accounting/plan/deployment focused suite: 108 passed.
-- Pinned Polar SDK transport/catalog suite: 18 passed, including interval mismatch.
-- Enterprise and cloud migrations applied to disposable PostgreSQL; both Alembic
-  models matched after upgrade. Cloud schema revision is `cloud_0001`.
-- Cloud runtime Ruff and repository type check passed during integration.
-- Initial dashboard typecheck/lint, profile builds, artifact exclusion and browser
-  checks passed. Return-flow and generated cloud-contract integration are undergoing
-  their final recheck.
-- Docker builder-stage checks passed for all three package selections. Complete
-  runtime inspection is continuing within local Docker disk limits.
-- Real Polar checkout is not run: sandbox/production merchant credentials and
-  configured products are external prerequisites documented in `ee/cloud/README.md`.
-- Docker ran out of local disk during concurrent artifact verification; only the
-  task's community build cache was removed, then the disposable PostgreSQL volume
-  recovered successfully. Full integration checks run after recovery.
+- Final full backend gate: **958 passed, 4 skipped**. The skips are historical
+  comparison snapshots unavailable in this checkout. The suite used a fresh
+  disposable PostgreSQL database with enterprise and cloud migrations applied.
+- `uv lock --check`, Ruff format/lint, Ty, all three OpenAPI checks and
+  `git diff --check` pass. Both Alembic schemas match their models.
+- Cloud tests: **28 passed**, including real SDK customer 404 handling, typed
+  vendor error sanitization, configured product validation, webhook signatures,
+  replay/identity conflicts, owner/tenant scopes, concurrent checkout requests,
+  billing revision races, cancellation/revocation, crash-safe delivery,
+  encrypted/expired URLs, reconciliation deduplication and configuration redaction.
+- Dashboard typecheck, lint, both generated API checks and both production builds
+  pass. Artifact scans prove commerce absent from the on-prem server/browser
+  output. Focused Chromium checks: 8 cloud controls/return tests, 1 on-prem
+  absence test, plus the cloud pricing sign-in test. Profile-specific skips are
+  intentional. The unrelated live Supabase commercial E2E requires working
+  external credentials and was not counted as passing.
+- Wheels and sdists for all three profiles pass source ownership, licence and
+  commerce dependency checks. Community and on-prem runtime images were built
+  and inspected: no cloud code, Polar SDK, or Standard Webhooks runtime.
+- Final cloud image: `sha256:3e7c36f73430601fa3983fdbdf50c6d3bf29b7cd9ca682ff2d87351b8c8f606b`.
+  Container factory/schema/package inspection passes, including action
+  capabilities and migration assets. A full cloud container started, reported
+  PostgreSQL/Redis healthy, and rejected an unsigned webhook with HTTP 403.
+- Independent quota, SDK/commerce and boundary reviews completed. The typed
+  Polar error handling and dashboard action capabilities were corrected and
+  regression-tested before the final gate.
 
+## Requested cleanup
 
-## Final integration evidence
+The focused `code-cleanup` pass removed five lines in two files:
+`ee/cloud/src/shim_cloud/billing.py` no longer scans the same product catalog twice;
+`ee/src/shim_enterprise/tenants/plans.py` leaves the final flush to its public
+transaction-owning callers. This was deletion/performance cleanup with unchanged
+public contracts. Cloud + plan regression checks: **37 passed**; Ruff, Ty and
+whitespace checks pass. No additional abstraction or compatibility layer was added.
 
-- Full backend suite on fresh migrated PostgreSQL: 956 passed, 4 historical
-  comparison snapshots unavailable/skipped. Follow-up cloud tests cover periodic
-  reconciliation dedup/expiry and hidden configuration credential values.
-- Real SDK 404 regression caught and fixed: all typed Polar errors derive from
-  `PolarError`; first checkout accepts customer-not-found, other failures remain
-  sanitized. SDK and webhook contracts use transport/signature checks, not only
-  mocked service functions.
-- Wheel and sdist checks pass for all three profiles: correct licence, source
-  ownership, and cloud-only commerce dependency metadata.
-- Community runtime image `8d2900dbd01b` and on-prem runtime `13b322b875c9`
-  were inspected: no cloud or Polar packages/code. Task-created images/caches were
-  removed after inspection to recover local Docker space.
-- Cloud runtime image built; migration module and all three packages plus pinned
-  Polar are present. Factory has exactly five commerce paths; HTTP health reports
-  connected PostgreSQL/Redis and an unsigned webhook returns 403.
-- Organization locking fences first-cap activation against already-started
-  uncapped admissions. It serializes short admissions within a tenant; measure
-  contention before introducing a more complex shared activation barrier.
-- Dashboard initial implementation committed as `8eb9b92`. Final action
-  capability alignment and CI backend revision pin follow after backend commit.
+## Commits and delivery
+
+Backend feature commit: `730a870`. Dashboard feature/capability commits:
+`8eb9b92` and `3752021`; verification/docs commit `79078e9` pins its CI contract
+to the full backend feature SHA.
+These are local commits. Push the backend commit before the dashboard branch so
+its cross-repository contract checkout can resolve that SHA. Nothing was pushed,
+merged, deployed, or configured in a live Polar account.
+
+The workspace-level `ENTERPRISE_ROADMAP.md` was updated outside either Git
+repository to distinguish hosted commerce from on-prem operator provisioning.
+
+## Remaining launch prerequisites and limits
+
+- Real Polar sandbox checkout and production merchant setup require account
+  credentials and configured products. Follow `ee/cloud/README.md` for product
+  amounts, API scopes, single-subscription enforcement, webhook registration,
+  portal behavior, delayed delivery and outage-recovery smoke checks. No live
+  purchase or vendor account configuration was performed.
+- Quotas use UTC calendar months for both monthly and yearly purchases. Operator
+  activation changes authority but does not cancel vendor payment obligations.
+- Organization locking fences cap activation against uncapped admissions and
+  serializes short admissions per tenant. Measure contention before introducing
+  a more complex shared activation barrier.
+- Docker ran out of local disk during image verification. Only task-created
+  images/cache refs were removed; the disposable PostgreSQL volume recovered.
+  Final database gates ran on fresh databases after recovery.

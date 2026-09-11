@@ -260,10 +260,6 @@ async def deliver_operation(
                 raise ValueError(
                     "Manage your existing subscription in the billing portal"
                 )
-            if operation.product_id not in {
-                str(value) for value in config.POLAR_PRODUCTS.values()
-            }:
-                raise ValueError("This subscription option is no longer available")
             assert operation.product_id is not None
             url = await checkout_url(
                 client,
