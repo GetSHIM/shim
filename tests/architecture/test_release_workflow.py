@@ -10,6 +10,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release.yml"
+ENTERPRISE_RELEASE = WORKFLOWS / "enterprise-release.yml"
 IMAGE = "ghcr.io/getshim/shim"
 DEPLOYMENT_COMMANDS = ("gcloud run", "gcloud builds", "update-traffic", "kubectl")
 RELEASE_TEXT = RELEASE.read_text()
@@ -28,6 +29,17 @@ def test_release_publishes_the_community_image_with_an_sbom() -> None:
     assert "attest-build-provenance" in RELEASE_TEXT
     assert "linux/amd64,linux/arm64" in RELEASE_TEXT
     assert "ee/Dockerfile" not in RELEASE_TEXT
+    assert "ee/cloud" not in RELEASE_TEXT
+    assert "shim-cloud" not in RELEASE_TEXT
+
+
+def test_enterprise_release_excludes_the_cloud_composition() -> None:
+    release_text = ENTERPRISE_RELEASE.read_text()
+
+    assert "file: ee/Dockerfile" in release_text
+    assert "ee/cloud" not in release_text
+    assert "shim-cloud" not in release_text
+    assert "uv build" not in release_text
 
 
 def test_release_never_deploys() -> None:

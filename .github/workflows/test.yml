@@ -35,8 +35,9 @@ jobs:
           forbidden = {
               "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
               "boto3", "botocore", "email-validator",
-              "google-cloud-secret-manager", "redis", "reportlab",
-              "shim-enterprise", "sqlalchemy", "supabase",
+              "google-cloud-secret-manager", "polar-sdk", "redis", "reportlab",
+              "shim-cloud", "shim-enterprise", "sqlalchemy", "standardwebhooks",
+              "supabase",
           }
           assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
           direct = {
@@ -49,8 +50,9 @@ jobs:
           forbidden_direct = {
               "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
               "boto3", "botocore", "cryptography", "email-validator",
-              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
-              "sqlalchemy", "supabase",
+              "google-cloud-secret-manager", "polar-sdk", "pyyaml", "redis",
+              "reportlab", "shim-cloud", "sqlalchemy", "standardwebhooks",
+              "supabase",
           }
           assert forbidden_direct.isdisjoint(direct), sorted(forbidden_direct & direct)
           '
@@ -115,13 +117,14 @@ jobs:
               assert not any(
                   component in path.parts
                   for path in paths
-                  for component in ("app", "ee", "shim_enterprise")
+                  for component in ("app", "ee", "shim_cloud", "shim_enterprise")
               )
           forbidden_direct = {
               "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
               "boto3", "botocore", "cryptography", "email-validator",
-              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
-              "sqlalchemy", "supabase",
+              "google-cloud-secret-manager", "polar-sdk", "pyyaml", "redis",
+              "reportlab", "shim-cloud", "sqlalchemy", "standardwebhooks",
+              "supabase",
           }
           direct = {
               requirement.split(";", 1)[0]
@@ -146,7 +149,9 @@ jobs:
           "$RUNNER_TEMP/community-venv/bin/python" -c '
           from importlib.util import find_spec
           import shim.application
-          assert find_spec("shim_enterprise") is None
+          assert all(find_spec(module) is None for module in (
+              "polar_sdk", "shim_cloud", "shim_enterprise", "standardwebhooks",
+          ))
           '
       - name: Build community image from scratch
         run: docker build --pull --no-cache --tag shim-community:ci .
@@ -160,9 +165,9 @@ jobs:
           forbidden = {
               "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
               "boto3", "botocore", "email-validator",
-              "google-cloud-secret-manager", "pytest", "pytest-asyncio", "redis",
-              "reportlab", "ruff", "shim-enterprise", "sqlalchemy", "supabase",
-              "ty",
+              "google-cloud-secret-manager", "polar-sdk", "pytest", "pytest-asyncio",
+              "redis", "reportlab", "ruff", "shim-cloud", "shim-enterprise",
+              "sqlalchemy", "standardwebhooks", "supabase", "ty",
           }
           assert "shim-gateway" in installed
           assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
@@ -176,8 +181,9 @@ jobs:
           forbidden_direct = {
               "alembic", "asyncpg", "azure-identity", "azure-keyvault-secrets",
               "boto3", "botocore", "cryptography", "email-validator",
-              "google-cloud-secret-manager", "pyyaml", "redis", "reportlab",
-              "sqlalchemy", "supabase",
+              "google-cloud-secret-manager", "polar-sdk", "pyyaml", "redis",
+              "reportlab", "shim-cloud", "sqlalchemy", "standardwebhooks",
+              "supabase",
           }
           assert forbidden_direct.isdisjoint(direct), sorted(forbidden_direct & direct)
           package = distribution("shim-gateway")
@@ -185,7 +191,9 @@ jobs:
           assert package.metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
           assert {"LICENSE", "NOTICE"} <= {Path(path).name for path in package.files or ()}
           assert find_spec("shim") is not None
-          assert find_spec("shim_enterprise") is None
+          assert all(find_spec(module) is None for module in (
+              "polar_sdk", "shim_cloud", "shim_enterprise", "standardwebhooks",
+          ))
           assert not any(Path(path).exists() for path in ("/app/app", "/app/ee", "/app/alembic"))
           '
       - name: Smoke community image
@@ -232,6 +240,11 @@ jobs:
       ENCRYPTION_KEY: 1yuHjGCrKdLoXrHt6qVL4vd6GHUZ1KVDbsXWJsbq3Kw=
       SUPABASE_URL: https://example.supabase.co
       SUPABASE_KEY: ci-public-anon-key
+      POLAR_ACCESS_TOKEN: ci-only-polar-token
+      POLAR_WEBHOOK_SECRET: ci-only-polar-webhook-secret
+      POLAR_ORGANIZATION_ID: 00000000-0000-0000-0000-000000000001
+      POLAR_PRODUCTS: '{"managed:monthly":"00000000-0000-0000-0000-000000000011","managed:yearly":"00000000-0000-0000-0000-000000000012","agency:monthly":"00000000-0000-0000-0000-000000000013","agency:yearly":"00000000-0000-0000-0000-000000000014"}'
+      CLOUD_DASHBOARD_URL: https://cloud.example.test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -252,15 +265,19 @@ jobs:
       - run: uv sync --locked --all-packages
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini check
-      - run: uv run --locked --all-packages ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-      - run: uv run --locked --all-packages ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
+      - run: uv run --locked --package shim-cloud python -m shim_cloud.migrate
+      - run: uv run --locked --package shim-cloud alembic -c ee/cloud/alembic.ini check
+      - run: uv run --locked --all-packages ruff format --check src ee/src ee/cloud/src tests ee/tests ee/cloud/tests scripts ee/scripts ee/alembic ee/cloud/alembic
+      - run: uv run --locked --all-packages ruff check src ee/src ee/cloud/src tests ee/tests ee/cloud/tests scripts ee/scripts ee/alembic ee/cloud/alembic
       - run: uv run --locked --all-packages ty check
       - run: uv run --locked --all-packages python -m pytest -q
       - run: uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-      - name: Build both packages from the validated lock
+      - run: uv run --locked --package shim-cloud python scripts/export_openapi.py --profile cloud --check
+      - name: Build all packages from the validated lock
         run: |
           uv build --package shim-gateway --wheel --sdist --out-dir dist/community
           uv build --package shim-enterprise --wheel --sdist --out-dir dist/enterprise
+          uv build --package shim-cloud --wheel --sdist --out-dir dist/cloud
       - name: Verify enterprise artifacts
         run: |
           python - <<'PY'
@@ -316,7 +333,7 @@ jobs:
               assert not any(
                   component in path.parts
                   for path in paths
-                  for component in ("app", "shim")
+                  for component in ("app", "shim", "shim_cloud")
               )
               assert {
                   "ai_act.yaml", "gdpr.yaml", "iso27001.yaml", "kvkk.yaml",
@@ -333,8 +350,12 @@ jobs:
             dist/community/*.whl dist/enterprise/*.whl
           "$RUNNER_TEMP/enterprise-venv/bin/python" -c '
           from importlib import import_module
+          from importlib.util import find_spec
           import shim.application
           import shim_enterprise.application
+          assert all(find_spec(module) is None for module in (
+              "polar_sdk", "shim_cloud", "standardwebhooks",
+          ))
           for module in (
               "shim_enterprise.workers.outbox",
               "shim_enterprise.workers.reconciliation",
@@ -356,7 +377,10 @@ jobs:
           from importlib.util import find_spec
           from pathlib import Path
           installed = {item.metadata["Name"].lower().replace("_", "-") for item in distributions()}
-          forbidden = {"pytest", "pytest-asyncio", "ruff", "ty"}
+          forbidden = {
+              "polar-sdk", "pytest", "pytest-asyncio", "ruff", "shim-cloud",
+              "standardwebhooks", "ty",
+          }
           assert {"shim-gateway", "shim-enterprise"} <= installed
           assert forbidden.isdisjoint(installed), sorted(forbidden & installed)
           for package_name, expression in (
@@ -371,6 +395,9 @@ jobs:
               }
           assert find_spec("shim") is not None
           assert find_spec("shim_enterprise") is not None
+          assert all(find_spec(module) is None for module in (
+              "polar_sdk", "shim_cloud", "standardwebhooks",
+          ))
           assert all(find_spec(module) is not None for module in (
               "shim_enterprise.workers.outbox",
               "shim_enterprise.workers.reconciliation",

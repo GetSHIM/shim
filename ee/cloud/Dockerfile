@@ -4,15 +4,18 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48a
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     UV_PYTHON_DOWNLOADS=0
 
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
-COPY ee/pyproject.toml ./ee/pyproject.toml
-COPY ee/cloud/pyproject.toml ./ee/cloud/pyproject.toml
+COPY ee/pyproject.toml ee/LICENSE ee/NOTICE ./ee/
+COPY ee/cloud/pyproject.toml ee/cloud/LICENSE ee/cloud/NOTICE ./ee/cloud/
 COPY src ./src
-RUN uv sync --locked --no-dev --package shim-gateway --no-editable
+COPY ee/src ./ee/src
+COPY ee/cloud/src ./ee/cloud/src
+RUN uv sync --locked --no-dev --package shim-cloud --no-editable
 
 FROM python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS runtime
 
@@ -26,6 +29,10 @@ RUN addgroup --system shim \
     && adduser --system --ingroup shim shim
 
 COPY --from=builder --chown=shim:shim /app/.venv ./.venv
+COPY --chown=shim:shim ee/alembic.ini ./ee/alembic.ini
+COPY --chown=shim:shim ee/alembic ./ee/alembic
+COPY --chown=shim:shim ee/cloud/alembic.ini ./ee/cloud/alembic.ini
+COPY --chown=shim:shim ee/cloud/alembic ./ee/cloud/alembic
 
 USER shim
 EXPOSE 8000
@@ -33,4 +40,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
 
-CMD ["shim", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "shim_cloud.application:create_cloud_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

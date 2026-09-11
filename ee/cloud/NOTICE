@@ -1,0 +1,8 @@
+Shim Enterprise
+Copyright 2026 Shim
+
+Files under this directory are licensed under the Elastic License 2.0 in
+LICENSE. The licensor is Shim.
+
+The shim-enterprise distribution depends on shim-gateway, which is separately
+licensed under the Apache License 2.0.

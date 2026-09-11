@@ -350,7 +350,7 @@ def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
 
 
-async def main() -> None:
+async def main(publisher: OutboxPublisher | None = None) -> None:
     from shim_enterprise.outbox.handlers import build_publisher
 
     configure_logging(settings.LOG_LEVEL)
@@ -368,7 +368,7 @@ async def main() -> None:
     for shutdown_signal in shutdown_signals:
         loop.add_signal_handler(shutdown_signal, stop_event.set)
     try:
-        await OutboxWorker(build_publisher()).run(stop_event)
+        await OutboxWorker(publisher or build_publisher()).run(stop_event)
     finally:
         for shutdown_signal in shutdown_signals:
             loop.remove_signal_handler(shutdown_signal)

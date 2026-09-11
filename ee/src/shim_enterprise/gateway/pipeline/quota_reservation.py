@@ -59,6 +59,7 @@ from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.tenants.models import (
     ApiKey,
+    Organization,
     ProviderSecret,
     TierDefinition,
     Team,
@@ -141,6 +142,37 @@ class AccountingPolicyLoader:
         session: AsyncSession,
         prepared: PreparedInference,
     ) -> QuotaPolicySnapshot:
+        # Also fence cap activation against admissions that began uncapped.
+        # ponytail: this serializes short admissions per organization; use a shared
+        # activation barrier if measured on-prem contention warrants it.
+        organization = (
+            await session.execute(
+                select(Organization)
+                .where(Organization.id == prepared.tenant_id)
+                .with_for_update(of=Organization)
+            )
+        ).scalar_one_or_none()
+        if organization is None:
+            raise AccountingPersistenceError("accounting organization no longer exists")
+        organization_limits = (
+            self._unlimited(organization.quota_monthly_request_limit),
+            self._unlimited(organization.quota_monthly_token_limit),
+        )
+        organization_policy = (
+            QuotaPolicySnapshot(
+                version=self._version(
+                    "organization:"
+                    f"{organization.id}:{organization.billing_revision}:"
+                    f"{organization.updated_at}",
+                    organization_limits,
+                ),
+                daily_request_limit=None,
+                monthly_request_limit=organization_limits[0],
+                monthly_token_limit=organization_limits[1],
+            )
+            if any(limit is not None for limit in organization_limits)
+            else None
+        )
         api_key_statement = (
             select(ApiKey)
             .where(
@@ -233,13 +265,18 @@ class AccountingPolicyLoader:
             return QuotaPolicySnapshot(
                 version=self._version(
                     "quota-default",
-                    (*values, team_policy.version if team_policy else None),
+                    (
+                        *values,
+                        organization_policy.version if organization_policy else None,
+                        team_policy.version if team_policy else None,
+                    ),
                 ),
                 daily_request_limit=values[0],
                 monthly_request_limit=values[1],
                 monthly_token_limit=values[2],
                 team_id=api_key.team_id,
                 team_policy=team_policy,
+                organization_policy=organization_policy,
             )
 
         values = (
@@ -250,13 +287,18 @@ class AccountingPolicyLoader:
         return QuotaPolicySnapshot(
             version=self._version(
                 f"quota:{tier.slug}:{getattr(tier, 'updated_at', None)}",
-                (*values, team_policy.version if team_policy else None),
+                (
+                    *values,
+                    organization_policy.version if organization_policy else None,
+                    team_policy.version if team_policy else None,
+                ),
             ),
             daily_request_limit=values[0],
             monthly_request_limit=values[1],
             monthly_token_limit=values[2],
             team_id=api_key.team_id,
             team_policy=team_policy,
+            organization_policy=organization_policy,
         )
 
     async def spend(

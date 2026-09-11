@@ -352,7 +352,7 @@ class UsageLedger(Base):
 
 
 class QuotaPeriodUsage(Base):
-    """Authoritative daily or monthly key or team quota counters."""
+    """Authoritative daily or monthly organization, key, or team counters."""
 
     __tablename__ = "quota_period_usage"
     __table_args__ = (
@@ -367,8 +367,16 @@ class QuotaPeriodUsage(Base):
             name="fk_quota_period_usage_org_team",
         ),
         CheckConstraint(
-            "(api_key_id IS NULL) <> (team_id IS NULL)",
+            "NOT (api_key_id IS NOT NULL AND team_id IS NOT NULL)",
             name="ck_quota_period_usage_single_scope",
+        ),
+        Index(
+            "uq_quota_period_usage_organization_scope",
+            "organization_id",
+            "period_type",
+            "period_start",
+            unique=True,
+            postgresql_where=text("api_key_id IS NULL AND team_id IS NULL"),
         ),
         Index(
             "uq_quota_period_usage_team_scope",

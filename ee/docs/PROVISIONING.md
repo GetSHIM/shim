@@ -81,3 +81,12 @@ These regression checks cover new provisioning, invalid inputs, transitions
 across all existing tiers, active/revoked/new keys, tenant separation, historical
 billing records, ledger values, and quota counters. They use disposable
 PostgreSQL and make no subscription-service calls.
+
+## Hosted cloud composition
+
+The hosted service adds [Polar commerce](../cloud/README.md) through a separate
+package/image. The on-prem application and provisioning commands do not install
+or import it. Shared plan updates preserve usage and increment a billing revision;
+an operator override takes authority from cloud sync. Optional organization-wide
+quotas are maintained on tier changes only for tenants already opted into them.
+The existing read-only subscription endpoint is unchanged.

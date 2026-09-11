@@ -10,6 +10,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUTS = {
     "community": REPOSITORY_ROOT / "openapi" / "community.json",
     "enterprise": REPOSITORY_ROOT / "ee" / "openapi" / "enterprise.json",
+    "cloud": REPOSITORY_ROOT / "ee" / "cloud" / "openapi" / "cloud.json",
 }
 
 
@@ -24,6 +25,10 @@ def render_openapi(profile: str) -> str:
         from shim_enterprise.application import create_enterprise_app
 
         application = create_enterprise_app()
+    elif profile == "cloud":
+        from shim_cloud.application import create_cloud_app
+
+        application = create_cloud_app()
     else:
         raise ValueError(f"unknown OpenAPI profile: {profile}")
     return json.dumps(application.openapi(), indent=2, sort_keys=True) + "\n"

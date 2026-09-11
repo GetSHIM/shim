@@ -497,10 +497,35 @@ def test_docker_build_contexts_are_exactly_allowlisted() -> None:
             "!src/**",
             "!ee/",
             "!ee/pyproject.toml",
+            "!ee/cloud/pyproject.toml",
             "**/__pycache__/",
             "**/*.py[cod]",
         ),
         "ee/Dockerfile.dockerignore": (
+            "**",
+            "!README.md",
+            "!LICENSE",
+            "!NOTICE",
+            "!pyproject.toml",
+            "!uv.lock",
+            "!src/",
+            "!src/**",
+            "!ee/",
+            "!ee/LICENSE",
+            "!ee/NOTICE",
+            "!ee/pyproject.toml",
+            "!ee/cloud/pyproject.toml",
+            "!ee/src/",
+            "!ee/src/**",
+            "!ee/alembic.ini",
+            "!ee/alembic/",
+            "!ee/alembic/**",
+            "!ee/scripts/",
+            "!ee/scripts/**",
+            "**/__pycache__/",
+            "**/*.py[cod]",
+        ),
+        "ee/cloud/Dockerfile.dockerignore": (
             "**",
             "!README.md",
             "!LICENSE",
@@ -518,8 +543,15 @@ def test_docker_build_contexts_are_exactly_allowlisted() -> None:
             "!ee/alembic.ini",
             "!ee/alembic/",
             "!ee/alembic/**",
-            "!ee/scripts/",
-            "!ee/scripts/**",
+            "!ee/cloud/",
+            "!ee/cloud/LICENSE",
+            "!ee/cloud/NOTICE",
+            "!ee/cloud/pyproject.toml",
+            "!ee/cloud/src/",
+            "!ee/cloud/src/**",
+            "!ee/cloud/alembic.ini",
+            "!ee/cloud/alembic/",
+            "!ee/cloud/alembic/**",
             "**/__pycache__/",
             "**/*.py[cod]",
         ),
@@ -560,9 +592,10 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         for argument in steps["deploy-gateway"]["args"]
     )
     assert "--revision-suffix=rel-$SHORT_SHA" in steps["deploy-gateway"]["args"]
-    assert "--args=-c,ee/alembic.ini,upgrade,head" in steps["deploy-migration"]["args"]
+    assert "--command=python" in steps["deploy-migration"]["args"]
+    assert "--args=-m,shim_cloud.migrate" in steps["deploy-migration"]["args"]
     expected_workers = {
-        "deploy-outbox-worker": "--args=-m,shim_enterprise.workers.outbox",
+        "deploy-outbox-worker": "--args=-m,shim_cloud.worker",
         "deploy-reconciliation-worker": (
             "--args=-m,shim_enterprise.workers.reconciliation"
         ),
@@ -788,6 +821,7 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         "${_REGION}-docker.pkg.dev/$PROJECT_ID/"
         "${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA"
     )
+    assert "--dockerfile=ee/cloud/Dockerfile" in steps["build-image"]["args"]
     assert f"--destination={image_ref}" in steps["build-image"]["args"]
     for step_id in ("deploy-migration", "deploy-gateway", *expected_workers):
         assert f"--image={image_ref}" in steps[step_id]["args"]

@@ -23,6 +23,7 @@ from shim_enterprise.billing.models import (
     SpendPeriodUsage,
     UsageLedger,
 )
+from shim_enterprise.tenants.models import Organization
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
     AuditIntentRepository,
@@ -159,6 +160,7 @@ class QuotaPolicySnapshot:
     monthly_token_limit: int | None
     team_id: UUID | None = None
     team_policy: QuotaPolicySnapshot | None = None
+    organization_policy: QuotaPolicySnapshot | None = None
 
     def __post_init__(self) -> None:
         limits = (
@@ -322,6 +324,8 @@ class DurableAccountingRepository:
         session: AsyncSession,
         command: QuotaReservationCommand,
     ) -> ReservationResult:
+        if command.policy.organization_policy is not None:
+            await self._lock_organization(session, command.tenant_id)
         await RequestLifecycleRepository.create(
             session,
             organization_id=command.tenant_id,
@@ -548,6 +552,11 @@ class DurableAccountingRepository:
         quota_reservation: UsageLedger,
         spend_reservation: UsageLedger | None,
     ) -> FinalizationResult:
+        if not any(
+            allocation.get("scope") == "organization"
+            for allocation in quota_reservation.period_allocations
+        ):
+            await self._lock_organization(session, command.tenant_id)
         quota_event, quota_replayed = await self._transition_reservation(
             session,
             command.tenant_id,
@@ -879,8 +888,20 @@ class DurableAccountingRepository:
         session: AsyncSession,
         command: QuotaReservationCommand,
     ) -> list[dict[str, object]]:
-        allocations = await self._reserve_scoped_quota_periods(
-            session, command, command.policy
+        allocations: list[dict[str, object]] = []
+        if command.policy.organization_policy is not None:
+            allocations.extend(
+                await self._reserve_scoped_quota_periods(
+                    session,
+                    command,
+                    command.policy.organization_policy,
+                    scope="organization",
+                )
+            )
+        allocations.extend(
+            await self._reserve_scoped_quota_periods(
+                session, command, command.policy, scope="api_key"
+            )
         )
         if (
             command.policy.team_id is not None
@@ -891,6 +912,7 @@ class DurableAccountingRepository:
                     session,
                     command,
                     command.policy.team_policy,
+                    scope="team",
                     team_id=command.policy.team_id,
                 )
             )
@@ -902,6 +924,7 @@ class DurableAccountingRepository:
         command: QuotaReservationCommand,
         policy: QuotaPolicySnapshot,
         *,
+        scope: Literal["organization", "api_key", "team"],
         team_id: UUID | None = None,
     ) -> list[dict[str, object]]:
         token_delta = command.estimated_input_tokens + command.maximum_output_tokens
@@ -952,6 +975,7 @@ class DurableAccountingRepository:
                 token_delta=tokens,
                 request_limit=request_limit,
                 token_limit=token_limit,
+                scope=scope,
                 team_id=team_id,
             )
             if row is None:
@@ -959,6 +983,7 @@ class DurableAccountingRepository:
             allocations.append(
                 {
                     "counter_type": "quota",
+                    "scope": scope,
                     "team_id": str(team_id) if team_id else None,
                     "period_row_id": str(row.id),
                     "period_type": period_type,
@@ -982,12 +1007,27 @@ class DurableAccountingRepository:
         token_delta: int,
         request_limit: int | None,
         token_limit: int | None,
+        scope: Literal["organization", "api_key", "team"],
         team_id: UUID | None = None,
     ) -> QuotaPeriodUsage | None:
+        if scope == "organization":
+            initial = await self._reserve_initial_organization_quota_period(
+                session,
+                command,
+                period_type=period_type,
+                period_start=period_start,
+                period_end=period_end,
+                request_delta=request_delta,
+                token_delta=token_delta,
+                request_limit=request_limit,
+                token_limit=token_limit,
+            )
+            if initial is not None:
+                return initial
         statement = insert(QuotaPeriodUsage).values(
             organization_id=command.tenant_id,
-            api_key_id=command.api_key_id if team_id is None else None,
-            team_id=team_id,
+            api_key_id=command.api_key_id if scope == "api_key" else None,
+            team_id=team_id if scope == "team" else None,
             period_type=period_type,
             period_start=period_start,
             period_end=period_end,
@@ -997,18 +1037,28 @@ class DurableAccountingRepository:
             limit_tokens=token_limit,
         )
         excluded = statement.excluded
+        scope_column = (
+            QuotaPeriodUsage.api_key_id
+            if scope == "api_key"
+            else QuotaPeriodUsage.team_id
+            if scope == "team"
+            else None
+        )
         statement = statement.on_conflict_do_update(
             index_elements=[
                 QuotaPeriodUsage.organization_id,
-                QuotaPeriodUsage.api_key_id
-                if team_id is None
-                else QuotaPeriodUsage.team_id,
+                *([scope_column] if scope_column is not None else []),
                 QuotaPeriodUsage.period_type,
                 QuotaPeriodUsage.period_start,
             ],
-            index_where=QuotaPeriodUsage.team_id.is_not(None)
-            if team_id is not None
-            else None,
+            index_where=(
+                QuotaPeriodUsage.api_key_id.is_(None)
+                & QuotaPeriodUsage.team_id.is_(None)
+                if scope == "organization"
+                else QuotaPeriodUsage.team_id.is_not(None)
+                if scope == "team"
+                else None
+            ),
             set_={
                 "reserved_requests": (
                     QuotaPeriodUsage.reserved_requests + excluded.reserved_requests
@@ -1035,6 +1085,84 @@ class DurableAccountingRepository:
                     + excluded.reserved_tokens
                     <= excluded.limit_tokens,
                 ),
+            ),
+        ).returning(QuotaPeriodUsage)
+        return (await session.execute(statement)).scalar_one_or_none()
+
+    async def _reserve_initial_organization_quota_period(
+        self,
+        session: AsyncSession,
+        command: QuotaReservationCommand,
+        *,
+        period_type: str,
+        period_start: date,
+        period_end: date,
+        request_delta: int,
+        token_delta: int,
+        request_limit: int | None,
+        token_limit: int | None,
+    ) -> QuotaPeriodUsage | None:
+        if await session.scalar(
+            select(QuotaPeriodUsage.id).where(
+                QuotaPeriodUsage.organization_id == command.tenant_id,
+                QuotaPeriodUsage.api_key_id.is_(None),
+                QuotaPeriodUsage.team_id.is_(None),
+                QuotaPeriodUsage.period_type == period_type,
+                QuotaPeriodUsage.period_start == period_start,
+            )
+        ):
+            return None
+        existing = tuple(
+            (
+                await session.execute(
+                    select(QuotaPeriodUsage)
+                    .where(
+                        QuotaPeriodUsage.organization_id == command.tenant_id,
+                        QuotaPeriodUsage.api_key_id.is_not(None),
+                        QuotaPeriodUsage.period_type == period_type,
+                        QuotaPeriodUsage.period_start == period_start,
+                    )
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        reserved_requests = sum(row.reserved_requests for row in existing)
+        settled_requests = sum(row.settled_requests for row in existing)
+        reserved_tokens = sum(row.reserved_tokens for row in existing)
+        settled_tokens = sum(row.settled_tokens for row in existing)
+        if (
+            request_limit is not None
+            and reserved_requests + settled_requests + request_delta > request_limit
+        ):
+            raise QuotaLimitExceeded(f"{period_type} request quota exceeded")
+        if (
+            token_limit is not None
+            and reserved_tokens + settled_tokens + token_delta > token_limit
+        ):
+            raise QuotaLimitExceeded(f"{period_type} token quota exceeded")
+        statement = insert(QuotaPeriodUsage).values(
+            organization_id=command.tenant_id,
+            api_key_id=None,
+            team_id=None,
+            period_type=period_type,
+            period_start=period_start,
+            period_end=period_end,
+            reserved_requests=reserved_requests + request_delta,
+            settled_requests=settled_requests,
+            reserved_tokens=reserved_tokens + token_delta,
+            settled_tokens=settled_tokens,
+            limit_requests=request_limit,
+            limit_tokens=token_limit,
+        )
+        statement = statement.on_conflict_do_nothing(
+            index_elements=[
+                QuotaPeriodUsage.organization_id,
+                QuotaPeriodUsage.period_type,
+                QuotaPeriodUsage.period_start,
+            ],
+            index_where=(
+                QuotaPeriodUsage.api_key_id.is_(None)
+                & QuotaPeriodUsage.team_id.is_(None)
             ),
         ).returning(QuotaPeriodUsage)
         return (await session.execute(statement)).scalar_one_or_none()
@@ -1362,6 +1490,20 @@ class DurableAccountingRepository:
             raise AccountingConflictError("request lifecycle does not exist")
         return lifecycle
 
+    async def _lock_organization(
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+    ) -> Organization:
+        organization = await session.scalar(
+            select(Organization)
+            .where(Organization.id == tenant_id)
+            .with_for_update(of=Organization)
+        )
+        if organization is None:
+            raise AccountingConflictError("accounting organization does not exist")
+        return organization
+
     async def _lock_reservation(
         self,
         session: AsyncSession,
@@ -1504,16 +1646,23 @@ class DurableAccountingRepository:
         completion_tokens: int,
         cost_usd: Decimal,
     ) -> list[dict[str, object]]:
-        allocations = sorted(
-            reservation.period_allocations,
+        allocations = [dict(item) for item in reservation.period_allocations]
+        allocations.extend(
+            await self._legacy_organization_allocations(session, tenant_id, allocations)
+        )
+        allocations.sort(
             key=lambda item: (
                 str(item.get("counter_type")),
-                # Match admission's key-then-team order to avoid lock inversion.
-                bool(item.get("team_id")),
+                # Match admission's organization-key-team order to avoid lock inversion.
+                0
+                if item.get("scope") == "organization"
+                else 2
+                if item.get("scope") == "team" or item.get("team_id")
+                else 1,
                 str(item.get("period_type")),
                 str(item.get("period_start")),
                 str(item.get("period_row_id")),
-            ),
+            )
         )
         if not allocations:
             raise AccountingConflictError("reservation has no period allocations")
@@ -1546,6 +1695,42 @@ class DurableAccountingRepository:
             else:
                 raise AccountingConflictError("unknown reservation counter type")
         return terminal
+
+    async def _legacy_organization_allocations(
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+        allocations: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        if any(item.get("scope") == "organization" for item in allocations):
+            return []
+        legacy: list[dict[str, object]] = []
+        for allocation in allocations:
+            if (
+                allocation.get("counter_type") != "quota"
+                or allocation.get("period_type") != "monthly"
+                or allocation.get("scope") in {"organization", "team"}
+                or allocation.get("team_id")
+            ):
+                continue
+            organization_row_id = await session.scalar(
+                select(QuotaPeriodUsage.id).where(
+                    QuotaPeriodUsage.organization_id == tenant_id,
+                    QuotaPeriodUsage.api_key_id.is_(None),
+                    QuotaPeriodUsage.team_id.is_(None),
+                    QuotaPeriodUsage.period_start
+                    == date.fromisoformat(str(allocation["period_start"])),
+                )
+            )
+            if organization_row_id is not None:
+                legacy.append(
+                    {
+                        **allocation,
+                        "scope": "organization",
+                        "period_row_id": str(organization_row_id),
+                    }
+                )
+        return legacy
 
     async def _apply_quota_transition(
         self,
