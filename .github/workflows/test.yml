@@ -364,9 +364,13 @@ jobs:
           ):
               import_module(module)
           '
+      # Cloud foreign keys depend on enterprise tables; roll cloud back first.
+      - run: uv run --locked --package shim-cloud alembic -c ee/cloud/alembic.ini downgrade base
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini downgrade base
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
       - run: uv run --locked --package shim-enterprise alembic -c ee/alembic.ini check
+      - run: uv run --locked --package shim-cloud python -m shim_cloud.migrate
+      - run: uv run --locked --package shim-cloud alembic -c ee/cloud/alembic.ini check
       - name: Build enterprise image from scratch
         run: docker build --pull --no-cache --file ee/Dockerfile --tag shim-enterprise:ci .
       - name: Verify enterprise image boundary
