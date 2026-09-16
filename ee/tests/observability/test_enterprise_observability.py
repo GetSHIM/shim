@@ -103,3 +103,50 @@ async def test_lifecycle_create_allows_replay_after_mutable_state_progresses() -
     )
 
     assert replayed is existing
+
+
+@pytest.mark.asyncio
+async def test_spend_denial_audit_is_visible_to_the_overview_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The denial audit a writer persists must satisfy the overview predicate."""
+
+    from shim_enterprise.billing import ledger
+
+    captured: dict[str, object] = {}
+
+    async def create(session, *, organization_id, values):
+        captured.update(values)
+
+    monkeypatch.setattr(ledger.AuditIntentRepository, "create", create)
+    monkeypatch.setattr(
+        ledger.RequestLifecycleRepository,
+        "get",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                lifecycle_metadata={},
+                actor_type="api_key",
+                api_key_id=uuid4(),
+                user_id=None,
+            )
+        ),
+    )
+
+    command = SimpleNamespace(
+        tenant_id=uuid4(),
+        request_id="req_spend_denied",
+        policy_verdicts=(),
+        audit_policy_mode="required",
+        input_hash="a" * 64,
+        pii_entities=None,
+        provider="openai",
+        provider_model="gpt-5",
+    )
+    repository = ledger.DurableAccountingRepository.__new__(
+        ledger.DurableAccountingRepository
+    )
+    await repository.write_spend_denial_preflight(AsyncMock(), command)
+
+    summary = captured["usage_summary"]
+    assert captured["lifecycle_status"] == "spend_denied"
+    assert summary["denial_reason"] == "spend_limit_exceeded"

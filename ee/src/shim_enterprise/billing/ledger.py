@@ -485,7 +485,7 @@ class DurableAccountingRepository:
             session,
             command,
             lifecycle_status="spend_denied",
-            usage_summary={"spend_denied": 1},
+            usage_summary={"denial_reason": "spend_limit_exceeded"},
         )
 
     async def finalize(
