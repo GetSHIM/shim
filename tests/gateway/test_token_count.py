@@ -171,6 +171,5 @@ async def test_token_count_does_not_consume_message_repeat_allowance():
                 repeated = await inbound.post("/v1/messages", json=completions)
                 blocked = await inbound.post("/v1/messages", json=completions)
     assert counted.status_code == generated.status_code == 200
-    # LOOP_REPEAT_LIMIT=2 blocks the third identical completion, not the second.
     assert repeated.status_code == 200
     assert blocked.status_code == 429

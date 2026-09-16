@@ -926,22 +926,19 @@ async def test_reconciliation_deduplicates_polar_intents_and_expires_results(
 
 
 def test_invalid_configuration_does_not_print_credentials() -> None:
-    # A model-level validator failure is the case that echoes the merged input
-    # mapping, so this is what hide_input_in_errors guards. The raw value still
-    # reaches ValidationError.errors(); only the rendered message is redacted,
-    # which is why this asserts on str().
     values = _config().model_dump()
     values.update(POLAR_ACCESS_TOKEN="never-log-this", CLOUD_DASHBOARD_URL="ftp://bad")
     with pytest.raises(ValidationError) as error:
         CloudSettings(_env_file=None, **values)
-    assert "never-log-this" not in str(error.value)
+    # hide_input_in_errors drops the echoed input_value mapping; a substring check
+    # would pass even with redaction off, because pydantic truncates the value.
+    assert "input_value" not in str(error.value)
 
 
 def test_configuration_requires_at_least_one_sellable_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # pydantic-settings merges an environment dict into the init value, so the
-    # variable must be cleared for this case to exercise the model itself.
+    # pydantic-settings merges env into the init dict, so it must be cleared.
     monkeypatch.delenv("POLAR_PRODUCTS", raising=False)
     values = _config().model_dump()
     values.update(POLAR_PRODUCTS={})

@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from shim_enterprise.gateway.contracts.audit import validate_audit_intent
 from shim_enterprise.observability.lifecycle import (
     PersistenceConflictError,
     RequestLifecycleRepository,
@@ -108,11 +109,9 @@ async def test_lifecycle_create_allows_replay_after_mutable_state_progresses() -
 
 
 @pytest.mark.asyncio
-async def test_spend_denial_audit_is_visible_to_the_overview_reader(
+async def test_spend_denial_audit_matches_every_audit_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The denial audit a writer persists must satisfy every audit reader."""
-
     from shim_enterprise.api.v1.management import _request_summary_statement
     from shim_enterprise.billing import ledger
     from shim_enterprise.observability.overview import _spend_denied
@@ -140,23 +139,23 @@ async def test_spend_denial_audit_is_visible_to_the_overview_reader(
         tenant_id=uuid4(),
         request_id="req_spend_denied",
         policy_verdicts=(),
-        audit_policy_mode="required",
+        audit_policy_mode="strict",
         input_hash="a" * 64,
         pii_entities=None,
         provider="openai",
         provider_model="gpt-5",
     )
-    repository = ledger.DurableAccountingRepository.__new__(
-        ledger.DurableAccountingRepository
-    )
+    repository = ledger.DurableAccountingRepository()
     await repository.write_spend_denial_preflight(AsyncMock(), command)
+
+    # The payload must satisfy the audit contract the repository enforces.
+    validate_audit_intent(uuid4(), {**captured, "tenant_id": uuid4()})
 
     summary = captured["usage_summary"]
     assert captured["lifecycle_status"] == "spend_denied"
     assert summary["spend_denied"] == 1
 
-    # Both audit readers must read exactly the key and value the writer stored,
-    # or the denial is counted as a technical failure instead of a rejection.
+    # A reader that misses this key or value counts the denial as a technical failure.
     for statement in (
         _spend_denied(uuid4()),
         _request_summary_statement(uuid4(), []),

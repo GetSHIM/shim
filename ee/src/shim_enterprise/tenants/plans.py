@@ -200,8 +200,7 @@ async def configure_organization_quota(
     definition = await session.get(TierDefinition, organization.tier)
     if definition is None:
         raise ValueError("Organization tier does not exist")
-    # This runs on every authenticated cloud request, so the steady state must
-    # stay lock-free instead of serializing tenants on the organization row.
+    # Called on every authenticated cloud request; keep the steady state lock-free.
     if (
         organization.quota_monthly_request_limit == definition.monthly_request_limit
         and organization.quota_monthly_token_limit == definition.monthly_token_limit

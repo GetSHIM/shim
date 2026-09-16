@@ -335,15 +335,15 @@ def _tier(request_limit: int, token_limit: int) -> SimpleNamespace:
 
 
 def _session_get(
-    organization: SimpleNamespace | None = None,
-    tiers: list[SimpleNamespace] | None = None,
+    organizations: list[SimpleNamespace | None],
+    tiers: list[SimpleNamespace | None] | None = None,
 ) -> AsyncMock:
-    """Answer ``session.get`` by what is fetched, not by call order."""
+    pending_organizations = list(organizations)
     pending_tiers = list(tiers or [])
 
     async def get(model, *_args, **_kwargs):
         if model is Organization:
-            return organization
+            return pending_organizations.pop(0)
         return pending_tiers.pop(0)
 
     return AsyncMock(side_effect=get)
@@ -353,17 +353,13 @@ def _session_get(
 async def test_quota_configuration_keeps_its_errors_for_missing_rows() -> None:
     organization_id = uuid4()
     session = SimpleNamespace(
-        get=AsyncMock(
-            side_effect=[
-                None,
-                _organization(organization_id, tier="gone"),
-                None,
-            ]
+        get=_session_get(
+            organizations=[None, _organization(organization_id, tier="gone")],
+            tiers=[None],
         ),
         scalar=AsyncMock(),
         flush=AsyncMock(),
     )
-
     with pytest.raises(ValueError, match="Organization not found"):
         await configure_organization_quota(session, organization_id)
     with pytest.raises(ValueError, match="Organization tier does not exist"):
@@ -378,11 +374,13 @@ async def test_quota_configuration_skips_the_row_lock_in_the_steady_state() -> N
     organization_id = uuid4()
     session = SimpleNamespace(
         get=_session_get(
-            organization=_organization(
-                organization_id,
-                quota_monthly_request_limit=1000,
-                quota_monthly_token_limit=1_000_000,
-            ),
+            organizations=[
+                _organization(
+                    organization_id,
+                    quota_monthly_request_limit=1000,
+                    quota_monthly_token_limit=1_000_000,
+                )
+            ],
             tiers=[_tier(1000, 1_000_000)],
         ),
         scalar=AsyncMock(),
@@ -401,7 +399,7 @@ async def test_quota_configuration_locks_and_rereads_the_tier_on_drift() -> None
     locked = _organization(organization_id, tier="agency")
     session = SimpleNamespace(
         get=_session_get(
-            organization=_organization(organization_id, tier="managed"),
+            organizations=[_organization(organization_id, tier="managed")],
             tiers=[_tier(5000, 5_000_000), _tier(50000, 50_000_000)],
         ),
         scalar=AsyncMock(return_value=locked),
