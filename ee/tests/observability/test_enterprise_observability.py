@@ -148,14 +148,12 @@ async def test_spend_denial_audit_matches_every_audit_reader(
     repository = ledger.DurableAccountingRepository()
     await repository.write_spend_denial_preflight(AsyncMock(), command)
 
-    # The payload must satisfy the audit contract the repository enforces.
     validate_audit_intent(uuid4(), {**captured, "tenant_id": uuid4()})
 
     summary = captured["usage_summary"]
     assert captured["lifecycle_status"] == "spend_denied"
     assert summary["spend_denied"] == 1
 
-    # A reader that misses this key or value counts the denial as a technical failure.
     for statement in (
         _spend_denied(uuid4()),
         _request_summary_statement(uuid4(), []),

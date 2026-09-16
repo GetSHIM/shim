@@ -343,6 +343,65 @@ jobs:
               }
           assert "shim-gateway==0.1.3" in metadata.get_all("Requires-Dist", [])
           PY
+      - name: Verify cloud artifacts
+        run: |
+          python - <<'PY'
+          from email import message_from_bytes
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          from zipfile import ZipFile
+
+          expected_legal = {
+              name: (Path("ee") / "cloud" / name).read_bytes()
+              for name in ("LICENSE", "NOTICE")
+          }
+          wheel = next(Path("dist/cloud").glob("*.whl"))
+          sdist = next(Path("dist/cloud").glob("*.tar.gz"))
+          with ZipFile(wheel) as archive:
+              wheel_paths = tuple(PurePosixPath(name) for name in archive.namelist())
+              metadata_path = next(
+                  name for name in archive.namelist()
+                  if name.endswith(".dist-info/METADATA")
+              )
+              metadata = message_from_bytes(archive.read(metadata_path))
+              wheel_legal = {
+                  path.name: archive.read(str(path))
+                  for path in wheel_paths
+                  if path.parent.name == "licenses" and path.name in expected_legal
+              }
+          with tarfile.open(sdist) as archive:
+              members = archive.getmembers()
+              sdist_paths = tuple(PurePosixPath(member.name) for member in members)
+              sdist_legal = {
+                  PurePosixPath(member.name).name: archive.extractfile(member).read()
+                  for member in members
+                  if member.isfile()
+                  and PurePosixPath(member.name).name in expected_legal
+              }
+              pkg_info = next(
+                  member for member in members if member.name.endswith("/PKG-INFO")
+              )
+              sdist_metadata = message_from_bytes(archive.extractfile(pkg_info).read())
+          assert wheel_legal == expected_legal
+          assert sdist_legal == expected_legal
+          for package_metadata in (metadata, sdist_metadata):
+              assert package_metadata["Metadata-Version"] == "2.4"
+              assert package_metadata["License-Expression"] == "Elastic-2.0"
+              assert package_metadata.get_all("License-File") == ["LICENSE", "NOTICE"]
+              assert package_metadata.get("License") is None
+              assert not any(
+                  value.startswith("License ::")
+                  for value in package_metadata.get_all("Classifier", [])
+              )
+          for paths in (wheel_paths, sdist_paths):
+              assert any("shim_cloud" in path.parts for path in paths)
+              assert not any(
+                  component in path.parts
+                  for path in paths
+                  for component in ("app", "shim", "shim_enterprise", "tests")
+              )
+          assert "shim-enterprise==0.1.3" in metadata.get_all("Requires-Dist", [])
+          PY
       - name: Smoke clean enterprise wheel installation
         run: |
           uv venv "$RUNNER_TEMP/enterprise-venv" --python 3.13

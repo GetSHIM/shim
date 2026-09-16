@@ -930,17 +930,44 @@ def test_invalid_configuration_does_not_print_credentials() -> None:
     values.update(POLAR_ACCESS_TOKEN="never-log-this", CLOUD_DASHBOARD_URL="ftp://bad")
     with pytest.raises(ValidationError) as error:
         CloudSettings(_env_file=None, **values)
-    # hide_input_in_errors drops the echoed input_value mapping; a substring check
-    # would pass even with redaction off, because pydantic truncates the value.
-    assert "input_value" not in str(error.value)
+    assert "never-log-this" not in str(error.value)
+    assert "never-log-this" not in repr(error.value.errors())
 
 
 def test_configuration_requires_at_least_one_sellable_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # pydantic-settings merges env into the init dict, so it must be cleared.
     monkeypatch.delenv("POLAR_PRODUCTS", raising=False)
     values = _config().model_dump()
     values.update(POLAR_PRODUCTS={})
+    with pytest.raises(ValidationError):
+        CloudSettings(_env_file=None, **values)
+
+
+def test_configuration_rejects_duplicate_product_ids() -> None:
+    values = _config().model_dump()
+    shared = uuid4()
+    values["POLAR_PRODUCTS"] = {
+        "managed:monthly": shared,
+        "agency:monthly": shared,
+    }
+    with pytest.raises(ValidationError):
+        CloudSettings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    "dashboard_url",
+    ["ftp://bad.test", "https://bad.test/?q=1", "https://user:pass@bad.test"],
+)
+def test_configuration_rejects_non_origin_dashboard_urls(dashboard_url: str) -> None:
+    values = _config().model_dump()
+    values["CLOUD_DASHBOARD_URL"] = dashboard_url
+    with pytest.raises(ValidationError):
+        CloudSettings(_env_file=None, **values)
+
+
+def test_production_billing_requires_an_https_dashboard() -> None:
+    values = _config().model_dump()
+    values.update(POLAR_SERVER="production", CLOUD_DASHBOARD_URL="http://bad.test")
     with pytest.raises(ValidationError):
         CloudSettings(_env_file=None, **values)

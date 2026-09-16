@@ -1,10 +1,10 @@
 """Validated cloud-only billing configuration."""
 
-from typing import Literal, Self
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,13 +26,19 @@ class CloudSettings(BaseSettings):
         env_file="ee/cloud/.env", extra="ignore", hide_input_in_errors=True
     )
 
-    @model_validator(mode="after")
-    def validate_billing_configuration(self) -> Self:
-        if len(set(self.POLAR_PRODUCTS.values())) != len(self.POLAR_PRODUCTS):
+    @field_validator("POLAR_PRODUCTS")
+    @classmethod
+    def validate_products(cls, value: dict[ProductKey, UUID]) -> dict[ProductKey, UUID]:
+        if len(set(value.values())) != len(value):
             raise ValueError(
                 "Polar product IDs must identify exactly one plan/interval"
             )
-        url = urlsplit(self.CLOUD_DASHBOARD_URL)
+        return value
+
+    @field_validator("CLOUD_DASHBOARD_URL")
+    @classmethod
+    def validate_dashboard_url(cls, value: str, info: ValidationInfo) -> str:
+        url = urlsplit(value)
         if (
             url.scheme not in {"https", "http"}
             or not url.hostname
@@ -43,10 +49,9 @@ class CloudSettings(BaseSettings):
             or url.fragment
         ):
             raise ValueError("CLOUD_DASHBOARD_URL must be an HTTP(S) origin")
-        if self.POLAR_SERVER == "production" and url.scheme != "https":
+        if info.data.get("POLAR_SERVER") == "production" and url.scheme != "https":
             raise ValueError("production billing requires an HTTPS dashboard")
-        self.CLOUD_DASHBOARD_URL = self.CLOUD_DASHBOARD_URL.rstrip("/")
-        return self
+        return value.rstrip("/")
 
     @property
     def return_url(self) -> str:
