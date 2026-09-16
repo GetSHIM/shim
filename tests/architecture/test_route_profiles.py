@@ -78,6 +78,13 @@ def test_route_profiles_are_normalized_and_unique() -> None:
     _route_profiles()
 
 
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_profile_routes_are_sorted(profile: str) -> None:
+    routes = _route_profiles()[profile]
+
+    assert routes == sorted(routes), f"{profile} profile routes are not sorted"
+
+
 def test_community_profile_is_a_strict_enterprise_subset() -> None:
     profiles = _route_profiles()
 

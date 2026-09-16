@@ -125,11 +125,6 @@ boundaries. External effects are dispatched from committed outbox intent.
 
 The exact method/path inventories live in `architecture/route_profiles.toml`.
 
-| Profile | Surface | Contract |
-| --- | --- | --- |
-| Community | OpenAI Chat and Responses; Anthropic Messages; Gemini generate and stream; model discovery; local scan; health | `openapi/community.json` |
-| Enterprise | Community provider routes plus durable scan usage, management, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
-
 `/metrics` is intentionally excluded from OpenAPI. Enterprise provider routes
 must preserve the community provider request, response, selector, error, and
 stream contracts while adding enterprise authentication and lifecycle policy.
@@ -255,19 +250,6 @@ Before changing an SDK pin:
 6. Regenerate all affected OpenAPI profiles and the enterprise dashboard client.
 
 ## Required verification
-
-```bash
-uv lock --check
-uv sync --locked --all-packages
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic ee/cloud/src ee/cloud/tests ee/cloud/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic ee/cloud/src ee/cloud/tests ee/cloud/alembic
-uv run --locked ty check
-uv run --locked python -m pytest -q
-uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
-uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-uv run --locked --package shim-cloud python scripts/export_openapi.py --profile cloud --check
-git diff --check
-```
 
 Persistence tests require PostgreSQL and Redis. The canonical Alembic config is
 `ee/alembic.ini`.
