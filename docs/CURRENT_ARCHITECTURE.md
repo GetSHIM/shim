@@ -249,11 +249,6 @@ Before changing an SDK pin:
    sanitization.
 6. Regenerate all affected OpenAPI profiles and the enterprise dashboard client.
 
-## Required verification
-
-Persistence tests require PostgreSQL and Redis. The canonical Alembic config is
-`ee/alembic.ini`.
-
 ## Licence boundary
 
 `LICENSE` and `NOTICE` apply Apache-2.0 outside `ee/`. `ee/LICENSE` and
