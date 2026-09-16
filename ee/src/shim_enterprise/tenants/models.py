@@ -31,6 +31,16 @@ class Organization(Base, TimestampMixin):
     """Mandatory tenant boundary for every customer-owned record."""
 
     __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            "quota_monthly_request_limit IS NULL OR quota_monthly_request_limit >= 0",
+            name="ck_organizations_quota_monthly_requests",
+        ),
+        CheckConstraint(
+            "quota_monthly_token_limit IS NULL OR quota_monthly_token_limit >= 0",
+            name="ck_organizations_quota_monthly_tokens",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         SqlUUID(as_uuid=True), primary_key=True, default=uuid4
@@ -58,6 +68,11 @@ class Organization(Base, TimestampMixin):
     )
     billing_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     customer_portal_url: Mapped[str | None] = mapped_column(Text)
+    quota_monthly_request_limit: Mapped[int | None] = mapped_column(Integer)
+    quota_monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+    billing_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     users: Mapped[list[User]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"

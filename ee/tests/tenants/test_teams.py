@@ -385,3 +385,214 @@ async def test_concurrent_team_quota_reserves_and_refunds_all_scopes(async_engin
             await session.execute(
                 delete(Organization).where(Organization.id == organization_id)
             )
+
+
+@pytest.mark.asyncio
+async def test_organization_quota_shares_existing_usage_across_new_keys(async_engine):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    organization_id, user_id = uuid4(), uuid4()
+    repository = DurableAccountingRepository()
+    async with factory.begin() as session:
+        session.add(
+            Organization(
+                id=organization_id,
+                name="Organization quota",
+                slug=f"organization-quota-{organization_id}",
+            )
+        )
+        session.add(
+            User(
+                id=user_id,
+                organization_id=organization_id,
+                email=f"organization-quota-{user_id}@example.com",
+                role="owner",
+                is_active=True,
+                is_verified=True,
+            )
+        )
+        await session.flush()
+        _, legacy_key = await create_api_key(session, user_id=user_id, name="legacy")
+        started_at = datetime.now(timezone.utc)
+        legacy_request = f"req_legacy_{uuid4().hex}"
+        await repository.reserve_quota(
+            session,
+            QuotaReservationCommand(
+                tenant_id=organization_id,
+                api_key_id=legacy_key.id,
+                request_id=legacy_request,
+                requested_model="internal",
+                source_endpoint="chat.completions",
+                started_at=started_at,
+                reconciliation_due_at=started_at + timedelta(minutes=2),
+                estimated_input_tokens=2,
+                maximum_output_tokens=8,
+                policy=QuotaPolicySnapshot("legacy", None, None, None),
+            ),
+        )
+        await repository.finalize(
+            session,
+            FinalizationCommand(
+                tenant_id=organization_id,
+                request_id=legacy_request,
+                quota_action=TerminalAction.SETTLE,
+                prompt_tokens=2,
+                completion_tokens=3,
+                lifecycle_status="completed",
+            ),
+        )
+        legacy_active_request = f"req_legacy_active_{uuid4().hex}"
+        await repository.reserve_quota(
+            session,
+            QuotaReservationCommand(
+                tenant_id=organization_id,
+                api_key_id=legacy_key.id,
+                request_id=legacy_active_request,
+                requested_model="internal",
+                source_endpoint="chat.completions",
+                started_at=started_at,
+                reconciliation_due_at=started_at + timedelta(minutes=2),
+                estimated_input_tokens=2,
+                maximum_output_tokens=8,
+                policy=QuotaPolicySnapshot("legacy", None, None, None),
+            ),
+        )
+
+    async with factory.begin() as session:
+        organization = await session.get(Organization, organization_id)
+        assert organization is not None
+        organization.quota_monthly_request_limit = 4
+        organization.quota_monthly_token_limit = 35
+        organization.billing_revision += 1
+        _, first_new_key = await create_api_key(
+            session, user_id=user_id, name="first new"
+        )
+        _, second_new_key = await create_api_key(
+            session, user_id=user_id, name="second new"
+        )
+
+    async def reserve(api_key_id):
+        request_id = f"req_organization_{uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        async with factory() as session:
+            policy = await AccountingPolicyLoader().quota(
+                session,
+                SimpleNamespace(
+                    tenant_id=organization_id,
+                    api_key_id=api_key_id,
+                    model="internal",
+                ),
+            )
+            try:
+                await repository.reserve_quota(
+                    session,
+                    QuotaReservationCommand(
+                        tenant_id=organization_id,
+                        api_key_id=api_key_id,
+                        request_id=request_id,
+                        requested_model="internal",
+                        source_endpoint="chat.completions",
+                        started_at=now,
+                        reconciliation_due_at=now + timedelta(minutes=2),
+                        estimated_input_tokens=2,
+                        maximum_output_tokens=8,
+                        policy=policy,
+                    ),
+                )
+                await session.commit()
+                return request_id
+            except QuotaLimitExceeded:
+                await session.rollback()
+                return None
+
+    try:
+        first, second = await asyncio.gather(
+            reserve(first_new_key.id), reserve(second_new_key.id)
+        )
+        assert first is not None and second is not None
+        assert await reserve(legacy_key.id) is None
+
+        async with factory.begin() as session:
+            counter = await session.scalar(
+                select(QuotaPeriodUsage).where(
+                    QuotaPeriodUsage.organization_id == organization_id,
+                    QuotaPeriodUsage.api_key_id.is_(None),
+                    QuotaPeriodUsage.team_id.is_(None),
+                )
+            )
+            assert counter is not None
+            assert (counter.reserved_requests, counter.settled_requests) == (3, 1)
+            assert (counter.reserved_tokens, counter.settled_tokens) == (30, 5)
+            await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=legacy_active_request,
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=2,
+                    completion_tokens=3,
+                    lifecycle_status="completed",
+                ),
+            )
+            await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=first,
+                    quota_action=TerminalAction.REFUND,
+                    lifecycle_status="failed",
+                    terminal_error_code="REQUEST_ABORTED",
+                ),
+            )
+            await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=second,
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=2,
+                    completion_tokens=4,
+                    lifecycle_status="completed",
+                ),
+            )
+
+        replacement = await reserve(legacy_key.id)
+        assert replacement is not None
+        async with factory.begin() as session:
+            await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=replacement,
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=2,
+                    completion_tokens=5,
+                    lifecycle_status="completed",
+                ),
+            )
+            counter = await session.scalar(
+                select(QuotaPeriodUsage).where(
+                    QuotaPeriodUsage.organization_id == organization_id,
+                    QuotaPeriodUsage.api_key_id.is_(None),
+                    QuotaPeriodUsage.team_id.is_(None),
+                )
+            )
+            assert counter is not None
+            assert (counter.reserved_requests, counter.settled_requests) == (0, 4)
+            assert (counter.reserved_tokens, counter.settled_tokens) == (0, 23)
+        assert await reserve(legacy_key.id) is None
+    finally:
+        async with factory.begin() as session:
+            for model in (
+                OutboxEvent,
+                UsageLedger,
+                RequestLifecycle,
+                QuotaPeriodUsage,
+                ApiKey,
+                User,
+            ):
+                await session.execute(
+                    delete(model).where(model.organization_id == organization_id)
+                )
+            await session.execute(
+                delete(Organization).where(Organization.id == organization_id)
+            )

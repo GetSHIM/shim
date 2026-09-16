@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -8,7 +9,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
+from shim_enterprise.gateway.contracts.audit import validate_audit_intent
 from shim_enterprise.observability.lifecycle import (
     PersistenceConflictError,
     RequestLifecycleRepository,
@@ -103,3 +106,66 @@ async def test_lifecycle_create_allows_replay_after_mutable_state_progresses() -
     )
 
     assert replayed is existing
+
+
+@pytest.mark.asyncio
+async def test_spend_denial_audit_matches_every_audit_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shim_enterprise.api.v1.management import _request_summary_statement
+    from shim_enterprise.billing import ledger
+    from shim_enterprise.observability.overview import _spend_denied
+
+    captured: dict[str, object] = {}
+
+    async def create(session, *, organization_id, values):
+        captured.update(values)
+
+    monkeypatch.setattr(ledger.AuditIntentRepository, "create", create)
+    monkeypatch.setattr(
+        ledger.RequestLifecycleRepository,
+        "get",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                lifecycle_metadata={},
+                actor_type="api_key",
+                api_key_id=uuid4(),
+                user_id=None,
+            )
+        ),
+    )
+
+    command = SimpleNamespace(
+        tenant_id=uuid4(),
+        request_id="req_spend_denied",
+        policy_verdicts=(),
+        audit_policy_mode="strict",
+        input_hash="a" * 64,
+        pii_entities=None,
+        provider="openai",
+        provider_model="gpt-5",
+    )
+    repository = ledger.DurableAccountingRepository()
+    await repository.write_spend_denial_preflight(AsyncMock(), command)
+
+    validate_audit_intent(uuid4(), {**captured, "tenant_id": uuid4()})
+
+    summary = captured["usage_summary"]
+    assert captured["lifecycle_status"] == "spend_denied"
+    assert summary["spend_denied"] == 1
+
+    for statement in (
+        _spend_denied(uuid4()),
+        _request_summary_statement(uuid4(), []),
+    ):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        match = re.search(
+            r"usage_summary ->> %\((\w+)\)s\) AS INTEGER\) = %\((\w+)\)s",
+            str(compiled),
+        )
+        assert match is not None, "reader no longer compares a usage_summary value"
+        key_param, value_param = match.groups()
+        assert (compiled.params[key_param], compiled.params[value_param]) == (
+            "spend_denied",
+            1,
+        )

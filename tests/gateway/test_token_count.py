@@ -166,11 +166,10 @@ async def test_token_count_does_not_consume_message_repeat_allowance():
                     "messages": [{"role": "user", "content": "hello"}],
                 }
                 counted = await inbound.post("/v1/messages/count_tokens", json=payload)
-                generated = await inbound.post(
-                    "/v1/messages", json={**payload, "max_tokens": 10}
-                )
-                repeated = await inbound.post(
-                    "/v1/messages", json={**payload, "max_tokens": 10}
-                )
+                completions = {**payload, "max_tokens": 10}
+                generated = await inbound.post("/v1/messages", json=completions)
+                repeated = await inbound.post("/v1/messages", json=completions)
+                blocked = await inbound.post("/v1/messages", json=completions)
     assert counted.status_code == generated.status_code == 200
-    assert repeated.status_code == 429
+    assert repeated.status_code == 200
+    assert blocked.status_code == 429

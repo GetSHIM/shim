@@ -34,7 +34,7 @@ steps:
       - --cache=true
       - --cache-ttl=168h
       - --context=.
-      - --dockerfile=ee/Dockerfile
+      - --dockerfile=ee/cloud/Dockerfile
 
   - id: acquire-deployment-lock
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
@@ -89,8 +89,8 @@ steps:
       - --project=${_DEPLOY_PROJECT_ID}
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
       - --region=${_REGION}
-      - --command=alembic
-      - --args=-c,ee/alembic.ini,upgrade,head
+      - --command=python
+      - --args=-m,shim_cloud.migrate
       - --tasks=1
       - --max-retries=0
       - --task-timeout=10m
@@ -138,12 +138,12 @@ steps:
       - --subnet=${_VPC_SUBNET}
       - --vpc-egress=private-ranges-only
       - --command=uvicorn
-      - --args=shim_enterprise.application:create_enterprise_app,--factory,--host,0.0.0.0,--port,8000,--workers,1
+      - --args=shim_cloud.application:create_cloud_app,--factory,--host,0.0.0.0,--port,8000,--workers,1
       - --revision-suffix=rel-$SHORT_SHA
       - --deploy-health-check
       - --no-traffic
-      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SHIM_LICENSE_KEY=${_SECRET_PREFIX}-license-key:1,ENCRYPTION_KEY=${_SECRET_PREFIX}-encryption-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
-      - --set-env-vars=^@^BACKEND_CORS_ORIGINS=${_FRONTEND_ORIGINS}@ENVIRONMENT=production@SECRET_BACKEND=gcp_secret_manager@GOOGLE_CLOUD_PROJECT=$PROJECT_ID@LOG_LEVEL=INFO@OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-gateway@DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE}@DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}@COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SHIM_LICENSE_KEY=${_SECRET_PREFIX}-license-key:1,ENCRYPTION_KEY=${_SECRET_PREFIX}-encryption-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1,POLAR_ACCESS_TOKEN=${_SECRET_PREFIX}-polar-access-token:1,POLAR_WEBHOOK_SECRET=${_SECRET_PREFIX}-polar-webhook-secret:1,POLAR_PRODUCTS=${_SECRET_PREFIX}-polar-products:1
+      - --set-env-vars=^@^BACKEND_CORS_ORIGINS=${_FRONTEND_ORIGINS}@ENVIRONMENT=production@SECRET_BACKEND=gcp_secret_manager@GOOGLE_CLOUD_PROJECT=$PROJECT_ID@LOG_LEVEL=INFO@OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-gateway@DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE}@DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW}@COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM}@POLAR_SERVER=production@POLAR_ORGANIZATION_ID=${_POLAR_ORGANIZATION_ID}@CLOUD_DASHBOARD_URL=${_CLOUD_DASHBOARD_URL}
 
   - id: verify-gateway
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
@@ -221,14 +221,14 @@ steps:
       - --vpc-egress=private-ranges-only
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:$COMMIT_SHA
       - --command=python
-      - --args=-m,shim_enterprise.workers.outbox
+      - --args=-m,shim_cloud.worker
       - --revision-suffix=rel-$SHORT_SHA
       - --no-promote
       - --cpu=1
       - --memory=1Gi
       - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
-      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1
-      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-outbox-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW},COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM}
+      - --set-secrets=DATABASE_URL=${_SECRET_PREFIX}-database-url:1,REDIS_URL=${_SECRET_PREFIX}-redis-url:1,SUPABASE_URL=${_SECRET_PREFIX}-supabase-url:1,SUPABASE_KEY=${_SECRET_PREFIX}-supabase-key:1,SECRET_KEY=${_SECRET_PREFIX}-secret-key:1,SENTRY_DSN=${_SECRET_PREFIX}-sentry-dsn:1,OTEL_EXPORTER_OTLP_ENDPOINT=${_SECRET_PREFIX}-otel-exporter-otlp-endpoint:1,OTEL_EXPORTER_OTLP_HEADERS=${_SECRET_PREFIX}-otel-exporter-otlp-headers:1,POLAR_ACCESS_TOKEN=${_SECRET_PREFIX}-polar-access-token:1,POLAR_WEBHOOK_SECRET=${_SECRET_PREFIX}-polar-webhook-secret:1,POLAR_PRODUCTS=${_SECRET_PREFIX}-polar-products:1
+      - --set-env-vars=ENVIRONMENT=production,SECRET_BACKEND=gcp_secret_manager,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,LOG_LEVEL=INFO,OTEL_SERVICE_NAME=${_RESOURCE_PREFIX}-outbox-worker,DATABASE_POOL_SIZE=${_DATABASE_POOL_SIZE},DATABASE_MAX_OVERFLOW=${_DATABASE_MAX_OVERFLOW},COMPLIANCE_EMAIL_FROM=${_COMPLIANCE_EMAIL_FROM},POLAR_SERVER=production,POLAR_ORGANIZATION_ID=${_POLAR_ORGANIZATION_ID},CLOUD_DASHBOARD_URL=${_CLOUD_DASHBOARD_URL}
 
   - id: deploy-reconciliation-worker
     name: gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:570dc7ce2876a2810dbf80f1d2520c1654aa218a7f1347715243a79c98d166ae
@@ -481,6 +481,8 @@ substitutions:
   _WORKER_INSTANCES: "1"
   _DATABASE_POOL_SIZE: "2"
   _DATABASE_MAX_OVERFLOW: "1"
+  _POLAR_ORGANIZATION_ID: ""
+  _CLOUD_DASHBOARD_URL: ""
 
 options:
   logging: CLOUD_LOGGING_ONLY

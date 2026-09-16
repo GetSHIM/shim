@@ -42,10 +42,13 @@ dev = [
 required-version = ">=0.12.5,<0.13"
 
 [tool.uv.workspace]
-members = ["ee"]
+members = ["ee", "ee/cloud"]
+
+[tool.uv.sources]
+shim-enterprise = { workspace = true }
 
 [tool.ty.src]
-include = ["src", "ee/src"]
+include = ["src", "ee/src", "ee/cloud/src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

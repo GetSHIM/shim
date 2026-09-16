@@ -2,19 +2,19 @@
 
 Status: current implementation contract
 
-Last verified: 2026-08-28
+Last verified: 2026-09-11
 
 This document describes the code in this branch. When it disagrees with prose,
 use this order of authority:
 
-1. tests and the two checked-in OpenAPI documents;
+1. tests and the three checked-in OpenAPI documents;
 2. `architecture/module_ownership.toml` and `architecture/route_profiles.toml`;
-3. runtime code under `src/shim` and `ee/src/shim_enterprise`;
+3. runtime code under `src/shim`, `ee/src/shim_enterprise`, and `ee/cloud/src/shim_cloud`;
 4. this document and the developer guide.
 
 ## Product and dependency shape
 
-shim is a package-modular monolith with two application compositions and one
+shim is a package-modular monolith with three application compositions and one
 lockfile.
 
 ```text
@@ -26,13 +26,15 @@ src/shim                                   ee/src/shim_enterprise
     +----------------------------------------------+
                  exact, allowlisted imports
 
-Forbidden: shim -> shim_enterprise
+shim-cloud (ee/cloud/src/shim_cloud) -> shim-enterprise -> shim
+Forbidden: reverse imports; community/on-prem -> cloud/Polar
 ```
 
 | Product | Runtime | State |
 | --- | --- | --- |
 | Community | `shim.application:create_community_app` | Bounded in-process state and local JSONL usage events |
 | Enterprise | `shim_enterprise.application:create_enterprise_app` | PostgreSQL truth, Redis acceleration, managed secrets, outbox, and workers |
+| Hosted cloud | `shim_cloud.application:create_cloud_app` | Shared enterprise state plus isolated cloud commerce operations |
 
 The community package has no ORM, Alembic, Redis, Supabase, or managed-secret
 dependency. Enterprise imports community contracts and implementations; it does
@@ -40,7 +42,7 @@ not fork the provider gateway.
 
 ## Request flow
 
-Both products share the same inference hot path:
+All products share the same inference hot path:
 
 ```text
 provider-native HTTP request
@@ -123,11 +125,6 @@ boundaries. External effects are dispatched from committed outbox intent.
 
 The exact method/path inventories live in `architecture/route_profiles.toml`.
 
-| Profile | Surface | Contract |
-| --- | --- | --- |
-| Community | OpenAI Chat and Responses; Anthropic Messages; Gemini generate and stream; model discovery; local scan; health | `openapi/community.json` |
-| Enterprise | Community provider routes plus durable scan usage, management, shared results, compliance, and AI Act | `ee/openapi/enterprise.json` |
-
 `/metrics` is intentionally excluded from OpenAPI. Enterprise provider routes
 must preserve the community provider request, response, selector, error, and
 stream contracts while adding enterprise authentication and lifecycle policy.
@@ -207,6 +204,9 @@ runtime code, Alembic, and enterprise scripts remain exact-manifest-only.
 | --- | --- |
 | Community API | `shim serve` |
 | Enterprise API | `uvicorn shim_enterprise.application:create_enterprise_app --factory` |
+| Cloud API | `uvicorn shim_cloud.application:create_cloud_app --factory` |
+| Cloud migrations | `python -m shim_cloud.migrate` |
+| Cloud outbox | `python -m shim_cloud.worker` |
 | Migrations | `alembic -c ee/alembic.ini upgrade head` |
 | Outbox | `python -m shim_enterprise.workers.outbox` |
 | Reconciliation | `python -m shim_enterprise.workers.reconciliation` |
@@ -215,8 +215,10 @@ runtime code, Alembic, and enterprise scripts remain exact-manifest-only.
 
 The root Dockerfile contains only the community runtime. `ee/Dockerfile`
 contains both packages plus enterprise migrations and operational scripts.
-Compose and Cloud Build use the enterprise image and canonical enterprise
-entrypoints.
+Customer Compose uses the enterprise image. Cloud Build uses `ee/cloud/Dockerfile`,
+which installs `shim-cloud` and selects cloud API, outbox and migration entrypoints.
+Its other workers reuse enterprise entrypoints. Cloud commerce is excluded from
+customer wheels/images. See the [cloud runbook](../ee/cloud/README.md).
 
 ## Change map
 
@@ -231,6 +233,7 @@ entrypoints.
 | Durable accounting | `ee/src/shim_enterprise/gateway/pipeline/quota_reservation.py` |
 | Tenancy and managed secrets | `ee/src/shim_enterprise/tenants/`, `ee/src/shim_enterprise/secrets/` |
 | Schema and migrations | `ee/src/shim_enterprise/**/models.py`, `ee/alembic/` |
+| Cloud commerce | `ee/cloud/src/shim_cloud/`, `ee/cloud/alembic/` |
 | Route and import rules | `architecture/`, `tests/architecture/` |
 
 ## SDK update procedure
@@ -244,29 +247,12 @@ Before changing an SDK pin:
 4. Run real SDK clients through the ASGI transport tests.
 5. Review new fields through privacy restoration, metering, and error
    sanitization.
-6. Regenerate both OpenAPI profiles and the enterprise dashboard client.
-
-## Required verification
-
-```bash
-uv lock --check
-uv sync --locked --all-packages
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ty check
-uv run --locked python -m pytest -q
-uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
-uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-git diff --check
-```
-
-Persistence tests require PostgreSQL and Redis. The canonical Alembic config is
-`ee/alembic.ini`.
+6. Regenerate all affected OpenAPI profiles and the enterprise dashboard client.
 
 ## Licence boundary
 
 `LICENSE` and `NOTICE` apply Apache-2.0 outside `ee/`. `ee/LICENSE` and
-`ee/NOTICE` apply Elastic-2.0 under `ee/` and name the licensor. Both package
+`ee/NOTICE` apply Elastic-2.0 under `ee/` and name the licensor. All package
 manifests declare the matching SPDX expression and legal files; CI verifies
 those files in wheel and sdist metadata. Production enterprise boots verify an
 offline `SHIM_LICENSE_KEY` in `shim_enterprise.core.license`; no other runtime

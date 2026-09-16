@@ -8,5 +8,6 @@
 !src/**
 !ee/
 !ee/pyproject.toml
+!ee/cloud/pyproject.toml
 **/__pycache__/
 **/*.py[cod]

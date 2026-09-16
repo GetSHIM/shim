@@ -39,19 +39,9 @@ uv sync --locked --all-packages
 
 ## Verification
 
-Run this before opening a pull request. Continuous integration runs the same
-commands, plus the container builds.
-
-```console
-uv lock --check
-uv sync --locked --all-packages
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ty check
-uv run --locked python -m pytest -q
-uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
-uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-```
+Run the gate in [the developer guide](DEVELOPER_GUIDE.md#required-gates) before
+opening a pull request. Continuous integration runs the same commands, plus the
+container builds.
 
 The enterprise tests need PostgreSQL and a Redis with the search and JSON
 modules. `docker compose up` brings both up.

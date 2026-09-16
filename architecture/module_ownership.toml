@@ -15,6 +15,15 @@ forbidden_public_import_roots = [
   "supabase",
 ]
 
+# Cloud commerce dependencies must remain out of community and customer
+# enterprise artifacts.
+forbidden_noncloud_import_roots = [
+  "polar",
+  "polar_sdk",
+  "shim_cloud",
+  "standardwebhooks",
+]
+
 # Exact community symbols consumed by enterprise runtime code. Any new entry is
 # a deliberate expansion of the supported cross-license API.
 [enterprise_public_api]
@@ -79,6 +88,36 @@ forbidden_public_import_roots = [
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]
+
+# Exact shared runtime symbols consumed by the hosted cloud composition.
+[cloud_enterprise_api]
+"shim_enterprise.api.enterprise_deps" = [
+  "bearer_scheme",
+  "get_current_user",
+  "get_org_owner",
+]
+"shim_enterprise.application" = ["create_enterprise_app"]
+"shim_enterprise.core.config" = ["settings"]
+"shim_enterprise.core.database" = ["AsyncSessionLocal", "get_db"]
+"shim_enterprise.outbox.handlers" = ["build_publisher"]
+"shim_enterprise.outbox.publisher" = [
+  "OutboxIdentityConflict",
+  "OutboxMessage",
+  "OutboxWriter",
+]
+"shim_enterprise.tenants.models" = ["Organization", "User"]
+"shim_enterprise.tenants.plans" = [
+  "apply_billing_plan",
+  "billing_organization_ids",
+  "billing_owner_email",
+  "claim_billing_source",
+  "configure_organization_quota",
+  "organization_plan",
+]
+"shim_enterprise.workers.outbox" = ["main"]
+
+[cloud_public_api]
+"shim.gateway.contracts.ids" = ["TenantId"]
 
 [modules]
 # Python files owned by the community target and free of enterprise imports.
@@ -193,6 +232,7 @@ public = [
 # Python files owned by commercially licensed capabilities.
 enterprise = [
   "ee/alembic/env.py",
+  "ee/alembic/versions/4d4e8c6b975a_add_organization_quota_limits.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
@@ -358,6 +398,23 @@ enterprise = [
   "ee/tests/tenants/test_service.py",
   "ee/tests/tenants/test_teams.py",
   "ee/tests/workers/test_readiness.py",
+]
+
+# Python files shipped only in the hosted cloud composition.
+cloud = [
+  "ee/cloud/alembic/env.py",
+  "ee/cloud/alembic/versions/0001_billing_operations.py",
+  "ee/cloud/src/shim_cloud/__init__.py",
+  "ee/cloud/src/shim_cloud/api.py",
+  "ee/cloud/src/shim_cloud/application.py",
+  "ee/cloud/src/shim_cloud/billing.py",
+  "ee/cloud/src/shim_cloud/config.py",
+  "ee/cloud/src/shim_cloud/migrate.py",
+  "ee/cloud/src/shim_cloud/models.py",
+  "ee/cloud/src/shim_cloud/polar.py",
+  "ee/cloud/src/shim_cloud/worker.py",
+  "ee/cloud/tests/test_billing.py",
+  "ee/cloud/tests/test_polar.py",
 ]
 
 # Transitional Python files that contain or exercise both ownership regions.

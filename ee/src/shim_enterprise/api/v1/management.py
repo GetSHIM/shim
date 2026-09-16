@@ -193,6 +193,25 @@ class MembershipView(MembershipInput):
     source: Literal["local", "oidc"]
 
 
+def _validate_allowed_models(value: list[str] | None) -> list[str] | None:
+    if value is not None and any(
+        not item or item != item.strip() or len(item) > 200 for item in value
+    ):
+        raise ValueError(
+            "Model identifiers must be nonblank and at most 200 characters"
+        )
+    return list(dict.fromkeys(value)) if value is not None else None
+
+
+def _validate_attribution(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return normalize_attribution(
+        value,
+        maximum_length=settings.COST_TAG_MAX_LENGTH,
+    )
+
+
 class ApiKeyInput(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     cost_center: str | None = None
@@ -200,26 +219,8 @@ class ApiKeyInput(BaseModel):
     team_id: UUID | None = None
     allowed_models: list[str] | None = Field(default=None, max_length=200)
 
-    @field_validator("allowed_models")
-    @classmethod
-    def validate_models(cls, value: list[str] | None) -> list[str] | None:
-        if value is not None and any(
-            not item or item != item.strip() or len(item) > 200 for item in value
-        ):
-            raise ValueError(
-                "Model identifiers must be nonblank and at most 200 characters"
-            )
-        return list(dict.fromkeys(value)) if value is not None else None
-
-    @field_validator("cost_center", "team")
-    @classmethod
-    def validate_attribution(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return normalize_attribution(
-            value,
-            maximum_length=settings.COST_TAG_MAX_LENGTH,
-        )
+    validate_models = field_validator("allowed_models")(_validate_allowed_models)
+    validate_attribution = field_validator("cost_center", "team")(_validate_attribution)
 
 
 class ApiKeyPatch(BaseModel):
@@ -228,26 +229,8 @@ class ApiKeyPatch(BaseModel):
     team_id: UUID | None = None
     allowed_models: list[str] | None = Field(default=None, max_length=200)
 
-    @field_validator("allowed_models")
-    @classmethod
-    def validate_models(cls, value: list[str] | None) -> list[str] | None:
-        if value is not None and any(
-            not item or item != item.strip() or len(item) > 200 for item in value
-        ):
-            raise ValueError(
-                "Model identifiers must be nonblank and at most 200 characters"
-            )
-        return list(dict.fromkeys(value)) if value is not None else None
-
-    @field_validator("cost_center", "team")
-    @classmethod
-    def validate_attribution(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return normalize_attribution(
-            value,
-            maximum_length=settings.COST_TAG_MAX_LENGTH,
-        )
+    validate_models = field_validator("allowed_models")(_validate_allowed_models)
+    validate_attribution = field_validator("cost_center", "team")(_validate_attribution)
 
 
 class ApiKeyView(BaseModel):
@@ -1042,7 +1025,7 @@ async def update_team(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> Team:
-    await require_team(session, user, team_id, administer=True)
+    team = await require_team(session, user, team_id, administer=True)
     duplicate = await session.scalar(
         select(Team.id).where(
             Team.organization_id == user.organization_id,
@@ -1054,13 +1037,6 @@ async def update_team(
         raise HTTPException(
             status_code=409, detail="A team with this name already exists"
         )
-    team = await session.scalar(
-        select(Team)
-        .where(Team.organization_id == user.organization_id, Team.id == team_id)
-        .with_for_update()
-    )
-    if team is None:
-        raise HTTPException(status_code=404, detail="Team not found")
     before = TeamView.model_validate(team).model_dump(mode="json")
     for field, value in payload.model_dump().items():
         setattr(team, field, value)
@@ -2311,8 +2287,7 @@ def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
             AuditIntent.organization_id == tenant_id,
             AuditIntent.request_id == RequestLog.request_id,
             AuditIntent.event_type == "preflight",
-            AuditIntent.usage_summary["denial_reason"].as_string()
-            == "spend_limit_exceeded",
+            AuditIntent.usage_summary["spend_denied"].as_integer() == 1,
         )
         .correlate(RequestLog)
         .exists()
