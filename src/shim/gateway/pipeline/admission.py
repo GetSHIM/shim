@@ -284,6 +284,7 @@ def _repeat_material(payload: Mapping[str, object]) -> str:
             "instructions",
             "messages",
             "model",
+            "protocol",
             "provider",
             "system",
             "systemInstruction",
