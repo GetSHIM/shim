@@ -19,7 +19,10 @@ from shim_enterprise.tenants.models import (
     User,
 )
 from shim_enterprise.tenants.plans import (
+    OrganizationPlan,
+    _plan,
     activate_organization_plan,
+    configure_organization_quota,
     create_organization_plan,
 )
 from shim_enterprise.tenants.service import (
@@ -286,3 +289,129 @@ async def test_free_plan_cannot_add_team_members(
             test_user_with_org,
             db,
         )
+
+
+def test_organization_plan_maps_organization_columns_in_field_order() -> None:
+    organization = SimpleNamespace(
+        id=uuid4(),
+        tier="agency",
+        billing_source="operator",
+        billing_status="active",
+        external_customer_id="customer-1",
+        external_subscription_id="subscription-1",
+        current_period_end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        cancel_at_period_end=True,
+        billing_revision=7,
+    )
+
+    assert _plan(organization) == OrganizationPlan(
+        organization_id=organization.id,
+        tier="agency",
+        source="operator",
+        status="active",
+        customer_id="customer-1",
+        subscription_id="subscription-1",
+        current_period_end=organization.current_period_end,
+        cancel_at_period_end=True,
+        revision=7,
+    )
+
+
+@pytest.mark.asyncio
+async def test_quota_configuration_keeps_its_errors_for_missing_rows() -> None:
+    organization_id = uuid4()
+    session = SimpleNamespace(
+        get=AsyncMock(
+            side_effect=[
+                None,
+                SimpleNamespace(
+                    id=organization_id,
+                    tier="missing-tier",
+                    quota_monthly_request_limit=None,
+                    quota_monthly_token_limit=None,
+                ),
+                None,
+            ]
+        ),
+        scalar=AsyncMock(),
+        flush=AsyncMock(),
+    )
+
+    with pytest.raises(ValueError, match="Organization not found"):
+        await configure_organization_quota(session, organization_id)
+    with pytest.raises(ValueError, match="Organization tier does not exist"):
+        await configure_organization_quota(session, organization_id)
+
+    session.scalar.assert_not_awaited()
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quota_configuration_skips_the_row_lock_in_the_steady_state() -> None:
+    organization_id = uuid4()
+    session = SimpleNamespace(
+        get=AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    id=organization_id,
+                    tier="free",
+                    quota_monthly_request_limit=1000,
+                    quota_monthly_token_limit=1_000_000,
+                ),
+                SimpleNamespace(
+                    monthly_request_limit=1000, monthly_token_limit=1_000_000
+                ),
+            ]
+        ),
+        scalar=AsyncMock(),
+        flush=AsyncMock(),
+    )
+
+    await configure_organization_quota(session, organization_id)
+
+    session.scalar.assert_not_awaited()
+    session.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_quota_configuration_locks_and_rereads_the_tier_on_drift() -> None:
+    organization_id = uuid4()
+    locked = SimpleNamespace(
+        id=organization_id,
+        tier="agency",
+        quota_monthly_request_limit=None,
+        quota_monthly_token_limit=None,
+    )
+    session = SimpleNamespace(
+        get=AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    id=organization_id,
+                    tier="managed",
+                    quota_monthly_request_limit=None,
+                    quota_monthly_token_limit=None,
+                ),
+                SimpleNamespace(
+                    monthly_request_limit=5000, monthly_token_limit=5_000_000
+                ),
+                SimpleNamespace(
+                    monthly_request_limit=50000, monthly_token_limit=50_000_000
+                ),
+            ]
+        ),
+        scalar=AsyncMock(return_value=locked),
+        flush=AsyncMock(),
+    )
+
+    await configure_organization_quota(session, organization_id)
+
+    statement = session.scalar.await_args_list[0].args[0]
+    assert "FOR UPDATE OF organizations" in str(
+        statement.compile(dialect=postgresql.dialect())
+    )
+    assert session.get.await_args_list[-1].kwargs == {"populate_existing": True}
+    assert (locked.quota_monthly_request_limit, locked.quota_monthly_token_limit) == (
+        50000,
+        50_000_000,
+    )
+    session.flush.assert_awaited_once()

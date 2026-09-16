@@ -91,11 +91,9 @@ class OrganizationPlan:
     status: str
     customer_id: str | None
     subscription_id: str | None
-    product_id: str | None
     current_period_end: datetime | None
     cancel_at_period_end: bool
     revision: int
-    verified_at: datetime | None
 
 
 def _plan(organization: Organization) -> OrganizationPlan:
@@ -106,11 +104,9 @@ def _plan(organization: Organization) -> OrganizationPlan:
         organization.billing_status,
         organization.external_customer_id,
         organization.external_subscription_id,
-        organization.billing_variant_id,
         organization.current_period_end,
         organization.cancel_at_period_end,
         organization.billing_revision,
-        organization.billing_event_at,
     )
 
 
@@ -196,8 +192,26 @@ async def configure_organization_quota(
     session: AsyncSession, organization_id: UUID
 ) -> None:
     """Opt an organization into the current tier's shared monthly allowance."""
-    organization = await _locked_organization(session, organization_id)
+    organization = await session.get(
+        Organization, organization_id, populate_existing=True
+    )
+    if organization is None:
+        raise ValueError(f"Organization not found: {organization_id}")
     definition = await session.get(TierDefinition, organization.tier)
+    if definition is None:
+        raise ValueError("Organization tier does not exist")
+    # This runs on every authenticated cloud request, so the steady state must
+    # stay lock-free instead of serializing tenants on the organization row.
+    if (
+        organization.quota_monthly_request_limit == definition.monthly_request_limit
+        and organization.quota_monthly_token_limit == definition.monthly_token_limit
+    ):
+        return
+
+    organization = await _locked_organization(session, organization_id)
+    definition = await session.get(
+        TierDefinition, organization.tier, populate_existing=True
+    )
     if definition is None:
         raise ValueError("Organization tier does not exist")
     organization.quota_monthly_request_limit = definition.monthly_request_limit
