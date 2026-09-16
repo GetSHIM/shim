@@ -274,7 +274,7 @@ def candidate_count(prepared: PreparedInference) -> int:
 
 
 def _repeat_material(payload: Mapping[str, object]) -> str:
-    """Build a stable, prompt-only identity without trusted request metadata."""
+    """Build a stable repeat identity from the prompt and routing fields only."""
 
     material = {
         key: payload[key]

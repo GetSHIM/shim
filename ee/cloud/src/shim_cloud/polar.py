@@ -8,6 +8,8 @@ from polar_sdk import Polar, models
 
 from shim_cloud.config import ProductKey
 
+POLAR_TIMEOUT_MS = 10_000
+
 _FIXED_PRICE_TYPES = (
     models.ProductPriceFixed,
     models.LegacyRecurringProductPriceFixed,
@@ -32,9 +34,7 @@ class CustomerSnapshot:
 
 
 async def customer_state(client: Polar, external_id: str) -> CustomerSnapshot:
-    state = await client.customers.get_state_external_async(
-        external_id=external_id,
-    )
+    state = await client.customers.get_state_external_async(external_id=external_id)
     return CustomerSnapshot(
         id=state.id,
         external_id=state.external_id if isinstance(state.external_id, str) else None,
@@ -88,9 +88,7 @@ async def portal_url(client: Polar, *, external_id: str, return_url: str) -> str
 async def validate_catalog(
     client: Polar, *, organization_id: str, products: dict[ProductKey, UUID]
 ) -> None:
-    organization = await client.organizations.get_async(
-        id=organization_id,
-    )
+    organization = await client.organizations.get_async(id=organization_id)
     if organization.id != organization_id:
         raise ValueError("Polar organization binding mismatch")
     if organization.subscription_settings.allow_multiple_subscriptions:
@@ -98,9 +96,7 @@ async def validate_catalog(
 
     for configured_key, configured_id in products.items():
         product_id = str(configured_id)
-        product = await client.products.get_async(
-            id=product_id,
-        )
+        product = await client.products.get_async(id=product_id)
         if product.id != product_id or product.organization_id != organization_id:
             raise ValueError("Polar product merchant binding mismatch")
         _, separator, configured_interval = configured_key.rpartition(":")

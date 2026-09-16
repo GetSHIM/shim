@@ -18,7 +18,7 @@ class CloudSettings(BaseSettings):
     POLAR_WEBHOOK_SECRET: SecretStr = Field(min_length=1)
     POLAR_ORGANIZATION_ID: UUID
     POLAR_SERVER: Literal["sandbox", "production"] = "sandbox"
-    POLAR_PRODUCTS: dict[ProductKey, UUID]
+    POLAR_PRODUCTS: dict[ProductKey, UUID] = Field(min_length=1)
     CLOUD_DASHBOARD_URL: str
     CLOUD_BILLING_RECONCILE_SECONDS: int = Field(default=300, ge=30, le=3600)
 
@@ -28,8 +28,6 @@ class CloudSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_billing_configuration(self) -> Self:
-        if not self.POLAR_PRODUCTS:
-            raise ValueError("POLAR_PRODUCTS must map paid plan:interval choices")
         if len(set(self.POLAR_PRODUCTS.values())) != len(self.POLAR_PRODUCTS):
             raise ValueError(
                 "Polar product IDs must identify exactly one plan/interval"

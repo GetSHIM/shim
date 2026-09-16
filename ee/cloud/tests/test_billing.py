@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
 from polar_sdk import Polar, ResourceNotFound, ResourceNotFoundData, SDKError
+from pydantic import ValidationError
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -31,7 +32,11 @@ from shim_cloud.api import operation_view, router
 from shim_cloud.billing import OPERATION_EVENT, SYNC_EVENT, request_operation
 from shim_cloud.config import CloudSettings
 from shim_cloud.models import BillingOperation
-from shim_cloud.polar import CustomerSnapshot, SubscriptionSnapshot
+from shim_cloud.polar import (
+    POLAR_TIMEOUT_MS,
+    CustomerSnapshot,
+    SubscriptionSnapshot,
+)
 
 _WEBHOOK_SECRET = "whsec_" + base64.b64encode(b"cloud-billing-test-secret").decode()
 
@@ -651,7 +656,7 @@ async def test_first_checkout_treats_polar_customer_404_as_no_customer(
         access_token="test-polar-token",
         async_client=http_client,
         retry_config=None,
-        timeout_ms=10_000,
+        timeout_ms=POLAR_TIMEOUT_MS,
     )
     validate_catalog = AsyncMock()
     create_checkout = AsyncMock(return_value="https://checkout.example/session")
@@ -921,8 +926,6 @@ async def test_reconciliation_deduplicates_polar_intents_and_expires_results(
 
 
 def test_invalid_configuration_does_not_print_credentials() -> None:
-    from pydantic import ValidationError
-
     values = _config().model_dump()
     values.update(
         POLAR_ACCESS_TOKEN="never-log-this", POLAR_PRODUCTS={"invalid": uuid4()}
@@ -935,17 +938,10 @@ def test_invalid_configuration_does_not_print_credentials() -> None:
 def test_configuration_requires_at_least_one_sellable_product(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from pydantic import ValidationError
-
     # pydantic-settings merges an environment dict into the init value, so the
     # variable must be cleared for this case to exercise the model itself.
     monkeypatch.delenv("POLAR_PRODUCTS", raising=False)
+    values = _config().model_dump()
+    values.update(POLAR_PRODUCTS={})
     with pytest.raises(ValidationError):
-        CloudSettings(
-            _env_file=None,
-            POLAR_ACCESS_TOKEN="test-polar-token",
-            POLAR_WEBHOOK_SECRET=_WEBHOOK_SECRET,
-            POLAR_ORGANIZATION_ID=uuid4(),
-            POLAR_PRODUCTS={},
-            CLOUD_DASHBOARD_URL="https://cloud.example",
-        )
+        CloudSettings(_env_file=None, **values)

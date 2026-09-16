@@ -166,17 +166,11 @@ async def test_token_count_does_not_consume_message_repeat_allowance():
                     "messages": [{"role": "user", "content": "hello"}],
                 }
                 counted = await inbound.post("/v1/messages/count_tokens", json=payload)
-                generated = await inbound.post(
-                    "/v1/messages", json={**payload, "max_tokens": 10}
-                )
-                repeated = await inbound.post(
-                    "/v1/messages", json={**payload, "max_tokens": 10}
-                )
-                blocked = await inbound.post(
-                    "/v1/messages", json={**payload, "max_tokens": 10}
-                )
+                completions = {**payload, "max_tokens": 10}
+                generated = await inbound.post("/v1/messages", json=completions)
+                repeated = await inbound.post("/v1/messages", json=completions)
+                blocked = await inbound.post("/v1/messages", json=completions)
     assert counted.status_code == generated.status_code == 200
-    # Token counting has its own repeat identity, so the two completions below
-    # still fit inside LOOP_REPEAT_LIMIT and only the third one is blocked.
+    # LOOP_REPEAT_LIMIT=2 blocks the third identical completion, not the second.
     assert repeated.status_code == 200
     assert blocked.status_code == 429

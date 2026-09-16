@@ -7,6 +7,7 @@ import pytest
 from polar_sdk import Polar, SDKError
 
 from shim_cloud.polar import (
+    POLAR_TIMEOUT_MS,
     checkout_url,
     customer_state,
     portal_url,
@@ -71,7 +72,7 @@ async def _client(handler: Handler) -> tuple[Polar, httpx.AsyncClient]:
             access_token="test-token",
             async_client=http_client,
             retry_config=None,
-            timeout_ms=10_000,
+            timeout_ms=POLAR_TIMEOUT_MS,
         ),
         http_client,
     )

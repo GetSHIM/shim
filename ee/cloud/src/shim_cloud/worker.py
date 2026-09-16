@@ -24,6 +24,7 @@ from shim_cloud.billing import (
     synchronize_plan,
 )
 from shim_cloud.config import CloudSettings
+from shim_cloud.polar import POLAR_TIMEOUT_MS
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +82,9 @@ async def main() -> None:
     async with Polar(
         access_token=config.POLAR_ACCESS_TOKEN.get_secret_value(),
         server=config.POLAR_SERVER,
-        # Outbox delivery owns retries; one bounded attempt per Polar call.
+        # Outbox delivery owns retries; keep each Polar call bounded.
         retry_config=None,
-        timeout_ms=10_000,
+        timeout_ms=POLAR_TIMEOUT_MS,
     ) as client:
         publisher = build_publisher()
         publisher.register(OPERATION_EVENT, partial(deliver_operation, client, config))
