@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -111,8 +112,9 @@ async def test_lifecycle_create_allows_replay_after_mutable_state_progresses() -
 async def test_spend_denial_audit_is_visible_to_the_overview_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The denial audit a writer persists must satisfy the overview predicate."""
+    """The denial audit a writer persists must satisfy every audit reader."""
 
+    from shim_enterprise.api.v1.management import _request_summary_statement
     from shim_enterprise.billing import ledger
     from shim_enterprise.observability.overview import _spend_denied
 
@@ -154,14 +156,20 @@ async def test_spend_denial_audit_is_visible_to_the_overview_reader(
     assert captured["lifecycle_status"] == "spend_denied"
     assert summary["spend_denied"] == 1
 
-    # The same key must be the one the overview predicate reads, or the denial
-    # is counted as a technical failure instead of a policy rejection.
-    rendered = str(
-        _spend_denied(uuid4()).compile(
-            dialect=postgresql.dialect(),
-            compile_kwargs={"literal_binds": True},
+    # Both audit readers must read exactly the key and value the writer stored,
+    # or the denial is counted as a technical failure instead of a rejection.
+    for statement in (
+        _spend_denied(uuid4()),
+        _request_summary_statement(uuid4(), []),
+    ):
+        compiled = statement.compile(dialect=postgresql.dialect())
+        match = re.search(
+            r"usage_summary ->> %\((\w+)\)s\) AS INTEGER\) = %\((\w+)\)s",
+            str(compiled),
         )
-    )
-    for key, value in summary.items():
-        assert key in rendered
-        assert str(value) in rendered
+        assert match is not None, "reader no longer compares a usage_summary value"
+        key_param, value_param = match.groups()
+        assert (compiled.params[key_param], compiled.params[value_param]) == (
+            "spend_denied",
+            1,
+        )
