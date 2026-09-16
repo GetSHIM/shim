@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -317,6 +317,38 @@ def test_organization_plan_maps_organization_columns_in_field_order() -> None:
     )
 
 
+def _organization(organization_id: UUID, **overrides) -> SimpleNamespace:
+    fields: dict[str, object] = {
+        "id": organization_id,
+        "tier": "free",
+        "quota_monthly_request_limit": None,
+        "quota_monthly_token_limit": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _tier(request_limit: int, token_limit: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        monthly_request_limit=request_limit, monthly_token_limit=token_limit
+    )
+
+
+def _session_get(
+    organization: SimpleNamespace | None = None,
+    tiers: list[SimpleNamespace] | None = None,
+) -> AsyncMock:
+    """Answer ``session.get`` by what is fetched, not by call order."""
+    pending_tiers = list(tiers or [])
+
+    async def get(model, *_args, **_kwargs):
+        if model is Organization:
+            return organization
+        return pending_tiers.pop(0)
+
+    return AsyncMock(side_effect=get)
+
+
 @pytest.mark.asyncio
 async def test_quota_configuration_keeps_its_errors_for_missing_rows() -> None:
     organization_id = uuid4()
@@ -324,12 +356,7 @@ async def test_quota_configuration_keeps_its_errors_for_missing_rows() -> None:
         get=AsyncMock(
             side_effect=[
                 None,
-                SimpleNamespace(
-                    id=organization_id,
-                    tier="missing-tier",
-                    quota_monthly_request_limit=None,
-                    quota_monthly_token_limit=None,
-                ),
+                _organization(organization_id, tier="gone"),
                 None,
             ]
         ),
@@ -350,18 +377,13 @@ async def test_quota_configuration_keeps_its_errors_for_missing_rows() -> None:
 async def test_quota_configuration_skips_the_row_lock_in_the_steady_state() -> None:
     organization_id = uuid4()
     session = SimpleNamespace(
-        get=AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    id=organization_id,
-                    tier="free",
-                    quota_monthly_request_limit=1000,
-                    quota_monthly_token_limit=1_000_000,
-                ),
-                SimpleNamespace(
-                    monthly_request_limit=1000, monthly_token_limit=1_000_000
-                ),
-            ]
+        get=_session_get(
+            organization=_organization(
+                organization_id,
+                quota_monthly_request_limit=1000,
+                quota_monthly_token_limit=1_000_000,
+            ),
+            tiers=[_tier(1000, 1_000_000)],
         ),
         scalar=AsyncMock(),
         flush=AsyncMock(),
@@ -376,28 +398,11 @@ async def test_quota_configuration_skips_the_row_lock_in_the_steady_state() -> N
 @pytest.mark.asyncio
 async def test_quota_configuration_locks_and_rereads_the_tier_on_drift() -> None:
     organization_id = uuid4()
-    locked = SimpleNamespace(
-        id=organization_id,
-        tier="agency",
-        quota_monthly_request_limit=None,
-        quota_monthly_token_limit=None,
-    )
+    locked = _organization(organization_id, tier="agency")
     session = SimpleNamespace(
-        get=AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    id=organization_id,
-                    tier="managed",
-                    quota_monthly_request_limit=None,
-                    quota_monthly_token_limit=None,
-                ),
-                SimpleNamespace(
-                    monthly_request_limit=5000, monthly_token_limit=5_000_000
-                ),
-                SimpleNamespace(
-                    monthly_request_limit=50000, monthly_token_limit=50_000_000
-                ),
-            ]
+        get=_session_get(
+            organization=_organization(organization_id, tier="managed"),
+            tiers=[_tier(5000, 5_000_000), _tier(50000, 50_000_000)],
         ),
         scalar=AsyncMock(return_value=locked),
         flush=AsyncMock(),
