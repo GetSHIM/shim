@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-
 from sqlalchemy.dialects import postgresql
 
 from shim_enterprise.observability.lifecycle import (
