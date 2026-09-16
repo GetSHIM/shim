@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import pytest
 
+from sqlalchemy.dialects import postgresql
+
 from shim_enterprise.observability.lifecycle import (
     PersistenceConflictError,
     RequestLifecycleRepository,
@@ -112,6 +114,7 @@ async def test_spend_denial_audit_is_visible_to_the_overview_reader(
     """The denial audit a writer persists must satisfy the overview predicate."""
 
     from shim_enterprise.billing import ledger
+    from shim_enterprise.observability.overview import _spend_denied
 
     captured: dict[str, object] = {}
 
@@ -149,4 +152,16 @@ async def test_spend_denial_audit_is_visible_to_the_overview_reader(
 
     summary = captured["usage_summary"]
     assert captured["lifecycle_status"] == "spend_denied"
-    assert summary["denial_reason"] == "spend_limit_exceeded"
+    assert summary["spend_denied"] == 1
+
+    # The same key must be the one the overview predicate reads, or the denial
+    # is counted as a technical failure instead of a policy rejection.
+    rendered = str(
+        _spend_denied(uuid4()).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    for key, value in summary.items():
+        assert key in rendered
+        assert str(value) in rendered
