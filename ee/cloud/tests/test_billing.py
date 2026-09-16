@@ -647,7 +647,12 @@ async def test_first_checkout_treats_polar_customer_404_as_no_customer(
         )
 
     http_client = AsyncClient(transport=MockTransport(handler))
-    client = Polar(access_token="test-polar-token", async_client=http_client)
+    client = Polar(
+        access_token="test-polar-token",
+        async_client=http_client,
+        retry_config=None,
+        timeout_ms=10_000,
+    )
     validate_catalog = AsyncMock()
     create_checkout = AsyncMock(return_value="https://checkout.example/session")
     monkeypatch.setattr(billing_module, "validate_catalog", validate_catalog)
@@ -925,3 +930,22 @@ def test_invalid_configuration_does_not_print_credentials() -> None:
     with pytest.raises(ValidationError) as error:
         CloudSettings(_env_file=None, **values)
     assert "never-log-this" not in str(error.value)
+
+
+def test_configuration_requires_at_least_one_sellable_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    # pydantic-settings merges an environment dict into the init value, so the
+    # variable must be cleared for this case to exercise the model itself.
+    monkeypatch.delenv("POLAR_PRODUCTS", raising=False)
+    with pytest.raises(ValidationError):
+        CloudSettings(
+            _env_file=None,
+            POLAR_ACCESS_TOKEN="test-polar-token",
+            POLAR_WEBHOOK_SECRET=_WEBHOOK_SECRET,
+            POLAR_ORGANIZATION_ID=uuid4(),
+            POLAR_PRODUCTS={},
+            CLOUD_DASHBOARD_URL="https://cloud.example",
+        )

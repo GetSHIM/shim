@@ -6,7 +6,8 @@ from uuid import UUID
 
 from polar_sdk import Polar, models
 
-_TIMEOUT_MS = 10_000
+from shim_cloud.config import ProductKey
+
 _FIXED_PRICE_TYPES = (
     models.ProductPriceFixed,
     models.LegacyRecurringProductPriceFixed,
@@ -33,8 +34,6 @@ class CustomerSnapshot:
 async def customer_state(client: Polar, external_id: str) -> CustomerSnapshot:
     state = await client.customers.get_state_external_async(
         external_id=external_id,
-        retries=None,
-        timeout_ms=_TIMEOUT_MS,
     )
     return CustomerSnapshot(
         id=state.id,
@@ -72,8 +71,6 @@ async def checkout_url(
             "return_url": return_url,
             "metadata": {"shim_operation_id": request_id},
         },
-        retries=None,
-        timeout_ms=_TIMEOUT_MS,
     )
     return checkout.url
 
@@ -84,19 +81,15 @@ async def portal_url(client: Polar, *, external_id: str, return_url: str) -> str
             "external_customer_id": external_id,
             "return_url": return_url,
         },
-        retries=None,
-        timeout_ms=_TIMEOUT_MS,
     )
     return session.customer_portal_url
 
 
 async def validate_catalog(
-    client: Polar, *, organization_id: str, products: dict[str, UUID]
+    client: Polar, *, organization_id: str, products: dict[ProductKey, UUID]
 ) -> None:
     organization = await client.organizations.get_async(
         id=organization_id,
-        retries=None,
-        timeout_ms=_TIMEOUT_MS,
     )
     if organization.id != organization_id:
         raise ValueError("Polar organization binding mismatch")
@@ -107,8 +100,6 @@ async def validate_catalog(
         product_id = str(configured_id)
         product = await client.products.get_async(
             id=product_id,
-            retries=None,
-            timeout_ms=_TIMEOUT_MS,
         )
         if product.id != product_id or product.organization_id != organization_id:
             raise ValueError("Polar product merchant binding mismatch")

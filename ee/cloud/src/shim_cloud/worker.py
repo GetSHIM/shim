@@ -81,6 +81,9 @@ async def main() -> None:
     async with Polar(
         access_token=config.POLAR_ACCESS_TOKEN.get_secret_value(),
         server=config.POLAR_SERVER,
+        # Outbox delivery owns retries; one bounded attempt per Polar call.
+        retry_config=None,
+        timeout_ms=10_000,
     ) as client:
         publisher = build_publisher()
         publisher.register(OPERATION_EVENT, partial(deliver_operation, client, config))

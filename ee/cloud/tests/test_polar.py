@@ -66,7 +66,15 @@ def _customer_state(subscriptions: list[dict[str, object]]) -> dict[str, object]
 
 async def _client(handler: Handler) -> tuple[Polar, httpx.AsyncClient]:
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return Polar(access_token="test-token", async_client=http_client), http_client
+    return (
+        Polar(
+            access_token="test-token",
+            async_client=http_client,
+            retry_config=None,
+            timeout_ms=10_000,
+        ),
+        http_client,
+    )
 
 
 def _organization(*, allow_multiple_subscriptions: bool = False) -> dict[str, object]:
