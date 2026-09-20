@@ -16,7 +16,7 @@
   <a href="https://getshim.tech">Website</a> ·
   <a href="https://getshim.tech/docs">Documentation</a> ·
   <a href="https://getshim.tech/playground">Playground</a> ·
-  <a href="https://github.com/GetSHIM/shim-guard">shim Guard</a>
+  <a href="https://github.com/GetSHIM/shim-cli">shim-cli</a>
 </p>
 
 <p align="center">
@@ -148,9 +148,11 @@ To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 
 ## Related projects
 
-- [shim Guard](https://github.com/GetSHIM/shim-guard) — local pre-submit privacy
-  protection for coding-agent CLIs. It redacts before a prompt leaves your
-  machine; shim covers the traffic your applications send.
+- [shim-cli](https://github.com/GetSHIM/shim-cli): the same boundary on a developer's
+  laptop, for Claude Code, Codex CLI and GitHub Copilot CLI. It masks secrets and
+  personal data in what the coding agent reads where the client allows it, and
+  `shim watch` measures what a session sent and what it cost. shim covers the
+  traffic your applications send.
 
 ## Licensing
 
