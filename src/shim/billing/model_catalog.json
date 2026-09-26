@@ -71,6 +71,13 @@
         "output_per_million": "25",
         "release_date": "2026-07-24"
       },
+      "claude-opus-5-5": {
+        "input_per_million": "5",
+        "max_output_tokens": 128000,
+        "name": "Claude Opus 5.5",
+        "output_per_million": "20",
+        "release_date": "2026-09-22"
+      },
       "claude-sonnet-4-5": {
         "input_per_million": "3.75",
         "max_output_tokens": 64000,
@@ -381,6 +388,26 @@
         "output_per_million": "50",
         "release_date": "2026-09-04"
       },
+      "gpt-6-luna": {
+        "input_per_million": "0.125",
+        "large_context_input_per_million": "0.25",
+        "large_context_output_per_million": "0.75",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6 Luna",
+        "output_per_million": "0.5",
+        "release_date": "2026-09-22"
+      },
+      "gpt-6-sol": {
+        "input_per_million": "2.5",
+        "large_context_input_per_million": "5",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6 Sol",
+        "output_per_million": "10",
+        "release_date": "2026-09-22"
+      },
       "o3": {
         "input_per_million": "2",
         "max_output_tokens": 100000,
@@ -398,5 +425,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:be88249f35fe42eee2361223"
+  "version": "models.dev:fdf29a45db9a0b89ad2aaaf4"
 }
