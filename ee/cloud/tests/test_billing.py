@@ -1184,7 +1184,8 @@ def test_invalid_configuration_does_not_print_credentials() -> None:
         ("CLOUD_DASHBOARD_URL", ""),
     ],
 )
-def test_enabled_billing_requires_complete_configuration(name, value):
+def test_enabled_billing_requires_complete_configuration(name, value, monkeypatch):
+    monkeypatch.delenv(name, raising=False)
     values = _config().model_dump()
     values[name] = value
     with pytest.raises(ValidationError):
