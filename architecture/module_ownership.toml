@@ -416,6 +416,7 @@ cloud = [
   "ee/cloud/src/shim_cloud/polar.py",
   "ee/cloud/src/shim_cloud/worker.py",
   "ee/cloud/tests/test_billing.py",
+  "ee/cloud/tests/test_migrations.py",
   "ee/cloud/tests/test_polar.py",
 ]
 

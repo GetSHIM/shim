@@ -225,7 +225,21 @@ async def test_disabled_billing_has_no_capabilities_or_commerce_intents(
 
 @pytest.mark.asyncio
 async def test_disabled_worker_skips_polar(monkeypatch):
-    config = _config().model_copy(update={"CLOUD_BILLING_ENABLED": False})
+    for name in CloudSettings.model_fields:
+        monkeypatch.delenv(name, raising=False)
+    config = CloudSettings(_env_file=None)
+    assert config.CLOUD_BILLING_ENABLED is False
+    assert config.POLAR_ORGANIZATION_ID is None
+    assert config.POLAR_PRODUCTS == {}
+    assert config.CLOUD_DASHBOARD_URL == ""
+    assert (
+        CloudSettings(_env_file=None, POLAR_ORGANIZATION_ID="").POLAR_ORGANIZATION_ID
+        is None
+    )
+    monkeypatch.setattr(application_module, "create_enterprise_app", FastAPI)
+    app = application_module.create_cloud_app(config)
+    async with app.router.lifespan_context(app):
+        assert app.state.cloud_settings is config
     run = AsyncMock()
     monkeypatch.setattr(worker_module, "CloudSettings", lambda: config)
     monkeypatch.setattr(worker_module, "run_outbox", run)
@@ -1158,6 +1172,23 @@ def test_invalid_configuration_does_not_print_credentials() -> None:
         CloudSettings(_env_file=None, **values)
     assert "never-log-this" not in str(error.value)
     assert "never-log-this" not in repr(error.value.errors())
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("POLAR_ACCESS_TOKEN", ""),
+        ("POLAR_WEBHOOK_SECRET", ""),
+        ("POLAR_ORGANIZATION_ID", None),
+        ("POLAR_PRODUCTS", {}),
+        ("CLOUD_DASHBOARD_URL", ""),
+    ],
+)
+def test_enabled_billing_requires_complete_configuration(name, value):
+    values = _config().model_dump()
+    values[name] = value
+    with pytest.raises(ValidationError):
+        CloudSettings(_env_file=None, **values)
 
 
 def test_configuration_requires_at_least_one_sellable_product(

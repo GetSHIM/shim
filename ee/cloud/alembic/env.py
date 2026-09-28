@@ -1,10 +1,10 @@
-"""Cloud schema only; enterprise owns the public schema and its migration history."""
+"""Cloud schema only; enterprise retains its search-path schema and history."""
 
 import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import Connection, pool, text
+from sqlalchemy import Connection, inspect, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from shim_cloud.models import CloudBase
@@ -25,7 +25,8 @@ def include_name(
 
 
 def run(connection: Connection) -> None:
-    connection.execute(text("CREATE SCHEMA IF NOT EXISTS shim_cloud"))
+    if not inspect(connection).has_schema("shim_cloud"):
+        connection.execute(text("CREATE SCHEMA shim_cloud"))
     connection.commit()
     context.configure(
         connection=connection,

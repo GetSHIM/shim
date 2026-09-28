@@ -15,21 +15,43 @@ ProductKey = Literal[
 
 class CloudSettings(BaseSettings):
     CLOUD_BILLING_ENABLED: bool = False
-    POLAR_ACCESS_TOKEN: SecretStr = Field(min_length=1)
-    POLAR_WEBHOOK_SECRET: SecretStr = Field(min_length=1)
-    POLAR_ORGANIZATION_ID: UUID
+    POLAR_ACCESS_TOKEN: SecretStr = SecretStr("")
+    POLAR_WEBHOOK_SECRET: SecretStr = SecretStr("")
+    POLAR_ORGANIZATION_ID: UUID | None = None
     POLAR_SERVER: Literal["sandbox", "production"] = "sandbox"
-    POLAR_PRODUCTS: dict[ProductKey, UUID] = Field(min_length=1)
-    CLOUD_DASHBOARD_URL: str
+    POLAR_PRODUCTS: dict[ProductKey, UUID] = Field(default_factory=dict)
+    CLOUD_DASHBOARD_URL: str = ""
     CLOUD_BILLING_RECONCILE_SECONDS: int = Field(default=300, ge=30, le=3600)
 
     model_config = SettingsConfigDict(
         env_file="ee/cloud/.env", extra="ignore", hide_input_in_errors=True
     )
 
+    @field_validator("POLAR_ACCESS_TOKEN", "POLAR_WEBHOOK_SECRET")
+    @classmethod
+    def validate_secret(cls, value: SecretStr, info: ValidationInfo) -> SecretStr:
+        if info.data.get("CLOUD_BILLING_ENABLED") and not value.get_secret_value():
+            raise ValueError("Enabled billing requires a nonempty secret")
+        return value
+
+    @field_validator("POLAR_ORGANIZATION_ID", mode="before")
+    @classmethod
+    def validate_organization(
+        cls, value: UUID | str | None, info: ValidationInfo
+    ) -> UUID | str | None:
+        if value == "":
+            value = None
+        if info.data.get("CLOUD_BILLING_ENABLED") and value is None:
+            raise ValueError("Enabled billing requires a merchant organization UUID")
+        return value
+
     @field_validator("POLAR_PRODUCTS")
     @classmethod
-    def validate_products(cls, value: dict[ProductKey, UUID]) -> dict[ProductKey, UUID]:
+    def validate_products(
+        cls, value: dict[ProductKey, UUID], info: ValidationInfo
+    ) -> dict[ProductKey, UUID]:
+        if info.data.get("CLOUD_BILLING_ENABLED") and not value:
+            raise ValueError("Enabled billing requires at least one sellable product")
         if len(set(value.values())) != len(value):
             raise ValueError(
                 "Polar product IDs must identify exactly one plan/interval"
@@ -39,6 +61,8 @@ class CloudSettings(BaseSettings):
     @field_validator("CLOUD_DASHBOARD_URL")
     @classmethod
     def validate_dashboard_url(cls, value: str, info: ValidationInfo) -> str:
+        if not value and not info.data.get("CLOUD_BILLING_ENABLED"):
+            return value
         url = urlsplit(value)
         if (
             url.scheme not in {"https", "http"}

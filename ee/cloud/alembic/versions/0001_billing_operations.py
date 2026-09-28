@@ -42,8 +42,8 @@ def upgrade() -> None:
         ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
-        sa.ForeignKeyConstraint(["organization_id"], ["public.organizations.id"]),
-        sa.ForeignKeyConstraint(["created_by"], ["public.users.id"]),
+        sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
+        sa.ForeignKeyConstraint(["created_by"], ["users.id"]),
         sa.UniqueConstraint(
             "organization_id", "request_id", name="uq_billing_operation_request"
         ),

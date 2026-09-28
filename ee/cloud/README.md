@@ -13,6 +13,25 @@ plus the values in [.env.example](.env.example). Keep tokens in the deployment
 secret store. `POLAR_ORGANIZATION_ID` is the merchant organization; customer
 `external_id` is the authenticated SHIM workspace UUID.
 
+Before the first cloud migration, provision its schema with an operator database
+account. Keep the enterprise migration role's existing `search_path` (for example,
+`shim,public`): cloud foreign keys resolve enterprise tables through that path,
+while cloud tables and migration history live explicitly in `shim_cloud`.
+
+```sql
+CREATE SCHEMA IF NOT EXISTS shim_cloud AUTHORIZATION shim_owner;
+GRANT USAGE ON SCHEMA shim_cloud TO shim_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE shim_owner IN SCHEMA shim_cloud
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shim_runtime;
+```
+
+Run migrations as `shim_owner` so these default privileges apply. Do not relocate
+existing enterprise tables or Alembic history into `public` or `shim_cloud`.
+The operator provisions `shim_cloud`; the migration role does not need database
+`CREATE` privilege when that schema already exists. Online migration inspects
+schema existence before issuing DDL. Do not run offline-generated schema creation
+SQL as a restricted migration role, even with `IF NOT EXISTS`.
+
 ```bash
 uv sync --locked --package shim-cloud
 uv run --locked --package shim-cloud python -m shim_cloud.migrate
@@ -189,6 +208,19 @@ uv run --locked --package shim-cloud python -m alembic -c ee/cloud/alembic.ini c
 uv run --locked --package shim-cloud python -m pytest -q ee/cloud/tests
 uv run --locked --package shim-cloud python scripts/export_openapi.py --profile cloud --check
 ```
+
+To rehearse non-public enterprise-schema migrations, provision a disposable
+PostgreSQL database with the roles, `search_path`, and SQL grants above.
+Use a restricted `shim_owner` that neither owns the database nor has database
+`CREATE` privilege, matching production, then run:
+
+```bash
+CLOUD_MIGRATION_TEST_DATABASE_URL="$DISPOSABLE_OWNER_DATABASE_URL" \
+    uv run --locked --package shim-cloud python -m pytest -q ee/cloud/tests/test_migrations.py
+```
+
+This opt-in test applies migrations and checks foreign-key targets, independent
+histories, and runtime grants. Never point it at production.
 
 References: [Python SDK](https://polar.sh/docs/integrate/sdk/python),
 [customer state](https://polar.sh/docs/integrate/customer-state),
