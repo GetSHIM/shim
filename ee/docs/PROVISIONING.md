@@ -50,16 +50,22 @@ reset. Unknown tenants/tiers fail without committing a partial change.
 2. Reconcile any renewal/cancellation/payment obligations through the existing
    commercial process. Removing the integration does not cancel or settle a
    subscription at the billing service.
-3. Run the activation command with the customer's approved **existing tier**.
+3. Deploy the matching dashboard before the backend. Its plan view consumes
+   `plan`, `status`, `source`, and `entitlements`, which exist in both backend
+   versions. Verify that view against the existing backend before removing the
+   old response fields. Existing dashboards that read `checkout_urls` cannot
+   consume the new response safely; do not deploy the backend while they remain
+   active.
+4. Deploy the backend and run the activation command with the customer's approved
+   **existing tier**.
    Change the tier only when that change has been approved. The command retains
    external customer/subscription/variant identifiers, historical period and
    cancellation fields, portal references, and webhook receipts.
-4. Verify an existing key still authenticates, a new key inherits the tier, and
+5. Verify an existing key still authenticates, a new key inherits the tier, and
    the dashboard shows the expected entitlements and usage. Operator-managed
    status is `active` for paid tiers and `free` for the free tier.
-5. Remove the obsolete `LEMON_SQUEEZY_*` deployment values and the billing-service
-   webhook destination after the agreed cutover. Deploy the matching dashboard
-   contract with the backend.
+6. Remove the obsolete `LEMON_SQUEEZY_*` deployment values and the billing-service
+   webhook destination after the agreed cutover.
 
 Historical period/cancellation fields are no longer a renewal schedule. An
 operator must apply future access changes according to the existing agreement;
