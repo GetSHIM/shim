@@ -125,6 +125,7 @@ def _terminal(status: str = "completed") -> StreamFinalization:
         completed_at=datetime.now(timezone.utc),
         error_code=None,
         error_message=None,
+        shim_latency_ms=0,
     )
 
 

@@ -881,12 +881,6 @@
             "title": "Is Cache Hit",
             "type": "boolean"
           },
-          "latency_ms": {
-            "description": "Full request lifecycle duration in milliseconds.",
-            "minimum": 0.0,
-            "title": "Latency Ms",
-            "type": "integer"
-          },
           "lifecycle_status": {
             "anyOf": [
               {
@@ -1001,7 +995,6 @@
           "prompt_tokens",
           "completion_tokens",
           "is_cache_hit",
-          "latency_ms",
           "cost_usd",
           "prev_hash",
           "row_hash"
@@ -7414,12 +7407,6 @@
             ],
             "title": "Endpoint"
           },
-          "latency_ms": {
-            "description": "Full request lifecycle duration in milliseconds.",
-            "minimum": 0.0,
-            "title": "Latency Ms",
-            "type": "integer"
-          },
           "model": {
             "anyOf": [
               {
@@ -7566,7 +7553,6 @@
           "usage_estimated",
           "cost_usd",
           "cost_complete",
-          "latency_ms",
           "pii_detected",
           "cost_center",
           "provider",

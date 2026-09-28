@@ -355,7 +355,6 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "usage_estimated",
         "cost_usd",
         "cost_complete",
-        "latency_ms",
         "shim_latency_ms",
         "pii_detected",
         "tags",
@@ -371,6 +370,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].repeat_chain_length is None
     assert page.items[0].shim_latency_ms is None
+    assert "latency_ms" not in page.items[0].model_dump()
+    assert "request_duration_ms" not in page.items[0].model_dump()
     assert page.items[0].ttft_ms is None
     assert page.items[0].system_prompt_hash is None
     assert page.items[0].deployment_kind is None
@@ -619,7 +620,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["deployment_kind"] == "internal"
     assert exported["system_prompt_hash"] == ""
     assert exported["shim_latency_ms"] == "0"
-    assert exported["request_duration_ms"] == "100"
+    assert "request_duration_ms" not in exported
     assert "latency_ms" not in exported
     assert exported["cost_complete"] == "True"
     rows.close.assert_awaited_once()

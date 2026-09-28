@@ -127,6 +127,7 @@ class LocalUsageLifecycle:
             if DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
             else "unsupported",
             estimated=False,
+            shim_latency_ms=prepared.timing.shim_latency_ms,
         )
 
     async def record_privacy(self, prepared: PreparedInference) -> None:
@@ -209,6 +210,7 @@ class LocalUsageLifecycle:
             ),
             model=prepared.model,
             estimated=True,
+            shim_latency_ms=prepared.timing.shim_latency_ms,
         )
 
     def _write(
@@ -221,9 +223,9 @@ class LocalUsageLifecycle:
         cost_usd: Decimal | None,
         model: str,
         estimated: bool,
+        shim_latency_ms: int,
         provider_finish_reasons: dict[str, str] | None = None,
         ttft_ms: float | None = None,
-        shim_latency_ms: int | None = None,
     ) -> None:
         event = {
             "version": 2,
@@ -231,11 +233,7 @@ class LocalUsageLifecycle:
             "provider": str(prepared.provider),
             "model": model,
             "outcome": outcome,
-            "shim_latency_ms": (
-                shim_latency_ms
-                if shim_latency_ms is not None
-                else prepared.timing.shim_latency_ms
-            ),
+            "shim_latency_ms": shim_latency_ms,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "estimated_cost_usd": str(cost_usd) if cost_usd is not None else None,

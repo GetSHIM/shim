@@ -20,6 +20,7 @@ def _session(finalizer: AsyncMock, *, provider: str = "openai") -> StreamSession
         ),
         finalizer=finalizer,
         stream_start_recorder=AsyncMock(),
+        timing=InferenceTiming(),
     )
 
 
@@ -57,6 +58,7 @@ async def test_active_stream_refreshes_its_durable_deadline() -> None:
         stream_heartbeat_recorder=heartbeat,
         heartbeat_interval_seconds=30,
         monotonic_clock=lambda: next(ticks),
+        timing=InferenceTiming(),
     )
 
     async def events():
@@ -282,6 +284,7 @@ async def test_shutdown_drains_cancelled_response_finalizer():
         finalizer=finalize,
         stream_start_recorder=AsyncMock(),
         finalization_tasks=processor._finalization_tasks,
+        timing=InferenceTiming(),
     )
     session.bind(SimpleNamespace(aclose=AsyncMock()))
     task = asyncio.create_task(session.aclose())

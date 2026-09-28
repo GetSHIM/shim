@@ -528,9 +528,6 @@ class RequestActivityView(BaseModel):
     usage_estimated: bool
     cost_usd: Decimal | None = Field(ge=0)
     cost_complete: bool
-    latency_ms: int = Field(
-        ge=0, description="Full request lifecycle duration in milliseconds."
-    )
     shim_latency_ms: int | None = Field(
         default=None,
         ge=0,
@@ -1889,7 +1886,6 @@ async def list_requests(
                 usage_estimated=_request_usage_estimated(row.details),
                 cost_usd=Decimal(str(cost_usd)) if cost_usd is not None else None,
                 cost_complete=cost_usd is not None,
-                latency_ms=row.latency_ms,
                 pii_detected=row.pii_detected,
                 tags=list(row.tags or []),
                 cost_center=row.cost_center,
@@ -1997,7 +1993,6 @@ async def export_requests(
                 "prompt_tokens",
                 "completion_tokens",
                 "cost_usd",
-                "request_duration_ms",
                 "shim_latency_ms",
                 "pii_detected",
                 "tags",
@@ -2032,7 +2027,6 @@ async def export_requests(
                         row.prompt_tokens,
                         row.completion_tokens,
                         Decimal(str(cost_usd)) if cost_usd is not None else None,
-                        row.latency_ms,
                         details.get("shim_latency_ms"),
                         row.pii_detected,
                         ",".join(row.tags or []),

@@ -38,9 +38,6 @@ class AuditLogRead(OrmReadModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     is_cache_hit: bool
-    latency_ms: int = Field(
-        ge=0, description="Full request lifecycle duration in milliseconds."
-    )
     shim_latency_ms: int | None = Field(
         default=None,
         ge=0,

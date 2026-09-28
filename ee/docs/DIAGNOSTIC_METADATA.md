@@ -26,8 +26,10 @@ processing, includes upstream wait and output restoration, and does not count
 headers, SSE comments/heartbeats, roles, empty deltas, usage, or terminal events.
 Supported media events are OpenAI audio deltas and partial images, and Gemini
 inline media. Media contributes to TTFT without being counted as text tokens.
-`latency_ms` remains the full request lifecycle duration; it includes provider
-waiting and generation. `shim_latency_ms` reports shim processing independently.
+Customer APIs and CSV exports expose only `shim_latency_ms`, which measures
+shim processing. Legacy full-cycle `latency_ms` remains internal persisted
+evidence, including immutable signed audit records; it is not a product latency
+metric and is not exposed in request or audit API views.
 Overview and request summaries expose `p95_completed_shim_latency_ms`, computed
 only from completed requests with a known shim measurement; periods without
 measurements report null.
@@ -92,8 +94,8 @@ No table or column migration is needed for these existing JSONB fields.
 
 `GET /api/v1/management/requests` exposes the optional fields on each
 request; `/requests/export` includes the same fields in CSV (unknown values
-are empty cells, and finish-reason maps are JSON). CSV names the retained full
-lifecycle duration `request_duration_ms`; APIs retain `latency_ms`. Audit completion `extra`
+are empty cells, and finish-reason maps are JSON). Both expose only the shim
+latency measurement. Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills. The community
 JSONL v2 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,

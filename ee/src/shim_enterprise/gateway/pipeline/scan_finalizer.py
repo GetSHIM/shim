@@ -34,7 +34,7 @@ class ScanFinalizer:
         completed_at: datetime,
         input_hash: str,
         output_hash: str,
-        shim_latency_ms: int | None = None,
+        shim_latency_ms: int,
     ) -> UUID | None:
         payload = scan_audit_payload(
             tenant_id=request.tenant_id,
@@ -105,7 +105,7 @@ class ScanFinalizer:
         actor: ResolvedScanActor,
         started_at: datetime,
         input_hash: str,
-        shim_latency_ms: int | None = None,
+        shim_latency_ms: int,
     ) -> None:
         failed_at = datetime.now(timezone.utc)
         payload = scan_audit_payload(

@@ -49,7 +49,7 @@ class StreamSession:
         parent_context: Context | None = None,
         terminal_observer: TerminalObserver | None = None,
         finalization_tasks: set[asyncio.Task[Any]] | None = None,
-        timing: InferenceTiming | None = None,
+        timing: InferenceTiming,
     ) -> None:
         self._finalization_tasks = (
             finalization_tasks if finalization_tasks is not None else set()
@@ -111,8 +111,7 @@ class StreamSession:
         """Close and finalize even when no response byte was requested."""
 
         try:
-            if self._timing is not None:
-                self._timing.resume()
+            self._timing.resume()
             if self._output_iterator is not None:
                 await self._output_iterator.aclose()
         finally:
@@ -167,8 +166,7 @@ class StreamSession:
         if self._consumed:
             raise RuntimeError("stream session can only be consumed once")
         self._consumed = True
-        if self._timing is not None:
-            self._timing.resume()
+        self._timing.resume()
 
         terminal: StreamTerminalStatus | None = None
         try:
@@ -176,11 +174,8 @@ class StreamSession:
                 await self.record_stream_start()
                 await self.record_stream_heartbeat()
                 self.meter.observe_emitted_output(chunk)
-                if self._timing is None:
+                with self._timing.exclude():
                     yield chunk
-                else:
-                    with self._timing.exclude():
-                        yield chunk
             terminal = self._terminal_from_hint()
         except (asyncio.CancelledError, GeneratorExit):
             terminal = "client_disconnected"
@@ -232,11 +227,7 @@ class StreamSession:
                     completed_at=completed_at,
                     error_code=error_code,
                     error_message=(error_message or default_message),
-                    shim_latency_ms=(
-                        self._timing.shim_latency_ms
-                        if self._timing is not None
-                        else None
-                    ),
+                    shim_latency_ms=self._timing.shim_latency_ms,
                 )
                 STREAM_TERMINAL_STATE_TOTAL.labels(
                     terminal_state=bounded_label("terminal_state", terminal_status)

@@ -158,7 +158,7 @@ def scan_audit_payload(
     entity_counts: dict[str, int],
     verdict: ScanVerdict | None,
     lifecycle_status: Literal["completed", "internal_error"],
-    shim_latency_ms: int | None = None,
+    shim_latency_ms: int | None,
 ) -> dict[str, object]:
     return {
         "organization_id": str(tenant_id),
