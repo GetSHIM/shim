@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasPath, BaseModel, ConfigDict, Field
 
 
 class OrmReadModel(BaseModel):
@@ -20,6 +20,15 @@ class AuditLogRead(OrmReadModel):
     created_at: datetime
     event_type: str
     request_id: str | None = None
+    api_key_id: UUID | None = None
+    actor: str | None = None
+    actor_type: Literal["api_key", "user_jwt", "internal"] | None = Field(
+        default=None, validation_alias=AliasPath("extra", "actor_type")
+    )
+    lifecycle_status: str | None = Field(
+        default=None, validation_alias=AliasPath("extra", "lifecycle_status")
+    )
+    policy_verdicts: list[dict[str, Any]] = Field(default_factory=list)
     model: str | None = None
     provider: str | None = None
     gateway_version: str | None = None

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from fastapi import HTTPException
 
@@ -14,7 +14,7 @@ from shim.gateway.contracts.context import (
     GatewayContext,
     PrivacyPolicy,
 )
-from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId
+from shim.gateway.contracts.ids import ProviderId, RequestId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
@@ -37,7 +37,9 @@ class GatewayInvocation:
     principal: AuthenticatedPrincipal
     payload: dict[str, Any]
     provider: Literal["openai", "anthropic", "google"]
-    protocol: Literal["chat", "responses", "messages", "generate_content"]
+    protocol: Literal[
+        "chat", "responses", "messages", "count_tokens", "generate_content"
+    ]
     model: str
     stream: bool
     headers: dict[str, str]
@@ -55,6 +57,7 @@ class AuthenticateStage:
         policy_resolver: RequestPolicyResolver,
     ) -> None:
         self.policy_resolver = policy_resolver
+        self.prepared: PreparedInference | None = None
 
     async def run(self, value: GatewayInvocation) -> PreparedInference:
         policy = await self.policy_resolver.resolve(value.principal)
@@ -66,8 +69,12 @@ class AuthenticateStage:
             request_id=request_id,
             tenant_id=policy.tenant_id,
             actor_type=value.principal.actor_type,
-            api_key_id=ApiKeyId(UUID(str(value.principal.api_key_id))),
-            user_id=None,
+            api_key_id=value.principal.api_key_id,
+            user_id=(
+                value.principal.user_id
+                if value.principal.actor_type == "user_jwt"
+                else None
+            ),
             endpoint=metadata.endpoint,
             started_at=started_at,
             tier_policy=policy.tier_policy,
@@ -78,28 +85,7 @@ class AuthenticateStage:
             ),
             audit_policy=policy.audit_policy,
         )
-        if policy.tenant_policy.allowed_providers and value.provider not in {
-            str(provider) for provider in policy.tenant_policy.allowed_providers
-        }:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "PROVIDER_NOT_ALLOWED",
-                    "message": f"{value.provider.title()} is not allowed by tenant policy.",
-                },
-            )
-        if (
-            policy.tenant_policy.require_zero_retention
-            and not _zero_retention_requested(value)
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "ZERO_RETENTION_REQUIRED",
-                    "message": "Tenant policy requires a provider-enforceable zero-retention request.",
-                },
-            )
-        return PreparedInference(
+        self.prepared = prepared = PreparedInference(
             context=context,
             payload=dict(value.payload),
             protocol=value.protocol,
@@ -109,6 +95,60 @@ class AuthenticateStage:
             pii_config=policy.pii_config,
             provider=ProviderId(value.provider),
         )
+        provider_denied = bool(
+            policy.tenant_policy.allowed_providers
+        ) and value.provider not in {
+            str(provider) for provider in policy.tenant_policy.allowed_providers
+        }
+        prepared.record_verdict(
+            "tenant.allowed_providers",
+            stage="authentication",
+            outcome="deny" if provider_denied else "allow",
+            reason_code="PROVIDER_NOT_ALLOWED"
+            if provider_denied
+            else "PROVIDER_ALLOWED",
+            policy=policy.tenant_policy.allowed_providers,
+        )
+        if provider_denied:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "PROVIDER_NOT_ALLOWED",
+                    "message": f"{value.provider.title()} is not allowed by tenant policy.",
+                },
+            )
+        retention_denied = (
+            policy.tenant_policy.require_zero_retention
+            and not _zero_retention_requested(value)
+        )
+        prepared.record_verdict(
+            "tenant.zero_retention_request",
+            stage="authentication",
+            outcome=(
+                "deny"
+                if retention_denied
+                else "allow"
+                if policy.tenant_policy.require_zero_retention
+                else "skip"
+            ),
+            reason_code=(
+                "ZERO_RETENTION_REQUIRED"
+                if retention_denied
+                else "ZERO_RETENTION_REQUEST_CHECKED"
+                if policy.tenant_policy.require_zero_retention
+                else "ZERO_RETENTION_NOT_REQUIRED"
+            ),
+            policy=policy.tenant_policy.require_zero_retention,
+        )
+        if retention_denied:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ZERO_RETENTION_REQUIRED",
+                    "message": "Tenant policy requires a provider-enforceable zero-retention request.",
+                },
+            )
+        return prepared
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:
         return {

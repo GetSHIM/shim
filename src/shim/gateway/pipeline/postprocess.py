@@ -20,7 +20,7 @@ from shim.gateway.streaming import (
     StreamSession,
     StreamTerminalStatus,
 )
-from shim.gateway.streaming.meter import StreamUsageSnapshot
+from shim.gateway.streaming.meter import StreamUsageSnapshot, native_finish_reasons
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
     PROVIDER_LATENCY_MS,
@@ -75,6 +75,7 @@ class ResponsePostprocessor:
     ) -> JSONResponse | StreamingResponse:
         if isinstance(response, ProviderStream):
             assert stream_session is not None
+            stream_session.meter.started_at_monotonic = response.started_at_monotonic
             stream_session.bind(
                 response.events,
                 close=response.close,
@@ -115,13 +116,14 @@ class ResponsePostprocessor:
             and lifecycle_status == "completed"
             and isinstance(response_model, str)
             and DEFAULT_PRICE_BOOK.supports(response_model, provider)
-            else prepared.model
+            else prepared.pricing_model
         )
         settlement_cost = compute_cost_usd(
             settlement_model,
             prompt_tokens,
             completion_tokens,
             provider=provider,
+            unpriced=prepared.unpriced,
         )
         if response.latency_ms is not None:
             labels = {
@@ -154,8 +156,12 @@ class ResponsePostprocessor:
                         provider,
                         input_tokens=prompt_tokens,
                         output_tokens=completion_tokens,
+                        unpriced=prepared.unpriced,
                     ),
                     estimated=not fully_actual,
+                    provider_finish_reasons=native_finish_reasons(
+                        response.payload, provider=provider
+                    ),
                     output_hash=(
                         content_ref(
                             self.output_hash_salt, bytes(gateway_response.body).decode()
@@ -216,7 +222,8 @@ class ResponsePostprocessor:
         return StreamSession(
             meter=StreamMeter(
                 provider=str(prepared.provider),
-                requested_model=prepared.model,
+                requested_model=prepared.pricing_model,
+                unpriced=prepared.unpriced,
                 prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
                 expected_candidates=candidate_count(prepared),
                 output_hash_salt=self.output_hash_salt,

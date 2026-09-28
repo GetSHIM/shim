@@ -86,6 +86,8 @@ async def create_api_key(
     name: str,
     cost_center: str | None = None,
     team: str | None = None,
+    team_id: UUID | None = None,
+    allowed_models: list[str] | None = None,
 ) -> tuple[str, ApiKey]:
     tenant_id = await session.scalar(
         select(User.organization_id).where(User.id == user_id)
@@ -119,10 +121,20 @@ async def create_api_key(
         is_active=True,
         cost_center=cost_center,
         team=team,
+        team_id=team_id,
+        allowed_models=allowed_models,
     )
     session.add(api_key)
     await session.flush()
     return plaintext, api_key
+
+
+def rotate_api_key(api_key: ApiKey) -> str:
+    """Replace the verifier in place, retaining ownership, policy and usage counters."""
+    plaintext = f"{API_KEY_PREFIX}{secrets.token_hex(32)}"
+    api_key.key_hash = _digest_api_key(plaintext)
+    api_key.prefix = plaintext[:16]
+    return plaintext
 
 
 async def move_user_from_bootstrap(
@@ -206,9 +218,16 @@ async def authenticate_api_key(
 ) -> ApiKey | None:
     if not plaintext.startswith(API_KEY_PREFIX):
         return None
-    statement = select(ApiKey).where(
-        ApiKey.key_hash == _digest_api_key(plaintext),
-        ApiKey.is_active.is_(True),
+    statement = (
+        select(ApiKey)
+        .join(User, User.id == ApiKey.user_id)
+        .where(
+            ApiKey.key_hash == _digest_api_key(plaintext),
+            ApiKey.is_active.is_(True),
+            User.organization_id == ApiKey.organization_id,
+            User.is_active.is_(True),
+            User.role != "auditor",
+        )
     )
     api_key = (await session.execute(statement)).scalar_one_or_none()
     if api_key is None:
@@ -281,7 +300,7 @@ class JwtIdentityVerifier:
 
     @staticmethod
     def _build_client() -> Any:
-        if not settings.SUPABASE_KEY:
+        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
             raise RuntimeError("SUPABASE_KEY is required for JWT verification")
         from supabase import create_client
 

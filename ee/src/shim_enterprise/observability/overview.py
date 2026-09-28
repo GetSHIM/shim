@@ -37,7 +37,9 @@ class OverviewSummaryRecord:
     policy_rejections: int
     technical_success_rate: float | None
     p95_completed_latency_ms: int | None
-    settled_spend_usd: Decimal
+    settled_spend_usd: Decimal | None
+    cost_complete: bool
+    unpriced_requests: int
     status_counts: dict[str, int]
 
 
@@ -45,7 +47,9 @@ class OverviewSummaryRecord:
 class OverviewTrendRecord:
     start: datetime
     requests: int
-    settled_spend_usd: Decimal
+    settled_spend_usd: Decimal | None
+    cost_complete: bool
+    unpriced_requests: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +162,9 @@ def _summary_statement(tenant_id: UUID, start_at: datetime, end_at: datetime):
     )
     columns = [
         func.count(RequestLifecycle.id).label("requests"),
+        func.count(RequestLifecycle.id)
+        .filter(_unpriced_spend(tenant_id))
+        .label("unpriced_requests"),
         *(
             func.count(RequestLifecycle.id)
             .filter(RequestLifecycle.status == lifecycle_status)
@@ -199,6 +206,9 @@ def _trend_statement(
         select(
             bucket_start.label("start"),
             func.count(RequestLifecycle.id).label("requests"),
+            func.count(RequestLifecycle.id)
+            .filter(_unpriced_spend(tenant_id))
+            .label("unpriced_requests"),
             func.coalesce(
                 func.sum(func.coalesce(spend, Decimal("0"))), Decimal("0")
             ).label("settled_spend_usd"),
@@ -289,6 +299,21 @@ def _settled_spend(tenant_id: UUID):
     )
 
 
+def _unpriced_spend(tenant_id: UUID):
+    return (
+        select(UsageLedger.id)
+        .where(
+            UsageLedger.organization_id == tenant_id,
+            UsageLedger.request_id == RequestLifecycle.request_id,
+            UsageLedger.event_type == "spend_settlement",
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"].as_string()
+            == "unknown",
+        )
+        .correlate(RequestLifecycle)
+        .exists()
+    )
+
+
 def _spend_denied(tenant_id: UUID):
     return (
         select(AuditIntent.id)
@@ -332,7 +357,11 @@ def _summary_from_row(row) -> OverviewSummaryRecord:
             status_counts["completed"] / technical_total if technical_total else None
         ),
         p95_completed_latency_ms=round(float(p95)) if p95 is not None else None,
-        settled_spend_usd=Decimal(str(row.settled_spend_usd or 0)),
+        settled_spend_usd=None
+        if row.unpriced_requests
+        else Decimal(str(row.settled_spend_usd or 0)),
+        cost_complete=not row.unpriced_requests,
+        unpriced_requests=int(row.unpriced_requests or 0),
         status_counts=status_counts,
     )
 
@@ -356,7 +385,8 @@ def _fill_trend(
     values = {
         _utc(row.start): (
             int(row.requests or 0),
-            Decimal(str(row.settled_spend_usd or 0)),
+            None if row.unpriced_requests else Decimal(str(row.settled_spend_usd or 0)),
+            int(row.unpriced_requests or 0),
         )
         for row in rows
     }
@@ -364,8 +394,12 @@ def _fill_trend(
     step = timedelta(hours=1) if bucket == "hour" else timedelta(days=1)
     trend = []
     while cursor < end_at:
-        requests, spend = values.get(cursor, (0, Decimal("0")))
-        trend.append(OverviewTrendRecord(max(cursor, start_at), requests, spend))
+        requests, spend, unpriced = values.get(cursor, (0, Decimal("0"), 0))
+        trend.append(
+            OverviewTrendRecord(
+                max(cursor, start_at), requests, spend, not unpriced, unpriced
+            )
+        )
         cursor += step
     return trend
 

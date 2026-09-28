@@ -71,3 +71,36 @@ async def messages(
         gateway_service=gateway_service,
         principal=principal,
     )
+
+
+class CountTokensRequest(ProviderRequest):
+    @model_validator(mode="after")
+    def validate_routing_fields(self) -> Self:
+        self.require_nonempty_string("model")
+        self.require("messages", list)
+        if "stream" in self.root:
+            raise ValueError("count_tokens does not support streaming")
+        return self
+
+
+@router.post("/messages/count_tokens", responses=ANTHROPIC_ERROR_RESPONSES)
+async def count_tokens(
+    request: Request,
+    payload: CountTokensRequest,
+    gateway_service: GatewayService = Depends(get_gateway_service),
+    principal: AuthenticatedPrincipal = Depends(get_anthropic_authenticated_principal),
+):
+    provider_payload = payload.provider_payload()
+    user_profile_id = request.headers.get("anthropic-user-profile-id")
+    if user_profile_id is not None:
+        provider_payload["user_profile_id"] = user_profile_id
+    return await dispatch_gateway_inference(
+        request=request,
+        payload=provider_payload,
+        provider="anthropic",
+        protocol="count_tokens",
+        model=payload.require_nonempty_string("model"),
+        stream=False,
+        gateway_service=gateway_service,
+        principal=principal,
+    )

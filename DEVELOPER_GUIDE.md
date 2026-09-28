@@ -89,7 +89,8 @@ uv run --locked --package shim-enterprise alembic -c ee/alembic.ini upgrade head
 Never downgrade a production database. Roll production back to the previous
 schema-compatible application image.
 
-Contact-only plan activation is an enterprise operation:
+Operator-managed provisioning and plan activation are enterprise operations.
+Follow [the provisioning and existing-customer transition runbook](ee/docs/PROVISIONING.md):
 
 ```bash
 uv run --locked --package shim-enterprise python ee/scripts/activate_plan.py --help
@@ -124,6 +125,9 @@ enterprise direct dependencies. The enterprise wheel must include its runtime
 assets and require the exact matching `shim-gateway` version.
 
 ## Changing an API or dependency
+
+Diagnostic field semantics and null behavior are documented in
+[`ee/docs/DIAGNOSTIC_METADATA.md`](ee/docs/DIAGNOSTIC_METADATA.md).
 
 1. Trace the route through authentication, `GatewayService`, `GatewayKernel`,
    provider execution, streaming, and usage finalization.

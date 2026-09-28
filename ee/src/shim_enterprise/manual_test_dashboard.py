@@ -40,7 +40,7 @@ def install_manual_test_dashboard(application: FastAPI) -> None:
 
 def manual_test_dashboard() -> HTMLResponse:
     nonce = secrets.token_urlsafe(24)
-    supabase_origin = _supabase_origin(settings.SUPABASE_URL)
+    supabase_origin = _supabase_origin(settings.SUPABASE_URL or "")
     public_key = _public_supabase_key(settings.SUPABASE_KEY)
     payload = {
         "email": settings.SHIM_TEST_USER_EMAIL or "",

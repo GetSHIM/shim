@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import io
+import json
 import logging
 import secrets
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -26,8 +28,9 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import case, cast as sql_cast, func, or_, select, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.api.enterprise_deps import (
     get_current_user,
@@ -61,21 +64,29 @@ from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
-from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
+from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import (
     ApiKey,
+    ModelDeployment,
     OrganizationInvite,
     Organization,
     ProviderSecret,
     TierDefinition,
+    Team,
+    TeamMembership,
     User,
 )
+from shim_enterprise.tenants.deployments import (
+    require_model_aliases,
+    validate_deployment_url,
+)
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
+from shim_enterprise.tenants.teams import member_team_ids, require_team
+from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import move_user_from_bootstrap
-from shim_enterprise.tenants.subscriptions import checkout_urls
 
 
 router = APIRouter()
@@ -141,7 +152,7 @@ class UserView(BaseModel):
     email: EmailStr
     full_name: str | None
     organization_name: str
-    role: Literal["owner", "admin", "member"]
+    role: Literal["owner", "admin", "member", "auditor"]
     is_active: bool
     is_verified: bool
     created_at: datetime
@@ -152,10 +163,53 @@ class UserPatch(BaseModel):
     organization_name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
+class TeamInput(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    daily_request_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    monthly_request_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    monthly_token_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Team name cannot be blank")
+        return value.strip()
+
+
+class TeamView(TeamInput):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+
+
+class MembershipInput(BaseModel):
+    role: Literal["member", "team_admin"] = "member"
+
+
+class MembershipView(MembershipInput):
+    model_config = ConfigDict(from_attributes=True)
+    user_id: UUID
+    team_id: UUID
+    source: Literal["local", "oidc"]
+
+
 class ApiKeyInput(BaseModel):
     name: str = Field(min_length=1, max_length=50)
     cost_center: str | None = None
     team: str | None = None
+    team_id: UUID | None = None
+    allowed_models: list[str] | None = Field(default=None, max_length=200)
+
+    @field_validator("allowed_models")
+    @classmethod
+    def validate_models(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(
+            not item or item != item.strip() or len(item) > 200 for item in value
+        ):
+            raise ValueError(
+                "Model identifiers must be nonblank and at most 200 characters"
+            )
+        return list(dict.fromkeys(value)) if value is not None else None
 
     @field_validator("cost_center", "team")
     @classmethod
@@ -171,6 +225,19 @@ class ApiKeyInput(BaseModel):
 class ApiKeyPatch(BaseModel):
     cost_center: str | None = None
     team: str | None = None
+    team_id: UUID | None = None
+    allowed_models: list[str] | None = Field(default=None, max_length=200)
+
+    @field_validator("allowed_models")
+    @classmethod
+    def validate_models(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(
+            not item or item != item.strip() or len(item) > 200 for item in value
+        ):
+            raise ValueError(
+                "Model identifiers must be nonblank and at most 200 characters"
+            )
+        return list(dict.fromkeys(value)) if value is not None else None
 
     @field_validator("cost_center", "team")
     @classmethod
@@ -195,6 +262,8 @@ class ApiKeyView(BaseModel):
     expires_at: datetime | None
     cost_center: str | None
     team: str | None
+    team_id: UUID | None
+    allowed_models: list[str] | None
 
 
 class CreatedApiKey(ApiKeyView):
@@ -258,11 +327,7 @@ class SubscriptionView(BaseModel):
     plan: Literal["free", "managed", "agency", "enterprise"]
     status: str
     source: str | None
-    current_period_end: datetime | None
-    cancel_at_period_end: bool
     entitlements: dict[str, bool]
-    checkout_urls: dict[str, dict[Literal["monthly", "yearly"], str]]
-    customer_portal_url: str | None
 
 
 class TeamMemberView(BaseModel):
@@ -271,14 +336,14 @@ class TeamMemberView(BaseModel):
     id: UUID
     email: EmailStr
     full_name: str | None
-    role: Literal["owner", "admin", "member"]
+    role: Literal["owner", "admin", "member", "auditor"]
     is_active: bool
     created_at: datetime
 
 
 class TeamInviteInput(BaseModel):
     email: EmailStr
-    role: Literal["admin", "member"] = "member"
+    role: Literal["admin", "member", "auditor"] = "member"
 
 
 class TeamInviteView(BaseModel):
@@ -286,7 +351,7 @@ class TeamInviteView(BaseModel):
 
     id: UUID
     email: EmailStr
-    role: Literal["owner", "admin", "member"]
+    role: Literal["owner", "admin", "member", "auditor"]
     expires_at: datetime
     accepted_at: datetime | None
     revoked_at: datetime | None
@@ -302,7 +367,7 @@ class AcceptTeamInvite(BaseModel):
 
 
 class TeamRolePatch(BaseModel):
-    role: Literal["owner", "admin", "member"]
+    role: Literal["owner", "admin", "member", "auditor"]
 
 
 class NotificationTargetInput(BaseModel):
@@ -432,13 +497,17 @@ class DailyUsageView(BaseModel):
     request_count: int
     prompt_tokens: int
     completion_tokens: int
-    cost_usd: float
+    cost_usd: float | None
+    unpriced_requests: int = 0
+    cost_complete: bool = True
 
 
 class BillingUsageView(BaseModel):
     period: BillingPeriodView
     daily_usage: list[DailyUsageView]
-    total_cost: float
+    total_cost: float | None
+    unpriced_requests: int = 0
+    cost_complete: bool = True
 
 
 KNOWN_REQUEST_ACTIVITY_STATUSES = (
@@ -474,13 +543,19 @@ class RequestActivityView(BaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     usage_estimated: bool
-    cost_usd: Decimal = Field(ge=0)
+    cost_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
     latency_ms: int = Field(ge=0)
     pii_detected: bool
     tags: list[str] = Field(default_factory=list)
     cost_center: str | None
     provider: str | None
     team: str | None
+    provider_finish_reasons: dict[str, str] | None = None
+    repeat_chain_length: int | None = Field(default=None, ge=1)
+    ttft_ms: float | None = Field(default=None, ge=0)
+    system_prompt_hash: str | None = None
+    deployment_kind: Literal["internal", "external", "unknown"] | None = None
 
 
 class RequestActivityStatusCountsView(BaseModel):
@@ -500,6 +575,8 @@ class RequestActivitySummaryView(BaseModel):
     technical_success_rate: float | None = Field(ge=0, le=1)
     p95_completed_latency_ms: int | None = Field(ge=0)
     settled_spend_usd: Decimal = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     pii_detected_requests: int = Field(ge=0)
@@ -542,14 +619,18 @@ class OverviewSummaryView(BaseModel):
     policy_rejections: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
     p95_completed_latency_ms: int | None = Field(ge=0)
-    settled_spend_usd: Decimal = Field(ge=0)
+    settled_spend_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
     status_counts: OverviewStatusCountsView
 
 
 class OverviewTrendPointView(BaseModel):
     start: datetime
     requests: int = Field(ge=0)
-    settled_spend_usd: Decimal = Field(ge=0)
+    settled_spend_usd: Decimal | None = Field(ge=0)
+    cost_complete: bool
+    unpriced_requests: int = Field(ge=0)
 
 
 class OverviewExceptionView(BaseModel):
@@ -589,11 +670,13 @@ class OverviewDashboardView(BaseModel):
 
 
 class BillingBreakdownRow(BaseModel):
+    unpriced_requests: int = 0
+    cost_complete: bool = True
     key: str = Field(min_length=1)
     request_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cost_usd: Decimal = Field(ge=0)
+    cost_usd: Decimal | None = Field(ge=0)
 
 
 class BillingBreakdownView(BaseModel):
@@ -644,11 +727,6 @@ async def get_subscription(
         raise HTTPException(
             status_code=503, detail="Organization tier is not configured"
         )
-    purchase_urls = (
-        checkout_urls(organization.id, user.id)
-        if user.role == "owner" and organization.tier == "free"
-        else {}
-    )
     return SubscriptionView(
         plan=cast(
             Literal["free", "managed", "agency", "enterprise"],
@@ -656,13 +734,7 @@ async def get_subscription(
         ),
         status=organization.billing_status,
         source=organization.billing_source,
-        current_period_end=organization.current_period_end,
-        cancel_at_period_end=organization.cancel_at_period_end,
         entitlements={key: bool(value) for key, value in tier.features.items()},
-        checkout_urls=purchase_urls,
-        customer_portal_url=(
-            organization.customer_portal_url if user.role == "owner" else None
-        ),
     )
 
 
@@ -884,8 +956,15 @@ async def update_team_member(
     member = await _owned_member(session, user, member_id)
     if member.role == "owner" and patch.role != "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    previous_role = member.role
     member.role = patch.role
-    await _audit(session, user, "tenant.team_role_updated", str(member.id))
+    await _audit(
+        session,
+        user,
+        "tenant.team_role_updated",
+        str(member.id),
+        details={"before": previous_role, "after": patch.role},
+    )
     await session.commit()
     await session.refresh(member)
     return member
@@ -916,6 +995,214 @@ async def remove_team_member(
     await session.commit()
 
 
+@router.get("/teams", response_model=list[TeamView])
+async def list_teams(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> list[Team]:
+    statement = select(Team).where(Team.organization_id == _tenant_id(user))
+    if user.role not in {"owner", "admin", "auditor"}:
+        statement = statement.where(Team.id.in_(member_team_ids(user)))
+    return list((await session.scalars(statement.order_by(Team.name, Team.id))).all())
+
+
+@router.post("/teams", response_model=TeamView, status_code=201)
+async def create_team(
+    payload: TeamInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Team:
+    statement = (
+        insert(Team)
+        .values(organization_id=_tenant_id(user), **payload.model_dump())
+        .on_conflict_do_nothing()
+        .returning(Team)
+    )
+    team = await session.scalar(statement)
+    if team is None:
+        raise HTTPException(
+            status_code=409, detail="A team with this name already exists"
+        )
+    await _audit(
+        session,
+        user,
+        "tenant.team_created",
+        str(team.id),
+        details={"after": payload.model_dump(mode="json")},
+    )
+    await session.commit()
+    await session.refresh(team)
+    return team
+
+
+@router.put("/teams/{team_id}", response_model=TeamView)
+async def update_team(
+    team_id: UUID,
+    payload: TeamInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Team:
+    await require_team(session, user, team_id, administer=True)
+    duplicate = await session.scalar(
+        select(Team.id).where(
+            Team.organization_id == user.organization_id,
+            Team.name == payload.name,
+            Team.id != team_id,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409, detail="A team with this name already exists"
+        )
+    team = await session.scalar(
+        select(Team)
+        .where(Team.organization_id == user.organization_id, Team.id == team_id)
+        .with_for_update()
+    )
+    if team is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    before = TeamView.model_validate(team).model_dump(mode="json")
+    for field, value in payload.model_dump().items():
+        setattr(team, field, value)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        if getattr(exc.orig, "sqlstate", None) == "23505":
+            raise HTTPException(
+                status_code=409, detail="A team with this name already exists"
+            ) from exc
+        raise
+    await _audit(
+        session,
+        user,
+        "tenant.team_policy_updated",
+        str(team_id),
+        details={"before": before, "after": payload.model_dump(mode="json")},
+    )
+    await session.commit()
+    await session.refresh(team)
+    return team
+
+
+@router.get("/teams/{team_id}/members", response_model=list[MembershipView])
+async def list_memberships(
+    team_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> list[TeamMembership]:
+    await require_team(session, user, team_id)
+    return list(
+        (
+            await session.scalars(
+                select(TeamMembership)
+                .where(
+                    TeamMembership.organization_id == _tenant_id(user),
+                    TeamMembership.team_id == team_id,
+                )
+                .order_by(TeamMembership.user_id)
+            )
+        ).all()
+    )
+
+
+@router.put("/teams/{team_id}/members/{member_id}", response_model=MembershipView)
+async def set_membership(
+    team_id: UUID,
+    member_id: UUID,
+    payload: MembershipInput,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> TeamMembership:
+    await require_team(session, user, team_id, administer=True)
+    member = await _owned_member(session, user, member_id)
+    existing = await session.scalar(
+        select(TeamMembership)
+        .where(
+            TeamMembership.organization_id == user.organization_id,
+            TeamMembership.team_id == team_id,
+            TeamMembership.user_id == member_id,
+        )
+        .with_for_update()
+    )
+    if existing is not None and existing.source == "oidc":
+        raise HTTPException(
+            status_code=409, detail="Manage this membership in the identity provider"
+        )
+    if payload.role == "team_admin" or (
+        existing is not None and existing.role == "team_admin"
+    ):
+        _require_role(user, "owner", "admin")
+    statement = insert(TeamMembership).values(
+        organization_id=user.organization_id,
+        team_id=team_id,
+        user_id=member.id,
+        role=payload.role,
+        source="local",
+    )
+    membership = await session.scalar(
+        statement.on_conflict_do_update(
+            index_elements=[
+                TeamMembership.organization_id,
+                TeamMembership.team_id,
+                TeamMembership.user_id,
+            ],
+            set_={"role": payload.role},
+            where=TeamMembership.source == "local",
+        ).returning(TeamMembership)
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=409, detail="Membership changed; reload and try again"
+        )
+    await _audit(
+        session,
+        user,
+        "tenant.team_membership_updated",
+        str(team_id) + ":" + str(member_id),
+    )
+    await session.commit()
+    await session.refresh(membership)
+    return membership
+
+
+@router.delete(
+    "/teams/{team_id}/members/{member_id}", status_code=204, response_model=None
+)
+async def remove_membership(
+    team_id: UUID,
+    member_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    await require_team(session, user, team_id, administer=True)
+    membership = await session.scalar(
+        select(TeamMembership)
+        .where(
+            TeamMembership.organization_id == user.organization_id,
+            TeamMembership.team_id == team_id,
+            TeamMembership.user_id == member_id,
+        )
+        .with_for_update()
+    )
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Team membership not found")
+    if membership.source == "oidc":
+        raise HTTPException(
+            status_code=409, detail="Manage this membership in the identity provider"
+        )
+    if membership.role == "team_admin":
+        _require_role(user, "owner", "admin")
+    await session.delete(membership)
+    await _audit(
+        session,
+        user,
+        "tenant.team_membership_removed",
+        str(team_id) + ":" + str(member_id),
+    )
+    await session.commit()
+
+
 @router.get("/api-keys", response_model=list[ApiKeyView])
 async def list_api_keys(
     user: User = Depends(get_current_user),
@@ -926,8 +1213,13 @@ async def list_api_keys(
         ApiKey.organization_id == tenant_id,
         ApiKey.is_active.is_(True),
     )
-    if user.role == "member":
-        statement = statement.where(ApiKey.user_id == user.id)
+    if user.role not in {"owner", "admin", "auditor"}:
+        statement = statement.where(
+            or_(
+                ApiKey.user_id == user.id,
+                ApiKey.team_id.in_(member_team_ids(user, administer=True)),
+            )
+        )
     now = datetime.now(timezone.utc)
     return [
         item
@@ -943,14 +1235,22 @@ async def create_api_key(
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
     _tenant_id(user)
+    _require_role(user, "owner", "admin", "member")
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
+    if payload.team_id is not None:
+        await require_team(session, user, payload.team_id)
+    elif user.role == "member" and await session.scalar(member_team_ids(user).limit(1)):
+        raise HTTPException(status_code=403, detail="Choose a team for this API key")
+    await require_model_aliases(session, _tenant_id(user), payload.allowed_models)
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
         name=payload.name,
         cost_center=payload.cost_center,
         team=payload.team,
+        team_id=payload.team_id,
+        allowed_models=payload.allowed_models,
     )
     await _audit(session, user, "tenant.api_key_created", str(api_key.id))
     await session.commit()
@@ -958,6 +1258,35 @@ async def create_api_key(
     return CreatedApiKey(
         **ApiKeyView.model_validate(api_key).model_dump(),
         plaintext=plaintext,
+    )
+
+
+@router.post("/api-keys/{api_key_id}/rotate", response_model=CreatedApiKey)
+async def rotate_api_key(
+    api_key_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> CreatedApiKey:
+    api_key = await _owned_api_key(session, user, api_key_id)
+    if not api_key.is_active or (
+        api_key.expires_at is not None
+        and _aware(api_key.expires_at) <= datetime.now(timezone.utc)
+    ):
+        raise HTTPException(
+            status_code=409, detail="Only active API keys can be rotated"
+        )
+    plaintext = rotate_tenant_api_key(api_key)
+    await _audit(
+        session,
+        user,
+        "tenant.api_key_rotated",
+        str(api_key.id),
+        details={"rotation_policy": "immediate"},
+    )
+    await session.commit()
+    await session.refresh(api_key)
+    return CreatedApiKey(
+        **ApiKeyView.model_validate(api_key).model_dump(), plaintext=plaintext
     )
 
 
@@ -969,9 +1298,26 @@ async def update_api_key(
     session: AsyncSession = Depends(get_db),
 ) -> ApiKey:
     api_key = await _owned_api_key(session, user, api_key_id)
+    if {"team_id", "allowed_models"} & patch.model_fields_set:
+        if api_key.team_id is None:
+            _require_role(user, "owner", "admin")
+        else:
+            await require_team(session, user, api_key.team_id, administer=True)
+    if "team_id" in patch.model_fields_set and patch.team_id != api_key.team_id:
+        _require_role(user, "owner", "admin")
+        if patch.team_id is not None:
+            await require_team(session, user, patch.team_id, administer=True)
+    if "allowed_models" in patch.model_fields_set:
+        await require_model_aliases(session, _tenant_id(user), patch.allowed_models)
     for field, value in patch.model_dump(exclude_unset=True).items():
         setattr(api_key, field, value)
-    await _audit(session, user, "tenant.api_key_updated", str(api_key.id))
+    await _audit(
+        session,
+        user,
+        "tenant.api_key_updated",
+        str(api_key.id),
+        details={"changes": patch.model_dump(mode="json", exclude_unset=True)},
+    )
     await session.commit()
     await session.refresh(api_key)
     return api_key
@@ -1553,13 +1899,24 @@ async def list_requests(
                 prompt_tokens=row.prompt_tokens,
                 completion_tokens=row.completion_tokens,
                 usage_estimated=_request_usage_estimated(row.details),
-                cost_usd=Decimal(str(cost_usd)),
+                cost_usd=Decimal(str(cost_usd)) if cost_usd is not None else None,
+                cost_complete=cost_usd is not None,
                 latency_ms=row.latency_ms,
                 pii_detected=row.pii_detected,
                 tags=list(row.tags or []),
                 cost_center=row.cost_center,
                 provider=_request_provider(row),
                 team=row.team,
+                **{
+                    field: (row.details or {}).get(field)
+                    for field in (
+                        "provider_finish_reasons",
+                        "repeat_chain_length",
+                        "ttft_ms",
+                        "system_prompt_hash",
+                        "deployment_kind",
+                    )
+                },
             )
             for row, cost_usd in rows
         ],
@@ -1656,6 +2013,12 @@ async def export_requests(
                 "tags",
                 "cost_center",
                 "team",
+                "provider_finish_reasons",
+                "repeat_chain_length",
+                "ttft_ms",
+                "system_prompt_hash",
+                "deployment_kind",
+                "cost_complete",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -1664,6 +2027,7 @@ async def export_requests(
         )
         try:
             async for row, cost_usd in result:
+                details = row.details or {}
                 output.seek(0)
                 output.truncate(0)
                 writer.writerow(
@@ -1677,12 +2041,24 @@ async def export_requests(
                         _request_activity_status(row.details),
                         row.prompt_tokens,
                         row.completion_tokens,
-                        Decimal(str(cost_usd)),
+                        Decimal(str(cost_usd)) if cost_usd is not None else None,
                         row.latency_ms,
                         row.pii_detected,
                         ",".join(row.tags or []),
                         row.cost_center,
                         row.team,
+                        (
+                            json.dumps(
+                                details["provider_finish_reasons"], sort_keys=True
+                            )
+                            if details.get("provider_finish_reasons") is not None
+                            else None
+                        ),
+                        details.get("repeat_chain_length"),
+                        details.get("ttft_ms"),
+                        details.get("system_prompt_hash"),
+                        details.get("deployment_kind"),
+                        cost_usd is not None,
                     )
                 )
                 yield output.getvalue().encode("utf-8")
@@ -1720,10 +2096,15 @@ async def billing_usage(
             ),
         )
     rows = [record.as_public_record() for record in records]
+    unpriced_requests = sum(record.unpriced_requests for record in records)
     return BillingUsageView(
         period=BillingPeriodView(start=start, end=end),
         daily_usage=[DailyUsageView.model_validate(row) for row in rows],
-        total_cost=sum(float(record.cost_usd) for record in records),
+        total_cost=None
+        if unpriced_requests
+        else sum(float(record.cost_usd) for record in records),
+        unpriced_requests=unpriced_requests,
+        cost_complete=not unpriced_requests,
     )
 
 
@@ -1896,9 +2277,27 @@ def _request_settled_spend(tenant_id: UUID):
             UsageLedger.organization_id == tenant_id,
             UsageLedger.request_id == RequestLog.request_id,
             UsageLedger.event_type == "spend_settlement",
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"]
+            .as_string()
+            .is_distinct_from("unknown"),
         )
         .correlate(RequestLog)
         .scalar_subquery()
+    )
+
+
+def _request_unpriced_spend(tenant_id: UUID):
+    return (
+        select(UsageLedger.id)
+        .where(
+            UsageLedger.organization_id == tenant_id,
+            UsageLedger.request_id == RequestLog.request_id,
+            UsageLedger.event_type == "spend_settlement",
+            UsageLedger.event_metadata["pricing"]["pricing_resolution"].as_string()
+            == "unknown",
+        )
+        .correlate(RequestLog)
+        .exists()
     )
 
 
@@ -1921,6 +2320,9 @@ def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
     return (
         select(
             func.count(RequestLog.id).label("requests"),
+            func.count(RequestLog.id)
+            .filter(_request_unpriced_spend(tenant_id))
+            .label("unpriced_requests"),
             *(
                 func.count(RequestLog.id)
                 .filter(lifecycle_status == status_name)
@@ -1984,6 +2386,8 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         ),
         p95_completed_latency_ms=round(float(p95)) if p95 is not None else None,
         settled_spend_usd=Decimal(str(row.settled_spend_usd or 0)),
+        cost_complete=not row.unpriced_requests,
+        unpriced_requests=int(row.unpriced_requests or 0),
         prompt_tokens=int(row.prompt_tokens or 0),
         completion_tokens=int(row.completion_tokens or 0),
         pii_detected_requests=int(row.pii_detected_requests or 0),
@@ -1999,7 +2403,10 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
     return (
         select(
             RequestLog,
-            func.coalesce(spend, Decimal("0")).label("cost_usd"),
+            case(
+                (_request_unpriced_spend(tenant_id), None),
+                else_=func.coalesce(spend, Decimal("0")),
+            ).label("cost_usd"),
         )
         .where(*filters)
         .order_by(RequestLog.timestamp.desc(), RequestLog.id.desc())
@@ -2024,7 +2431,15 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
-        ("key", "request_count", "prompt_tokens", "completion_tokens", "cost_usd")
+        (
+            "key",
+            "request_count",
+            "prompt_tokens",
+            "completion_tokens",
+            "cost_usd",
+            "unpriced_requests",
+            "cost_complete",
+        )
     )
     for record in records:
         writer.writerow(
@@ -2034,7 +2449,9 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
                 record.request_count,
                 record.prompt_tokens,
                 record.completion_tokens,
-                record.cost_usd,
+                None if record.unpriced_requests else record.cost_usd,
+                record.unpriced_requests,
+                record.unpriced_requests == 0,
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -2086,7 +2503,9 @@ def _billing_breakdown_pdf(
                         record.key,
                         str(record.request_count),
                         str(record.prompt_tokens + record.completion_tokens),
-                        str(record.cost_usd),
+                        str(record.cost_usd)
+                        if record.unpriced_requests == 0
+                        else f"Unknown ({record.unpriced_requests} unpriced)",
                     ]
                     for record in records
                 ],
@@ -2106,7 +2525,7 @@ async def _user_view(session: AsyncSession, user: User) -> UserView:
         email=user.email,
         full_name=user.full_name,
         organization_name=tenant.name,
-        role=cast(Literal["owner", "admin", "member"], user.role),
+        role=cast(Literal["owner", "admin", "member", "auditor"], user.role),
         is_active=user.is_active,
         is_verified=user.is_verified,
         created_at=user.created_at,
@@ -2118,12 +2537,30 @@ async def _owned_api_key(
     user: User,
     api_key_id: UUID,
 ) -> ApiKey:
-    statement = select(ApiKey).where(
-        ApiKey.id == api_key_id,
-        ApiKey.organization_id == _tenant_id(user),
+    _require_role(user, "owner", "admin", "member")
+    await session.scalar(
+        select(Organization.id)
+        .where(Organization.id == _tenant_id(user))
+        .with_for_update()
     )
-    if user.role == "member":
-        statement = statement.where(ApiKey.user_id == user.id)
+    statement = (
+        select(ApiKey)
+        .where(
+            ApiKey.id == api_key_id,
+            ApiKey.organization_id == _tenant_id(user),
+        )
+        .with_for_update()
+    )
+    if user.role not in {"owner", "admin"}:
+        statement = statement.where(
+            or_(
+                (ApiKey.user_id == user.id)
+                & (
+                    ApiKey.team_id.is_(None) | ApiKey.team_id.in_(member_team_ids(user))
+                ),
+                ApiKey.team_id.in_(member_team_ids(user, administer=True)),
+            )
+        )
     row = (await session.execute(statement)).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="API key not found")
@@ -2228,37 +2665,6 @@ async def _owned_budget(
     if row is None:
         raise HTTPException(status_code=404, detail="Budget not found")
     return row
-
-
-async def _audit(
-    session: AsyncSession,
-    user: User,
-    action: str,
-    subject_id: str,
-) -> None:
-    tenant_id = _tenant_id(user)
-    event_id = f"management:{uuid4()}"
-    now = datetime.now(timezone.utc)
-    await OutboxWriter().append(
-        session,
-        organization_id=TenantId(tenant_id),
-        values={
-            "event_type": "audit.chain_append_requested",
-            "aggregate_type": "management",
-            "aggregate_id": event_id,
-            "idempotency_key": f"{event_id}:audit",
-            "payload": {
-                "organization_id": str(tenant_id),
-                "request_id": event_id,
-                "event_type": "management_action",
-                "actor": str(user.id),
-                "endpoint": action,
-                "extra": {"subject_id": subject_id},
-            },
-            "status": "pending",
-            "next_attempt_at": now,
-        },
-    )
 
 
 async def _validate_targets(targets: list[NotificationTargetInput]) -> None:
@@ -2401,3 +2807,212 @@ def _validate_sync_window(start: datetime, end: datetime) -> None:
             status_code=422,
             detail="synchronous operations are limited to 31 days",
         )
+
+
+class ModelDeploymentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    alias: str = Field(
+        min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    )
+    provider: Literal["openai", "anthropic"]
+    upstream_model: str = Field(min_length=1, max_length=200)
+    base_url: str = Field(min_length=1, max_length=2048)
+    provider_secret_id: UUID
+    timeout_seconds: int = Field(default=60, ge=1, le=300)
+    deployment_kind: Literal["internal", "external"]
+    declared_version: str = Field(min_length=1, max_length=200)
+    owner: str = Field(min_length=1, max_length=200)
+    enabled: bool = True
+
+    @field_validator("upstream_model", "declared_version", "owner")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("Value must be nonblank without surrounding whitespace")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def approved_destination(cls, value: str) -> str:
+        return validate_deployment_url(value)
+
+
+class ModelDeploymentView(ModelDeploymentInput):
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("base_url")
+    @classmethod
+    def approved_destination(cls, value: str) -> str:
+        # Operators must still be able to inspect a now-disallowed deployment.
+        return value
+
+    id: UUID
+    health: Literal["unknown", "healthy", "unhealthy"]
+    health_checked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@router.get("/model-deployments", response_model=list[ModelDeploymentView])
+async def list_model_deployments(
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    return (
+        (
+            await session.execute(
+                select(ModelDeployment)
+                .where(
+                    ModelDeployment.organization_id == _tenant_id(user),
+                )
+                .order_by(ModelDeployment.alias)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@router.post("/model-deployments", response_model=ModelDeploymentView, status_code=201)
+async def create_model_deployment(
+    payload: ModelDeploymentInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
+    if secret.provider != payload.provider:
+        raise HTTPException(422, detail="Credential provider does not match deployment")
+    row = ModelDeployment(organization_id=_tenant_id(user), **payload.model_dump())
+    session.add(row)
+    try:
+        await session.flush()
+        await _audit(
+            session,
+            user,
+            "tenant.model_deployment_created",
+            str(row.id),
+            details={"configuration": payload.model_dump(mode="json")},
+        )
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            409, detail="Model alias already exists or credential is unavailable"
+        ) from None
+    await session.refresh(row)
+    return row
+
+
+@router.put("/model-deployments/{deployment_id}", response_model=ModelDeploymentView)
+async def update_model_deployment(
+    deployment_id: UUID,
+    payload: ModelDeploymentInput,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await _owned_model_deployment(session, user, deployment_id)
+    secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
+    if secret.provider != payload.provider:
+        raise HTTPException(422, detail="Credential provider does not match deployment")
+    for field, value in payload.model_dump().items():
+        setattr(row, field, value)
+    row.health, row.health_checked_at = "unknown", None
+    try:
+        await _audit(
+            session,
+            user,
+            "tenant.model_deployment_updated",
+            str(row.id),
+            details={"configuration": payload.model_dump(mode="json")},
+        )
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            409, detail="Model alias already exists or credential is unavailable"
+        ) from None
+    await session.refresh(row)
+    return row
+
+
+@router.post(
+    "/model-deployments/{deployment_id}/health", response_model=ModelDeploymentView
+)
+async def check_model_deployment_health(
+    deployment_id: UUID,
+    request: Request,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await _owned_model_deployment(session, user, deployment_id)
+    secret = await _owned_provider_secret(session, user, row.provider_secret_id)
+    try:
+        base_url = validate_deployment_url(row.base_url)
+    except ValueError:
+        raise HTTPException(
+            503, detail="Deployment origin is no longer approved"
+        ) from None
+    checked_version = row.updated_at
+    secret_ref, provider, tenant_id = secret.secret_ref, row.provider, _tenant_id(user)
+    # Finish the read transaction before secret-store or provider I/O.
+    await session.commit()
+    healthy = False
+    try:
+        async with asyncio.timeout(5):
+            credential = await get_secret_store().get_secret(
+                TenantId(tenant_id),
+                SecretRef(secret_ref),
+                expected_purpose=f"provider:{provider}:api-key",
+            )
+            headers = (
+                {"Authorization": f"Bearer {credential}"}
+                if provider == "openai"
+                else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
+            )
+            path = "/models" if provider == "openai" else "/v1/models"
+            # Stream headers only: an unhealthy server cannot force an unbounded body read.
+            async with request.app.state.http_client.stream(
+                "GET",
+                base_url + path,
+                headers=headers,
+                timeout=5,
+                follow_redirects=False,
+            ) as response:
+                healthy = response.status_code == 200
+    except (httpx.HTTPError, ValueError, TimeoutError):
+        healthy = False
+    row = await _owned_model_deployment(session, user, deployment_id)
+    if row.updated_at != checked_version:
+        raise HTTPException(
+            409, detail="Deployment changed during health check; check again"
+        )
+    row.health = "healthy" if healthy else "unhealthy"
+    row.health_checked_at = datetime.now(timezone.utc)
+    await _audit(
+        session,
+        user,
+        "tenant.model_deployment_health_checked",
+        str(row.id),
+        details={"health": row.health, "declared_version": row.declared_version},
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def _owned_model_deployment(
+    session: AsyncSession, user: User, deployment_id: UUID
+) -> ModelDeployment:
+    row = (
+        await session.execute(
+            select(ModelDeployment)
+            .where(
+                ModelDeployment.id == deployment_id,
+                ModelDeployment.organization_id == _tenant_id(user),
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, detail="Model deployment not found")
+    return row

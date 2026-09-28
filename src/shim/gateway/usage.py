@@ -31,7 +31,13 @@ class UsageLimitExceeded(RuntimeError):
     """An authoritative usage policy denied admission."""
 
 
+class UsageAuditPersistenceError(RuntimeError):
+    """Required audit evidence could not be committed before a response."""
+
+
 class UsageLifecycle(Protocol):
+    async def reject(self, prepared: PreparedInference) -> None: ...
+
     async def admit(
         self,
         prepared: PreparedInference,
@@ -39,6 +45,10 @@ class UsageLifecycle(Protocol):
     ) -> None: ...
 
     async def record_privacy(self, prepared: PreparedInference) -> None: ...
+
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None: ...
 
     async def reserve_provider_spend(
         self,
@@ -107,7 +117,26 @@ class LocalUsageLifecycle:
     ) -> None:
         pass
 
+    async def reject(self, prepared: PreparedInference) -> None:
+        self._write(
+            prepared,
+            outcome="rejected",
+            completed_at=datetime.now(timezone.utc),
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost_usd=Decimal("0"),
+            model=prepared.model
+            if DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
+            else "unsupported",
+            estimated=False,
+        )
+
     async def record_privacy(self, prepared: PreparedInference) -> None:
+        pass
+
+    async def record_token_count(
+        self, prepared: PreparedInference, input_tokens: int | None
+    ) -> None:
         pass
 
     async def reserve_provider_spend(
@@ -149,6 +178,8 @@ class LocalUsageLifecycle:
             ),
             model=usage.provider_model,
             estimated=usage.estimated,
+            provider_finish_reasons=usage.provider_finish_reasons,
+            ttft_ms=usage.ttft_ms,
         )
 
     async def fail(
@@ -194,6 +225,8 @@ class LocalUsageLifecycle:
         cost_usd: Decimal | None,
         model: str,
         estimated: bool,
+        provider_finish_reasons: dict[str, str] | None = None,
+        ttft_ms: float | None = None,
     ) -> None:
         event = {
             "version": 1,
@@ -211,11 +244,23 @@ class LocalUsageLifecycle:
             "completion_tokens": completion_tokens,
             "estimated_cost_usd": str(cost_usd) if cost_usd is not None else None,
             "estimated": estimated,
+            "provider_finish_reasons": provider_finish_reasons,
+            "ttft_ms": ttft_ms,
+            "repeat_chain_length": (
+                prepared.admission.repeat_chain_length
+                if prepared.admission is not None
+                else None
+            ),
+            "system_prompt_hash": None,
+            "deployment_kind": prepared.deployment_kind,
             "privacy_counts": (
                 dict(prepared.privacy.pii_entities)
                 if prepared.privacy is not None
                 else {}
             ),
+            "policy_verdicts": [
+                verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
+            ],
         }
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         try:

@@ -33,6 +33,7 @@ from shim_enterprise.outbox.dead_letter import (
 )
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage, OutboxPublisher
+from shim_enterprise.workers.readiness import write_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -254,7 +255,9 @@ class OutboxWorker:
         logger.info("Outbox worker started worker_id=%s", self.worker_id)
         while not stop_event.is_set():
             try:
-                await self.run_once()
+                summary = await self.run_once()
+                if not (summary.failed or summary.dead_lettered or summary.lease_lost):
+                    write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "outbox")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -12,7 +12,6 @@ ENTERPRISE_REQUIRED_FIELDS = {
     "DATABASE_URL",
     "REDIS_URL",
     "SECRET_KEY",
-    "SUPABASE_URL",
 }
 ENTERPRISE_REQUIRED_VALUES = {
     "DATABASE_URL": "postgresql+asyncpg://test:test@localhost/test",

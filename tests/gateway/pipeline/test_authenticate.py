@@ -82,6 +82,16 @@ async def test_authenticate_uses_session_free_policy_values_only() -> None:
     assert not hasattr(prepared, "db")
     assert not hasattr(prepared.policy, "__dict__")
     policy_resolver.resolve.assert_awaited_once_with(principal)
+    second = await AuthenticateStage(policy_resolver).run(invocation)
+    assert second.request_id != prepared.request_id
+    assert second.policy_verdicts is not prepared.policy_verdicts
+    second.record_verdict(
+        "privacy.input",
+        stage="privacy",
+        outcome="deny",
+        reason_code="PRIVACY_POLICY_BLOCKED",
+    )
+    assert all(verdict.outcome != "deny" for verdict in prepared.policy_verdicts)
 
 
 @pytest.mark.asyncio

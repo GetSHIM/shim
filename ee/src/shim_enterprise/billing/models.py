@@ -352,7 +352,7 @@ class UsageLedger(Base):
 
 
 class QuotaPeriodUsage(Base):
-    """Authoritative daily or monthly API-key quota counters."""
+    """Authoritative daily or monthly key or team quota counters."""
 
     __tablename__ = "quota_period_usage"
     __table_args__ = (
@@ -360,6 +360,24 @@ class QuotaPeriodUsage(Base):
             ("organization_id", "api_key_id"),
             ("api_keys.organization_id", "api_keys.id"),
             name="fk_quota_period_usage_org_api_key",
+        ),
+        ForeignKeyConstraint(
+            ("organization_id", "team_id"),
+            ("teams.organization_id", "teams.id"),
+            name="fk_quota_period_usage_org_team",
+        ),
+        CheckConstraint(
+            "(api_key_id IS NULL) <> (team_id IS NULL)",
+            name="ck_quota_period_usage_single_scope",
+        ),
+        Index(
+            "uq_quota_period_usage_team_scope",
+            "organization_id",
+            "team_id",
+            "period_type",
+            "period_start",
+            unique=True,
+            postgresql_where=text("team_id IS NOT NULL"),
         ),
         UniqueConstraint(
             "organization_id",
@@ -398,9 +416,10 @@ class QuotaPeriodUsage(Base):
         ForeignKey("organizations.id"),
         nullable=False,
     )
-    api_key_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), ForeignKey("api_keys.id"), nullable=False
+    api_key_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("api_keys.id"), nullable=True
     )
+    team_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     period_type: Mapped[str] = mapped_column(Text, nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)

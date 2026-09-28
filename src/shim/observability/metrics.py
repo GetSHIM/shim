@@ -15,6 +15,7 @@ LABEL_VALUES: Final = MappingProxyType(
                 "/v1/chat/completions",
                 "/v1/responses",
                 "/v1/messages",
+                "/v1/messages/count_tokens",
                 "/v1beta/models/*:generateContent",
                 "/v1beta/models/*:streamGenerateContent",
                 "/v1/scan",
@@ -93,7 +94,14 @@ LABEL_VALUES: Final = MappingProxyType(
         ),
         "method": frozenset({"GET", "POST"}),
         "protocol": frozenset(
-            {"chat", "responses", "messages", "generate_content", "scan"}
+            {
+                "chat",
+                "responses",
+                "messages",
+                "count_tokens",
+                "generate_content",
+                "scan",
+            }
         ),
         "actor_type": frozenset({"api_key", "user_jwt", "internal"}),
         "source_endpoint": frozenset(

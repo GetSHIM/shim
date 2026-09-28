@@ -404,22 +404,6 @@ def test_settings_accept_csv_or_json_lists(value: str, expected: list[str]) -> N
     assert configured.BACKEND_CORS_ORIGINS == expected
 
 
-@pytest.mark.parametrize(
-    "url",
-    ["http://store.lemonsqueezy.com/buy/variant", "/buy/variant", "https:///buy"],
-)
-def test_checkout_urls_require_absolute_https(url: str) -> None:
-    with pytest.raises(ValidationError, match="absolute HTTPS URL"):
-        Settings(
-            DATABASE_URL="postgresql+asyncpg://test:test@localhost/test",
-            REDIS_URL="redis://localhost:6379/0",
-            SECRET_KEY="test-secret-key-value",
-            SUPABASE_URL="https://example.supabase.co",
-            LEMON_SQUEEZY_SOLO_PRO_MONTHLY_CHECKOUT_URL=url,
-            _env_file=None,
-        )
-
-
 class RotationStore:
     def __init__(self, rotated_reference: SecretRef) -> None:
         self.rotated_reference = rotated_reference

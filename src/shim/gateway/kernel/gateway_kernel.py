@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 import logging
 from typing import Any
 
 from fastapi import HTTPException
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import LoopDetector
@@ -18,10 +18,16 @@ from shim.gateway.pipeline.privacy import PrivacyStage
 from shim.gateway.pipeline.provider_spend import ProviderSpendStage
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
+    ProviderNonStream,
     ProviderExecutionStage,
 )
 from shim.gateway.streaming import StreamSession
-from shim.gateway.usage import UsageFailureReason, UsageLifecycle, UsageLimitExceeded
+from shim.gateway.usage import (
+    UsageAuditPersistenceError,
+    UsageFailureReason,
+    UsageLifecycle,
+    UsageLimitExceeded,
+)
 from shim.observability.metrics import REQUESTS_TOTAL, bounded_label
 from shim.observability.tracing import start_span
 from shim.privacy.continuation import PrivacyContinuationStore
@@ -49,6 +55,8 @@ class GatewayKernel:
         usage: UsageLifecycle,
         heartbeat_interval_seconds: float = 30,
         output_hash_salt: str | None = None,
+        prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
+        | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -66,6 +74,7 @@ class GatewayKernel:
         )
         self.chain_store = chain_store
         self.policy_resolver = policy_resolver
+        self.prepare_inference = prepare_inference
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -119,10 +128,30 @@ class GatewayKernel:
                 retryable=True,
                 provider=invocation.provider,
             )
-        prepared = await run_stage(
-            AuthenticateStage(self.policy_resolver),
-            invocation,
-        )
+        authenticate_stage = AuthenticateStage(self.policy_resolver)
+        try:
+            prepared = await run_stage(authenticate_stage, invocation)
+        except BaseException:
+            if authenticate_stage.prepared is not None:
+                await self.usage.reject(authenticate_stage.prepared)
+            raise
+        if self.prepare_inference is not None:
+            try:
+                prepared = await self.prepare_inference(prepared)
+            except BaseException:
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "deployment.registry",
+                        stage="admission",
+                        outcome="error",
+                        reason_code="DEPLOYMENT_REGISTRY_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
+                raise
+
         if prepared_observer is not None:
             prepared_observer(prepared)
         admission_stage = AdmissionStage(
@@ -136,9 +165,25 @@ class GatewayKernel:
         )
         try:
             prepared = await run_stage(admission_stage, prepared)
-        except BaseException:
+        except BaseException as error:
             if admission_stage.reserved:
                 await self._fail_safely(prepared, reason="admission_aborted")
+            else:
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "gateway.admission",
+                        stage="admission",
+                        outcome="deny"
+                        if isinstance(error, HTTPException) and error.status_code < 500
+                        else "error",
+                        reason_code="INVALID_REQUEST"
+                        if isinstance(error, HTTPException) and error.status_code < 500
+                        else "ADMISSION_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
             raise
 
         stream_session: StreamSession | None = None
@@ -150,6 +195,32 @@ class GatewayKernel:
                 ),
                 prepared,
             )
+            if prepared.protocol == "count_tokens":
+                await self.usage.record_token_count(prepared, None)
+
+                async def token_count_started() -> None:
+                    pass
+
+                counted = await execution.execute(
+                    invocation=invocation,
+                    prepared=prepared,
+                    provider_start_callback=token_count_started,
+                )
+                assert isinstance(counted, ProviderNonStream)
+                input_tokens = counted.payload.get("input_tokens")
+                if (
+                    not isinstance(input_tokens, int)
+                    or isinstance(input_tokens, bool)
+                    or input_tokens < 0
+                ):
+                    raise ProviderCallError(
+                        502, "PROVIDER_UNAVAILABLE", False, provider="anthropic"
+                    )
+                await self.usage.record_token_count(prepared, input_tokens)
+                headers = {"X-Shim-Request-Id": str(prepared.request_id)}
+                if counted.request_id:
+                    headers["request-id"] = counted.request_id
+                return JSONResponse(content=counted.payload, headers=headers)
             await self.usage.record_privacy(prepared)
             prepared = await run_stage(
                 ProviderSpendStage(invocation, self.usage),
@@ -183,7 +254,20 @@ class GatewayKernel:
                 and error.status_code < 500
                 else "request_aborted"
             )
-            await self._fail_safely(prepared, reason=reason)
+            if prepared.protocol != "count_tokens":
+                await self._fail_safely(prepared, reason=reason)
+            elif not isinstance(error, UsageAuditPersistenceError):
+                if not any(
+                    verdict.outcome in {"deny", "error"}
+                    for verdict in prepared.policy_verdicts
+                ):
+                    prepared.record_verdict(
+                        "gateway.token_count",
+                        stage="privacy",
+                        outcome="error",
+                        reason_code="TOKEN_COUNT_UNAVAILABLE",
+                    )
+                await self.usage.reject(prepared)
             raise
 
     async def _fail_safely(
@@ -194,5 +278,7 @@ class GatewayKernel:
     ) -> None:
         try:
             await self.usage.fail(prepared, reason=reason)
+        except UsageAuditPersistenceError:
+            raise
         except Exception as exc:
             logger.error("Usage recovery failed type=%s", type(exc).__name__)

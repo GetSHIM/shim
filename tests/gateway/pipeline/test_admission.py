@@ -128,6 +128,7 @@ async def test_admission_bounds_provider_payloads_and_output_limits() -> None:
         "key-hash",
         limit=60,
         window_seconds=60,
+        amount=1,
     )
     usage.admit.assert_awaited_once()
 

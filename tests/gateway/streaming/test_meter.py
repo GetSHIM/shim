@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import json
 
 import pytest
 
 from shim.billing.pricing import UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.streaming import StreamMeter
+from shim.gateway.streaming.meter import native_finish_reasons
 
 
 def meter(
@@ -272,3 +274,138 @@ def test_timeout_codes_are_independent_of_error_prose(event):
     stream_meter = meter()
     stream_meter.observe_sse(event)
     assert stream_meter.terminal_hint == "timeout"
+
+
+@pytest.mark.parametrize(
+    ("provider", "payload", "expected"),
+    [
+        (
+            "openai",
+            {
+                "choices": [
+                    {"index": 2, "finish_reason": "length"},
+                    {"index": 0, "finish_reason": "stop"},
+                ]
+            },
+            {"choices.2.finish_reason": "length", "choices.0.finish_reason": "stop"},
+        ),
+        (
+            "openai",
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+            {"status": "incomplete", "incomplete_details.reason": "max_output_tokens"},
+        ),
+        ("anthropic", {"stop_reason": "refusal"}, {"stop_reason": "refusal"}),
+        (
+            "google",
+            {"candidates": [{"index": 1, "finishReason": "SAFETY"}]},
+            {"candidates.1.finishReason": "SAFETY"},
+        ),
+        (
+            "google",
+            {"promptFeedback": {"blockReason": "SAFETY"}},
+            {"promptFeedback.blockReason": "SAFETY"},
+        ),
+        ("openai", {"choices": [{"finish_reason": "private-provider-text"}]}, None),
+        ("openai", {"error": {"message": "private-provider-text"}}, None),
+        (
+            "google",
+            {"candidates": [{"finishReason": "FINISH_REASON_UNSPECIFIED"}]},
+            None,
+        ),
+        ("openai", {}, None),
+    ],
+)
+def test_native_finish_facts_match_json_and_sse(provider, payload, expected) -> None:
+    stream_meter = meter(provider)
+    stream_meter.observe_sse(f"data: {json.dumps(payload)}\n\n".encode())
+
+    assert native_finish_reasons(payload, provider=provider) == expected
+    assert stream_meter.snapshot().provider_finish_reasons == expected
+    assert stream_meter.snapshot().ttft_ms is None
+
+
+def test_ttft_ignores_heartbeats_metadata_empty_deltas_and_usage() -> None:
+    now = 10.0
+    stream_meter = StreamMeter(
+        provider="openai",
+        requested_model="gpt-5.6-luna",
+        prompt_tokens_estimated=5,
+        started_at_monotonic=now,
+        monotonic_clock=lambda: now,
+    )
+    stream_meter.observe_sse(
+        b': heartbeat\n\nevent: response.created\ndata: {"response":{"status":"in_progress"}}\n\n'
+        b'data: {"choices":[{"delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":5}}\n\n'
+    )
+    assert stream_meter.snapshot().ttft_ms is None
+    now = 10.125
+    stream_meter.observe_sse(b'data: {"choices":[{"delta":{"content":"hel')
+    assert stream_meter.snapshot().ttft_ms is None
+    stream_meter.observe_sse(b'lo"}}]}\n\n')
+    now = 11.0
+    stream_meter.observe_sse(
+        b'data: {"choices":[{"index":0,"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'
+    )
+    snapshot = stream_meter.snapshot()
+    assert snapshot.ttft_ms == 125.0
+    assert snapshot.provider_finish_reasons == {"choices.0.finish_reason": "length"}
+    assert snapshot.estimated is True
+    assert stream_meter.terminal_hint == "completed"
+
+
+@pytest.mark.parametrize(
+    ("provider", "payload"),
+    [
+        ("openai", {"type": "response.audio.delta", "delta": "opaque-audio"}),
+        (
+            "openai",
+            {
+                "type": "response.image_generation_call.partial_image",
+                "partial_image_b64": "opaque-image",
+            },
+        ),
+        ("openai", {"choices": [{"delta": {"audio": {"data": "opaque-audio"}}}]}),
+        (
+            "google",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "inlineData": {
+                                        "data": "opaque-image",
+                                        "mimeType": "image/png",
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ),
+        (
+            "anthropic",
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "text", "text": "hello"},
+            },
+        ),
+    ],
+)
+def test_initial_and_media_content_sets_ttft_without_changing_token_estimates(
+    provider, payload
+) -> None:
+    stream_meter = StreamMeter(
+        provider=provider,
+        requested_model="gpt-5.6-luna",
+        prompt_tokens_estimated=5,
+        started_at_monotonic=10.0,
+        monotonic_clock=lambda: 10.25,
+    )
+    stream_meter.observe_sse(f"data: {json.dumps(payload)}\n\n".encode())
+    assert stream_meter.snapshot().ttft_ms == 250.0
+    assert stream_meter.snapshot().completion_tokens == 0

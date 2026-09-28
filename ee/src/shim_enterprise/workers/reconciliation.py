@@ -15,6 +15,7 @@ from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim_enterprise.gateway.pipeline.reconciliation import ScanReconciler
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing, start_span
+from shim_enterprise.workers.readiness import write_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ class ReconciliationWorker:
         while not stop_event.is_set():
             try:
                 recovered = await self.run_once()
+                write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "reconciliation")
                 if recovered:
                     logger.warning(
                         "Recovered stale gateway requests count=%s", recovered

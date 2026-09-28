@@ -36,7 +36,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
-    prepared = SimpleNamespace(stream=False)
+    prepared = SimpleNamespace(stream=False, protocol="chat")
     provider_output = object()
     response = Response("ok")
 
@@ -187,7 +187,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
     status_code: int,
     expected_reason: str,
 ) -> None:
-    prepared = SimpleNamespace(stream=False)
+    prepared = SimpleNamespace(stream=False, protocol="chat")
     failure = ProviderCallError(
         status_code=status_code,
         error_code="PROVIDER_UNAVAILABLE",
@@ -214,7 +214,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
 async def test_kernel_maps_post_reservation_admission_abort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False)
+    prepared = SimpleNamespace(stream=False, protocol="chat")
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):
@@ -237,7 +237,7 @@ async def test_kernel_maps_post_reservation_admission_abort(
 async def test_recovery_session_failure_does_not_mask_original_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False)
+    prepared = SimpleNamespace(stream=False, protocol="chat")
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):

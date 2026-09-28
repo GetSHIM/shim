@@ -103,12 +103,14 @@ def model_record(model_id: str, provider: str = "openai") -> dict[str, object]:
 
 
 def _anthropic_model_page(
-    model_ids: tuple[str, ...],
+    records: list[dict[str, object]],
     *,
     after_id: str | None,
     before_id: str | None,
     limit: int,
 ) -> dict[str, object]:
+    model_ids = tuple(str(record["id"]) for record in records)
+    by_id = {str(record["id"]): record for record in records}
     if after_id is not None and before_id is not None:
         raise HTTPException(status_code=400, detail="Use only one model cursor.")
     if after_id is not None or before_id is not None:
@@ -132,7 +134,7 @@ def _anthropic_model_page(
         page = model_ids[:limit]
         has_more = len(page) < len(model_ids)
     return {
-        "data": [model_record(model_id, "anthropic") for model_id in page],
+        "data": [by_id[model_id] for model_id in page],
         "has_more": has_more,
         "first_id": page[0] if page else None,
         "last_id": page[-1] if page else None,
@@ -145,6 +147,7 @@ def _anthropic_model_page(
     responses=MODEL_ERROR_RESPONSES,
 )
 async def list_models(
+    request: Request,
     _principal: AuthenticatedPrincipal = Depends(get_anthropic_authenticated_principal),
     anthropic_version: str | None = Header(None, alias="anthropic-version"),
     client_version: str | None = None,
@@ -153,9 +156,8 @@ async def list_models(
     limit: int = Query(20, ge=1, le=1_000),
 ):
     if anthropic_version is not None:
-        model_ids = DEFAULT_PRICE_BOOK.models("anthropic")
         return _anthropic_model_page(
-            model_ids,
+            await _model_records(request, _principal, "anthropic"),
             after_id=after_id,
             before_id=before_id,
             limit=limit,
@@ -165,7 +167,7 @@ async def list_models(
         return {"models": []}
     return {
         "object": "list",
-        "data": [model_record(model_id) for model_id in DEFAULT_PRICE_BOOK.prices],
+        "data": await _model_records(request, _principal, "openai"),
     }
 
 
@@ -176,20 +178,33 @@ async def list_models(
 )
 async def retrieve_model(
     model_id: str,
+    request: Request,
     _principal: AuthenticatedPrincipal = Depends(get_anthropic_authenticated_principal),
     anthropic_version: str | None = Header(None, alias="anthropic-version"),
 ):
     provider = "anthropic" if anthropic_version is not None else "openai"
-    try:
-        return model_record(model_id, provider)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "code": "MODEL_NOT_FOUND",
-                "message": "The requested model is not in the public catalog.",
-            },
-        ) from None
+    for record in await _model_records(request, _principal, provider):
+        if record["id"] == model_id:
+            return record
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "MODEL_NOT_FOUND",
+            "message": "The requested model is not available.",
+        },
+    )
+
+
+async def _model_records(
+    request: Request, principal: AuthenticatedPrincipal, provider: str
+) -> list[dict[str, object]]:
+    catalog = getattr(request.app.state, "model_catalog", None)
+    if catalog is not None:
+        return await catalog(principal, provider)
+    return [
+        model_record(model_id, provider)
+        for model_id in DEFAULT_PRICE_BOOK.models(provider)
+    ]
 
 
 @router.post(

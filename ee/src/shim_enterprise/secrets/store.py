@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+from uuid import UUID
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,6 +20,7 @@ FERNET_V2_PREFIX = "fernet:v2:"
 GCP_V1_PREFIX = "gcpsm:v1:"
 AWS_V1_PREFIX = "awssm:v1:"
 AZURE_V1_PREFIX = "azurekv:v1:"
+VAULT_V1_PREFIX = "vaultkv:v1:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,14 @@ def parse_secret_ref(secret_ref: SecretRef | str) -> ParsedSecretRef:
         if not re.fullmatch(r"https://[^/]+/secrets/[^/]+/[A-Za-z0-9-]+", locator):
             raise ValueError("Azure secret reference must pin a version")
         return ParsedSecretRef("azure", locator.rsplit("/", 1)[-1], locator, "v1")
+    if value.startswith(VAULT_V1_PREFIX):
+        locator = value[len(VAULT_V1_PREFIX) :]
+        match = re.fullmatch(
+            r"([A-Za-z0-9_-]+/shim/[a-f0-9]{64}/[a-f0-9]{32})@([1-9][0-9]*)", locator
+        )
+        if match is None:
+            raise ValueError("Vault secret reference must pin a numeric version")
+        return ParsedSecretRef("vault", match.group(2), match.group(1), "v1")
     raise ValueError("Unsupported secret reference")
 
 
@@ -169,6 +179,10 @@ def get_secret_store() -> SecretStore:
             )
 
             _store_singleton = AWSSecretsManagerStore()
+        elif settings.SECRET_BACKEND == "vault":
+            from shim_enterprise.secrets.vault import VaultSecretStore
+
+            _store_singleton = VaultSecretStore()
         elif settings.SECRET_BACKEND == "azure_key_vault":
             from shim_enterprise.secrets.azure_key_vault import AzureKeyVaultStore
 
@@ -199,11 +213,13 @@ class ManagedProviderCredentialResolver:
         self,
         tenant_id: TenantId,
         credential: EphemeralProviderCredential | None,
+        *,
+        reference: str | None = None,
     ) -> str | None:
         if credential is not None and credential.provider != self.provider:
             raise ValueError("credential does not match the selected provider")
         injected = credential.consume() if credential is not None else None
-        if injected:
+        if injected and reference is None:
             return injected
 
         from shim_enterprise.tenants.models import ProviderSecret
@@ -216,6 +232,11 @@ class ManagedProviderCredentialResolver:
                         .where(
                             ProviderSecret.organization_id == tenant_id,
                             ProviderSecret.provider == self.provider,
+                            *(
+                                [ProviderSecret.id == UUID(reference)]
+                                if reference is not None
+                                else []
+                            ),
                         )
                         .order_by(
                             desc(ProviderSecret.created_at), desc(ProviderSecret.id)

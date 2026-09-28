@@ -886,6 +886,13 @@
         "title": "Content",
         "type": "object"
       },
+      "CountTokensRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "title": "CountTokensRequest",
+        "type": "object"
+      },
       "Delivery": {
         "description": "Delivery mode for the generated content.",
         "enum": [
@@ -5626,6 +5633,193 @@
           }
         ],
         "summary": "Messages"
+      }
+    },
+    "/v1/messages/count_tokens": {
+      "post": {
+        "operationId": "count_tokens_v1_messages_count_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountTokensRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          },
+          "529": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnthropicErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized Anthropic-compatible error."
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "AnthropicAPIKey": []
+          }
+        ],
+        "summary": "Count Tokens"
       }
     },
     "/v1/models": {

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException
 from starlette.responses import Response
 
 from shim_enterprise.billing.ledger import QuotaLimitExceeded, SpendLimitExceeded
@@ -46,7 +47,9 @@ class EnterpriseGatewayService(GatewayService):
         *,
         payload: dict[str, Any],
         provider: Literal["openai", "anthropic", "google"],
-        protocol: Literal["chat", "responses", "messages", "generate_content"],
+        protocol: Literal[
+            "chat", "responses", "messages", "count_tokens", "generate_content"
+        ],
         model: str,
         stream: bool,
         headers: dict[str, str],
@@ -72,7 +75,15 @@ class EnterpriseGatewayService(GatewayService):
             raise_audit_intent_error()
         except QuotaLimitExceeded:
             raise_accounting_limit("MONTHLY_QUOTA_EXCEEDED")
-        except SpendLimitExceeded:
+        except SpendLimitExceeded as exc:
+            if str(exc) == "MODEL_PRICE_UNKNOWN":
+                raise HTTPException(
+                    403,
+                    detail={
+                        "code": "MODEL_PRICE_UNKNOWN",
+                        "message": "A priced model is required to enforce this provider spending limit.",
+                    },
+                ) from None
             raise_accounting_limit("SPEND_LIMIT_EXCEEDED")
         except TenantPolicyConfigurationError:
             raise_tenant_policy_error()
