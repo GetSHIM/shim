@@ -42,7 +42,10 @@ class AuditLogRead(OrmReadModel):
         ge=0, description="Full request lifecycle duration in milliseconds."
     )
     shim_latency_ms: int | None = Field(
-        default=None, ge=0, validation_alias=AliasPath("extra", "shim_latency_ms")
+        default=None,
+        ge=0,
+        title="shim latency (ms)",
+        validation_alias=AliasPath("extra", "shim_latency_ms"),
     )
     cost_usd: Decimal = Field(ge=0)
     input_hash: str | None = None

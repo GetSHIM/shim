@@ -534,6 +534,7 @@ class RequestActivityView(BaseModel):
     shim_latency_ms: int | None = Field(
         default=None,
         ge=0,
+        title="shim latency (ms)",
         description="shim processing time excluding provider waiting; null when unmeasured.",
     )
     pii_detected: bool
@@ -563,7 +564,9 @@ class RequestActivityStatusCountsView(BaseModel):
 class RequestActivitySummaryView(BaseModel):
     requests: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
-    p95_completed_shim_latency_ms: int | None = Field(ge=0)
+    p95_completed_shim_latency_ms: int | None = Field(
+        ge=0, title="p95 completed shim latency (ms)"
+    )
     settled_spend_usd: Decimal = Field(ge=0)
     cost_complete: bool
     unpriced_requests: int = Field(ge=0)
@@ -608,7 +611,9 @@ class OverviewSummaryView(BaseModel):
     technical_failures: int = Field(ge=0)
     policy_rejections: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
-    p95_completed_shim_latency_ms: int | None = Field(ge=0)
+    p95_completed_shim_latency_ms: int | None = Field(
+        ge=0, title="p95 completed shim latency (ms)"
+    )
     settled_spend_usd: Decimal | None = Field(ge=0)
     cost_complete: bool
     unpriced_requests: int = Field(ge=0)

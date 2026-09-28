@@ -989,7 +989,7 @@
                 "type": "null"
               }
             ],
-            "title": "Shim Latency Ms"
+            "title": "shim latency (ms)"
           }
         },
         "required": [
@@ -5908,7 +5908,7 @@
                 "type": "null"
               }
             ],
-            "title": "P95 Completed Shim Latency Ms"
+            "title": "p95 completed shim latency (ms)"
           },
           "policy_rejections": {
             "minimum": 0.0,
@@ -7084,7 +7084,7 @@
                 "type": "null"
               }
             ],
-            "title": "P95 Completed Shim Latency Ms"
+            "title": "p95 completed shim latency (ms)"
           },
           "pii_detected_requests": {
             "minimum": 0.0,
@@ -7299,7 +7299,7 @@
               }
             ],
             "description": "shim processing time excluding provider waiting; null when unmeasured.",
-            "title": "Shim Latency Ms"
+            "title": "shim latency (ms)"
           },
           "status": {
             "enum": [
