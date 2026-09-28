@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -19,6 +20,19 @@ from shim_enterprise.tenants.models import Organization, User
 
 class CloudBase(DeclarativeBase):
     pass
+
+
+class BillingActivation(CloudBase):
+    __tablename__ = "billing_activation"
+    __table_args__ = (
+        CheckConstraint("id", name="ck_billing_activation_singleton"),
+        {"schema": "shim_cloud"},
+    )
+
+    id: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class BillingOperation(CloudBase):

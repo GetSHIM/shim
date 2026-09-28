@@ -26,12 +26,24 @@ from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.models import Organization, User
 from shim_enterprise.tenants.plans import activate_organization_plan
+from shim_enterprise.tenants.service import create_api_key
+from shim_enterprise.billing.ledger import (
+    DurableAccountingRepository,
+    QuotaReservationCommand,
+    QuotaPolicySnapshot,
+    FinalizationCommand,
+    TerminalAction,
+)
+from shim_enterprise.workers.outbox import OutboxLeaseRepository
+from shim_cloud.activate import activate, require_activation
 from shim_cloud import billing as billing_module
+from shim_cloud import application as application_module
 from shim_cloud import worker as worker_module
 from shim_cloud.api import operation_view, router
 from shim_cloud.billing import OPERATION_EVENT, SYNC_EVENT, request_operation
 from shim_cloud.config import CloudSettings
 from shim_cloud.models import BillingOperation
+from shim_cloud.models import BillingActivation
 from shim_cloud.polar import (
     POLAR_TIMEOUT_MS,
     CustomerSnapshot,
@@ -54,6 +66,7 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 def _config() -> CloudSettings:
     return CloudSettings(
         _env_file=None,
+        CLOUD_BILLING_ENABLED=True,
         POLAR_ACCESS_TOKEN="test-polar-token",
         POLAR_WEBHOOK_SECRET=_WEBHOOK_SECRET,
         POLAR_ORGANIZATION_ID=uuid4(),
@@ -63,6 +76,211 @@ def _config() -> CloudSettings:
         },
         CLOUD_DASHBOARD_URL="https://cloud.example",
     )
+
+
+@pytest.mark.asyncio
+async def test_activation_rejects_pending_usage_before_enabling_caps(session_factory):
+    async with session_factory() as session:
+        async with session.begin():
+            organization_id, user_id = uuid4(), uuid4()
+            organization = Organization(
+                id=organization_id,
+                name="Activation",
+                slug=f"activation-{organization_id}",
+            )
+            session.add_all(
+                [
+                    organization,
+                    User(
+                        id=user_id,
+                        organization_id=organization_id,
+                        email=f"{user_id}@example.com",
+                        role="owner",
+                        is_active=True,
+                        is_verified=True,
+                    ),
+                ]
+            )
+            await session.flush()
+            _, key = await create_api_key(session, user_id=user_id, name="Activation")
+            with pytest.raises(ValueError, match="draining old runtimes"):
+                await require_activation(session)
+            now = datetime.now(timezone.utc)
+            request_id = f"req_activation_{uuid4().hex}"
+            repository = DurableAccountingRepository()
+            await repository.reserve_quota(
+                session,
+                QuotaReservationCommand(
+                    tenant_id=organization_id,
+                    api_key_id=key.id,
+                    request_id=request_id,
+                    requested_model="internal",
+                    source_endpoint="chat.completions",
+                    started_at=now,
+                    reconciliation_due_at=now + timedelta(minutes=2),
+                    estimated_input_tokens=2,
+                    maximum_output_tokens=8,
+                    policy=QuotaPolicySnapshot("disabled", None, None, None),
+                ),
+            )
+            with pytest.raises(ValueError, match="reservations remain pending"):
+                await activate(session)
+            assert organization.quota_monthly_request_limit is None
+            await repository.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=request_id,
+                    quota_action=TerminalAction.REFUND,
+                    lifecycle_status="failed",
+                ),
+            )
+            await activate(session)
+            await require_activation(session)
+            await session.refresh(organization)
+            assert organization.quota_monthly_request_limit == 1000
+            assert organization.quota_monthly_token_limit == 1_000_000
+            assert await session.get(BillingActivation, True) is not None
+            await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_disabled_billing_has_no_capabilities_or_commerce_intents(
+    session_factory,
+):
+    config = _config().model_copy(update={"CLOUD_BILLING_ENABLED": False})
+    ids = await _workspace(session_factory)
+    organization_id, owner_id, _, other_organization_id, _ = ids
+    try:
+        async with session_factory() as session:
+            app = _app(
+                config,
+                session,
+                {
+                    "user": SimpleNamespace(
+                        id=owner_id, organization_id=organization_id, role="owner"
+                    )
+                },
+            )
+            async with AsyncClient(
+                transport=ASGITransport(app), base_url="http://test"
+            ) as client:
+                view = (await client.get("/api/v1/management/cloud-billing")).json()
+                assert not any(
+                    view[name]
+                    for name in ("can_manage", "can_checkout", "can_open_portal")
+                )
+                assert view["products"] == []
+                assert (
+                    await client.post(
+                        "/api/v1/management/cloud-billing/checkout",
+                        json={
+                            "request_id": str(uuid4()),
+                            "plan": "managed",
+                            "interval": "monthly",
+                        },
+                    )
+                ).status_code == 503
+                assert (
+                    await client.post("/api/v1/webhooks/polar", content=b"ignored")
+                ).status_code == 503
+            assert (
+                await session.scalar(
+                    select(BillingOperation.id).where(
+                        BillingOperation.organization_id == organization_id
+                    )
+                )
+                is None
+            )
+            await billing_module.append_intent(
+                session,
+                organization_id,
+                event_type=SYNC_EVENT,
+                aggregate_id=str(organization_id),
+                idempotency_key="disabled-test",
+                payload={},
+            )
+            messages = await OutboxLeaseRepository((OPERATION_EVENT, SYNC_EVENT)).claim(
+                session,
+                worker_id="disabled",
+                now=datetime.now(timezone.utc),
+                lease_seconds=30,
+                batch_size=100,
+            )
+            assert not any(
+                message.organization_id == organization_id for message in messages
+            )
+            event = await session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.organization_id == organization_id
+                )
+            )
+            assert event.status == "pending" and event.attempt_count == 0
+            await session.rollback()
+    finally:
+        await _delete_workspace(
+            session_factory, (organization_id, other_organization_id)
+        )
+
+
+@pytest.mark.asyncio
+async def test_disabled_worker_skips_polar(monkeypatch):
+    config = _config().model_copy(update={"CLOUD_BILLING_ENABLED": False})
+    run = AsyncMock()
+    monkeypatch.setattr(worker_module, "CloudSettings", lambda: config)
+    monkeypatch.setattr(worker_module, "run_outbox", run)
+    monkeypatch.setattr(
+        worker_module,
+        "Polar",
+        lambda **kwargs: pytest.fail("Disabled billing contacted Polar"),
+    )
+    await worker_module.main()
+    run.assert_awaited_once()
+    assert run.call_args.kwargs["repository"].excluded_event_types == (
+        OPERATION_EVENT,
+        SYNC_EVENT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_enabled_runtimes_require_activation(session_factory, monkeypatch):
+    config = _config()
+    monkeypatch.setattr(application_module, "create_enterprise_app", FastAPI)
+    monkeypatch.setattr(application_module, "AsyncSessionLocal", session_factory)
+    app = application_module.create_cloud_app(config)
+    with pytest.raises(ValueError, match="draining old runtimes"):
+        async with app.router.lifespan_context(app):
+            pytest.fail("Unactivated gateway started")
+    monkeypatch.setattr(worker_module, "CloudSettings", lambda: config)
+    monkeypatch.setattr(worker_module, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        worker_module,
+        "Polar",
+        lambda **kwargs: pytest.fail("Unactivated worker contacted Polar"),
+    )
+    with pytest.raises(ValueError, match="draining old runtimes"):
+        await worker_module.main()
+    async with session_factory() as session:
+        organization = Organization(
+            name="Disabled authentication", slug=f"disabled-auth-{uuid4()}"
+        )
+        session.add(organization)
+        await session.flush()
+        user = SimpleNamespace(organization_id=organization.id)
+        monkeypatch.setattr(
+            application_module, "get_current_user", AsyncMock(return_value=user)
+        )
+        app.state.cloud_settings = config.model_copy(
+            update={"CLOUD_BILLING_ENABLED": False}
+        )
+        assert (
+            await application_module.cloud_user(SimpleNamespace(app=app), None, session)
+            is user
+        )
+        await session.refresh(organization)
+        assert organization.quota_monthly_request_limit is None
+        assert organization.quota_monthly_token_limit is None
+        await session.rollback()
 
 
 async def _workspace(

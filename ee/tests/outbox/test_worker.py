@@ -71,7 +71,7 @@ async def test_worker_main_handles_shutdown_signals_and_cancellation(
     monkeypatch.setattr(
         worker_module,
         "OutboxWorker",
-        lambda _publisher: worker_shutdown_probe,
+        lambda _publisher, **kwargs: worker_shutdown_probe,
     )
 
     with pytest.raises(asyncio.CancelledError):

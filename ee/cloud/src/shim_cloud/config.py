@@ -14,6 +14,7 @@ ProductKey = Literal[
 
 
 class CloudSettings(BaseSettings):
+    CLOUD_BILLING_ENABLED: bool = False
     POLAR_ACCESS_TOKEN: SecretStr = Field(min_length=1)
     POLAR_WEBHOOK_SECRET: SecretStr = Field(min_length=1)
     POLAR_ORGANIZATION_ID: UUID

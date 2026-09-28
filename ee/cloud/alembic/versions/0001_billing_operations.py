@@ -1,4 +1,4 @@
-"""Cloud-only transient checkout/portal operations and initial org quota opt-in."""
+"""Cloud-only transient billing operations and explicit activation marker."""
 
 from alembic import op
 import sqlalchemy as sa
@@ -10,6 +10,19 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.create_table(
+        "billing_activation",
+        sa.Column("id", sa.Boolean(), nullable=False),
+        sa.Column(
+            "activated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.CheckConstraint("id", name="ck_billing_activation_singleton"),
+        schema="shim_cloud",
+    )
     op.create_table(
         "billing_operation",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -49,14 +62,9 @@ def upgrade() -> None:
         ["expires_at"],
         schema="shim_cloud",
     )
-    op.execute("""
-        UPDATE organizations SET
-            quota_monthly_request_limit = tier_definitions.monthly_request_limit,
-            quota_monthly_token_limit = tier_definitions.monthly_token_limit
-        FROM tier_definitions WHERE organizations.tier = tier_definitions.slug
-    """)
 
 
 def downgrade() -> None:
     op.drop_table("billing_operation", schema="shim_cloud")
+    op.drop_table("billing_activation", schema="shim_cloud")
     # Retain quota opt-in and all usage history; rollback must not widen allowances.

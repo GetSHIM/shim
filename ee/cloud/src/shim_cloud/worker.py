@@ -14,7 +14,8 @@ from shim_enterprise.core.database import AsyncSessionLocal
 from shim_enterprise.outbox.handlers import build_publisher
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.plans import billing_organization_ids
-from shim_enterprise.workers.outbox import main as run_outbox
+from shim_enterprise.workers.outbox import OutboxLeaseRepository, main as run_outbox
+from shim_cloud.activate import require_activation
 from shim_cloud.billing import (
     OPERATION_EVENT,
     SYNC_EVENT,
@@ -79,6 +80,13 @@ async def reconcile(config: CloudSettings) -> None:
 
 async def main() -> None:
     config = CloudSettings()
+    if not config.CLOUD_BILLING_ENABLED:
+        await run_outbox(
+            repository=OutboxLeaseRepository((OPERATION_EVENT, SYNC_EVENT))
+        )
+        return
+    async with AsyncSessionLocal() as session:
+        await require_activation(session)
     async with Polar(
         access_token=config.POLAR_ACCESS_TOKEN.get_secret_value(),
         server=config.POLAR_SERVER,

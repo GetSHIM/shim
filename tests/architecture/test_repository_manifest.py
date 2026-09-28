@@ -569,6 +569,7 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
     substitutions = deployment["substitutions"]
 
     assert "GATEWAY_OUTBOX_WORKER_ENABLED" not in deployment_text
+    assert "shim_cloud.activate" not in deployment_text
     assert all("@sha256:" in step["name"] for step in deployment["steps"])
     assert {
         "validate-deployment",
@@ -628,6 +629,7 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
     assert substitutions["_MAX_INSTANCES"] == "10"
     assert substitutions["_DATABASE_POOL_SIZE"] == "2"
     assert substitutions["_DATABASE_MAX_OVERFLOW"] == "1"
+    assert substitutions["_CLOUD_BILLING_ENABLED"] == "false"
     assert "_REDIS_URL" not in substitutions
     assert substitutions["_FRONTEND_ORIGINS"].split(",") == [
         "https://shim-phi.vercel.app",
@@ -637,6 +639,7 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
     validation_environment = steps["validate-deployment"]["env"]
     assert "ACTUAL_PROJECT_ID=$PROJECT_ID" in validation_environment
     assert "BUILD_ID=$BUILD_ID" in validation_environment
+    assert "CLOUD_BILLING_ENABLED=${_CLOUD_BILLING_ENABLED}" in validation_environment
     assert "DEPLOY_LOCK_URI=${_DEPLOY_LOCK_URI}" in validation_environment
     assert "DEPLOY_PROJECT_ID=${_DEPLOY_PROJECT_ID}" in validation_environment
     assert "DEPLOY_TRIGGER_ID=${_DEPLOY_TRIGGER_ID}" in validation_environment
@@ -648,6 +651,7 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
     validation_values = {
         "ACTUAL_PROJECT_ID": "project",
         "BUILD_ID": "00000000-0000-0000-0000-000000000000",
+        "CLOUD_BILLING_ENABLED": "false",
         "DEPLOY_LOCK_URI": "gs://bucket/lock",
         "DEPLOY_PROJECT_ID": "project",
         "DEPLOY_TRIGGER_ID": "11111111-1111-1111-1111-111111111111",
@@ -703,6 +707,30 @@ def test_cloud_build_deploys_migrations_and_standalone_workers() -> None:
         )
         assert (result.returncode == 0) is succeeds
     assert "10.156.0.3" not in deployment_text
+    for enabled, succeeds in (
+        ("false", True),
+        ("true", True),
+        ("", False),
+        ("1", False),
+        ("TRUE", False),
+        ("invalid", False),
+    ):
+        result = subprocess.run(
+            ["bash", "-ceu", validation_script],
+            env=validation_values
+            | {"CLOUD_BILLING_ENABLED": enabled, "WORKER_INSTANCES": "1"},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert (result.returncode == 0) is succeeds
+    for step_id in ("deploy-gateway", "deploy-outbox-worker"):
+        environment = next(
+            argument
+            for argument in steps[step_id]["args"]
+            if argument.startswith("--set-env-vars=")
+        )
+        assert "CLOUD_BILLING_ENABLED=${_CLOUD_BILLING_ENABLED}" in environment
     assert "--vpc-connector=" not in deployment_text
     assert "europe-west3-docker.pkg.dev/$PROJECT_ID/shim/gateway" not in deployment_text
     assert "${_RESOURCE_PREFIX}-migrate" in steps["deploy-migration"]["args"]

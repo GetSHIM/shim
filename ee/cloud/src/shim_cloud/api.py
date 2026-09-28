@@ -68,6 +68,12 @@ def cloud_settings(request: Request) -> CloudSettings:
     return request.app.state.cloud_settings
 
 
+def enabled_billing(config: CloudSettings = Depends(cloud_settings)) -> CloudSettings:
+    if not config.CLOUD_BILLING_ENABLED:
+        raise HTTPException(503, "Cloud billing has not been activated")
+    return config
+
+
 def operation_view(operation: BillingOperation) -> BillingOperationView:
     if operation.expires_at <= datetime.now(timezone.utc):
         return BillingOperationView(id=operation.id, status="expired")
@@ -96,8 +102,10 @@ async def billing_status(
 ) -> CloudBillingView:
     response.headers["Cache-Control"] = "no-store"
     plan = await organization_plan(session, user.organization_id)
-    manageable = user.role == "owner" and (
-        plan.source == "polar" or (plan.source is None and plan.tier == "free")
+    manageable = (
+        config.CLOUD_BILLING_ENABLED
+        and user.role == "owner"
+        and (plan.source == "polar" or (plan.source is None and plan.tier == "free"))
     )
     can_checkout = (
         manageable and plan.tier == "free" and plan.status != "review_required"
@@ -134,7 +142,7 @@ async def checkout(
     response: Response,
     user: User = Depends(get_org_owner),
     session: AsyncSession = Depends(get_db),
-    config: CloudSettings = Depends(cloud_settings),
+    config: CloudSettings = Depends(enabled_billing),
 ) -> BillingOperationView:
     product_id = config.POLAR_PRODUCTS.get(f"{body.plan}:{body.interval}")
     if product_id is None:
@@ -152,6 +160,7 @@ async def portal(
     response: Response,
     user: User = Depends(get_org_owner),
     session: AsyncSession = Depends(get_db),
+    config: CloudSettings = Depends(enabled_billing),
 ) -> BillingOperationView:
     return await _request(body, response, user, session, "portal", None)
 
@@ -219,7 +228,7 @@ class CustomerStateEvent(BaseModel):
 async def polar_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db),
-    config: CloudSettings = Depends(cloud_settings),
+    config: CloudSettings = Depends(enabled_billing),
 ) -> Response:
     body = bytearray()
     async for chunk in request.stream():

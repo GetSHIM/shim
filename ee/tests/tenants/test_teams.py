@@ -227,6 +227,75 @@ async def test_model_and_membership_denial_precedes_quota(db, test_user_with_org
 
 
 @pytest.mark.asyncio
+async def test_removing_organization_caps_preserves_active_accounting(db, test_api_key):
+    repository = DurableAccountingRepository()
+    now = datetime.now(timezone.utc)
+    organization_id = test_api_key.organization_id
+    common = dict(
+        tenant_id=organization_id,
+        api_key_id=test_api_key.id,
+        requested_model="internal",
+        source_endpoint="chat.completions",
+        started_at=now,
+        reconciliation_due_at=now + timedelta(minutes=2),
+        estimated_input_tokens=2,
+        maximum_output_tokens=8,
+    )
+    capped_request = f"req_capped_{uuid4().hex}"
+    uncapped_request = f"req_uncapped_{uuid4().hex}"
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            **common,
+            request_id=capped_request,
+            policy=QuotaPolicySnapshot(
+                "capped",
+                None,
+                None,
+                None,
+                organization_policy=QuotaPolicySnapshot("organization", None, 1, 10),
+            ),
+        ),
+    )
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            **common,
+            request_id=uncapped_request,
+            policy=QuotaPolicySnapshot("uncapped", None, None, None),
+        ),
+    )
+    for request_id in (uncapped_request, capped_request):
+        await repository.finalize(
+            db,
+            FinalizationCommand(
+                tenant_id=organization_id,
+                request_id=request_id,
+                quota_action=TerminalAction.REFUND,
+                lifecycle_status="failed",
+            ),
+        )
+    counters = (
+        await db.scalars(
+            select(QuotaPeriodUsage)
+            .where(QuotaPeriodUsage.organization_id == organization_id)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert len(counters) == 2
+    assert all(
+        (
+            row.reserved_requests,
+            row.reserved_tokens,
+            row.settled_requests,
+            row.settled_tokens,
+        )
+        == (0, 0, 0, 0)
+        for row in counters
+    )
+
+
+@pytest.mark.asyncio
 async def test_concurrent_team_quota_reserves_and_refunds_all_scopes(async_engine):
     factory = async_sessionmaker(async_engine, expire_on_commit=False)
     organization_id, user_id, team_id = uuid4(), uuid4(), uuid4()

@@ -324,8 +324,7 @@ class DurableAccountingRepository:
         session: AsyncSession,
         command: QuotaReservationCommand,
     ) -> ReservationResult:
-        if command.policy.organization_policy is not None:
-            await self._lock_organization(session, command.tenant_id)
+        await self._lock_organization(session, command.tenant_id)
         await RequestLifecycleRepository.create(
             session,
             organization_id=command.tenant_id,
@@ -889,12 +888,29 @@ class DurableAccountingRepository:
         command: QuotaReservationCommand,
     ) -> list[dict[str, object]]:
         allocations: list[dict[str, object]] = []
-        if command.policy.organization_policy is not None:
+        organization_policy = command.policy.organization_policy
+        if organization_policy is None:
+            month_start, _ = self._month_bounds(
+                command.started_at.astimezone(timezone.utc).date()
+            )
+            if await session.scalar(
+                select(QuotaPeriodUsage.id).where(
+                    QuotaPeriodUsage.organization_id == command.tenant_id,
+                    QuotaPeriodUsage.api_key_id.is_(None),
+                    QuotaPeriodUsage.team_id.is_(None),
+                    QuotaPeriodUsage.period_type == "monthly",
+                    QuotaPeriodUsage.period_start == month_start,
+                )
+            ):
+                organization_policy = QuotaPolicySnapshot(
+                    "organization:uncapped", None, None, None
+                )
+        if organization_policy is not None:
             allocations.extend(
                 await self._reserve_scoped_quota_periods(
                     session,
                     command,
-                    command.policy.organization_policy,
+                    organization_policy,
                     scope="organization",
                 )
             )

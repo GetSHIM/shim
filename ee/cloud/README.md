@@ -24,14 +24,56 @@ The cloud worker **replaces** `shim_enterprise.workers.outbox`; the other
 enterprise workers remain unchanged. Do not run a second plain enterprise
 outbox worker against the cloud database: it cannot dispatch commerce events.
 The migration command applies the existing enterprise history first, then the
-independent `shim_cloud` schema/history. Never downgrade production. Quota
-history survives application rollback; on-prem images cannot process cloud
-commerce intents and are not a cloud rollback target.
+independent `shim_cloud` schema/history. It does not enable organization quotas
+or commerce. Never downgrade production. Quota history survives application
+rollback; on-prem images cannot process cloud commerce intents and are not a
+cloud rollback target.
 
 The website uses `NEXT_PUBLIC_BUILD_PROFILE=cloud`. Customer dashboard Docker
 builds default to `onprem`; both profiles retain their independently configured
 authentication mode. Match `CLOUD_DASHBOARD_URL`, CORS, and (for OIDC)
 `DASHBOARD_ORIGIN` to the dashboard's origin.
+
+## First cloud rollout
+
+`CLOUD_BILLING_ENABLED` defaults to `false`. The gateway still serves inference
+and management reads, but offers no checkout/portal capabilities and rejects
+commerce mutations and webhooks with 503. The cloud worker processes ordinary
+enterprise outbox events while leaving cloud intents pending, without contacting
+Polar. Existing quotas and verified entitlements are preserved.
+
+1. Deploy the matching dashboard first and verify its plan view against the
+   existing backend. It consumes the four shared subscription fields and must
+   not depend on the retired `checkout_urls` response field.
+2. Apply migrations and deploy the cloud gateway and workers with billing
+   disabled. Cloud Build defaults `_CLOUD_BILLING_ENABLED` to `false`; keep it
+   false for this initial release. Replace every old gateway/accounting worker
+   instance, remove access through old revision tags, and drain their requests.
+3. Briefly pause new inference admission and let requests finish. Reconcile any
+   remaining reservations using the new accounting worker. With an operator
+   database account, run:
+
+   ```bash
+   uv run --locked --package shim-cloud python -m shim_cloud.activate \
+     --confirm-old-runtimes-drained
+   ```
+
+   This transaction refuses activation while quota reservations lack a terminal
+   ledger event. It enables the current tier's organization caps and records
+   activation without resetting usage. The acknowledgement is required because
+   the database cannot prove an old runtime will never admit another request.
+   Do not bypass the drain or remove pending ledger rows to pass the check.
+4. Verify the real sandbox/merchant launch checks below. Set
+   `CLOUD_BILLING_ENABLED=true` for both cloud processes, or set the Cloud Build
+   trigger substitution `_CLOUD_BILLING_ENABLED=true` for the next release.
+   Enabled gateway/worker startup refuses to run without the activation record.
+   Resume inference and verify pooled accounting across two keys.
+
+Activation is a one-time transition. Keep the trigger substitution true for
+subsequent cloud releases. Setting it false later pauses commerce; it does not
+remove organization caps or make an older accounting implementation a supported
+rollback target. Roll back only to a cloud image with compatible accounting and
+the activation schema. Customer enterprise installations never run this command.
 
 ## Polar setup
 

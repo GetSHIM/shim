@@ -97,6 +97,7 @@ forbidden_noncloud_import_roots = [
   "get_org_owner",
 ]
 "shim_enterprise.application" = ["create_enterprise_app"]
+"shim_enterprise.billing.models" = ["UsageLedger"]
 "shim_enterprise.core.config" = ["settings"]
 "shim_enterprise.core.database" = ["AsyncSessionLocal", "get_db"]
 "shim_enterprise.outbox.handlers" = ["build_publisher"]
@@ -114,7 +115,7 @@ forbidden_noncloud_import_roots = [
   "configure_organization_quota",
   "organization_plan",
 ]
-"shim_enterprise.workers.outbox" = ["main"]
+"shim_enterprise.workers.outbox" = ["OutboxLeaseRepository", "main"]
 
 [cloud_public_api]
 "shim.gateway.contracts.ids" = ["TenantId"]
@@ -405,6 +406,7 @@ cloud = [
   "ee/cloud/alembic/env.py",
   "ee/cloud/alembic/versions/0001_billing_operations.py",
   "ee/cloud/src/shim_cloud/__init__.py",
+  "ee/cloud/src/shim_cloud/activate.py",
   "ee/cloud/src/shim_cloud/api.py",
   "ee/cloud/src/shim_cloud/application.py",
   "ee/cloud/src/shim_cloud/billing.py",
