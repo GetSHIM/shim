@@ -89,7 +89,7 @@ async def request_operation(
         if plan.subscription_id is not None and plan.tier != "free":
             raise ValueError("Manage your existing subscription in the billing portal")
         active = await session.scalar(
-            select(BillingOperation.id).where(
+            select(BillingOperation).where(
                 BillingOperation.organization_id == organization_id,
                 BillingOperation.kind == "checkout",
                 BillingOperation.status.in_(("pending", "processing", "complete")),
@@ -97,6 +97,8 @@ async def request_operation(
             )
         )
         if active is not None:
+            if (active.created_by, active.product_id) == (user_id, product_id):
+                return active
             raise ValueError(
                 "A checkout is already in progress; resume it before starting another"
             )

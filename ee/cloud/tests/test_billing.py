@@ -526,14 +526,14 @@ async def test_concurrent_checkout_requests_commit_one_operation_and_intent(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     ids = await _workspace(session_factory)
-    organization_id, owner_id, _, other_organization_id, _ = ids
+    organization_id, owner_id, admin_id, other_organization_id, _ = ids
     start = asyncio.Event()
 
     async def request(request_id: UUID) -> str:
         await start.wait()
         async with session_factory() as session:
             try:
-                await request_operation(
+                operation = await request_operation(
                     session,
                     organization_id,
                     owner_id,
@@ -542,23 +542,31 @@ async def test_concurrent_checkout_requests_commit_one_operation_and_intent(
                     product_id="product-managed",
                 )
                 await session.commit()
+                return str(operation.id)
             except ValueError as exc:
                 await session.rollback()
                 return str(exc)
-        return "created"
 
     try:
         tasks = [asyncio.create_task(request(uuid4())) for _ in range(2)]
         start.set()
         outcome = await asyncio.gather(*tasks)
-        assert outcome.count("created") == 1
-        assert (
-            outcome.count(
-                "A checkout is already in progress; resume it before starting another"
-            )
-            == 1
-        )
+        assert len(set(outcome)) == 1
+        UUID(outcome[0])
         async with session_factory() as session:
+            for user_id, product_id in (
+                (owner_id, "product-agency"),
+                (admin_id, "product-managed"),
+            ):
+                with pytest.raises(ValueError, match="checkout is already in progress"):
+                    await request_operation(
+                        session,
+                        organization_id,
+                        user_id,
+                        request_id=uuid4(),
+                        kind="checkout",
+                        product_id=product_id,
+                    )
             operations = list(
                 (
                     await session.scalars(
