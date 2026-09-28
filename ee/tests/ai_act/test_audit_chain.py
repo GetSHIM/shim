@@ -277,3 +277,24 @@ async def test_database_rejects_audit_row_anchor_and_truncate_mutations(
                 await db.execute(text(statement), parameters)
         finally:
             await savepoint.rollback()
+
+
+@pytest.mark.parametrize("shim_latency_ms", [None, 0, 17])
+def test_audit_api_preserves_signed_duration_and_nullable_shim_measurement(
+    shim_latency_ms,
+):
+    from shim_enterprise.ai_act.models import AIActAuditLog
+    from shim_enterprise.ai_act.schemas import AuditLogRead
+
+    context = {"organization_id": str(TENANT_ID), "latency_ms": 20000, "extra": {}}
+    if shim_latency_ms is not None:
+        context["extra"]["shim_latency_ms"] = shim_latency_ms
+    link = next_link(
+        None, context, salt="audit-salt", now=NOW, gateway_version="shim-gateway/test"
+    )
+    row = AIActAuditLog(id=TENANT_ID, **link)
+    view = AuditLogRead.model_validate(row)
+    assert row.latency_ms == 20000
+    assert "latency_ms" not in view.model_dump()
+    assert "request_duration_ms" not in view.model_dump()
+    assert view.shim_latency_ms == shim_latency_ms

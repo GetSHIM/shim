@@ -881,11 +881,6 @@
             "title": "Is Cache Hit",
             "type": "boolean"
           },
-          "latency_ms": {
-            "minimum": 0.0,
-            "title": "Latency Ms",
-            "type": "integer"
-          },
           "lifecycle_status": {
             "anyOf": [
               {
@@ -977,6 +972,18 @@
             "exclusiveMinimum": 0.0,
             "title": "Seq",
             "type": "integer"
+          },
+          "shim_latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "shim latency (ms)"
           }
         },
         "required": [
@@ -988,7 +995,6 @@
           "prompt_tokens",
           "completion_tokens",
           "is_cache_hit",
-          "latency_ms",
           "cost_usd",
           "prev_hash",
           "row_hash"
@@ -5885,7 +5891,7 @@
             "title": "Cost Complete",
             "type": "boolean"
           },
-          "p95_completed_latency_ms": {
+          "p95_completed_shim_latency_ms": {
             "anyOf": [
               {
                 "minimum": 0.0,
@@ -5895,7 +5901,7 @@
                 "type": "null"
               }
             ],
-            "title": "P95 Completed Latency Ms"
+            "title": "p95 completed shim latency (ms)"
           },
           "policy_rejections": {
             "minimum": 0.0,
@@ -5951,7 +5957,7 @@
           "technical_failures",
           "policy_rejections",
           "technical_success_rate",
-          "p95_completed_latency_ms",
+          "p95_completed_shim_latency_ms",
           "settled_spend_usd",
           "cost_complete",
           "unpriced_requests",
@@ -7061,7 +7067,7 @@
             "title": "Cost Complete",
             "type": "boolean"
           },
-          "p95_completed_latency_ms": {
+          "p95_completed_shim_latency_ms": {
             "anyOf": [
               {
                 "minimum": 0.0,
@@ -7071,7 +7077,7 @@
                 "type": "null"
               }
             ],
-            "title": "P95 Completed Latency Ms"
+            "title": "p95 completed shim latency (ms)"
           },
           "pii_detected_requests": {
             "minimum": 0.0,
@@ -7128,7 +7134,7 @@
         "required": [
           "requests",
           "technical_success_rate",
-          "p95_completed_latency_ms",
+          "p95_completed_shim_latency_ms",
           "settled_spend_usd",
           "cost_complete",
           "unpriced_requests",
@@ -7208,11 +7214,6 @@
             ],
             "title": "Endpoint"
           },
-          "latency_ms": {
-            "minimum": 0.0,
-            "title": "Latency Ms",
-            "type": "integer"
-          },
           "model": {
             "anyOf": [
               {
@@ -7273,6 +7274,19 @@
           "request_id": {
             "title": "Request Id",
             "type": "string"
+          },
+          "shim_latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "shim processing time excluding provider waiting; null when unmeasured.",
+            "title": "shim latency (ms)"
           },
           "status": {
             "enum": [
@@ -7346,7 +7360,6 @@
           "usage_estimated",
           "cost_usd",
           "cost_complete",
-          "latency_ms",
           "pii_detected",
           "cost_center",
           "provider",

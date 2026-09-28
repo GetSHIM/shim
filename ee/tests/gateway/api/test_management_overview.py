@@ -32,7 +32,7 @@ def _empty_summary() -> OverviewSummaryRecord:
         technical_failures=0,
         policy_rejections=0,
         technical_success_rate=None,
-        p95_completed_latency_ms=None,
+        p95_completed_shim_latency_ms=None,
         settled_spend_usd=Decimal("0"),
         cost_complete=True,
         unpriced_requests=0,
@@ -68,7 +68,7 @@ def test_overview_metric_definitions_exclude_policy_and_client_outcomes() -> Non
         rejected=1,
         failed=2,
         policy_failed=1,
-        p95_completed_latency_ms=401.2,
+        p95_completed_shim_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
         unpriced_requests=0,
     )
@@ -79,7 +79,7 @@ def test_overview_metric_definitions_exclude_policy_and_client_outcomes() -> Non
     assert summary.technical_failures == 3
     assert summary.policy_rejections == 2
     assert summary.technical_success_rate == pytest.approx(6 / 9)
-    assert summary.p95_completed_latency_ms == 401
+    assert summary.p95_completed_shim_latency_ms == 401
     assert summary.settled_spend_usd == Decimal("1.25000000")
     row.unpriced_requests = 1
     incomplete = _summary_from_row(row)
@@ -149,6 +149,8 @@ def test_overview_summary_query_is_tenant_scoped_and_uses_denial_exists() -> Non
     assert "usage_ledger.event_type =" in sql
     assert "spend_settlement" in compiled.params.values()
     assert "percentile_cont" in sql
+    assert "shim_latency_ms" in compiled.params.values()
+    assert "completed_at -" not in sql
     assert "EXISTS (SELECT audit_intent.id" in sql
     assert "audit_intent.request_id = request_lifecycle.request_id" in sql
     assert "JOIN audit_intent" not in sql

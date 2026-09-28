@@ -139,6 +139,7 @@ def rejection_intent(prepared: PreparedInference) -> GatewayOutboxIntent:
                     )
                     else "failed",
                     "admitted": False,
+                    "shim_latency_ms": prepared.timing.shim_latency_ms,
                 },
             }
         ),
@@ -200,6 +201,7 @@ _DIAGNOSTIC_FIELDS = (
     "provider_finish_reasons",
     "repeat_chain_length",
     "ttft_ms",
+    "shim_latency_ms",
     "system_prompt_hash",
     "deployment_kind",
 )

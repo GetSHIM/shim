@@ -10,9 +10,13 @@ import httpx
 import pytest
 from openai.types.responses import ResponseErrorEvent
 
+import shim.gateway.pipeline.anthropic_execution as anthropic_execution
+import shim.gateway.pipeline.google_execution as google_execution
+import shim.gateway.pipeline.openai_execution as openai_execution
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
+from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
@@ -68,6 +72,7 @@ def _prepared(
     )
     return SimpleNamespace(
         payload=payload,
+        timing=InferenceTiming(),
         target=None,
         tenant_id=TenantId(UUID(tenant)),
         protocol=protocol,
@@ -1091,3 +1096,244 @@ async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error(
     assert b"PROVIDER_UNAVAILABLE" in wire
     assert b"[DONE]" not in wire
     assert b"alice@example.com" not in wire
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,protocol,stream",
+    [
+        ("openai", "chat", False),
+        ("openai", "chat", True),
+        ("openai", "responses", False),
+        ("openai", "responses", True),
+        ("anthropic", "messages", False),
+        ("anthropic", "messages", True),
+        ("anthropic", "count_tokens", False),
+        ("google", "generate_content", False),
+        ("google", "generate_content", True),
+    ],
+)
+@pytest.mark.parametrize("failed", [False, True])
+async def test_provider_wait_is_excluded_but_restoration_is_counted(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    protocol: str,
+    stream: bool,
+    failed: bool,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("shim.gateway.kernel.result.perf_counter", lambda: clock[0])
+    timing = InferenceTiming(started_at=0.0)
+    module = {
+        "openai": openai_execution,
+        "anthropic": anthropic_execution,
+        "google": google_execution,
+    }[provider]
+    class_prefix = {"openai": "OpenAI", "anthropic": "Anthropic", "google": "Google"}[
+        provider
+    ]
+    restore_calls = []
+    if stream:
+        restorer = getattr(module, f"{class_prefix}StreamRestorer")
+        method = {
+            "chat": "restore_chat_chunk",
+            "responses": "restore_response_event",
+            "messages": "restore_events",
+            "generate_content": "restore_chunk",
+        }[protocol]
+        original_restore = getattr(restorer, method)
+
+        def restore(self, payload):
+            clock[0] += 7
+            restore_calls.append(payload)
+            return original_restore(self, payload)
+
+        monkeypatch.setattr(restorer, method, restore)
+    else:
+        name = f"restore_{provider}_payload"
+        original_restore = getattr(module, name)
+
+        def restore(*args):
+            clock[0] += 7
+            restore_calls.append(args[0])
+            return original_restore(*args)
+
+        monkeypatch.setattr(module, name, restore)
+
+    placeholder = "<EMAIL_ADDRESS_deadbeef>"
+    if protocol == "responses":
+        payload = {"model": "gpt-5.6-luna", "input": "hello"}
+        response = _response("resp_timing")
+        response["output"] = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": placeholder}],
+            }
+        ]
+        chunks = [{"type": "response.completed", "response": response}]
+    elif protocol == "chat":
+        payload = {"model": "gpt-5.6-luna", "messages": []}
+        response = {
+            "id": "chat_timing",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-5.6-luna",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": placeholder},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        chunks = [
+            {
+                **response,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": placeholder},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        ]
+    elif provider == "anthropic":
+        payload = {"model": "claude-sonnet-4-5", "max_tokens": 32, "messages": []}
+        response = {
+            "id": "msg_timing",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{"type": "text", "text": placeholder}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+        chunks = [
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": placeholder},
+            },
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_stop"},
+        ]
+        if protocol == "count_tokens":
+            payload.pop("max_tokens")
+            response = {"input_tokens": 1}
+    else:
+        payload = {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
+        response = {
+            "candidates": [
+                {"content": {"parts": [{"text": placeholder}]}, "finishReason": "STOP"}
+            ]
+        }
+        chunks = [
+            {"candidates": [{"content": {"parts": [{"text": placeholder}]}}]},
+            {"candidates": [{"finishReason": "STOP"}]},
+        ]
+    if stream and provider != "google":
+        payload["stream"] = True
+
+    class DelayedStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for chunk in chunks:
+                clock[0] += 100
+                event = f"event: {chunk['type']}\n" if provider == "anthropic" else ""
+                yield f"{event}data: {json.dumps(chunk)}\n\n".encode()
+            if protocol == "chat":
+                clock[0] += 100
+                yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            clock[0] += 100
+
+    async def handler(_request):
+        clock[0] += 100
+        if failed:
+            return httpx.Response(
+                500, json={"error": {"code": 500, "message": "failed"}}
+            )
+        if stream:
+            return httpx.Response(
+                200,
+                stream=DelayedStream(),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=response)
+
+    async def started():
+        clock[0] += 3
+
+    async def recorded():
+        clock[0] += 5
+
+    async def saved(*_args):
+        clock[0] += 11
+
+    prepared = _prepared(
+        payload,
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol=protocol,
+        mapping={placeholder: "alice@example.com"},
+    )
+    prepared.timing = timing
+    prepared.stream = stream
+    prepared.model = payload.get("model", "gemini-3.5-flash")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = getattr(module, f"{class_prefix}Execution")(
+            credential_resolver=EnvironmentProviderCredentialResolver(provider, {}),
+            circuit=SimpleNamespace(
+                acquire_call=AsyncMock(return_value=True),
+                record_success=recorded,
+                record_failure=recorded,
+                release_probe=AsyncMock(),
+            ),
+            settings=settings,
+            http_client=http,
+            **(
+                {"chain_store": SimpleNamespace(save=saved)}
+                if provider == "openai"
+                else {}
+            ),
+        )
+        original_resolve = execution.credential_resolver.resolve
+
+        async def resolve(*args, **kwargs):
+            clock[0] += 2
+            return await original_resolve(*args, **kwargs)
+
+        execution.credential_resolver = SimpleNamespace(resolve=resolve)
+        invocation = SimpleNamespace(
+            provider_credential=EphemeralProviderCredential(provider, "secret")
+        )
+        if failed:
+            with pytest.raises(ProviderCallError):
+                await execution.execute(
+                    invocation=invocation,
+                    prepared=prepared,
+                    provider_start_callback=started,
+                )
+            assert not restore_calls
+        else:
+            result = await execution.execute(
+                invocation=invocation,
+                prepared=prepared,
+                provider_start_callback=started,
+            )
+            if stream:
+                wire = b"".join([event async for event in result.events])
+                assert b"alice@example.com" in wire
+                assert b"PROVIDER_UNAVAILABLE" not in wire
+            elif protocol != "count_tokens":
+                assert "alice@example.com" in json.dumps(result.payload)
+            assert restore_calls
+
+    continuation_seconds = 11 if protocol == "responses" and not failed else 0
+    assert (
+        timing.shim_latency_ms
+        == (10 + 7 * len(restore_calls) + continuation_seconds) * 1_000
+    )
+    assert timing.excluded_seconds >= 100

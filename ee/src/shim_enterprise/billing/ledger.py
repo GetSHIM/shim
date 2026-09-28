@@ -270,11 +270,14 @@ class FinalizationCommand:
     reconciliation_urgent: bool = False
     provider_finish_reasons: dict[str, str] | None = None
     ttft_ms: float | None = None
+    shim_latency_ms: int | None = None
     policy_verdicts: tuple[dict[str, Any], ...] | None = None
 
     def __post_init__(self) -> None:
         if self.quota_action is TerminalAction.NONE:
             raise ValueError("every accepted request requires a quota finalization")
+        if self.shim_latency_ms is not None and self.shim_latency_ms < 0:
+            raise ValueError("shim processing latency must be nonnegative")
         if self.prompt_tokens < 0 or self.completion_tokens < 0:
             raise ValueError("final token counts must be nonnegative")
         if self.actual_cost_usd < 0:
@@ -605,6 +608,7 @@ class DurableAccountingRepository:
                 **(lifecycle.lifecycle_metadata or {}),
                 "provider_finish_reasons": command.provider_finish_reasons,
                 "ttft_ms": command.ttft_ms,
+                "shim_latency_ms": command.shim_latency_ms,
             }
         if command.policy_verdicts is not None and not all_replayed:
             lifecycle.lifecycle_metadata = {

@@ -151,7 +151,8 @@ class AnthropicExecution:
                     for item in headers["anthropic-beta"].split(",")
                     if item.strip()
                 ]
-            result: Any = await create(**kwargs)
+            with prepared.timing.exclude():
+                result: Any = await create(**kwargs)
         except asyncio.CancelledError:
             await circuit.release_probe()
             raise
@@ -168,7 +169,8 @@ class AnthropicExecution:
                 state["closed"] = True
                 try:
                     async with asyncio.timeout(5):
-                        await result.close()
+                        with prepared.timing.exclude():
+                            await result.close()
                 except Exception:
                     pass
                 finally:
@@ -216,7 +218,7 @@ class AnthropicExecution:
             self.pii_scrubber,
         )
         try:
-            async for event in stream:
+            async for event in prepared.timing.iterate(stream):
                 for payload in restorer.restore_events(_dump_sdk(event)):
                     if _is_anthropic_failure(payload):
                         if not state["recorded"]:

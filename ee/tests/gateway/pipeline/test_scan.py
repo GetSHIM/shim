@@ -133,6 +133,11 @@ async def test_success_persists_terminal_state_audit_outbox_without_raw_pii(
     assert {intent.event_type for intent in intents} == {"preflight", "completion"}
     assert {intent.lifecycle_status for intent in intents} == {"accepted", "completed"}
     assert outbox.status == "pending"
+    assert outbox.payload["extra"]["shim_latency_ms"] >= 0
+    assert (
+        lifecycle.lifecycle_metadata["shim_latency_ms"]
+        == outbox.payload["extra"]["shim_latency_ms"]
+    )
     assert outbox.id == next(
         intent.outbox_event_id
         for intent in intents

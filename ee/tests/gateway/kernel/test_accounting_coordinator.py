@@ -22,6 +22,7 @@ from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
 from shim.gateway.kernel.result import (
     PreparedInference,
+    InferenceTiming,
     ProviderTarget,
     UNSPECIFIED_PROVIDER_MODEL,
 )
@@ -68,6 +69,7 @@ from shim_enterprise.tenants.models import ApiKey, Organization, User
 def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
     prepared = SimpleNamespace(
         policy_verdicts=[],
+        timing=InferenceTiming(),
         tenant_id=uuid4(),
         api_key_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -123,6 +125,7 @@ def _terminal(status: str = "completed") -> StreamFinalization:
         completed_at=datetime.now(timezone.utc),
         error_code=None,
         error_message=None,
+        shim_latency_ms=0,
     )
 
 
@@ -244,9 +247,12 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         lifecycle_status="client_disconnected",
         provider_finish_reasons={"choices.1.finish_reason": "length"},
         ttft_ms=125.5,
+        shim_latency_ms=0,
     )
     await repository.finalize(db, command)
-    assert (await repository.finalize(db, command)).replayed
+    assert (
+        await repository.finalize(db, replace(command, shim_latency_ms=999))
+    ).replayed
     await db.flush()
     lifecycle = (
         await db.execute(
@@ -259,6 +265,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         "deployment_kind": "internal",
         "provider_finish_reasons": {"choices.1.finish_reason": "length"},
         "ttft_ms": 125.5,
+        "shim_latency_ms": 0,
     }
     assert all(
         lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()
@@ -762,7 +769,7 @@ async def test_nonstream_response_is_constructed_before_terminal_settlement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    response = SimpleNamespace(status_code=200)
+    response = SimpleNamespace(status_code=200, headers={})
 
     def build_response(*_args, **_kwargs):
         events.append("response_constructed")
@@ -1288,6 +1295,9 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     ).one()
     overview_summary = overview._summary_from_row(summary_row)
     assert overview_summary.requests == 1
+    assert overview_summary.p95_completed_shim_latency_ms is None
+    assert page.summary.p95_completed_shim_latency_ms is None
+    assert page.items[0].shim_latency_ms is None
     assert overview_summary.cost_complete is (pricing_resolution != "unknown")
     assert overview_summary.unpriced_requests == (pricing_resolution == "unknown")
     assert overview_summary.settled_spend_usd == (
@@ -1958,3 +1968,78 @@ async def test_shared_tier_allows_independent_reservations_but_fences_edits(
             await cleanup.execute(
                 delete(TierDefinition).where(TierDefinition.slug == slug)
             )
+
+
+@pytest.mark.asyncio
+async def test_shim_latency_percentiles_exclude_historical_durations(db, test_api_key):
+    repository = DurableAccountingRepository()
+    now = datetime.now(timezone.utc)
+    request_ids = []
+    for measured in (None, 0):
+        request_id = f"req_latency_{uuid4().hex}"
+        request_ids.append(request_id)
+        await repository.reserve_quota(
+            db,
+            QuotaReservationCommand(
+                tenant_id=test_api_key.organization_id,
+                api_key_id=test_api_key.id,
+                request_id=request_id,
+                requested_model="gpt-5.6-luna",
+                source_endpoint="chat.completions",
+                started_at=now - timedelta(seconds=20),
+                reconciliation_due_at=now + timedelta(minutes=2),
+                estimated_input_tokens=20,
+                maximum_output_tokens=30,
+                policy=QuotaPolicySnapshot("test", None, None, None),
+            ),
+        )
+        await repository.finalize(
+            db,
+            FinalizationCommand(
+                tenant_id=test_api_key.organization_id,
+                request_id=request_id,
+                quota_action=TerminalAction.SETTLE,
+                completed_at=now,
+                shim_latency_ms=measured,
+            ),
+        )
+        event = (
+            await db.execute(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == request_id,
+                    OutboxEvent.event_type == "analytics.request_completed",
+                )
+            )
+        ).scalar_one()
+        db.add(
+            analytics_projection.RequestLog(
+                **analytics_projection._projection_values(
+                    OutboxMessage.from_event(event)
+                )
+            )
+        )
+    await db.flush()
+    overview_row = (
+        await db.execute(
+            overview._summary_statement(
+                test_api_key.organization_id,
+                now - timedelta(days=1),
+                now + timedelta(days=1),
+            ).where(RequestLifecycle.request_id.in_(request_ids))
+        )
+    ).one()
+    request_row = (
+        await db.execute(
+            management._request_summary_statement(
+                test_api_key.organization_id,
+                [
+                    analytics_projection.RequestLog.organization_id
+                    == test_api_key.organization_id,
+                    analytics_projection.RequestLog.request_id.in_(request_ids),
+                ],
+            )
+        )
+    ).one()
+    assert overview_row.requests == request_row.requests == 2
+    assert overview_row.p95_completed_shim_latency_ms == 0
+    assert request_row.p95_completed_shim_latency_ms == 0

@@ -169,3 +169,36 @@ async def test_spend_denial_audit_matches_every_audit_reader(
             "spend_denied",
             1,
         )
+
+
+@pytest.mark.parametrize("shim_latency_ms", [None, 0, 17])
+def test_analytics_projection_preserves_nullable_shim_measurement(shim_latency_ms):
+    from datetime import datetime, timezone
+    from shim_enterprise.observability.analytics_projection import _projection_values
+    from shim_enterprise.outbox.publisher import OutboxMessage
+
+    tenant_id = uuid4()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "organization_id": str(tenant_id),
+        "request_id": "request",
+        "api_key_id": str(uuid4()),
+        "timestamp": now.isoformat(),
+        "latency_ms": 20000,
+    }
+    if shim_latency_ms is not None:
+        payload["shim_latency_ms"] = shim_latency_ms
+    message = OutboxMessage(
+        id=uuid4(),
+        organization_id=tenant_id,
+        event_type="analytics.request_completed",
+        aggregate_type="request",
+        aggregate_id="request",
+        idempotency_key="request",
+        payload=payload,
+        attempt_count=0,
+        created_at=now,
+    )
+    values = _projection_values(message)
+    assert values["latency_ms"] == 20000
+    assert values["details"]["shim_latency_ms"] == shim_latency_ms

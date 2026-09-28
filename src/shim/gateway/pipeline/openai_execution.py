@@ -130,7 +130,8 @@ class OpenAIExecution:
             )
             if headers:
                 kwargs["extra_headers"] = headers
-            result = await create(**kwargs)
+            with prepared.timing.exclude():
+                result = await create(**kwargs)
         except asyncio.CancelledError:
             await circuit.release_probe()
             raise
@@ -148,7 +149,8 @@ class OpenAIExecution:
                 state["closed"] = True
                 try:
                     async with asyncio.timeout(5):
-                        await result.close()
+                        with prepared.timing.exclude():
+                            await result.close()
                 except Exception:
                     pass
                 finally:
@@ -216,7 +218,7 @@ class OpenAIExecution:
         next_sequence_number = 0
         saved_response_ids: set[str] = set()
         try:
-            async for event in stream:
+            async for event in prepared.timing.iterate(stream):
                 payload = _dump_sdk(event)
                 event_type = str(payload.get("type", ""))
                 sequence_number = payload.get("sequence_number")
@@ -315,7 +317,7 @@ class OpenAIExecution:
         expected_choices = _expected_chat_choices(prepared.payload)
         finished_choices: set[int] = set()
         try:
-            async for chunk in stream:
+            async for chunk in prepared.timing.iterate(stream):
                 payload = _dump_sdk(chunk)
                 if _is_openai_failure(payload):
                     if not state["recorded"]:

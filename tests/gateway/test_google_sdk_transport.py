@@ -13,6 +13,7 @@ from shim.api.v1.gemini import GenerateContentRequest
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
+from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.privacy import scrub_payload
 from shim.gateway.pipeline.provider_execution import (
@@ -39,6 +40,7 @@ def _prepared(
 ):
     return SimpleNamespace(
         payload=payload,
+        timing=InferenceTiming(),
         tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),
         provider="google",
         protocol="generate_content",

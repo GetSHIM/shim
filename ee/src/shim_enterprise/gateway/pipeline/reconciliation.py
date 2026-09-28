@@ -109,6 +109,7 @@ class ScanReconciler:
                 entity_counts={},
                 verdict=None,
                 lifecycle_status="internal_error",
+                shim_latency_ms=None,
             )
             await persist_scan_audit_completion(
                 session=session,

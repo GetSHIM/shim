@@ -8,6 +8,7 @@ import pytest
 
 from shim.gateway.streaming import StreamMeter, StreamSession
 from shim.gateway.pipeline.postprocess import _ManagedStreamingResponse
+from shim.gateway.kernel.result import InferenceTiming
 
 
 def _session(finalizer: AsyncMock, *, provider: str = "openai") -> StreamSession:
@@ -19,6 +20,7 @@ def _session(finalizer: AsyncMock, *, provider: str = "openai") -> StreamSession
         ),
         finalizer=finalizer,
         stream_start_recorder=AsyncMock(),
+        timing=InferenceTiming(),
     )
 
 
@@ -56,6 +58,7 @@ async def test_active_stream_refreshes_its_durable_deadline() -> None:
         stream_heartbeat_recorder=heartbeat,
         heartbeat_interval_seconds=30,
         monotonic_clock=lambda: next(ticks),
+        timing=InferenceTiming(),
     )
 
     async def events():
@@ -281,6 +284,7 @@ async def test_shutdown_drains_cancelled_response_finalizer():
         finalizer=finalize,
         stream_start_recorder=AsyncMock(),
         finalization_tasks=processor._finalization_tasks,
+        timing=InferenceTiming(),
     )
     session.bind(SimpleNamespace(aclose=AsyncMock()))
     task = asyncio.create_task(session.aclose())
@@ -293,3 +297,56 @@ async def test_shutdown_drains_cancelled_response_finalizer():
     await processor.drain()
     assert session.terminal_status == "client_disconnected"
     assert not processor._finalization_tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect", [False, True])
+async def test_shim_latency_excludes_provider_and_client_waits(monkeypatch, disconnect):
+    now = 100.0
+    monkeypatch.setattr("shim.gateway.kernel.result.perf_counter", lambda: now)
+    timing = InferenceTiming(started_at=now)
+    now += 0.002
+    timing.pause()
+    now += 20.0
+
+    async def raw_events():
+        nonlocal now
+        now += 30.0
+        yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        now += 30.0
+        yield b"data: [DONE]\n\n"
+
+    async def restored_events():
+        nonlocal now
+        async for event in timing.iterate(raw_events()):
+            now += 0.003
+            yield event
+
+    async def stream_started():
+        nonlocal now
+        now += 0.004
+
+    finalizer = AsyncMock()
+    session = StreamSession(
+        meter=StreamMeter(
+            provider="openai", requested_model="gpt-5.6-luna", prompt_tokens_estimated=1
+        ),
+        finalizer=finalizer,
+        stream_start_recorder=stream_started,
+        timing=timing,
+    )
+    session.bind(restored_events())
+    await anext(session)
+    now += 40.0
+    if disconnect:
+        await session.aclose()
+    else:
+        await anext(session)
+        now += 40.0
+        with pytest.raises(StopAsyncIteration):
+            await anext(session)
+    terminal = finalizer.await_args.args[0]
+    assert terminal.shim_latency_ms == (9 if disconnect else 12)
+    assert terminal.terminal_status == (
+        "client_disconnected" if disconnect else "completed"
+    )

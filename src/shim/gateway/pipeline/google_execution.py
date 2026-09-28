@@ -89,7 +89,8 @@ class GoogleExecution:
             await provider_start_callback()
         except BaseException:
             if client is not None:
-                await _close_client(client)
+                with prepared.timing.exclude():
+                    await _close_client(client)
             await self.circuit.release_probe()
             raise
 
@@ -97,11 +98,12 @@ class GoogleExecution:
         stream = None
         try:
             if prepared.stream:
-                stream = await client.aio.models.generate_content_stream(
-                    model=prepared.model,
-                    contents=prepared.payload["contents"],
-                )
-                first_chunk = await anext(stream)
+                with prepared.timing.exclude():
+                    stream = await client.aio.models.generate_content_stream(
+                        model=prepared.model,
+                        contents=prepared.payload["contents"],
+                    )
+                    first_chunk = await anext(stream)
                 state = {"closed": False, "recorded": False}
                 restorer = GoogleStreamRestorer(
                     prepared.privacy.verification_map,
@@ -121,10 +123,12 @@ class GoogleExecution:
                         return
                     state["closed"] = True
                     try:
-                        await _close_stream(stream)
+                        with prepared.timing.exclude():
+                            await _close_stream(stream)
                     finally:
                         try:
-                            await _close_client(client)
+                            with prepared.timing.exclude():
+                                await _close_client(client)
                         finally:
                             if not state["recorded"]:
                                 await self.circuit.release_probe()
@@ -133,6 +137,7 @@ class GoogleExecution:
                 return ProviderStream(
                     events=self._stream(
                         stream,
+                        prepared,
                         first_event,
                         restorer,
                         expected_candidates,
@@ -146,10 +151,11 @@ class GoogleExecution:
                     prefetched_events=(first_event,),
                 )
 
-            result = await client.aio.models.generate_content(
-                model=prepared.model,
-                contents=prepared.payload["contents"],
-            )
+            with prepared.timing.exclude():
+                result = await client.aio.models.generate_content(
+                    model=prepared.model,
+                    contents=prepared.payload["contents"],
+                )
             payload = restore_google_payload(
                 _dump_sdk(result),
                 prepared.privacy.verification_map,
@@ -172,13 +178,15 @@ class GoogleExecution:
             raise _public_error(exc) from None
         finally:
             if not handed_to_stream:
-                if stream is not None:
-                    await _close_stream(stream)
-                await _close_client(client)
+                with prepared.timing.exclude():
+                    if stream is not None:
+                        await _close_stream(stream)
+                    await _close_client(client)
 
     async def _stream(
         self,
         stream,
+        prepared: PreparedInference,
         first_event: bytes,
         restorer: GoogleStreamRestorer,
         expected_candidates: int,
@@ -189,7 +197,7 @@ class GoogleExecution:
     ) -> AsyncIterator[bytes]:
         try:
             yield first_event
-            async for chunk in stream:
+            async for chunk in prepared.timing.iterate(stream):
                 payload = _dump_sdk(chunk)
                 finished_candidates.update(_finished_candidates(payload))
                 blocked = blocked or _has_block_reason(payload)

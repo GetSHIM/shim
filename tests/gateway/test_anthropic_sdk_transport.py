@@ -14,6 +14,7 @@ from shim.api.v1.messages import MessagesRequest
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
+from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.privacy import scrub_payload
 from shim.gateway.pipeline.provider_execution import (
@@ -36,6 +37,7 @@ settings = CommunitySettings(_env_file=None)
 def _prepared(payload: dict, mapping: dict[str, str] | None = None):
     return SimpleNamespace(
         payload=payload,
+        timing=InferenceTiming(),
         protocol="messages",
         target=None,
         tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),

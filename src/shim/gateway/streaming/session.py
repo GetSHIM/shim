@@ -13,6 +13,7 @@ from typing import Any
 from opentelemetry import context as otel_context
 from opentelemetry.context import Context
 
+from shim.gateway.kernel.result import InferenceTiming
 from shim.observability.metrics import STREAM_TERMINAL_STATE_TOTAL, bounded_label
 from shim.observability.tracing import start_span
 
@@ -48,11 +49,13 @@ class StreamSession:
         parent_context: Context | None = None,
         terminal_observer: TerminalObserver | None = None,
         finalization_tasks: set[asyncio.Task[Any]] | None = None,
+        timing: InferenceTiming,
     ) -> None:
         self._finalization_tasks = (
             finalization_tasks if finalization_tasks is not None else set()
         )
         self.meter = meter
+        self._timing = timing
         self._finalizer = finalizer
         self._stream_start_recorder = stream_start_recorder
         self._stream_heartbeat_recorder = stream_heartbeat_recorder
@@ -108,6 +111,7 @@ class StreamSession:
         """Close and finalize even when no response byte was requested."""
 
         try:
+            self._timing.resume()
             if self._output_iterator is not None:
                 await self._output_iterator.aclose()
         finally:
@@ -162,6 +166,7 @@ class StreamSession:
         if self._consumed:
             raise RuntimeError("stream session can only be consumed once")
         self._consumed = True
+        self._timing.resume()
 
         terminal: StreamTerminalStatus | None = None
         try:
@@ -169,7 +174,8 @@ class StreamSession:
                 await self.record_stream_start()
                 await self.record_stream_heartbeat()
                 self.meter.observe_emitted_output(chunk)
-                yield chunk
+                with self._timing.exclude():
+                    yield chunk
             terminal = self._terminal_from_hint()
         except (asyncio.CancelledError, GeneratorExit):
             terminal = "client_disconnected"
@@ -221,6 +227,7 @@ class StreamSession:
                     completed_at=completed_at,
                     error_code=error_code,
                     error_message=(error_message or default_message),
+                    shim_latency_ms=self._timing.shim_latency_ms,
                 )
                 STREAM_TERMINAL_STATE_TOTAL.labels(
                     terminal_state=bounded_label("terminal_state", terminal_status)

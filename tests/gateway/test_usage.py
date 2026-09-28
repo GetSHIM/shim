@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from shim.gateway.streaming import StreamFinalization
+from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
@@ -18,6 +19,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
     started_at = datetime.now(timezone.utc) - timedelta(milliseconds=12)
     return SimpleNamespace(
         policy_verdicts=[],
+        timing=InferenceTiming(),
         request_id="req_local",
         provider="openai",
         model=model,
@@ -54,6 +56,7 @@ def _terminal(*, model: str = "gpt-5.6-luna") -> StreamFinalization:
         completed_at=datetime.now(timezone.utc),
         error_code=None,
         error_message=None,
+        shim_latency_ms=12,
     )
 
 
@@ -86,7 +89,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "provider",
         "model",
         "outcome",
-        "latency_ms",
+        "shim_latency_ms",
         "prompt_tokens",
         "completion_tokens",
         "estimated_cost_usd",
@@ -99,9 +102,9 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "deployment_kind",
         "policy_verdicts",
     }
-    latency_ms = event.pop("latency_ms")
+    latency_ms = event.pop("shim_latency_ms")
     assert event == {
-        "version": 1,
+        "version": 2,
         "request_id": "req_local",
         "provider": "openai",
         "model": "gpt-5.6-luna",
@@ -230,6 +233,7 @@ async def test_nonstream_hash_is_optional_without_changing_response(monkeypatch,
     assert response.headers["x-request-id"] == "upstream-id"
     usage.finalize.assert_awaited_once()
     terminal = usage.finalize.await_args.args[1]
+    assert response.headers["x-shim-latency-ms"] == str(terminal.shim_latency_ms)
     assert dumps.call_count == 1
     assert terminal.usage.output_hash == (
         content_ref(

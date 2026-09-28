@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
@@ -16,7 +16,7 @@ from shim.gateway.contracts.context import (
 )
 from shim.gateway.contracts.ids import ProviderId, RequestId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
-from shim.gateway.kernel.result import PreparedInference
+from shim.gateway.kernel.result import InferenceTiming, PreparedInference
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.request_policy import RequestPolicyResolver
 from shim.privacy.pii_scrubber import pii_scrubbing_enabled
@@ -45,6 +45,7 @@ class GatewayInvocation:
     headers: dict[str, str]
     provider_credential: EphemeralProviderCredential | None
     metadata: GatewayRequestMetadata
+    timing: InferenceTiming = field(default_factory=InferenceTiming, compare=False)
 
 
 class AuthenticateStage:
@@ -94,6 +95,7 @@ class AuthenticateStage:
             policy=policy.request_policy,
             pii_config=policy.pii_config,
             provider=ProviderId(value.provider),
+            timing=value.timing,
         )
         provider_denied = bool(
             policy.tenant_policy.allowed_providers
