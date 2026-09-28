@@ -9,9 +9,12 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "architecture/module_ownership.toml"
-OWNERS = ("public", "enterprise", "split")
+OWNERS = ("public", "enterprise", "cloud", "split")
 PYTHON_ROOTS = (
     "ee/alembic",
+    "ee/cloud/alembic",
+    "ee/cloud/src/shim_cloud",
+    "ee/cloud/tests",
     "ee/deploy/test",
     "ee/scripts",
     "ee/src/shim_enterprise",
@@ -24,6 +27,10 @@ ENTERPRISE_RUNTIME_ROOTS = (
     "ee/alembic",
     "ee/scripts",
     "ee/src/shim_enterprise",
+)
+CLOUD_RUNTIME_ROOTS = (
+    "ee/cloud/alembic",
+    "ee/cloud/src/shim_cloud",
 )
 # Enterprise tests may white-box community behavior without expanding the
 # supported runtime API recorded in enterprise_public_api.
@@ -39,15 +46,25 @@ def _forbidden_public_import_roots() -> set[str]:
     return set(typed_roots)
 
 
-def _enterprise_public_api() -> set[tuple[str, str]]:
+def _forbidden_noncloud_import_roots() -> set[str]:
     document = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
-    api = document.get("enterprise_public_api")
+    roots = document.get("forbidden_noncloud_import_roots")
+    assert isinstance(roots, list)
+    assert all(isinstance(root, str) and root for root in roots)
+    typed_roots = [root for root in roots if isinstance(root, str)]
+    assert typed_roots == sorted(set(typed_roots))
+    return set(typed_roots)
+
+
+def _declared_api(section: str, root: str) -> set[tuple[str, str]]:
+    document = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+    api = document.get(section)
     assert isinstance(api, dict)
     assert list(api) == sorted(api)
 
     entries: set[tuple[str, str]] = set()
     for module, symbols in api.items():
-        assert isinstance(module, str) and module.startswith("shim.")
+        assert isinstance(module, str) and module.startswith(f"{root}.")
         assert isinstance(symbols, list) and symbols
         assert all(
             isinstance(symbol, str) and symbol and symbol != "*" for symbol in symbols
@@ -58,6 +75,18 @@ def _enterprise_public_api() -> set[tuple[str, str]]:
         )
         entries.update((module, symbol) for symbol in typed_symbols)
     return entries
+
+
+def _enterprise_public_api() -> set[tuple[str, str]]:
+    return _declared_api("enterprise_public_api", "shim")
+
+
+def _cloud_enterprise_api() -> set[tuple[str, str]]:
+    return _declared_api("cloud_enterprise_api", "shim_enterprise")
+
+
+def _cloud_public_api() -> set[tuple[str, str]]:
+    return _declared_api("cloud_public_api", "shim")
 
 
 def _manifest_ownership() -> dict[str, str]:
@@ -99,6 +128,8 @@ def _module_name(path: str) -> str:
     parts = Path(path).with_suffix("").parts
     if parts[:3] == ("ee", "src", "shim_enterprise"):
         parts = parts[2:]
+    elif parts[:4] == ("ee", "cloud", "src", "shim_cloud"):
+        parts = parts[3:]
     elif parts[:2] == ("src", "shim"):
         parts = parts[1:]
     if parts[-1] == "__init__":
@@ -244,10 +275,12 @@ def _scan_imports(source: str, *, package: str, known: set[str]) -> set[str]:
     return imported
 
 
-def _scan_public_api_imports(
+def _scan_api_imports(
     source: str,
     *,
     package: str,
+    root: str,
+    label: str,
 ) -> tuple[set[tuple[str, str]], set[str]]:
     tree = ast.parse(source)
     aliases = _dynamic_import_aliases(tree)
@@ -257,17 +290,17 @@ def _scan_public_api_imports(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             errors.update(
-                f"line {node.lineno}: bare public module import {alias.name}"
+                f"line {node.lineno}: bare {label} module import {alias.name}"
                 for alias in node.names
-                if alias.name == "shim" or alias.name.startswith("shim.")
+                if alias.name == root or alias.name.startswith(f"{root}.")
             )
         elif isinstance(node, ast.ImportFrom):
             specifier = f"{'.' * node.level}{node.module or ''}"
             module = resolve_name(specifier, package) if node.level else specifier
-            if module == "shim" or module.startswith("shim."):
+            if module == root or module.startswith(f"{root}."):
                 for alias in node.names:
                     if alias.name == "*":
-                        errors.add(f"line {node.lineno}: public API star import")
+                        errors.add(f"line {node.lineno}: {label} API star import")
                     else:
                         imported.add((module, alias.name))
         elif isinstance(node, ast.Call):
@@ -280,9 +313,17 @@ def _scan_public_api_imports(
                 continue
             if name.startswith("<unresolved dynamic import"):
                 errors.add(f"line {node.lineno}: {name}")
-            elif name == "shim" or name.startswith("shim."):
-                errors.add(f"line {node.lineno}: dynamic public module import {name}")
+            elif name == root or name.startswith(f"{root}."):
+                errors.add(f"line {node.lineno}: dynamic {label} module import {name}")
     return imported, errors
+
+
+def _scan_public_api_imports(
+    source: str,
+    *,
+    package: str,
+) -> tuple[set[tuple[str, str]], set[str]]:
+    return _scan_api_imports(source, package=package, root="shim", label="public")
 
 
 def _imported_module_names(path: str, known: set[str]) -> set[str]:
@@ -322,6 +363,21 @@ def _reachable_paths(graph: dict[str, set[str]], start: str) -> set[str]:
     return reachable
 
 
+def _paths_reaching(graph: dict[str, set[str]], targets: set[str]) -> set[str]:
+    reverse: dict[str, set[str]] = {path: set() for path in graph}
+    for path, imports in graph.items():
+        for imported in imports:
+            reverse[imported].add(path)
+    reachable = set(targets)
+    pending = list(targets)
+    while pending:
+        path = pending.pop()
+        parents = reverse[path] - reachable
+        reachable.update(parents)
+        pending.extend(parents)
+    return reachable
+
+
 def test_python_files_have_exactly_one_current_owner() -> None:
     _manifest_ownership()
 
@@ -336,6 +392,11 @@ def test_python_ownership_regions_are_canonical() -> None:
             "ee/scripts/",
             "ee/src/shim_enterprise/",
             "ee/tests/",
+        ),
+        "cloud": (
+            "ee/cloud/alembic/",
+            "ee/cloud/src/shim_cloud/",
+            "ee/cloud/tests/",
         ),
         "split": ("scripts/export_openapi.py", "tests/architecture/"),
     }
@@ -362,12 +423,41 @@ def test_public_files_cannot_reach_enterprise_files() -> None:
     ownership = _manifest_ownership()
     graph = _internal_import_graph(ownership)
     enterprise = {path for path, owner in ownership.items() if owner == "enterprise"}
-    violations = {
-        path: sorted(_reachable_paths(graph, path) & enterprise)
+    reaching_enterprise = _paths_reaching(graph, enterprise)
+    assert {
+        path
         for path, owner in ownership.items()
-        if owner == "public"
-    }
-    assert {path: imports for path, imports in violations.items() if imports} == {}
+        if owner == "public" and path in reaching_enterprise
+    } == set()
+
+
+def test_noncloud_files_cannot_reach_cloud_files() -> None:
+    ownership = _manifest_ownership()
+    graph = _internal_import_graph(ownership)
+    cloud = {path for path, owner in ownership.items() if owner == "cloud"}
+    reaching_cloud = _paths_reaching(graph, cloud)
+    assert {
+        path
+        for path, owner in ownership.items()
+        if owner in {"public", "enterprise"} and path in reaching_cloud
+    } == set()
+
+
+def test_noncloud_files_cannot_import_cloud_only_dependencies() -> None:
+    ownership = _manifest_ownership()
+    forbidden = _forbidden_noncloud_import_roots()
+    violations: dict[str, list[str]] = {}
+    for path, owner in ownership.items():
+        if owner not in {"public", "enterprise"}:
+            continue
+        imports = {
+            name
+            for name in _imported_module_names(path, forbidden)
+            if name in forbidden
+        }
+        if imports:
+            violations[path] = sorted(imports)
+    assert violations == {}
 
 
 def test_public_files_cannot_reach_forbidden_or_unresolved_dependencies() -> None:
@@ -399,27 +489,76 @@ def test_enterprise_runtime_uses_exact_declared_public_api() -> None:
     allowed = _enterprise_public_api()
     assert {module for module, _ in allowed} <= public_modules
 
+    imported, errors = _runtime_api_imports(
+        ENTERPRISE_RUNTIME_ROOTS, root="shim", label="public"
+    )
+
+    assert errors == {}
+    assert imported == allowed, (
+        f"undeclared public API: {sorted(imported - allowed)}; "
+        f"stale public API: {sorted(allowed - imported)}"
+    )
+
+
+def _runtime_api_imports(
+    directories: tuple[str, ...], *, root: str, label: str
+) -> tuple[set[tuple[str, str]], dict[str, list[str]]]:
     imported: set[tuple[str, str]] = set()
     errors: dict[str, list[str]] = {}
-    for directory in ENTERPRISE_RUNTIME_ROOTS:
+    for directory in directories:
         for path in sorted((ROOT / directory).rglob("*.py")):
             relative_path = path.relative_to(ROOT).as_posix()
             module = _module_name(relative_path)
             package = (
                 module if path.name == "__init__.py" else module.rpartition(".")[0]
             )
-            file_imports, file_errors = _scan_public_api_imports(
+            file_imports, file_errors = _scan_api_imports(
                 path.read_text(encoding="utf-8"),
                 package=package,
+                root=root,
+                label=label,
             )
             imported.update(file_imports)
             if file_errors:
                 errors[relative_path] = sorted(file_errors)
+    return imported, errors
 
-    assert errors == {}
-    assert imported == allowed, (
-        f"undeclared public API: {sorted(imported - allowed)}; "
-        f"stale public API: {sorted(allowed - imported)}"
+
+def test_cloud_runtime_uses_exact_declared_shared_apis() -> None:
+    ownership = _manifest_ownership()
+    public_modules = {
+        _module_name(path)
+        for path, owner in ownership.items()
+        if owner == "public" and path.startswith("src/shim/")
+    }
+    enterprise_modules = {
+        _module_name(path)
+        for path, owner in ownership.items()
+        if owner == "enterprise" and path.startswith("ee/src/shim_enterprise/")
+    }
+    allowed_public = _cloud_public_api()
+    allowed_enterprise = _cloud_enterprise_api()
+    assert {module for module, _ in allowed_public} <= public_modules
+    assert {module for module, _ in allowed_enterprise} <= enterprise_modules
+
+    public_imports, public_errors = _runtime_api_imports(
+        CLOUD_RUNTIME_ROOTS, root="shim", label="public"
+    )
+    enterprise_imports, enterprise_errors = _runtime_api_imports(
+        CLOUD_RUNTIME_ROOTS, root="shim_enterprise", label="enterprise"
+    )
+
+    assert public_errors == {}
+    assert enterprise_errors == {}
+    assert public_imports == allowed_public, (
+        f"undeclared cloud public API: {sorted(public_imports - allowed_public)}; "
+        f"stale cloud public API: {sorted(allowed_public - public_imports)}"
+    )
+    assert enterprise_imports == allowed_enterprise, (
+        "undeclared cloud enterprise API: "
+        f"{sorted(enterprise_imports - allowed_enterprise)}; "
+        "stale cloud enterprise API: "
+        f"{sorted(allowed_enterprise - enterprise_imports)}"
     )
 
 

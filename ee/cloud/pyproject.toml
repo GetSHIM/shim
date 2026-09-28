@@ -1,0 +1,20 @@
+[project]
+name = "shim-cloud"
+version = "0.1.3"
+description = "Hosted cloud commerce composition for shim"
+license = "Elastic-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "shim-enterprise==0.1.3",
+  "polar-sdk==0.32.0",
+  "standardwebhooks==1.0.0",
+]
+
+[tool.uv.build-backend]
+module-name = "shim_cloud"
+module-root = "src"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"

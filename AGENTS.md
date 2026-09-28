@@ -38,16 +38,7 @@ a demonstrated consumer. Reuse the existing contract or adapter first.
 
 ## Required gate
 
-```bash
-uv lock --check
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ty check
-uv run --locked python -m pytest -q
-uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
-uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
-git diff --check
-```
+Run the full gate in [the developer guide](DEVELOPER_GUIDE.md#required-gates).
 
 Continuous integration runs on pull requests and on pushes to `main`. Pushing a
 branch verifies nothing, so run the gate locally and open a pull request rather

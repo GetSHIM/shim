@@ -65,6 +65,9 @@ class WorkerPass:
 class OutboxLeaseRepository:
     """Own short claim and acknowledgement transactions."""
 
+    def __init__(self, excluded_event_types: tuple[str, ...] = ()) -> None:
+        self.excluded_event_types = excluded_event_types
+
     async def claim(
         self,
         session: AsyncSession,
@@ -84,7 +87,10 @@ class OutboxLeaseRepository:
         )
         statement = (
             select(OutboxEvent)
-            .where(or_(claimable, abandoned))
+            .where(
+                or_(claimable, abandoned),
+                OutboxEvent.event_type.not_in(self.excluded_event_types),
+            )
             .order_by(
                 OutboxEvent.next_attempt_at,
                 OutboxEvent.created_at,
@@ -350,7 +356,11 @@ def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
 
 
-async def main() -> None:
+async def main(
+    publisher: OutboxPublisher | None = None,
+    *,
+    repository: OutboxLeaseRepository | None = None,
+) -> None:
     from shim_enterprise.outbox.handlers import build_publisher
 
     configure_logging(settings.LOG_LEVEL)
@@ -368,7 +378,9 @@ async def main() -> None:
     for shutdown_signal in shutdown_signals:
         loop.add_signal_handler(shutdown_signal, stop_event.set)
     try:
-        await OutboxWorker(build_publisher()).run(stop_event)
+        await OutboxWorker(publisher or build_publisher(), repository=repository).run(
+            stop_event
+        )
     finally:
         for shutdown_signal in shutdown_signals:
             loop.remove_signal_handler(shutdown_signal)

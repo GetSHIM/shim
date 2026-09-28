@@ -10,6 +10,7 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY ee/pyproject.toml ./ee/pyproject.toml
+COPY ee/cloud/pyproject.toml ./ee/cloud/pyproject.toml
 COPY src ./src
 RUN uv sync --locked --no-dev --package shim-gateway --no-editable
 

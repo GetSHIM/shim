@@ -10,6 +10,7 @@
 !ee/LICENSE
 !ee/NOTICE
 !ee/pyproject.toml
+!ee/cloud/pyproject.toml
 !ee/src/
 !ee/src/**
 !ee/alembic.ini

@@ -321,8 +321,7 @@ def _spend_denied(tenant_id: UUID):
             AuditIntent.organization_id == tenant_id,
             AuditIntent.request_id == RequestLifecycle.request_id,
             AuditIntent.event_type == "preflight",
-            AuditIntent.usage_summary["denial_reason"].as_string()
-            == "spend_limit_exceeded",
+            AuditIntent.usage_summary["spend_denied"].as_integer() == 1,
         )
         .correlate(RequestLifecycle)
         .exists()

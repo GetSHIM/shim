@@ -1809,6 +1809,15 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
             side_effect=[
                 SimpleNamespace(
                     scalar_one_or_none=lambda: SimpleNamespace(
+                        id=uuid4(),
+                        billing_revision=0,
+                        updated_at=None,
+                        quota_monthly_request_limit=None,
+                        quota_monthly_token_limit=None,
+                    )
+                ),
+                SimpleNamespace(
+                    scalar_one_or_none=lambda: SimpleNamespace(
                         tier="free",
                         expires_at=None,
                         is_active=True,
@@ -1834,8 +1843,9 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
         str(call.args[0].compile(dialect=postgresql.dialect()))
         for call in session.execute.await_args_list
     ]
-    assert statements[0].endswith("FOR UPDATE")
-    assert statements[1].endswith("FOR SHARE")
+    assert statements[0].endswith("FOR UPDATE OF organizations")
+    assert statements[1].endswith("FOR UPDATE")
+    assert statements[2].endswith("FOR SHARE")
     assert policy.daily_request_limit == 10
 
 

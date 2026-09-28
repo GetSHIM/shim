@@ -11,13 +11,14 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY ee/pyproject.toml ee/LICENSE ee/NOTICE ./ee/
+COPY ee/cloud/pyproject.toml ./ee/cloud/pyproject.toml
 COPY src ./src
 COPY ee/src ./ee/src
-RUN uv sync --locked --no-dev --all-packages --no-editable
+RUN uv sync --locked --no-dev --package shim-enterprise --no-editable
 
 FROM builder AS test
 
-RUN uv sync --locked --all-packages --no-editable
+RUN uv sync --locked --package shim-enterprise --no-editable
 
 FROM python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 AS runtime
 

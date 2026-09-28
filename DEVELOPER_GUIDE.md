@@ -14,6 +14,7 @@ ee/src/shim_enterprise/      enterprise runtime and adapters
 ee/tests/                    enterprise tests
 ee/alembic/                  enterprise schema history
 ee/openapi/enterprise.json   enterprise HTTP contract
+ee/cloud/                   hosted commerce package, schema, and OpenAPI contract
 ```
 
 Community code must run without `ee/`, PostgreSQL, Redis, Supabase, or managed
@@ -103,12 +104,13 @@ Run the locked full gate before merging a cross-package or enterprise change:
 ```bash
 uv lock --check
 uv sync --locked --all-packages
-uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic
-uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic
+uv run --locked ruff format --check src ee/src tests ee/tests scripts ee/scripts ee/alembic ee/cloud/src ee/cloud/tests ee/cloud/alembic
+uv run --locked ruff check src ee/src tests ee/tests scripts ee/scripts ee/alembic ee/cloud/src ee/cloud/tests ee/cloud/alembic
 uv run --locked ty check
 uv run --locked python -m pytest -q
 uv run --locked --package shim-gateway python scripts/export_openapi.py --profile community --check
 uv run --locked --package shim-enterprise python scripts/export_openapi.py --profile enterprise --check
+uv run --locked --package shim-cloud python scripts/export_openapi.py --profile cloud --check
 git diff --check
 ```
 
@@ -151,3 +153,8 @@ regions' `LICENSE`, `NOTICE`, and matching package metadata. Do not add a CLA,
 runtime licence check, or commercial-validation policy without owner approval.
 Never move enterprise source or assets outside `ee/` merely to simplify
 packaging.
+
+Hosted subscriptions use the separate [cloud composition and runbook](ee/cloud/README.md).
+Apply its migrations after enterprise migrations before running cloud persistence tests.
+Customer packages remain selected explicitly with `--package shim-enterprise`;
+`--all-packages` is a development/verification choice, not a customer artifact install.

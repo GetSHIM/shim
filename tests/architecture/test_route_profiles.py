@@ -11,10 +11,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "architecture/route_profiles.toml"
-PROFILE_NAMES = ("community", "enterprise")
+PROFILE_NAMES = ("community", "enterprise", "cloud")
 PROFILE_SCHEMAS = {
     "community": ROOT / "openapi/community.json",
     "enterprise": ROOT / "ee/openapi/enterprise.json",
+    "cloud": ROOT / "ee/cloud/openapi/cloud.json",
 }
 OPENAPI_METHODS = frozenset(
     {"delete", "get", "head", "options", "patch", "post", "put", "trace"}
@@ -77,10 +78,18 @@ def test_route_profiles_are_normalized_and_unique() -> None:
     _route_profiles()
 
 
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_profile_routes_are_sorted(profile: str) -> None:
+    routes = _route_profiles()[profile]
+
+    assert routes == sorted(routes), f"{profile} profile routes are not sorted"
+
+
 def test_community_profile_is_a_strict_enterprise_subset() -> None:
     profiles = _route_profiles()
 
     assert set(profiles["community"]) < set(profiles["enterprise"])
+    assert set(profiles["enterprise"]) < set(profiles["cloud"])
 
 
 @pytest.mark.parametrize("profile", PROFILE_NAMES)
