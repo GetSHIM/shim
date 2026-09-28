@@ -8,6 +8,7 @@ provider attempt rule are unchanged.
 | --- | --- | --- |
 | `provider_finish_reasons` | Map of native completion facts, preserving candidate indices and provider spelling. See the protocol table below. | `null` when no recognized native completion fact was observed; absent map entries remain unknown. |
 | `repeat_chain_length` | Number of matching request-content observations in the configured tenant repeat window, including this request (`1` for the first observation). | `null` when the detector has no observation, including Redis unavailability. |
+| `shim_latency_ms` | Integer milliseconds spent processing inside shim, excluding provider waits and generation; measured with a monotonic clock up to the terminal accounting handoff. Includes invocation preprocessing and response transformation; excludes provider SDK awaits, raw stream awaits, client suspension and transport close. Terminal persistence after the snapshot is outside the measurement. Provider-free scans use the same snapshot boundary. | `null` when unmeasured, including historical rows and recovery after process loss; measured zero remains zero. |
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
@@ -25,7 +26,15 @@ processing, includes upstream wait and output restoration, and does not count
 headers, SSE comments/heartbeats, roles, empty deltas, usage, or terminal events.
 Supported media events are OpenAI audio deltas and partial images, and Gemini
 inline media. Media contributes to TTFT without being counted as text tokens.
-The existing latency and lifecycle status fields remain independent.
+`latency_ms` remains the full request lifecycle duration; it includes provider
+waiting and generation. `shim_latency_ms` reports shim processing independently.
+Overview and request summaries expose `p95_completed_shim_latency_ms`, computed
+only from completed requests with a known shim measurement; periods without
+measurements report null.
+
+Successful inference JSON responses expose `X-Shim-Latency-Ms` using the same terminal
+measurement snapshot. Streaming responses do not expose this header because
+the measurement is available only at stream completion.
 
 ## Native completion facts
 
@@ -74,18 +83,21 @@ prompts, previous responses, and cached instructions are not reconstructed.
 ## Persistence and reading
 
 Request fields enter `request_lifecycle.metadata` during quota reservation.
-Completion facts and TTFT join them in the terminal accounting transaction,
+Completion facts, TTFT and shim processing time join them in the terminal
+accounting transaction,
 before audit/analytics outbox intent is constructed. Terminal replay preserves
 the first committed observations. Analytics delivery copies them into
 `request_logs.details` with the existing tenant/request idempotency constraint.
 No table or column migration is needed for these existing JSONB fields.
 
-`GET /api/v1/management/requests` exposes the five optional fields on each
+`GET /api/v1/management/requests` exposes the optional fields on each
 request; `/requests/export` includes the same fields in CSV (unknown values
-are empty cells, and finish-reason maps are JSON). Audit completion `extra`
+are empty cells, and finish-reason maps are JSON). CSV names the retained full
+lifecycle duration `request_duration_ms`; APIs retain `latency_ms`. Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills. The community
-JSONL event also contains them, with `system_prompt_hash: null` because community
+JSONL v2 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
+with `system_prompt_hash: null` because community
 has no configured installation hashing key.
 
 ## Unpriced deployment costs

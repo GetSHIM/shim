@@ -25,3 +25,4 @@ class StreamFinalization:
     completed_at: datetime
     error_code: str | None
     error_message: str | None
+    shim_latency_ms: int | None = None

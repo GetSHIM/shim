@@ -81,6 +81,7 @@ class ResponsePostprocessor:
                 close=response.close,
                 prefetched_events=response.prefetched_events,
             )
+            prepared.timing.pause()
             return _ManagedStreamingResponse(
                 stream_session,
                 media_type="text/event-stream",
@@ -142,47 +143,45 @@ class ResponsePostprocessor:
             headers=_gateway_headers(prepared, response.request_id),
         )
         completed_at = datetime.now(timezone.utc)
-        await self.usage.finalize(
-            prepared,
-            StreamFinalization(
-                terminal_status=lifecycle_status,
-                usage=StreamUsageSnapshot(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    settlement_cost_usd=settlement_cost,
-                    provider_model=settlement_model,
-                    pricing_metadata=DEFAULT_PRICE_BOOK.resolved_price_metadata(
-                        settlement_model,
-                        provider,
-                        input_tokens=prompt_tokens,
-                        output_tokens=completion_tokens,
-                        unpriced=prepared.unpriced,
-                    ),
-                    estimated=not fully_actual,
-                    provider_finish_reasons=native_finish_reasons(
-                        response.payload, provider=provider
-                    ),
-                    output_hash=(
-                        content_ref(
-                            self.output_hash_salt, bytes(gateway_response.body).decode()
-                        )
-                        if self.output_hash_salt is not None
-                        else None
-                    ),
+        terminal = StreamFinalization(
+            terminal_status=lifecycle_status,
+            usage=StreamUsageSnapshot(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                settlement_cost_usd=settlement_cost,
+                provider_model=settlement_model,
+                pricing_metadata=DEFAULT_PRICE_BOOK.resolved_price_metadata(
+                    settlement_model,
+                    provider,
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                    unpriced=prepared.unpriced,
                 ),
-                completed_at=completed_at,
-                error_code=(
-                    "PROVIDER_RESPONSE_FAILED"
-                    if lifecycle_status != "completed"
-                    else None
+                estimated=not fully_actual,
+                provider_finish_reasons=native_finish_reasons(
+                    response.payload, provider=provider
                 ),
-                error_message=(
-                    "The provider returned a terminal failure."
-                    if lifecycle_status != "completed"
+                output_hash=(
+                    content_ref(
+                        self.output_hash_salt, bytes(gateway_response.body).decode()
+                    )
+                    if self.output_hash_salt is not None
                     else None
                 ),
             ),
+            completed_at=completed_at,
+            error_code=(
+                "PROVIDER_RESPONSE_FAILED" if lifecycle_status != "completed" else None
+            ),
+            error_message=(
+                "The provider returned a terminal failure."
+                if lifecycle_status != "completed"
+                else None
+            ),
+            shim_latency_ms=prepared.timing.shim_latency_ms,
         )
+        gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
+        await self.usage.finalize(prepared, terminal)
         return gateway_response
 
     def create_stream_session(
@@ -234,6 +233,7 @@ class ResponsePostprocessor:
             heartbeat_interval_seconds=self.heartbeat_interval_seconds,
             terminal_observer=observe_terminal,
             finalization_tasks=self._finalization_tasks,
+            timing=prepared.timing,
         )
 
 

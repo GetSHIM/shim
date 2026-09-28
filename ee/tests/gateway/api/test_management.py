@@ -275,7 +275,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         completion_tokens=40,
         pii_detected_requests=4,
         policy_failed=1,
-        p95_completed_latency_ms=401.2,
+        p95_completed_shim_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
         unpriced_requests=0,
     )
@@ -333,7 +333,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert page.summary.technical_success_rate == pytest.approx(6 / 8)
     assert page.summary.technical_failures == 2
     assert page.summary.policy_rejections == 3
-    assert page.summary.p95_completed_latency_ms == 401
+    assert page.summary.p95_completed_shim_latency_ms == 401
     assert page.summary.settled_spend_usd == Decimal("1.25000000")
     assert page.summary.prompt_tokens == 120
     assert page.summary.completion_tokens == 40
@@ -356,6 +356,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "cost_usd",
         "cost_complete",
         "latency_ms",
+        "shim_latency_ms",
         "pii_detected",
         "tags",
         "cost_center",
@@ -369,6 +370,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     }
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].repeat_chain_length is None
+    assert page.items[0].shim_latency_ms is None
     assert page.items[0].ttft_ms is None
     assert page.items[0].system_prompt_hash is None
     assert page.items[0].deployment_kind is None
@@ -397,6 +399,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     summary_compiled = summary_statement.compile(dialect=postgresql.dialect())
     summary_sql = str(summary_compiled)
     assert "percentile_cont" in summary_sql
+    assert "shim_latency_ms" in summary_compiled.params.values()
+    assert "WITHIN GROUP (ORDER BY request_logs.latency_ms)" not in summary_sql
     assert "IS NULL" in summary_sql
     assert "NOT IN" in summary_sql
     assert "spend_settlement" in summary_compiled.params.values()
@@ -427,14 +431,14 @@ def test_request_activity_summary_has_null_technical_metrics_without_denominator
             completion_tokens=0,
             pii_detected_requests=0,
             policy_failed=0,
-            p95_completed_latency_ms=None,
+            p95_completed_shim_latency_ms=None,
             settled_spend_usd=Decimal("0"),
             unpriced_requests=0,
         )
     )
 
     assert summary.technical_success_rate is None
-    assert summary.p95_completed_latency_ms is None
+    assert summary.p95_completed_shim_latency_ms is None
     assert summary.policy_rejections == 1
 
 
@@ -571,6 +575,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "provider_finish_reasons": {"status": "incomplete"},
             "repeat_chain_length": 2,
             "ttft_ms": 42.5,
+            "shim_latency_ms": 0,
             "deployment_kind": "internal",
         },
         prompt_tokens=10,
@@ -613,6 +618,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["ttft_ms"] == "42.5"
     assert exported["deployment_kind"] == "internal"
     assert exported["system_prompt_hash"] == ""
+    assert exported["shim_latency_ms"] == "0"
+    assert exported["request_duration_ms"] == "100"
+    assert "latency_ms" not in exported
     assert exported["cost_complete"] == "True"
     rows.close.assert_awaited_once()
     statement = session.stream.await_args.args[0]

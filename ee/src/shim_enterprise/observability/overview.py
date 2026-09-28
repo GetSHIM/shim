@@ -36,7 +36,7 @@ class OverviewSummaryRecord:
     technical_failures: int
     policy_rejections: int
     technical_success_rate: float | None
-    p95_completed_latency_ms: int | None
+    p95_completed_shim_latency_ms: int | None
     settled_spend_usd: Decimal | None
     cost_complete: bool
     unpriced_requests: int
@@ -154,12 +154,7 @@ class OverviewReadModel:
 def _summary_statement(tenant_id: UUID, start_at: datetime, end_at: datetime):
     spend = _settled_spend(tenant_id)
     spend_denied = _spend_denied(tenant_id)
-    latency_ms = (
-        func.extract(
-            "epoch", RequestLifecycle.completed_at - RequestLifecycle.started_at
-        )
-        * 1000
-    )
+    latency_ms = RequestLifecycle.lifecycle_metadata["shim_latency_ms"].as_integer()
     columns = [
         func.count(RequestLifecycle.id).label("requests"),
         func.count(RequestLifecycle.id)
@@ -180,7 +175,7 @@ def _summary_statement(tenant_id: UUID, start_at: datetime, end_at: datetime):
         func.percentile_cont(0.95)
         .within_group(latency_ms)
         .filter(RequestLifecycle.status == "completed")
-        .label("p95_completed_latency_ms"),
+        .label("p95_completed_shim_latency_ms"),
         func.coalesce(func.sum(func.coalesce(spend, Decimal("0"))), Decimal("0")).label(
             "settled_spend_usd"
         ),
@@ -347,7 +342,7 @@ def _summary_from_row(row) -> OverviewSummaryRecord:
     technical_total = (
         sum(status_counts[status] for status in TECHNICAL_STATUSES) - policy_failed
     )
-    p95 = row.p95_completed_latency_ms
+    p95 = row.p95_completed_shim_latency_ms
     return OverviewSummaryRecord(
         requests=int(row.requests or 0),
         technical_failures=technical_total - status_counts["completed"],
@@ -355,7 +350,7 @@ def _summary_from_row(row) -> OverviewSummaryRecord:
         technical_success_rate=(
             status_counts["completed"] / technical_total if technical_total else None
         ),
-        p95_completed_latency_ms=round(float(p95)) if p95 is not None else None,
+        p95_completed_shim_latency_ms=round(float(p95)) if p95 is not None else None,
         settled_spend_usd=None
         if row.unpriced_requests
         else Decimal(str(row.settled_spend_usd or 0)),

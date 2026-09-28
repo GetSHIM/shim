@@ -34,6 +34,7 @@ class ScanFinalizer:
         completed_at: datetime,
         input_hash: str,
         output_hash: str,
+        shim_latency_ms: int | None = None,
     ) -> UUID | None:
         payload = scan_audit_payload(
             tenant_id=request.tenant_id,
@@ -48,14 +49,19 @@ class ScanFinalizer:
             entity_counts=privacy.entity_counts,
             verdict=privacy.verdict,
             lifecycle_status="completed",
+            shim_latency_ms=shim_latency_ms,
         )
         try:
-            await self._lock(session, request)
+            lifecycle = await self._lock(session, request)
             updated = await RequestLifecycleRepository.update(
                 session,
                 organization_id=request.tenant_id,
                 request_id=request.request_id,
                 values={
+                    "lifecycle_metadata": {
+                        **(lifecycle.lifecycle_metadata or {}),
+                        "shim_latency_ms": shim_latency_ms,
+                    },
                     "status": "completed",
                     "privacy_status": (
                         "detected" if privacy.entity_counts else "clean"
@@ -99,6 +105,7 @@ class ScanFinalizer:
         actor: ResolvedScanActor,
         started_at: datetime,
         input_hash: str,
+        shim_latency_ms: int | None = None,
     ) -> None:
         failed_at = datetime.now(timezone.utc)
         payload = scan_audit_payload(
@@ -114,14 +121,19 @@ class ScanFinalizer:
             entity_counts={},
             verdict=None,
             lifecycle_status="internal_error",
+            shim_latency_ms=shim_latency_ms,
         )
         try:
-            await self._lock(session, request)
+            lifecycle = await self._lock(session, request)
             updated = await RequestLifecycleRepository.update(
                 session,
                 organization_id=request.tenant_id,
                 request_id=request.request_id,
                 values={
+                    "lifecycle_metadata": {
+                        **(lifecycle.lifecycle_metadata or {}),
+                        "shim_latency_ms": shim_latency_ms,
+                    },
                     "status": "internal_error",
                     "privacy_status": "failed",
                     "failed_at": failed_at,

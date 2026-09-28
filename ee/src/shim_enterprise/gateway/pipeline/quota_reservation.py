@@ -791,6 +791,7 @@ class DurableAccountingCoordinator:
                     TerminalAction.REFUND if spend_reserved else TerminalAction.NONE
                 ),
                 lifecycle_status=lifecycle_status,
+                shim_latency_ms=prepared.timing.shim_latency_ms,
                 terminal_error_code=error_code,
                 terminal_error_message=error_message,
                 policy_verdicts=tuple(
@@ -951,6 +952,7 @@ class DurableUsageLifecycle:
                         output_hash=usage.output_hash,
                         provider_finish_reasons=usage.provider_finish_reasons,
                         ttft_ms=usage.ttft_ms,
+                        shim_latency_ms=terminal.shim_latency_ms,
                         completed_at=terminal.completed_at,
                     ),
                 )

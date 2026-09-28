@@ -58,6 +58,7 @@ def install_http_middleware(
             expose_headers=[
                 "Content-Disposition",
                 "X-Shim-Request-Id",
+                "X-Shim-Latency-Ms",
                 "request-id",
                 "retry-after",
                 "x-goog-request-id",

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from decimal import Decimal
 from queue import Full, Queue, ShutDown
 from threading import Thread
@@ -121,7 +120,6 @@ class LocalUsageLifecycle:
         self._write(
             prepared,
             outcome="rejected",
-            completed_at=datetime.now(timezone.utc),
             prompt_tokens=0,
             completion_tokens=0,
             cost_usd=Decimal("0"),
@@ -165,7 +163,6 @@ class LocalUsageLifecycle:
         self._write(
             prepared,
             outcome=terminal.terminal_status,
-            completed_at=terminal.completed_at,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             cost_usd=(
@@ -180,6 +177,7 @@ class LocalUsageLifecycle:
             estimated=usage.estimated,
             provider_finish_reasons=usage.provider_finish_reasons,
             ttft_ms=usage.ttft_ms,
+            shim_latency_ms=terminal.shim_latency_ms,
         )
 
     async def fail(
@@ -197,7 +195,6 @@ class LocalUsageLifecycle:
         self._write(
             prepared,
             outcome=reason,
-            completed_at=datetime.now(timezone.utc),
             prompt_tokens=prompt_tokens,
             completion_tokens=0,
             cost_usd=(
@@ -219,7 +216,6 @@ class LocalUsageLifecycle:
         prepared: PreparedInference,
         *,
         outcome: str,
-        completed_at: datetime,
         prompt_tokens: int,
         completion_tokens: int,
         cost_usd: Decimal | None,
@@ -227,18 +223,18 @@ class LocalUsageLifecycle:
         estimated: bool,
         provider_finish_reasons: dict[str, str] | None = None,
         ttft_ms: float | None = None,
+        shim_latency_ms: int | None = None,
     ) -> None:
         event = {
-            "version": 1,
+            "version": 2,
             "request_id": str(prepared.request_id),
             "provider": str(prepared.provider),
             "model": model,
             "outcome": outcome,
-            "latency_ms": max(
-                0,
-                round(
-                    (completed_at - prepared.context.started_at).total_seconds() * 1_000
-                ),
+            "shim_latency_ms": (
+                shim_latency_ms
+                if shim_latency_ms is not None
+                else prepared.timing.shim_latency_ms
             ),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

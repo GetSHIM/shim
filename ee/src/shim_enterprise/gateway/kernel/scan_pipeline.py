@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -59,6 +60,7 @@ class ScanExecutionPipeline:
         principal: AuthenticatedPrincipal,
         session: AsyncSession,
     ) -> ScanExecutionResult:
+        timing_started = perf_counter()
         actor: ResolvedScanActor | None = None
         outcome = "server_error"
         with start_span(
@@ -69,7 +71,7 @@ class ScanExecutionPipeline:
         ) as span:
             try:
                 actor = await self._resolve(principal, session)
-                result = await self._execute(scan_input, actor, session)
+                result = await self._execute(scan_input, actor, session, timing_started)
             except ScanLimitExceeded:
                 outcome = "rejected"
                 raise
@@ -123,6 +125,7 @@ class ScanExecutionPipeline:
         scan_input: ScanInput,
         actor: ResolvedScanActor,
         session: AsyncSession,
+        timing_started: float,
     ) -> ScanExecutionResult:
         request = ScanRequest(
             request_id=RequestId(f"scan_{uuid4().hex}"),
@@ -171,6 +174,9 @@ class ScanExecutionPipeline:
                     actor=actor,
                     started_at=started_at,
                     input_hash=input_hash,
+                    shim_latency_ms=max(
+                        0, int((perf_counter() - timing_started) * 1000)
+                    ),
                 )
                 raise
             privacy_span.set_attributes(
@@ -198,6 +204,7 @@ class ScanExecutionPipeline:
             completed_at=completed_at,
             input_hash=input_hash,
             output_hash=output_hash,
+            shim_latency_ms=max(0, int((perf_counter() - timing_started) * 1000)),
         )
         return ScanExecutionResult(
             request_id=request.request_id,

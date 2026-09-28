@@ -158,6 +158,7 @@ def scan_audit_payload(
     entity_counts: dict[str, int],
     verdict: ScanVerdict | None,
     lifecycle_status: Literal["completed", "internal_error"],
+    shim_latency_ms: int | None = None,
 ) -> dict[str, object]:
     return {
         "organization_id": str(tenant_id),
@@ -184,6 +185,7 @@ def scan_audit_payload(
             "entity_types": sorted(entity_counts),
             "lifecycle_status": lifecycle_status,
             "operation_type": "pii_scan",
+            "shim_latency_ms": shim_latency_ms,
             "scan_source": source,
         },
     }
@@ -292,6 +294,9 @@ async def persist_token_count_audit(
                         else {}
                     ),
                     "operation_type": "token_count",
+                    "shim_latency_ms": prepared.timing.shim_latency_ms
+                    if input_tokens is not None
+                    else None,
                     "deployment_kind": prepared.deployment_kind,
                     **(
                         {

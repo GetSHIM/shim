@@ -528,7 +528,14 @@ class RequestActivityView(BaseModel):
     usage_estimated: bool
     cost_usd: Decimal | None = Field(ge=0)
     cost_complete: bool
-    latency_ms: int = Field(ge=0)
+    latency_ms: int = Field(
+        ge=0, description="Full request lifecycle duration in milliseconds."
+    )
+    shim_latency_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description="shim processing time excluding provider waiting; null when unmeasured.",
+    )
     pii_detected: bool
     tags: list[str] = Field(default_factory=list)
     cost_center: str | None
@@ -556,7 +563,7 @@ class RequestActivityStatusCountsView(BaseModel):
 class RequestActivitySummaryView(BaseModel):
     requests: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
-    p95_completed_latency_ms: int | None = Field(ge=0)
+    p95_completed_shim_latency_ms: int | None = Field(ge=0)
     settled_spend_usd: Decimal = Field(ge=0)
     cost_complete: bool
     unpriced_requests: int = Field(ge=0)
@@ -601,7 +608,7 @@ class OverviewSummaryView(BaseModel):
     technical_failures: int = Field(ge=0)
     policy_rejections: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
-    p95_completed_latency_ms: int | None = Field(ge=0)
+    p95_completed_shim_latency_ms: int | None = Field(ge=0)
     settled_spend_usd: Decimal | None = Field(ge=0)
     cost_complete: bool
     unpriced_requests: int = Field(ge=0)
@@ -1889,6 +1896,7 @@ async def list_requests(
                         "provider_finish_reasons",
                         "repeat_chain_length",
                         "ttft_ms",
+                        "shim_latency_ms",
                         "system_prompt_hash",
                         "deployment_kind",
                     )
@@ -1984,7 +1992,8 @@ async def export_requests(
                 "prompt_tokens",
                 "completion_tokens",
                 "cost_usd",
-                "latency_ms",
+                "request_duration_ms",
+                "shim_latency_ms",
                 "pii_detected",
                 "tags",
                 "cost_center",
@@ -2019,6 +2028,7 @@ async def export_requests(
                         row.completion_tokens,
                         Decimal(str(cost_usd)) if cost_usd is not None else None,
                         row.latency_ms,
+                        details.get("shim_latency_ms"),
                         row.pii_detected,
                         ",".join(row.tags or []),
                         row.cost_center,
@@ -2329,9 +2339,9 @@ def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
             .filter(lifecycle_status == "failed", spend_denied)
             .label("policy_failed"),
             func.percentile_cont(0.95)
-            .within_group(RequestLog.latency_ms)
+            .within_group(RequestLog.details["shim_latency_ms"].as_integer())
             .filter(lifecycle_status == "completed")
-            .label("p95_completed_latency_ms"),
+            .label("p95_completed_shim_latency_ms"),
             func.coalesce(
                 func.sum(func.coalesce(spend, Decimal("0"))), Decimal("0")
             ).label("settled_spend_usd"),
@@ -2351,7 +2361,7 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         for status_name in ("provider_error", "timeout", "internal_error", "failed")
     ) - int(row.policy_failed or 0)
     technical_requests = status_counts["completed"] + technical_failures
-    p95 = row.p95_completed_latency_ms
+    p95 = row.p95_completed_shim_latency_ms
     return RequestActivitySummaryView(
         requests=int(row.requests or 0),
         technical_success_rate=(
@@ -2359,7 +2369,7 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
             if technical_requests
             else None
         ),
-        p95_completed_latency_ms=round(float(p95)) if p95 is not None else None,
+        p95_completed_shim_latency_ms=round(float(p95)) if p95 is not None else None,
         settled_spend_usd=Decimal(str(row.settled_spend_usd or 0)),
         cost_complete=not row.unpriced_requests,
         unpriced_requests=int(row.unpriced_requests or 0),

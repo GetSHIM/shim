@@ -136,6 +136,7 @@ def _projection_values(message: OutboxMessage) -> dict:
                     "provider_finish_reasons",
                     "repeat_chain_length",
                     "ttft_ms",
+                    "shim_latency_ms",
                     "system_prompt_hash",
                     "deployment_kind",
                 )
