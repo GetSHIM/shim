@@ -105,6 +105,13 @@
         "name": "Claude Sonnet 5",
         "output_per_million": "10",
         "release_date": "2026-06-29"
+      },
+      "claude-sonnet-5-5": {
+        "input_per_million": "2.5",
+        "max_output_tokens": 128000,
+        "name": "Claude Sonnet 5.5",
+        "output_per_million": "10",
+        "release_date": "2026-09-28"
       }
     },
     "google": {
@@ -408,6 +415,16 @@
         "output_per_million": "10",
         "release_date": "2026-09-22"
       },
+      "gpt-6.1-sol": {
+        "input_per_million": "2.5",
+        "large_context_input_per_million": "5",
+        "large_context_output_per_million": "15",
+        "large_context_threshold": 272000,
+        "max_output_tokens": 128000,
+        "name": "GPT-6.1 Sol",
+        "output_per_million": "10",
+        "release_date": "2026-09-29"
+      },
       "gpt-daybreak-blue-latest": {
         "input_per_million": "5",
         "large_context_input_per_million": "10",
@@ -442,5 +459,5 @@
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:401468beb3641f8b727ae9d7"
+  "version": "models.dev:3f0d1cf9c6a0cb4b397e5d56"
 }
