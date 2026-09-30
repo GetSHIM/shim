@@ -1307,6 +1307,18 @@
         "title": "AuthConfigOidcConfig",
         "type": "object"
       },
+      "AuthResult": {
+        "properties": {
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "title": "AuthResult",
+        "type": "object"
+      },
       "AuthType": {
         "description": "Type of auth scheme. This enum is not supported in Gemini API.",
         "enum": [
@@ -2439,6 +2451,44 @@
         "title": "ConnectorUpdate",
         "type": "object"
       },
+      "ConsoleSession": {
+        "properties": {
+          "auth_mode": {
+            "enum": [
+              "supabase",
+              "oidc",
+              "keycloak"
+            ],
+            "title": "Auth Mode",
+            "type": "string"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/SessionCapabilities"
+          },
+          "team_grants": {
+            "items": {
+              "$ref": "#/components/schemas/SessionTeamGrant"
+            },
+            "title": "Team Grants",
+            "type": "array"
+          },
+          "user": {
+            "$ref": "#/components/schemas/SessionUser"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/SessionWorkspace"
+          }
+        },
+        "required": [
+          "user",
+          "workspace",
+          "auth_mode",
+          "capabilities",
+          "team_grants"
+        ],
+        "title": "ConsoleSession",
+        "type": "object"
+      },
       "Content": {
         "additionalProperties": false,
         "description": "Contains the multi-part content of a message.",
@@ -2815,6 +2865,26 @@
         ],
         "title": "DynamicRetrievalConfigMode",
         "type": "string"
+      },
+      "EmailInput": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "next": {
+            "default": "/dashboard",
+            "maxLength": 2048,
+            "title": "Next",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "EmailInput",
+        "type": "object"
       },
       "EnterpriseWebSearch": {
         "additionalProperties": false,
@@ -6481,6 +6551,78 @@
         "title": "PartialArg",
         "type": "object"
       },
+      "PasswordChange": {
+        "properties": {
+          "current_password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Current Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "password",
+          "current_password"
+        ],
+        "title": "PasswordChange",
+        "type": "object"
+      },
+      "PasswordInput": {
+        "properties": {
+          "password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "PasswordInput",
+        "type": "object"
+      },
+      "PasswordLogin": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "next": {
+            "default": "/dashboard",
+            "maxLength": 2048,
+            "title": "Next",
+            "type": "string"
+          },
+          "password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "PasswordLogin",
+        "type": "object"
+      },
       "PhishBlockThreshold": {
         "description": "Sites with confidence level chosen & above this value will be blocked from the search results.\n\nThis enum is not supported in Gemini API.",
         "enum": [
@@ -7030,6 +7172,60 @@
           }
         },
         "title": "RagRetrievalConfigRankingRankService",
+        "type": "object"
+      },
+      "Registration": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "next": {
+            "default": "/dashboard",
+            "maxLength": 2048,
+            "title": "Next",
+            "type": "string"
+          },
+          "organization": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization"
+          },
+          "password": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "password",
+          "email"
+        ],
+        "title": "Registration",
         "type": "object"
       },
       "ReplicatedVoiceConfig": {
@@ -8278,6 +8474,164 @@
         ],
         "title": "ServiceTier",
         "type": "string"
+      },
+      "SessionCapabilities": {
+        "properties": {
+          "cloud_billing": {
+            "title": "Cloud Billing",
+            "type": "boolean"
+          },
+          "evidence": {
+            "title": "Evidence",
+            "type": "boolean"
+          },
+          "hosted_invitations": {
+            "title": "Hosted Invitations",
+            "type": "boolean"
+          },
+          "model_deployment_required": {
+            "title": "Model Deployment Required",
+            "type": "boolean"
+          },
+          "model_deployments": {
+            "title": "Model Deployments",
+            "type": "boolean"
+          },
+          "provider_findings": {
+            "title": "Provider Findings",
+            "type": "boolean"
+          },
+          "reports": {
+            "title": "Reports",
+            "type": "boolean"
+          },
+          "reviews": {
+            "title": "Reviews",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "provider_findings",
+          "evidence",
+          "reviews",
+          "reports",
+          "hosted_invitations",
+          "cloud_billing",
+          "model_deployments",
+          "model_deployment_required"
+        ],
+        "title": "SessionCapabilities",
+        "type": "object"
+      },
+      "SessionTeamGrant": {
+        "properties": {
+          "role": {
+            "enum": [
+              "member",
+              "team_admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "team_id": {
+            "format": "uuid",
+            "title": "Team Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "team_id",
+          "role"
+        ],
+        "title": "SessionTeamGrant",
+        "type": "object"
+      },
+      "SessionUser": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "email_verified": {
+            "title": "Email Verified",
+            "type": "boolean"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "admin",
+              "member",
+              "auditor"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "user_metadata": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "User Metadata",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "full_name",
+          "role",
+          "email_verified",
+          "is_active",
+          "user_metadata"
+        ],
+        "title": "SessionUser",
+        "type": "object"
+      },
+      "SessionWorkspace": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SessionWorkspace",
+        "type": "object"
       },
       "SharedResultCreate": {
         "additionalProperties": false,
@@ -10181,6 +10535,47 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/auth/account/password": {
+      "post": {
+        "operationId": "change_password_api_v1_auth_account_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Password",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/api/v1/auth/callback": {
       "get": {
         "operationId": "callback_api_v1_auth_callback_get",
@@ -10200,6 +10595,71 @@
         ]
       }
     },
+    "/api/v1/auth/confirm": {
+      "get": {
+        "operationId": "confirm_api_v1_auth_confirm_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "token_hash",
+            "required": true,
+            "schema": {
+              "title": "Token Hash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "signup",
+                "recovery",
+                "invite",
+                "email"
+              ],
+              "title": "Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "next",
+            "required": false,
+            "schema": {
+              "default": "/dashboard",
+              "title": "Next",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "get": {
         "operationId": "login_api_v1_auth_login_get",
@@ -10212,6 +10672,26 @@
               "default": "/dashboard",
               "title": "Next",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "google",
+                    "github"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
             }
           }
         ],
@@ -10260,6 +10740,211 @@
         ]
       }
     },
+    "/api/v1/auth/password/login": {
+      "post": {
+        "operationId": "password_login_api_v1_auth_password_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordLogin"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Password Login",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/password/reset": {
+      "post": {
+        "operationId": "reset_password_api_v1_auth_password_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Password",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/recovery": {
+      "post": {
+        "operationId": "recovery_api_v1_auth_recovery_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recovery",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "operationId": "register_api_v1_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Registration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
+    "/api/v1/auth/resend": {
+      "post": {
+        "operationId": "resend_api_v1_auth_resend_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resend",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/api/v1/auth/session": {
       "get": {
         "operationId": "get_session_api_v1_auth_session_get",
@@ -10268,9 +10953,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Session Api V1 Auth Session Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ConsoleSession"
                 }
               }
             },
@@ -12119,6 +12802,18 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+            "in": "query",
+            "name": "end_exclusive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+              "title": "End Exclusive",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -12222,6 +12917,18 @@
               "title": "Format",
               "type": "string"
             }
+          },
+          {
+            "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+            "in": "query",
+            "name": "end_exclusive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+              "title": "End Exclusive",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -12308,6 +13015,18 @@
                 }
               ],
               "title": "End Date"
+            }
+          },
+          {
+            "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+            "in": "query",
+            "name": "end_exclusive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+              "title": "End Exclusive",
+              "type": "boolean"
             }
           }
         ],
@@ -13405,6 +14124,18 @@
               "title": "Offset",
               "type": "integer"
             }
+          },
+          {
+            "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+            "in": "query",
+            "name": "end_exclusive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+              "title": "End Exclusive",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -13597,6 +14328,18 @@
               ],
               "description": "Case-insensitive cost center substring.",
               "title": "Cost Center"
+            }
+          },
+          {
+            "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+            "in": "query",
+            "name": "end_exclusive",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Exclude the exact end timestamp; default preserves inclusive legacy bounds.",
+              "title": "End Exclusive",
+              "type": "boolean"
             }
           }
         ],

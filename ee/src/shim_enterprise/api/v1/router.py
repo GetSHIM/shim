@@ -11,6 +11,7 @@ from shim_enterprise.compliance.api import router as compliance_router
 from shim_enterprise.shared_results.api import authenticated_router, public_router
 
 from shim_enterprise.tenants.oidc import router as identity_router
+from shim_enterprise.tenants.hosted_auth import router as hosted_identity_router
 
 gateway_router = APIRouter()
 gateway_router.include_router(chat_router)
@@ -21,6 +22,7 @@ gateway_router.include_router(authenticated_router)
 
 management_router = APIRouter()
 management_router.include_router(identity_router)
+management_router.include_router(hosted_identity_router)
 management_router.include_router(
     management.router,
     prefix="/management",

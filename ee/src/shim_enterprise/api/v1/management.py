@@ -12,7 +12,7 @@ import io
 import json
 import logging
 import secrets
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -1848,6 +1848,12 @@ async def list_requests(
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    end_exclusive: Annotated[
+        bool,
+        Query(
+            description="Exclude the exact end timestamp; default preserves inclusive legacy bounds."
+        ),
+    ] = False,
 ) -> RequestActivityPage:
     generated_at = datetime.now(timezone.utc)
     tenant_id = _tenant_id(user)
@@ -1855,6 +1861,7 @@ async def list_requests(
         tenant_id,
         start=start,
         end=end,
+        end_exclusive=end_exclusive,
         status_filter=status_filter,
         model=model,
         request_id=request_id,
@@ -1942,6 +1949,12 @@ async def export_requests(
     ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    end_exclusive: Annotated[
+        bool,
+        Query(
+            description="Exclude the exact end timestamp; default preserves inclusive legacy bounds."
+        ),
+    ] = False,
 ) -> StreamingResponse:
     tenant_id = _tenant_id(user)
     end_at = _aware(end or datetime.now(timezone.utc))
@@ -1951,6 +1964,7 @@ async def export_requests(
         tenant_id,
         start=start_at,
         end=end_at,
+        end_exclusive=end_exclusive,
         status_filter=status_filter,
         model=model,
         request_id=request_id,
@@ -2063,6 +2077,12 @@ async def billing_usage(
     end_date: datetime | None = Query(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    end_exclusive: Annotated[
+        bool,
+        Query(
+            description="Exclude the exact end timestamp; default preserves inclusive legacy bounds."
+        ),
+    ] = False,
 ) -> BillingUsageView:
     end = _aware(end_date or datetime.now(timezone.utc))
     start = _aware(start_date or end - timedelta(days=30))
@@ -2072,6 +2092,7 @@ async def billing_usage(
         tenant_id=TenantId(_tenant_id(user)),
         start_at=start,
         end_at=end,
+        end_exclusive=end_exclusive,
     )
     if len(records) > MAX_BILLING_DAILY_ROWS:
         raise HTTPException(
@@ -2112,6 +2133,12 @@ async def billing_breakdown(
     limit: int = Query(default=100, ge=1, le=500),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    end_exclusive: Annotated[
+        bool,
+        Query(
+            description="Exclude the exact end timestamp; default preserves inclusive legacy bounds."
+        ),
+    ] = False,
 ) -> BillingBreakdownView:
     end = _aware(end_date or datetime.now(timezone.utc))
     start = _aware(start_date or end - timedelta(days=30))
@@ -2121,6 +2148,7 @@ async def billing_breakdown(
         tenant_id=TenantId(_tenant_id(user)),
         start_at=start,
         end_at=end,
+        end_exclusive=end_exclusive,
         group_by=group_by,
         limit=limit,
     )
@@ -2147,6 +2175,12 @@ async def export_billing_breakdown(
     format: Literal["csv", "pdf"] = Query(default="csv"),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
+    end_exclusive: Annotated[
+        bool,
+        Query(
+            description="Exclude the exact end timestamp; default preserves inclusive legacy bounds."
+        ),
+    ] = False,
 ) -> Response:
     end = _aware(end_date or datetime.now(timezone.utc))
     start = _aware(start_date or end - timedelta(days=30))
@@ -2156,6 +2190,7 @@ async def export_billing_breakdown(
         tenant_id=TenantId(_tenant_id(user)),
         start_at=start,
         end_at=end,
+        end_exclusive=end_exclusive,
         group_by=group_by,
         limit=MAX_BILLING_BREAKDOWN_ROWS + 1,
     )
@@ -2192,6 +2227,7 @@ def _request_filters(
     pii_detected: bool | None,
     tag: str | None,
     cost_center: str | None,
+    end_exclusive: bool = False,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -2217,7 +2253,11 @@ def _request_filters(
     if start_at is not None:
         filters.append(RequestLog.timestamp >= start_at)
     if end_at is not None:
-        filters.append(RequestLog.timestamp <= end_at)
+        filters.append(
+            RequestLog.timestamp < end_at
+            if end_exclusive
+            else RequestLog.timestamp <= end_at
+        )
     if status_filter is not None:
         lifecycle_status = _request_lifecycle_status_expression()
         filters.append(

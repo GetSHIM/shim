@@ -40,7 +40,7 @@ class Settings(CommunitySettings):
     VAULT_KV_MOUNT: str = Field(default="secret", pattern=r"^[A-Za-z0-9_-]+$")
     VAULT_NAMESPACE: str | None = None
 
-    AUTH_MODE: Literal["supabase", "oidc"] = "supabase"
+    AUTH_MODE: Literal["supabase", "oidc", "keycloak"] = "supabase"
     SUPABASE_URL: str | None = None
     OIDC_ISSUER_URL: str | None = Field(default=None, max_length=512)
     OIDC_CLIENT_ID: str | None = None
@@ -134,13 +134,29 @@ class Settings(CommunitySettings):
             )
         if self.AUTH_MODE == "supabase" and not self.SUPABASE_URL:
             raise ValueError("supabase authentication requires SUPABASE_URL")
-        if self.AUTH_MODE == "oidc":
+        if self.AUTH_MODE == "supabase" and self.DASHBOARD_ORIGIN:
+            for name in ("SUPABASE_URL", "DASHBOARD_ORIGIN"):
+                url = urlsplit(getattr(self, name))
+                if (
+                    url.scheme not in {"http", "https"}
+                    or not url.hostname
+                    or url.username
+                    or url.password
+                    or url.query
+                    or url.fragment
+                    or url.path not in {"", "/"}
+                    or self.ENVIRONMENT == "production"
+                    and url.scheme != "https"
+                ):
+                    raise ValueError(
+                        f"{name} must be an absolute origin; production requires HTTPS"
+                    )
+        if self.AUTH_MODE in {"oidc", "keycloak"}:
             for name in (
                 "OIDC_ISSUER_URL",
                 "OIDC_CLIENT_ID",
                 "OIDC_CLIENT_SECRET",
                 "OIDC_REDIRECT_URI",
-                "OIDC_ORGANIZATION_ID",
                 "DASHBOARD_ORIGIN",
             ):
                 if not getattr(self, name):
@@ -149,7 +165,9 @@ class Settings(CommunitySettings):
                 raise ValueError(
                     "OIDC_API_AUDIENCE must differ from the login client to reject ID tokens"
                 )
-            if not self.OIDC_GROUP_ROLE_MAP:
+            if self.AUTH_MODE == "oidc" and not self.OIDC_ORGANIZATION_ID:
+                raise ValueError("oidc authentication requires OIDC_ORGANIZATION_ID")
+            if self.AUTH_MODE == "oidc" and not self.OIDC_GROUP_ROLE_MAP:
                 raise ValueError(
                     "OIDC_GROUP_ROLE_MAP must grant at least one group access"
                 )

@@ -11,7 +11,7 @@ import ssl
 from hashlib import sha256
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -86,10 +86,32 @@ def create_enterprise_app() -> FastAPI:
         StarletteHTTPException,
         gateway_exception_handler,
     )
-    application.add_exception_handler(
-        RequestValidationError,
-        gateway_exception_handler,
-    )
+
+    async def validation_error(request: Request, exc: Exception) -> Response:
+        if request.url.path.startswith(settings.API_PREFIX + "/") and isinstance(
+            exc, RequestValidationError
+        ):
+            return JSONResponse(
+                {
+                    "detail": [
+                        {field: item[field] for field in ("loc", "msg", "type")}
+                        for item in exc.errors()
+                    ]
+                },
+                status_code=422,
+                headers={"Cache-Control": "private, no-store"},
+            )
+        return await gateway_exception_handler(request, exc)
+
+    application.add_exception_handler(RequestValidationError, validation_error)
+
+    @application.middleware("http")
+    async def private_control_plane(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(settings.API_PREFIX + "/"):
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     install_oidc(application)
     application.state.cache = cache
     application.state.model_catalog = DeploymentResolver(AsyncSessionLocal).catalog

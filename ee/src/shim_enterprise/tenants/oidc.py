@@ -8,9 +8,9 @@ import json
 import logging
 import secrets
 import time
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlencode, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 import jwt
 from joserfc.errors import JoseError
-from pydantic import EmailStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, EmailStr, TypeAdapter, ValidationError
 from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -29,7 +29,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
-from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.models import Organization, TeamMembership, User
 from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
 router = APIRouter(prefix="/auth", tags=["identity"])
@@ -49,9 +49,17 @@ ASYMMETRIC_ALGORITHMS = {
 
 
 def install_oidc(application: Any) -> None:
-    if settings.AUTH_MODE != "oidc":
-        return
     logging.getLogger("uvicorn.access").addFilter(_redact_login_query)
+    application.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.SECRET_KEY,
+        session_cookie="shim_login",
+        max_age=300,
+        same_site="lax",
+        https_only=settings.ENVIRONMENT == "production",
+    )
+    if settings.AUTH_MODE == "supabase":
+        return
     oauth = OAuth()
     application.state.oidc = oauth.register(
         "customer",
@@ -65,14 +73,6 @@ def install_oidc(application: Any) -> None:
             "follow_redirects": False,
         },
     )
-    application.add_middleware(
-        SessionMiddleware,
-        secret_key=settings.SECRET_KEY,
-        session_cookie="shim_login",
-        max_age=300,
-        same_site="lax",
-        https_only=settings.ENVIRONMENT == "production",
-    )
 
 
 def _redact_login_query(record: logging.LogRecord) -> bool:
@@ -84,6 +84,8 @@ def _redact_login_query(record: logging.LogRecord) -> bool:
 
 
 def require_origin(request: Request) -> None:
+    if not settings.DASHBOARD_ORIGIN:
+        raise HTTPException(503, "Console origin is not configured")
     if request.headers.get("origin") != str(settings.DASHBOARD_ORIGIN).rstrip("/"):
         raise HTTPException(403, "Same-origin request required")
 
@@ -110,7 +112,7 @@ def _session_key(session_id: str) -> str:
 
 
 async def _client(request: Request) -> Any:
-    if settings.AUTH_MODE != "oidc":
+    if settings.AUTH_MODE not in {"oidc", "keycloak"}:
         raise HTTPException(404, "OIDC is not configured")
     client = request.app.state.oidc
     metadata = await client.load_server_metadata()
@@ -152,6 +154,17 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         or not subject.isascii()
     ):
         raise HTTPException(401, "Invalid OIDC identity")
+    if settings.AUTH_MODE == "keycloak":
+        if claims.get("email_verified") is not True:
+            raise HTTPException(403, "A verified identity is required")
+        user = await session.scalar(
+            select(User).where(User.oidc_issuer == issuer, User.oidc_subject == subject)
+        )
+        if user is None or not user.is_active or user.organization_id is None:
+            raise HTTPException(
+                403, "Identity is not linked to an active workspace member"
+            )
+        return user
     groups = identity_groups(claims)
     roles = [
         settings.OIDC_GROUP_ROLE_MAP[group]
@@ -231,28 +244,59 @@ async def _save_session(
         raise HTTPException(401, "Identity session was revoked")
 
 
-@router.get("/login")
-async def login(request: Request, next: str = "/dashboard") -> Response:
-    client = await _client(request)
-    parsed = urlsplit(next)
+def validate_return_path(next_path: str) -> None:
+    parsed = urlsplit(next_path)
     if (
-        not next.startswith("/")
-        or next.startswith("//")
-        or "\\" in next
+        not next_path.startswith("/")
+        or next_path.startswith("//")
+        or "\\" in next_path
         or parsed.netloc
         or parsed.scheme
-        or any(ord(c) < 32 for c in next)
+        or any(ord(c) < 32 for c in next_path)
     ):
         raise HTTPException(400, "Invalid return path")
+
+
+def set_session_cookie(response: Response, session_id: str, expires_at: float) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_id,
+        httponly=True,
+        secure=settings.ENVIRONMENT == "production",
+        samesite="lax",
+        max_age=int(expires_at - time.time()),
+        path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+
+
+@router.get("/login")
+async def login(
+    request: Request,
+    next: str = "/dashboard",
+    provider: Literal["google", "github"] | None = None,
+) -> Response:
+    validate_return_path(next)
+    if settings.AUTH_MODE == "supabase":
+        from shim_enterprise.tenants.hosted_auth import oauth_login
+
+        return await oauth_login(request, next, provider)
+    client = await _client(request)
     request.session.clear()
     request.session["next"] = next
-    return await client.authorize_redirect(request, settings.OIDC_REDIRECT_URI)
+    response = await client.authorize_redirect(request, settings.OIDC_REDIRECT_URI)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/callback")
 async def callback(
     request: Request, session: AsyncSession = Depends(get_db)
 ) -> Response:
+    if settings.AUTH_MODE == "supabase":
+        from shim_enterprise.tenants.hosted_auth import callback as hosted_callback
+
+        return await hosted_callback(request, session)
     try:
         client = await _client(request)
         token = await client.authorize_access_token(
@@ -290,20 +334,11 @@ async def callback(
     response = RedirectResponse(
         str(settings.DASHBOARD_ORIGIN).rstrip("/") + next_path, status_code=303
     )
-    response.set_cookie(
-        SESSION_COOKIE,
-        session_id,
-        httponly=True,
-        secure=settings.ENVIRONMENT == "production",
-        samesite="lax",
-        max_age=int(data["expires_at"] - time.time()),
-        path="/",
-    )
-    response.headers["Cache-Control"] = "no-store"
+    set_session_cookie(response, session_id, data["expires_at"])
     return response
 
 
-async def session_claims(request: Request) -> dict[str, Any]:
+async def session_data(request: Request) -> dict[str, Any]:
     session_id = request.cookies.get(SESSION_COOKIE)
     if not session_id or len(session_id) > 128:
         raise HTTPException(401, "Session expired")
@@ -337,46 +372,77 @@ async def session_claims(request: Request) -> dict[str, Any]:
                     time.time() - data["checked_at"] < settings.OIDC_REVALIDATE_SECONDS
                     and data["claims"]["exp"] > time.time()
                 ):
-                    return data["claims"]
-                client = await _client(request)
-                refresh_token = data["token"].get("refresh_token")
-                if not refresh_token:
-                    raise HTTPException(
-                        401, "Sign in again to revalidate identity membership"
+                    return data
+                if data.get("provider") == "supabase":
+                    if settings.AUTH_MODE != "supabase":
+                        raise HTTPException(401, "Session provider changed")
+                    from shim_enterprise.tenants.hosted_auth import refresh_session
+
+                    data = await refresh_session(data)
+                else:
+                    client = await _client(request)
+                    refresh_token = data["token"].get("refresh_token")
+                    if not refresh_token:
+                        raise HTTPException(
+                            401, "Sign in again to revalidate identity membership"
+                        )
+                    token = await client.fetch_access_token(
+                        grant_type="refresh_token", refresh_token=refresh_token
                     )
-                token = await client.fetch_access_token(
-                    grant_type="refresh_token", refresh_token=refresh_token
-                )
-                claims = dict(
-                    await client.parse_id_token(
-                        token, nonce=None, claims_options=_claims_options(), leeway=0
+                    claims = dict(
+                        await client.parse_id_token(
+                            token,
+                            nonce=None,
+                            claims_options=_claims_options(),
+                            leeway=0,
+                        )
                     )
-                )
-                if (claims["sub"], claims["iss"]) != (
-                    data["claims"]["sub"],
-                    data["claims"]["iss"],
-                ):
-                    raise HTTPException(401, "Session identity changed")
-                data.update(
-                    token=dict(
-                        token, refresh_token=token.get("refresh_token", refresh_token)
-                    ),
-                    claims=claims,
-                    checked_at=time.time(),
-                )
+                    if (claims["sub"], claims["iss"]) != (
+                        data["claims"]["sub"],
+                        data["claims"]["iss"],
+                    ):
+                        raise HTTPException(401, "Session identity changed")
+                    data.update(
+                        token=dict(
+                            token,
+                            refresh_token=token.get("refresh_token", refresh_token),
+                        ),
+                        claims=claims,
+                        checked_at=time.time(),
+                    )
                 await _save_session(request, key, data)
-            except (OAuthError, JoseError, KeyError, ValueError, HTTPException):
+            except HTTPException as exc:
+                if exc.status_code not in {400, 401, 403}:
+                    raise
+                await redis.delete(key)
+                raise HTTPException(
+                    401, "Identity session is no longer authorized"
+                ) from None
+            except OAuthError as exc:
+                if exc.error in {"temporarily_unavailable", "server_error"}:
+                    raise HTTPException(
+                        503, "Identity verification unavailable"
+                    ) from exc
+                await redis.delete(key)
+                raise HTTPException(
+                    401, "Identity session is no longer authorized"
+                ) from None
+            except (JoseError, KeyError, ValueError):
                 await redis.delete(key)
                 raise HTTPException(
                     401, "Identity session is no longer authorized"
                 ) from None
             finally:
                 await lock.release()
-        return data["claims"]
+        return data
     except (InvalidToken, ValueError, KeyError) as exc:
         raise HTTPException(401, "Invalid identity session") from exc
     except (RedisError, httpx.HTTPError) as exc:
         raise HTTPException(503, "Identity verification unavailable") from exc
+
+
+async def session_claims(request: Request) -> dict[str, Any]:
+    return (await session_data(request))["claims"]
 
 
 async def access_token_claims(request: Request, token: str) -> dict[str, Any]:
@@ -428,22 +494,99 @@ async def current_oidc_user(
     return await synchronize_user(session, claims)
 
 
-@router.get("/session")
+class SessionUser(BaseModel):
+    id: UUID
+    email: EmailStr
+    full_name: str | None
+    role: Literal["owner", "admin", "member", "auditor"]
+    email_verified: bool
+    is_active: bool
+    user_metadata: dict[str, str | None]
+
+
+class SessionWorkspace(BaseModel):
+    id: UUID
+    name: str
+
+
+class SessionCapabilities(BaseModel):
+    provider_findings: bool
+    evidence: bool
+    reviews: bool
+    reports: bool
+    hosted_invitations: bool
+    cloud_billing: bool
+    model_deployments: bool
+    model_deployment_required: bool
+
+
+class SessionTeamGrant(BaseModel):
+    team_id: UUID
+    role: Literal["member", "team_admin"]
+
+
+class ConsoleSession(BaseModel):
+    user: SessionUser
+    workspace: SessionWorkspace
+    auth_mode: Literal["supabase", "oidc", "keycloak"]
+    capabilities: SessionCapabilities
+    team_grants: list[SessionTeamGrant]
+
+
+@router.get("/session", response_model=ConsoleSession)
 async def get_session(
     request: Request, response: Response, session: AsyncSession = Depends(get_db)
-) -> dict[str, Any]:
-    if settings.AUTH_MODE != "oidc":
-        raise HTTPException(404, "OIDC is not configured")
-    user = await current_oidc_user(request, session)
+) -> ConsoleSession:
+    from shim_enterprise.api.enterprise_deps import get_invite_user
+
+    user = await get_invite_user(request, None, session)
+    organization = await session.get(Organization, user.organization_id)
+    if organization is None:
+        raise HTTPException(403, "Workspace is unavailable")
+    grants = (
+        await session.scalars(
+            select(TeamMembership)
+            .where(
+                TeamMembership.organization_id == user.organization_id,
+                TeamMembership.user_id == user.id,
+            )
+            .order_by(TeamMembership.team_id)
+        )
+    ).all()
+    cloud = getattr(request.app.state, "cloud_settings", None)
     response.headers["Cache-Control"] = "no-store"
-    return {
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-            "user_metadata": {"full_name": user.full_name},
-            "role": user.role,
-        }
-    }
+    return ConsoleSession(
+        user=SessionUser(
+            id=user.id,
+            email=user.email,
+            full_name=user.full_name,
+            role=cast(Literal["owner", "admin", "member", "auditor"], user.role),
+            email_verified=user.is_verified,
+            is_active=user.is_active,
+            user_metadata={"full_name": user.full_name},
+        ),
+        workspace=SessionWorkspace(id=organization.id, name=organization.name),
+        auth_mode=settings.AUTH_MODE,
+        capabilities=SessionCapabilities(
+            provider_findings=user.is_active,
+            evidence=user.is_active and settings.AI_ACT_AUDIT_ENABLED,
+            reviews=user.is_active and settings.AI_ACT_AUDIT_ENABLED,
+            reports=user.is_active,
+            hosted_invitations=settings.AUTH_MODE == "supabase",
+            cloud_billing=bool(
+                user.is_active and cloud and cloud.CLOUD_BILLING_ENABLED
+            ),
+            model_deployments=user.is_active and user.role in {"owner", "admin"},
+            model_deployment_required=settings.MODEL_DEPLOYMENT_REQUIRED,
+        ),
+        team_grants=[
+            SessionTeamGrant(
+                team_id=grant.team_id,
+                role=cast(Literal["member", "team_admin"], grant.role),
+            )
+            for grant in grants
+        ],
+    )
 
 
 @router.post("/logout")
@@ -451,7 +594,21 @@ async def logout(request: Request) -> Response:
     require_origin(request)
     session_id = request.cookies.get(SESSION_COOKIE)
     if session_id:
-        await _redis(request).delete(_session_key(session_id))
+        redis = _redis(request)
+        stored = await redis.getdel(_session_key(session_id))
+        if settings.AUTH_MODE == "supabase" and stored:
+            from shim_enterprise.tenants.hosted_auth import provider_request
+
+            try:
+                data = json.loads(_cipher().decrypt(stored.encode()))
+                await provider_request(
+                    "POST",
+                    "logout",
+                    token=data["token"]["access_token"],
+                    params={"scope": "local"},
+                )
+            except (HTTPException, InvalidToken, ValueError, KeyError):
+                pass
     request.session.clear()
     try:
         client = await _client(request)

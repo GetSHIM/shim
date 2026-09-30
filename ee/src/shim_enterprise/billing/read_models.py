@@ -77,6 +77,7 @@ class BillingReadModels:
         tenant_id: TenantId,
         start_at: datetime,
         end_at: datetime,
+        end_exclusive: bool = False,
     ) -> list[DailyUsage]:
         if start_at.tzinfo is None or end_at.tzinfo is None:
             raise ValueError("billing read boundaries must be timezone-aware")
@@ -124,7 +125,9 @@ class BillingReadModels:
             .where(
                 UsageLedger.organization_id == tenant_id,
                 UsageLedger.created_at >= start_at,
-                UsageLedger.created_at <= end_at,
+                UsageLedger.created_at < end_at
+                if end_exclusive
+                else UsageLedger.created_at <= end_at,
                 UsageLedger.event_type.in_(("quota_settlement", "spend_settlement")),
             )
             .group_by(usage_date, UsageLedger.requested_model)
@@ -152,6 +155,7 @@ class BillingReadModels:
         tenant_id: TenantId,
         start_at: datetime,
         end_at: datetime,
+        end_exclusive: bool = False,
         group_by: BillingBreakdownGroup,
         limit: int | None,
     ) -> list[BillingBreakdown]:
@@ -248,7 +252,9 @@ class BillingReadModels:
                 RequestLifecycle.organization_id == tenant_id,
                 UsageLedger.organization_id == tenant_id,
                 RequestLifecycle.reconciled_at >= start_at,
-                RequestLifecycle.reconciled_at <= end_at,
+                RequestLifecycle.reconciled_at < end_at
+                if end_exclusive
+                else RequestLifecycle.reconciled_at <= end_at,
                 UsageLedger.event_type.in_(("quota_settlement", "spend_settlement")),
             )
             .group_by(group_key)

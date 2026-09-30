@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.database import AsyncSessionLocal, get_db
 from shim_enterprise.core.config import settings
-from shim_enterprise.tenants.oidc import current_oidc_user
+from shim_enterprise.tenants.oidc import SESSION_COOKIE, current_oidc_user, session_data
 from shim.gateway.auth import authentication_error, select_gateway_credential
 from shim.gateway.contracts.ids import ApiKeyId, UserId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
@@ -203,12 +203,19 @@ async def get_scan_principal(
     """Authenticate scan callers without accepting caller-supplied tenancy."""
 
     token = select_gateway_credential(request.headers)
-    if settings.AUTH_MODE == "oidc" and (
+    if settings.AUTH_MODE in {"oidc", "keycloak"} and (
         token is None
         or not token.startswith(API_KEY_PREFIX)
         and "x-shim-key" not in request.headers
     ):
         user = await current_oidc_user(request, session, token)
+        return AuthenticatedPrincipal(
+            actor_type="user_jwt",
+            user_id=UserId(user.id),
+            authenticated_at=datetime.now(timezone.utc),
+        )
+    if token is None and request.cookies.get(SESSION_COOKIE):
+        user = await get_current_user(request, None, session)
         return AuthenticatedPrincipal(
             actor_type="user_jwt",
             user_id=UserId(user.id),
@@ -257,7 +264,7 @@ async def get_invite_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    if settings.AUTH_MODE == "oidc":
+    if settings.AUTH_MODE in {"oidc", "keycloak"}:
         if "/invites" in request.url.path:
             raise HTTPException(
                 403, "OIDC membership is managed by your identity provider"
@@ -265,6 +272,14 @@ async def get_invite_user(
         return await current_oidc_user(
             request, session, bearer.credentials if bearer else None
         )
+    if bearer is None and request.cookies.get(SESSION_COOKIE):
+        data = await session_data(request)
+        if data.get("provider") != "supabase":
+            raise credentials_exception
+        user = await _load_jwt_user(data["token"]["access_token"], session)
+        if user is None or str(user.id) != data["claims"]["sub"]:
+            raise credentials_exception
+        return user
     if bearer is None:
         raise credentials_exception
 
