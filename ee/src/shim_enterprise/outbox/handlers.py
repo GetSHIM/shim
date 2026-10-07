@@ -96,10 +96,12 @@ async def deliver_budget_alert(message: OutboxMessage) -> None:
         SecretRef(secret_ref),
         expected_purpose="budget-alert-endpoint",
     )
+    # The delivery target, with its secret-store reference, stays inside shim.
+    alert = {key: value for key, value in payload.items() if key != "target"}
     body = (
-        {"text": _budget_text(payload)}
+        {"text": _budget_text(alert)}
         if target["kind"] == "slack"
-        else {"event": BUDGET_THRESHOLD, "payload": payload}
+        else {"event": BUDGET_THRESHOLD, "payload": alert}
     )
     try:
         await _post_forward_url(
