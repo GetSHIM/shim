@@ -77,6 +77,11 @@ disconnect. `completed` lifecycle status means the transport completed; a
 native truncation/refusal reason can still accompany it. `[DONE]` does not
 fabricate a finish reason. Missing provider usage does not erase completion
 facts or TTFT; the existing `usage_estimated` field describes accounting fallback.
+OpenAI chat streams on catalog routes are metered from provider usage: when the
+caller did not set `stream_options.include_usage`, shim asks for it upstream and
+keeps the extra usage chunk away from the caller, so those requests are no
+longer estimated. Registry targets are not asked, because an OpenAI-compatible
+server is not guaranteed to accept the option.
 
 ## System-instruction hashing
 

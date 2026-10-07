@@ -28,6 +28,7 @@ from shim.gateway.pipeline.provider_execution import (
     select_headers,
     status_error_code,
 )
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.streaming.sse import encode_data, encode_responses_event
 from shim.privacy.continuation import (
     PrivacyContinuationStore,
@@ -126,6 +127,21 @@ class OpenAIExecution:
                 else client.chat.completions.create
             )
             kwargs = sdk_create_kwargs(create, prepared.payload)
+            client_options = prepared.payload.get("stream_options")
+            meter_usage = (
+                prepared.protocol == "chat"
+                and prepared.stream
+                and prepared.target is None
+                and not (
+                    isinstance(client_options, dict)
+                    and client_options.get("include_usage") is True
+                )
+            )
+            if meter_usage:
+                kwargs["stream_options"] = {
+                    **(client_options if isinstance(client_options, dict) else {}),
+                    "include_usage": True,
+                }
             headers = select_headers(
                 getattr(invocation, "headers", {}),
                 _OPENAI_HEADERS,
@@ -162,7 +178,9 @@ class OpenAIExecution:
             events = (
                 self._responses_stream(result, prepared, state, close_stream, circuit)
                 if prepared.protocol == "responses"
-                else self._chat_stream(result, prepared, state, close_stream, circuit)
+                else self._chat_stream(
+                    result, prepared, state, close_stream, circuit, meter_usage
+                )
             )
             return ProviderStream(
                 events=events,
@@ -314,7 +332,8 @@ class OpenAIExecution:
         state: dict[str, bool],
         close_stream: Callable[[], Awaitable[None]],
         circuit: CircuitBreaker,
-    ) -> AsyncIterator[bytes]:
+        meter_usage: bool,
+    ) -> AsyncIterator[bytes | MeterOnly]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
             prepared.privacy.verification_map,
@@ -343,7 +362,10 @@ class OpenAIExecution:
                     await circuit.record_success()
                     state["recorded"] = True
                 restored = restorer.restore_chat_chunk(payload)
-                yield encode_data(restored)
+                if meter_usage and not payload.get("choices") and payload.get("usage"):
+                    yield MeterOnly(encode_data(restored))
+                else:
+                    yield encode_data(restored)
             if len(finished_choices) >= expected_choices:
                 yield b"data: [DONE]\n\n"
             else:

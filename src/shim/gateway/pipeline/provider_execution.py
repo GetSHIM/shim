@@ -14,6 +14,7 @@ import httpx
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
     PROVIDER_LATENCY_MS,
@@ -44,7 +45,7 @@ class ProviderNonStream:
 
 @dataclass(frozen=True, slots=True)
 class ProviderStream:
-    events: AsyncIterator[bytes]
+    events: AsyncIterator[bytes | MeterOnly]
     request_id: str | None
     close: Callable[[], Awaitable[None]]
     prefetched_events: tuple[bytes, ...] = ()

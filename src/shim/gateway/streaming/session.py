@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from inspect import isawaitable
 from time import monotonic
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 _PROVIDER_CLOSE_TIMEOUT_SECONDS = 5.0
 
 TerminalObserver = Callable[[StreamTerminalStatus], None]
+
+
+@dataclass(frozen=True, slots=True)
+class MeterOnly:
+    """Provider bytes the meter must see and the client did not ask for."""
+
+    data: bytes
 
 
 class StreamSession:
@@ -66,7 +74,7 @@ class StreamSession:
             parent_context if parent_context is not None else otel_context.get_current()
         )
         self._terminal_observer = terminal_observer
-        self._provider_stream: AsyncIterator[bytes] | None = None
+        self._provider_stream: AsyncIterator[bytes | MeterOnly] | None = None
         self._provider_close: Callable[[], Awaitable[None]] | None = None
         self._premetered_events: list[bytes] = []
         self._provider_closed = False
@@ -86,7 +94,7 @@ class StreamSession:
 
     def bind(
         self,
-        provider_stream: AsyncIterator[bytes],
+        provider_stream: AsyncIterator[bytes | MeterOnly],
         *,
         close: Callable[[], Awaitable[None]] | None = None,
         prefetched_events: tuple[bytes, ...] = (),
@@ -201,6 +209,9 @@ class StreamSession:
         if self._provider_stream is None:
             return
         async for chunk in self._provider_stream:
+            if isinstance(chunk, MeterOnly):
+                self.meter.observe_sse(chunk.data)
+                continue
             if self._premetered_events and chunk == self._premetered_events[0]:
                 self._premetered_events.pop(0)
             else:
