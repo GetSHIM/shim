@@ -316,6 +316,12 @@ async def get_org_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+async def get_org_reader(user: User = Depends(get_current_user)) -> User:
+    if user.role not in {"owner", "admin", "auditor"}:
+        raise HTTPException(status_code=403, detail="Organization reader required")
+    return user
+
+
 async def get_org_owner(user: User = Depends(get_current_user)) -> User:
     if user.role != "owner":
         raise HTTPException(status_code=403, detail="Organization owner required")

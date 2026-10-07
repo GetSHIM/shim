@@ -567,3 +567,22 @@ async def test_database_outage_answers_every_provider_in_its_native_shape() -> N
     assert message.json()["type"] == "error"
     assert message.json()["error"]["type"] == "api_error"
     assert gemini.json()["error"]["status"] == "UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [("owner", True), ("admin", True), ("auditor", True), ("member", False)],
+)
+async def test_org_reader_admits_owner_admin_and_auditor(
+    role: str, allowed: bool
+) -> None:
+    user = SimpleNamespace(role=role)
+
+    if allowed:
+        assert await enterprise_deps.get_org_reader(user) is user  # type: ignore[arg-type]
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await enterprise_deps.get_org_reader(user)  # type: ignore[arg-type]
+        assert refused.value.status_code == 403
+        assert refused.value.detail == "Organization reader required"
