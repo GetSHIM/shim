@@ -375,6 +375,48 @@ async def test_compliance_email_uses_fixed_resend_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_budget_webhook_receives_the_alert_without_its_delivery_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id = uuid4()
+    alert = {
+        "organization_id": str(organization_id),
+        "budget_id": str(uuid4()),
+        "scope_type": "tag",
+        "scope_value": "checkout",
+        "period": "2026-10",
+        "threshold": 0.8,
+        "percent_used": 81.0,
+    }
+    event = OutboxMessage(
+        id=uuid4(),
+        organization_id=organization_id,
+        event_type=handlers.BUDGET_THRESHOLD,
+        aggregate_type="budget",
+        aggregate_id=alert["budget_id"],
+        idempotency_key="budget:alert",
+        payload={
+            **alert,
+            "target": {"kind": "webhook", "secret_ref": "fernet:v2:budget-target"},
+        },
+        attempt_count=1,
+        created_at=datetime.now(timezone.utc),
+    )
+    store = SimpleNamespace(
+        get_secret=AsyncMock(return_value="https://alerts.example.com/shim")
+    )
+    posted = AsyncMock()
+    monkeypatch.setattr(handlers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(handlers, "_post_forward_url", posted)
+
+    await handlers.deliver_budget_alert(event)
+
+    content = posted.await_args.kwargs["content"]
+    assert json.loads(content) == {"event": handlers.BUDGET_THRESHOLD, "payload": alert}
+    assert b"budget-target" not in content
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("target_kind", ["siem_webhook", "slack", "email"])
 async def test_tenant_policy_delivery_keeps_its_body_shape(
     monkeypatch: pytest.MonkeyPatch, target_kind: str
