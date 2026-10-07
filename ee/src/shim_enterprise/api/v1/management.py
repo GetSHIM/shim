@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.api.enterprise_deps import (
+    ORGANIZATION_READERS,
     get_current_user,
     get_invite_user,
     get_org_admin,
@@ -1216,13 +1217,8 @@ async def list_api_keys(
         ApiKey.organization_id == tenant_id,
         ApiKey.is_active.is_(True),
     )
-    if user.role not in {"owner", "admin", "auditor"}:
-        statement = statement.where(
-            or_(
-                ApiKey.user_id == user.id,
-                ApiKey.team_id.in_(member_team_ids(user, administer=True)),
-            )
-        )
+    if user.role not in ORGANIZATION_READERS:
+        statement = statement.where(_own_or_administered_key(user))
     now = datetime.now(timezone.utc)
     return [
         item
@@ -1584,7 +1580,7 @@ async def tier_info(
 async def list_budgets(
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> list[CostBudget]:
     statement = (
@@ -1780,7 +1776,7 @@ async def dashboard_overview(
         default=None,
         description="Exclusive UTC end; defaults to the current time.",
     ),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> OverviewDashboardView:
     generated_at = datetime.now(timezone.utc)
@@ -1870,7 +1866,7 @@ async def list_requests(
     generated_at = datetime.now(timezone.utc)
     tenant_id = _tenant_id(user)
     filters = _request_filters(
-        tenant_id,
+        user,
         start=start,
         end=end,
         status_filter=status_filter,
@@ -1967,7 +1963,7 @@ async def export_requests(
     start_at = _aware(start or end_at - timedelta(days=30))
     _validate_sync_window(start_at, end_at)
     filters = _request_filters(
-        tenant_id,
+        user,
         start=start_at,
         end=end_at,
         status_filter=status_filter,
@@ -2082,7 +2078,7 @@ async def export_requests(
 async def billing_usage(
     start_date: datetime | None = Query(default=None),
     end_date: datetime | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> BillingUsageView:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -2131,7 +2127,7 @@ async def billing_breakdown(
         ),
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> BillingBreakdownView:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -2166,7 +2162,7 @@ async def export_billing_breakdown(
     end_date: datetime | None = Query(default=None),
     group_by: BillingBreakdownGroup = Query(default="model"),
     format: Literal["csv", "pdf"] = Query(default="csv"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -2202,8 +2198,15 @@ async def export_billing_breakdown(
     )
 
 
+def _own_or_administered_key(user: User) -> Any:
+    return or_(
+        ApiKey.user_id == user.id,
+        ApiKey.team_id.in_(member_team_ids(user, administer=True)),
+    )
+
+
 def _request_filters(
-    tenant_id: UUID,
+    user: User,
     *,
     start: datetime | None,
     end: datetime | None,
@@ -2234,7 +2237,17 @@ def _request_filters(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    tenant_id = _tenant_id(user)
     filters = [RequestLog.organization_id == tenant_id]
+    if user.role not in ORGANIZATION_READERS:
+        filters.append(
+            RequestLog.api_key_id.in_(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id,
+                    _own_or_administered_key(user),
+                )
+            )
+        )
     if start_at is not None:
         filters.append(RequestLog.timestamp >= start_at)
     if end_at is not None:

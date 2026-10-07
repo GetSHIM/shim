@@ -1289,7 +1289,9 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
         cost_center=None,
         limit=10,
         offset=0,
-        user=SimpleNamespace(organization_id=test_api_key.organization_id),
+        user=SimpleNamespace(
+            role="owner", organization_id=test_api_key.organization_id
+        ),
         session=db,
     )
     summary_row = (

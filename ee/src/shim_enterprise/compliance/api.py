@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from shim_enterprise.api.enterprise_deps import get_current_user, get_org_admin
+from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.compliance.adapters import (
     ProviderConfigError,
     UnknownProviderError,
@@ -338,7 +338,7 @@ async def create_connector(
 
 @router.get("/connectors", response_model=list[ConnectorRead])
 async def list_connectors(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> list[ConnectorRead]:
     tenant_id = _tenant_id(current_user)
@@ -355,7 +355,7 @@ async def list_connectors(
 @router.get("/connectors/{connector_id}", response_model=ConnectorRead)
 async def get_connector(
     connector_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> ConnectorRead:
     connector = await _load_connector(session, _tenant_id(current_user), connector_id)
@@ -500,7 +500,7 @@ async def list_findings(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> FindingPage:
     statement = _finding_scope(_tenant_id(current_user), connector_id)
@@ -554,7 +554,7 @@ async def _group_counts(
 @router.get("/findings/summary", response_model=FindingSummary)
 async def findings_summary(
     connector_id: UUID | None = Query(default=None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> FindingSummary:
     tenant_id = _tenant_id(current_user)
@@ -779,7 +779,7 @@ async def create_forward_target(
 @router.get("/forward-targets", response_model=list[ForwardTargetRead])
 async def list_forward_targets(
     connector_id: UUID | None = Query(default=None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> list[ForwardTargetRead]:
     tenant_id = _tenant_id(current_user)
@@ -955,7 +955,7 @@ async def _cancel_forward_deliveries(
 )
 async def generate_kvkk_report(
     payload: ReportRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     tenant_id = _tenant_id(current_user)

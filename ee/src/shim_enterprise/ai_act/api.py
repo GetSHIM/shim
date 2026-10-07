@@ -43,7 +43,7 @@ from shim_enterprise.ai_act.verify import (
     verify_anchors,
     verify_chain,
 )
-from shim_enterprise.api.enterprise_deps import get_current_user, get_org_admin
+from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.models import Organization, User
@@ -134,7 +134,7 @@ async def _tenant_policy(
 async def compliance_overview(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> OverviewResponse:
     if start is not None and end is not None and start > end:
@@ -158,7 +158,7 @@ async def list_audit_logs(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> AuditLogPage:
     if start is not None and end is not None and start > end:
@@ -197,7 +197,7 @@ async def list_audit_logs(
 async def verify_audit_chain(
     start: datetime | None = Query(default=None, alias="from"),
     end: datetime | None = Query(default=None, alias="to"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> VerifyResult:
     start = _aware(start) if start is not None else None
@@ -233,7 +233,7 @@ async def verify_audit_chain(
 )
 async def generate_audit_report_endpoint(
     payload: AuditReportRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     requested = list(dict.fromkeys(payload.frameworks))
@@ -294,7 +294,7 @@ async def create_oversight_policy(
 
 @router.get("/oversight/policies", response_model=list[OversightPolicyRead])
 async def list_oversight_policies(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> list[OversightPolicyRead]:
     if current_user.organization_id is None:
@@ -358,7 +358,7 @@ async def list_oversight_requests(
         alias="status",
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ) -> list[OversightRequestRead]:
     tenant_id = current_user.organization_id
