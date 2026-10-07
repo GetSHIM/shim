@@ -56,7 +56,7 @@ class CommunitySettings(BaseSettings):
 
     SENTRY_DSN: str | None = None
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
-    OTEL_SERVICE_NAME: str = "ai-gateway-optimizer"
+    OTEL_SERVICE_NAME: str = "shim"
 
     @field_validator("TRUSTED_PROXIES", "BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
