@@ -73,6 +73,7 @@ def create_community_app(
             follow_redirects=False,
         )
         application.state.http_client = client
+        google_sync_client = httpx.Client()
         application.state.gateway_service = GatewayService(
             GatewayKernel(
                 {
@@ -92,6 +93,7 @@ def create_community_app(
                         circuit=InMemoryCircuitBreaker(),
                         settings=configured,
                         http_client=client,
+                        sync_http_client=google_sync_client,
                         pii_scrubber=pii_scrubber,
                     ),
                     "openai": OpenAIExecution(
@@ -123,6 +125,7 @@ def create_community_app(
         finally:
             await application.state.gateway_service.kernel.postprocessor.drain()
             await usage.aclose()
+            google_sync_client.close()
             if owns_http_client:
                 await client.aclose()
 

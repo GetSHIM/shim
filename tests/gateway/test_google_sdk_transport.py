@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import ssl
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -61,6 +62,7 @@ def _execution(http_client: httpx.AsyncClient) -> GoogleExecution:
         circuit=InMemoryCircuitBreaker(),
         settings=settings,
         http_client=http_client,
+        sync_http_client=httpx.Client(),
     )
 
 
@@ -478,3 +480,59 @@ async def test_local_exceptions_release_the_probe_without_counting(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_requests_share_one_tls_context_but_never_a_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    upstream_keys: list[str | None] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_keys.append(request.headers.get("x-goog-api-key"))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    real_client = google_execution.genai.Client
+    clients: list[tuple[google_execution.types.HttpOptions, object]] = []
+
+    def recording_client(**kwargs):
+        client = real_client(**kwargs)
+        client.close = Mock(wraps=client.close)
+        client.aio.aclose = AsyncMock(wraps=client.aio.aclose)
+        clients.append((kwargs["http_options"], client))
+        return client
+
+    monkeypatch.setattr(google_execution.genai, "Client", recording_client)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        for key in ("google-key-one", "google-key-two"):
+            await execution.execute(
+                invocation=_invocation(key),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert upstream_keys == ["google-key-one", "google-key-two"]
+    assert isinstance(execution.ssl_context, ssl.SSLContext)
+    for options, client in clients:
+        assert options.client_args == {"verify": execution.ssl_context}
+        assert options.async_client_args == {
+            "verify": execution.ssl_context,
+            "ssl": execution.ssl_context,
+        }
+        assert options.httpx_client is execution.sync_http_client
+        assert options.httpx_async_client is http
+        client.close.assert_called_once()
+        client.aio.aclose.assert_awaited_once()
+    assert clients[0][1] is not clients[1][1]

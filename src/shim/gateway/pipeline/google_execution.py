@@ -43,13 +43,18 @@ class GoogleExecution:
         circuit: CircuitBreaker,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
+        sync_http_client: httpx.Client,
         pii_scrubber: PIIScrubberService | None = None,
     ) -> None:
         self.credential_resolver = credential_resolver
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
+        # The SDK builds a synchronous client unless given one; the async path never uses it.
+        self.sync_http_client = sync_http_client
         self.circuit = circuit
         self.settings = settings
+        # Shared and only read: the SDK would otherwise build two per client.
+        self.ssl_context = httpx.create_ssl_context()
 
     async def execute(
         self,
@@ -82,6 +87,12 @@ class GoogleExecution:
                     timeout=int(self.settings.GOOGLE_TIMEOUT_SECONDS * 1_000),
                     retry_options=types.HttpRetryOptions(attempts=1),
                     httpx_async_client=self.http_client,
+                    httpx_client=self.sync_http_client,
+                    client_args={"verify": self.ssl_context},
+                    async_client_args={
+                        "verify": self.ssl_context,
+                        "ssl": self.ssl_context,
+                    },
                     extra_body={
                         key: value
                         for key, value in prepared.payload.items()

@@ -136,9 +136,10 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         verify=ssl.create_default_context(cafile=settings.MODEL_DEPLOYMENT_CA_BUNDLE),
     )
     application.state.http_client = http_client
+    google_sync_client = httpx.Client()
     pii_scrubber = PIIScrubberService()
     application.state.gateway_service = EnterpriseGatewayService(
-        _create_gateway_kernel(cache, http_client, pii_scrubber),
+        _create_gateway_kernel(cache, http_client, google_sync_client, pii_scrubber),
         ScanExecutionPipeline(scrubber=pii_scrubber),
     )
     await _connect_cache(cache)
@@ -147,6 +148,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         await application.state.gateway_service.kernel.postprocessor.drain()
         await http_client.aclose()
+        google_sync_client.close()
         await cache.close()
         await engine.dispose()
         shutdown_tracing()
@@ -155,6 +157,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
 def _create_gateway_kernel(
     cache: CacheService,
     http_client: httpx.AsyncClient,
+    google_sync_client: httpx.Client,
     pii_scrubber: PIIScrubberService,
 ) -> GatewayKernel:
     policy_resolver = TenantRequestPolicyResolver(
@@ -199,6 +202,7 @@ def _create_gateway_kernel(
                 ),
                 circuit=RedisCircuitBreaker("google", cache=cache),
                 settings=settings,
+                sync_http_client=google_sync_client,
                 **dependencies,
             ),
         },
