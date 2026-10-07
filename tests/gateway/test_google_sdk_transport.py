@@ -310,7 +310,9 @@ async def test_stream_requires_every_requested_candidate_to_finish(
         )
         wire = b"".join([event async for event in result.events])
 
-    assert b'"status":"PROVIDER_UNAVAILABLE"' in wire
+    error = json.loads(wire.splitlines()[-2].removeprefix(b"data: "))["error"]
+    assert error["status"] == "UNAVAILABLE"
+    assert error["details"][0]["reason"] == "PROVIDER_UNAVAILABLE"
     execution.circuit.record_failure.assert_awaited_once()
     execution.circuit.record_success.assert_not_awaited()
 

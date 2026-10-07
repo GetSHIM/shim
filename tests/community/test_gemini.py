@@ -284,8 +284,16 @@ async def test_gemini_validation_precedes_one_sanitized_provider_attempt() -> No
             "code": 500,
             "message": "The Google request failed.",
             "status": "INTERNAL",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "PROVIDER_UNAVAILABLE",
+                    "domain": "getshim.tech",
+                }
+            ],
         }
     }
+    assert failed.headers["x-shim-error-code"] == "PROVIDER_UNAVAILABLE"
     assert failed.headers["x-goog-request-id"] == "google_failed_1"
     assert attempts == 1
     assert "secret upstream detail" not in failed.text

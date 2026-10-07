@@ -17,6 +17,7 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    google_error,
     record_provider_error,
     retry_after_header,
     status_error_code,
@@ -478,13 +479,11 @@ def _has_block_reason(payload: Mapping[str, Any]) -> bool:
 
 def _stream_error(error: ProviderCallError) -> bytes:
     return encode_data(
-        {
-            "error": {
-                "code": error.status_code,
-                "message": "The Google stream ended with an error.",
-                "status": error.error_code,
-            }
-        }
+        google_error(
+            error.status_code,
+            "The Google stream ended with an error.",
+            error.error_code,
+        )
     )
 
 

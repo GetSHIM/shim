@@ -30,9 +30,12 @@ def select_gateway_credential(
     return None
 
 
-def authentication_error(detail: str) -> HTTPException:
+def authentication_error(detail: str, *, code: str | None = None) -> HTTPException:
+    headers = {"WWW-Authenticate": "Bearer"}
+    if code:
+        headers["X-Shim-Error-Code"] = code
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
+        headers=headers,
     )

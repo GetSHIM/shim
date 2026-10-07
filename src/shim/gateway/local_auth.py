@@ -50,12 +50,12 @@ class LocalAuthenticator:
     def _resolve(self, candidate: str | None) -> AuthenticatedPrincipal:
         if self._expected_digest is not None:
             if candidate is None:
-                raise authentication_error("Missing API Key")
+                raise authentication_error("Missing API Key", code="MISSING_API_KEY")
             if not secrets.compare_digest(
                 self._expected_digest,
                 sha256(candidate.encode()).digest(),
             ):
-                raise authentication_error("Invalid API Key")
+                raise authentication_error("Invalid API Key", code="INVALID_API_KEY")
         return AuthenticatedPrincipal(
             actor_type="api_key",
             api_key_id=LOCAL_API_KEY_ID,

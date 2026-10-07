@@ -448,3 +448,32 @@ def test_cli_allows_external_bind_with_a_validated_gateway_key(monkeypatch) -> N
     cli.main(["serve", "--host", "0.0.0.0"])
 
     assert run.call_args.kwargs["host"] == "0.0.0.0"
+
+
+@pytest.mark.asyncio
+async def test_browsers_can_read_the_gateway_error_code() -> None:
+    origin = "https://dashboard.example.test"
+    application = create_community_app(
+        CommunitySettings(
+            SHIM_API_KEY=GATEWAY_KEY, BACKEND_CORS_ORIGINS=[origin], _env_file=None
+        ),
+        event_stream=StringIO(),
+    )
+
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"origin": origin},
+            json={"model": MODEL, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 401
+    assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
+    exposed = response.headers["access-control-expose-headers"].lower().split(",")
+    assert "x-shim-error-code" in [name.strip() for name in exposed]
