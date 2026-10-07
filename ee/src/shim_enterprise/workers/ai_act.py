@@ -17,6 +17,7 @@ from shim_enterprise.ai_act.oversight import expire_pending, run_oversight_evalu
 from shim_enterprise.ai_act.retention import archive_expired
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.tenants.models import Organization
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -76,9 +77,12 @@ class AuditMaintenanceWorker:
         start = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc)
         tenant_ids = (
             await session.execute(
-                select(distinct(AIActAuditLog.organization_id)).where(
+                select(distinct(AIActAuditLog.organization_id))
+                .join(Organization, Organization.id == AIActAuditLog.organization_id)
+                .where(
                     AIActAuditLog.created_at >= start,
                     AIActAuditLog.created_at < start + timedelta(days=1),
+                    Organization.archived_at.is_(None),
                 )
             )
         ).scalars()

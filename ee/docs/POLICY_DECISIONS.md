@@ -91,6 +91,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |
 | `tenant.api_key_updated` | `before` and `after` of the changed fields (`cost_center`, `team`, `team_id`, `allowed_models`) |
 | `tenant.model_deployment_updated` | `before` and `after` of the changed configuration fields |
+| `tenant.personal_workspace_archived` | `removed`: rows deleted per table when the workspace's only user joined another organization; recorded in the archived workspace's chain |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
 | `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
 | `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |

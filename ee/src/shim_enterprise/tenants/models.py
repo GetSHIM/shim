@@ -40,6 +40,10 @@ class Organization(Base, TimestampMixin):
             "quota_monthly_token_limit IS NULL OR quota_monthly_token_limit >= 0",
             name="ck_organizations_quota_monthly_tokens",
         ),
+        CheckConstraint(
+            "(archived_at IS NULL) = (archived_reason IS NULL)",
+            name="ck_organizations_archive_pair",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -77,6 +81,9 @@ class Organization(Base, TimestampMixin):
     allow_customer_provider_keys: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # Set when the only user joined another organization; nobody belongs to it again.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_reason: Mapped[str | None] = mapped_column(String(32))
 
     users: Mapped[list[User]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"

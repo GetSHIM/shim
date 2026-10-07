@@ -94,7 +94,10 @@ from shim_enterprise.tenants.teams import (
 )
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
-from shim_enterprise.tenants.service import move_user_from_bootstrap
+from shim_enterprise.tenants.service import (
+    WorkspaceHasRequestHistory,
+    move_user_from_bootstrap,
+)
 
 
 router = APIRouter()
@@ -1005,26 +1008,36 @@ async def accept_team_invite(
     await _require_entitlement(session, invite.organization_id, "team_rbac")
     previous_tenant_id = _tenant_id(user)
     changing_tenant = previous_tenant_id != invite.organization_id
+    secrets_to_delete: list[tuple[str, str]] = []
     if changing_tenant:
-        moved_user = await move_user_from_bootstrap(
-            session,
-            user_id=user.id,
-            source_organization_id=previous_tenant_id,
-            destination_organization_id=invite.organization_id,
-            role=invite.role,
-        )
-        if moved_user is None:
+        try:
+            moved = await move_user_from_bootstrap(
+                session,
+                user_id=user.id,
+                source_organization_id=previous_tenant_id,
+                destination_organization_id=invite.organization_id,
+                role=invite.role,
+            )
+        except WorkspaceHasRequestHistory as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Your personal workspace has request history and cannot be "
+                "archived; ask the inviting organization's owner to contact support.",
+            ) from exc
+        if moved is None:
             raise HTTPException(
                 status_code=409,
                 detail="Leave or empty the current organization before accepting",
             )
-        user = moved_user
+        user, secrets_to_delete = moved
     else:
         user.role = invite.role
         user.is_active = True
     invite.accepted_at = now
     await _audit(session, user, "tenant.team_invite_accepted", str(invite.id))
     await session.commit()
+    for reference, purpose in secrets_to_delete:
+        await _delete_secret_best_effort(previous_tenant_id, reference, purpose)
     await session.refresh(user)
     return user
 

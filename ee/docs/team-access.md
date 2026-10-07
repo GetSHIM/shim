@@ -26,6 +26,29 @@ the feature:
   "message": "This feature needs one of the plans listed in eligible_plans."}}
 ```
 
+Signing in creates a personal workspace. Accepting an invitation
+(`POST /api/v1/management/team/invites/accept`) moves the user out of it:
+
+- An unused personal workspace is archived. Unused means the invitee is its only
+  user, it is on the free plan with no billing source or billing receipt, and it
+  has no request history: no request lifecycle, usage, quota, spend, audit intent
+  or request log row (a `/v1/scan` with a key counts). Its keys, provider
+  secrets, deployments, budgets, teams, connectors, forward targets and privacy
+  settings are deleted, so its keys stop authenticating, and the stored secrets
+  are deleted from the secret store after the change commits. The organization
+  row stays with `archived_at` and `archived_reason: joined_organization`, its
+  audit chain and undelivered outbox rows stay, and the chain records
+  `tenant.personal_workspace_archived`. Nobody can belong to it again; workers
+  write no audit anchors for it and billing never lists it.
+- A personal workspace with request history is kept and the answer is 409
+  "Your personal workspace has request history and cannot be archived; ask the
+  inviting organization's owner to contact support."
+- Any other workspace (more users, a paid plan, a billing source) answers 409
+  "Leave or empty the current organization before accepting".
+
+A workspace that never had a management action or a configuration row is
+deleted instead of archived, as before.
+
 Use **Workspace → Teams** to create a team, configure quotas, and assign
 members. Use **Gateway → Keys** to assign a key's access team and model list.
 Only organization owners/admins can move a key between teams. A member with
