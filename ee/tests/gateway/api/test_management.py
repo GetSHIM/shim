@@ -990,14 +990,18 @@ async def test_organization_wide_reads_need_an_organization_reader(
             (await client.request(method, path, json={})).json()["detail"]
             for method, path in routes
         ]
-        test_user_with_org.role = "auditor"
-        admitted = [
-            (await client.request(method, path, json={})).status_code
-            for method, path in routes
-        ]
+        admitted = {}
+        for role in ("owner", "admin", "auditor"):
+            test_user_with_org.role = role
+            admitted[role] = [
+                (await client.request(method, path, json={})).status_code
+                for method, path in routes
+            ]
 
     assert refused == ["Organization reader required"] * len(routes)
-    assert 403 not in admitted
+    # The connector route looks up a random id.
+    expected = [404 if "/connectors/" in path else 200 for _, path in routes]
+    assert admitted == {"owner": expected, "admin": expected, "auditor": expected}
 
 
 def _stored_extra(details: dict[str, object]) -> dict[str, object]:

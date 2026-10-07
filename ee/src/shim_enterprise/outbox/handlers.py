@@ -136,8 +136,14 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
     if bundle_kind != target_kind:
         raise ValueError("compliance delivery target kind mismatch")
     if target_kind == "email":
+        relaxed = body.get("kind") == "privacy_protection_relaxed"
         await _send_compliance_email(
             endpoint,
+            subject=(
+                "shim privacy protection turned off"
+                if relaxed
+                else "shim compliance finding summary"
+            ),
             text=_compliance_text(body),
             idempotency_key=message.idempotency_key,
         )
@@ -165,6 +171,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
 async def _send_compliance_email(
     recipient: str,
     *,
+    subject: str,
     text: str,
     idempotency_key: str,
 ) -> None:
@@ -184,7 +191,7 @@ async def _send_compliance_email(
             json={
                 "from": str(settings.COMPLIANCE_EMAIL_FROM),
                 "to": [recipient],
-                "subject": "shim compliance finding summary",
+                "subject": subject,
                 "text": text,
             },
         )
@@ -202,6 +209,12 @@ def _compliance_text(body: dict) -> str:
         return (
             f"shim compliance finding: {body.get('severity', 'unknown')} "
             f"{body.get('entity_type', 'entity')}"
+        )
+    if body.get("kind") == "privacy_protection_relaxed":
+        fields = ", ".join(map(str, body.get("fields", [])))
+        return (
+            f"shim privacy protection turned off: {fields} "
+            f"(by user {body.get('actor', 'unknown')})"
         )
     return f"shim compliance alert: {body.get('message', body.get('kind', 'event'))}"
 

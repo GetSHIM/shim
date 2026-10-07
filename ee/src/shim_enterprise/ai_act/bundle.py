@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
-import math
 from typing import Any
 from uuid import UUID
 
@@ -26,18 +26,18 @@ from shim_enterprise.ai_act.verify import (
 )
 
 
-class UnverifiableAuditRow(ValueError):
-    """A stored row holds a value that would not survive the bundle round trip."""
-
-
-def _round_trip_unsafe(value: Any) -> bool:
-    if isinstance(value, float):
-        return not math.isfinite(value) or abs(value) >= 1e16
-    if isinstance(value, dict):
-        return any(_round_trip_unsafe(child) for child in value.values())
-    if isinstance(value, list):
-        return any(_round_trip_unsafe(child) for child in value)
-    return False
+def _exported_rows(
+    rows: list[tuple[dict[str, Any], str, str, str]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            **json.loads(canonical_row(canonical_fields_from_values(values))),
+            "prev_hash": prev_hash,
+            "row_hash": row_hash,
+            "id": row_id,
+        }
+        for values, prev_hash, row_hash, row_id in rows
+    ]
 
 
 async def build_audit_bundle(
@@ -85,23 +85,14 @@ async def build_audit_bundle(
         raise AuditVerificationLimitExceeded(
             f"bundle export is limited to {MAX_SYNC_AUDIT_ANCHORS} anchors"
         )
-    exported = []
-    for row in rows:
-        fields = canonical_fields_from_values(row_to_values(row))
-        if _round_trip_unsafe(fields["extra"]) or _round_trip_unsafe(
-            fields["policy_verdicts"]
-        ):
-            raise UnverifiableAuditRow(
-                f"audit row seq {row.seq} holds a float that cannot be exported"
-            )
-        exported.append(
-            {
-                **json.loads(canonical_row(fields)),
-                "prev_hash": row.prev_hash,
-                "row_hash": row.row_hash,
-                "id": str(row.id),
-            }
-        )
+    # Up to 10,000 rows of canonical JSON: keep the CPU work off the event loop.
+    exported = await asyncio.to_thread(
+        _exported_rows,
+        [
+            (row_to_values(row), row.prev_hash, row.row_hash, str(row.id))
+            for row in rows
+        ],
+    )
     genesis = genesis_hash(audit_salt(), str(organization_id))
     first = rows[0]
     return {

@@ -66,6 +66,8 @@ async def test_redrive_resets_only_dead_audit_events(db, test_org) -> None:
         return {row.id: (row.status, row.attempt_count) for row in rows}
 
     before = await states()
+    # Dead events other tests or live runs left in this database.
+    leftover = await redrive(db, None, dry_run=True) - 3
     assert await redrive(db, test_org.id, dry_run=True) == 2
     assert await states() == before
 
@@ -75,7 +77,7 @@ async def test_redrive_resets_only_dead_audit_events(db, test_org) -> None:
     assert all(after[event.id] == before[event.id] for event in untouched)
     assert after[other_dead.id] == ("dead_letter", 8)
 
-    assert await redrive(db, None, dry_run=False) == 1
+    assert await redrive(db, None, dry_run=False) == 1 + leftover
     assert (await states())[other_dead.id] == ("pending", 0)
     assert await redrive(db, None, dry_run=True) == 0
 

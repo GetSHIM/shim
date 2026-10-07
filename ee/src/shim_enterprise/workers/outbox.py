@@ -251,14 +251,18 @@ class OutboxWorker:
             )
             groups.setdefault(key, []).append(message)
 
-        async def deliver(group: list[OutboxMessage]) -> list[DeliveryOutcome]:
-            return [await self._deliver(message, fixed_now=now) for message in group]
+        async def deliver(
+            group: list[OutboxMessage],
+        ) -> list[tuple[OutboxMessage, DeliveryOutcome]]:
+            return [
+                (message, await self._deliver(message, fixed_now=now))
+                for message in group
+            ]
 
-        results = await asyncio.gather(*map(deliver, groups.values()))
         delivered = [
             pair
-            for group, group_outcomes in zip(groups.values(), results, strict=True)
-            for pair in zip(group, group_outcomes, strict=True)
+            for pairs in await asyncio.gather(*map(deliver, groups.values()))
+            for pair in pairs
         ]
         outcomes = [outcome for _, outcome in delivered]
         await self._observe(now or datetime.now(timezone.utc))

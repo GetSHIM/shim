@@ -361,6 +361,7 @@ async def test_compliance_email_uses_fixed_resend_endpoint(
 
     await handlers._send_compliance_email(
         "alerts@example.com",
+        subject="shim compliance finding summary",
         text="shim summary",
         idempotency_key="compliance:email:1",
     )
@@ -374,7 +375,7 @@ async def test_compliance_email_uses_fixed_resend_endpoint(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["siem_webhook", "slack"])
+@pytest.mark.parametrize("target_kind", ["siem_webhook", "slack", "email"])
 async def test_tenant_policy_delivery_keeps_its_body_shape(
     monkeypatch: pytest.MonkeyPatch, target_kind: str
 ) -> None:
@@ -418,15 +419,22 @@ async def test_tenant_policy_delivery_keeps_its_body_shape(
         )
     )
     posted = AsyncMock()
+    emailed = AsyncMock()
     monkeypatch.setattr(handlers, "get_secret_store", lambda: store)
     monkeypatch.setattr(handlers, "_post_forward_url", posted)
+    monkeypatch.setattr(handlers, "_send_compliance_email", emailed)
 
     await handlers.deliver_compliance_event(event)
 
+    text = f"shim privacy protection turned off: block_email (by user {body['actor']})"
+    if target_kind == "email":
+        assert emailed.await_args.kwargs["subject"] == (
+            "shim privacy protection turned off"
+        )
+        assert emailed.await_args.kwargs["text"] == text
+        return
     delivered = json.loads(posted.await_args.kwargs["content"])
     if target_kind == "siem_webhook":
         assert delivered == body
     else:
-        assert delivered == {
-            "text": "shim compliance alert: privacy_protection_relaxed"
-        }
+        assert delivered == {"text": text}

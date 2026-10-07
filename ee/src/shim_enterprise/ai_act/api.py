@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -12,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.anchor import write_anchor
-from shim_enterprise.ai_act.bundle import UnverifiableAuditRow, build_audit_bundle
+from shim_enterprise.ai_act.bundle import build_audit_bundle
 from shim_enterprise.ai_act.models import (
     AIActAuditLog,
     OversightPolicy,
@@ -221,13 +222,15 @@ async def export_audit_bundle(
             bundle = await build_audit_bundle(
                 session, tenant_id, start=start, end=end, now=datetime.now(timezone.utc)
             )
-        except (AuditVerificationLimitExceeded, UnverifiableAuditRow) as exc:
+        except AuditVerificationLimitExceeded as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
     if bundle is None:
         raise HTTPException(
             status_code=404, detail="No audit rows in the requested window."
         )
-    return JSONResponse(
+    # Rendering tens of megabytes of JSON stays off the event loop.
+    return await asyncio.to_thread(
+        JSONResponse,
         bundle,
         headers={
             "Content-Disposition": (

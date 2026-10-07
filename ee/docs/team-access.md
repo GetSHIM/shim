@@ -21,9 +21,9 @@ without it, the invite answers 403 with a body that names the plans that have
 the feature:
 
 ```json
-{"code": "PLAN_UPGRADE_REQUIRED", "feature": "team_rbac", "current_plan": "free",
- "eligible_plans": ["agency", "enterprise"],
- "message": "This feature needs one of the plans listed in eligible_plans."}
+{"detail": {"code": "PLAN_UPGRADE_REQUIRED", "feature": "team_rbac",
+  "current_plan": "free", "eligible_plans": ["agency", "enterprise"],
+  "message": "This feature needs one of the plans listed in eligible_plans."}}
 ```
 
 Use **Workspace → Teams** to create a team, configure quotas, and assign
@@ -45,10 +45,10 @@ required" on organization-wide reads.
 | --- | --- | --- |
 | `/management/requests`, `/management/requests/export` | Whole organization | Own keys and administered teams' keys |
 | `/management/overview`, `/management/billing/*`, `GET /management/cost/budgets` | Yes | 403 |
-| `/compliance/overview`, `/compliance/audit/logs`, `POST /compliance/audit/verify`, `POST /compliance/reports/audit`, `POST /compliance/reports/kvkk` | Yes | 403 |
+| `/compliance/overview`, `/compliance/audit/logs`, `/compliance/audit/bundle`, `POST /compliance/audit/verify`, `POST /compliance/reports/audit`, `POST /compliance/reports/kvkk` | Yes | 403 |
 | Compliance connectors, findings, forward targets, oversight and oversight policies (`GET`) | Yes | 403 |
 | `/management/model-deployments` (`GET`) | Yes | 403 |
-| `/auth/me`, `/subscription`, `GET /settings/pii`, `/team/members`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
+| `/auth/me`, `/subscription`, `/tier-info`, `GET /settings/pii`, `/team/members`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
 
 ## Attribution and migration
 

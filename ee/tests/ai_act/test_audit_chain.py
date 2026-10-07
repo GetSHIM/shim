@@ -18,16 +18,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from shim_enterprise.ai_act import audit_writer
 from shim_enterprise.ai_act.anchor import compute_daily_anchor, write_anchor
-from shim_enterprise.ai_act.bundle import UnverifiableAuditRow, build_audit_bundle
+from shim_enterprise.ai_act.bundle import build_audit_bundle
 from shim_enterprise.ai_act.audit_writer import (
     append_audit_row_deduplicated,
     next_link,
     write_audit_row,
 )
 from shim_enterprise.ai_act.hashing import canonical_row, chain_hash, compute_row_hash
-from shim_enterprise.ai_act.models import AIActAuditLog
+from shim_enterprise.ai_act.models import AIActAuditAnchor, AIActAuditLog
 import shim_enterprise.ai_act.verify as verify_module
 from shim_enterprise.ai_act.verify import (
+    MAX_SYNC_AUDIT_ANCHORS,
     AuditVerificationLimitExceeded,
     verify_anchors,
     verify_chain,
@@ -446,6 +447,7 @@ async def _bundle_rows(db, organization_id) -> list:
 @pytest.mark.asyncio
 async def test_full_chain_bundle_follows_format_v1_and_rehashes(db, test_org) -> None:
     written = await _bundle_rows(db, test_org.id)
+    anchor = await write_anchor(db, test_org.id, written[0].created_at.date())
 
     bundle = await build_audit_bundle(
         db, test_org.id, start=None, end=None, now=datetime.now(timezone.utc)
@@ -471,6 +473,17 @@ async def test_full_chain_bundle_follows_format_v1_and_rehashes(db, test_org) ->
         "1.2E-7",
     ]
     assert audit_writer.audit_salt() not in json.dumps(bundle)
+    assert anchor is not None and anchor.row_count == len(written)
+    assert bundle["anchors"] == [
+        {
+            "anchor_date": anchor.anchor_date.isoformat(),
+            "root_hash": anchor.root_hash,
+            "tip_hash": anchor.tip_hash,
+            "row_count": anchor.row_count,
+            "from_seq": anchor.from_seq,
+            "to_seq": anchor.to_seq,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -496,17 +509,61 @@ async def test_partial_bundle_starts_at_the_first_rows_stored_link(
 
 
 @pytest.mark.asyncio
-async def test_bundle_refuses_a_float_that_cannot_round_trip(db, test_org) -> None:
-    row = await write_audit_row(
+async def test_a_float_jsonb_cannot_keep_is_hashed_as_its_string(db, test_org) -> None:
+    await write_audit_row(
         {
             "organization_id": test_org.id,
             "request_id": "req-big",
-            "extra": {"value": 1e16},
+            "extra": {"big": 1e16, "small": 1e-07, "nan": float("nan"), "neg": -0.0},
         },
         db,
     )
+    # Read the row back from PostgreSQL, not from the identity map.
+    db.expunge_all()
 
-    with pytest.raises(UnverifiableAuditRow, match=f"seq {row.seq}"):
+    bundle = await build_audit_bundle(
+        db, test_org.id, start=None, end=None, now=datetime.now(timezone.utc)
+    )
+
+    assert bundle is not None
+    (row,) = bundle["rows"]
+    assert row["extra"] == {
+        "big": "1e+16",
+        "small": 1e-07,
+        "nan": "nan",
+        "neg": "-0.0",
+    }
+    fields = {key: row[key] for key in audit_writer.CANONICAL_KEYS}
+    assert chain_hash(bundle["genesis_hash"], canonical_row(fields)) == row["row_hash"]
+
+
+@pytest.mark.asyncio
+async def test_bundle_refuses_more_anchors_than_the_synchronous_limit(
+    db, test_org
+) -> None:
+    row = await write_audit_row(
+        {"organization_id": test_org.id, "request_id": "req-anchors"}, db
+    )
+    today = row.created_at.date()
+    db.add_all(
+        AIActAuditAnchor(
+            organization_id=test_org.id,
+            anchor_date=today - timedelta(days=offset),
+            root_hash="0" * 64,
+            tip_hash=row.row_hash,
+            row_count=1,
+            from_seq=row.seq,
+            to_seq=row.seq,
+        )
+        for offset in range(MAX_SYNC_AUDIT_ANCHORS + 1)
+    )
+    await db.flush()
+
+    with pytest.raises(AuditVerificationLimitExceeded, match="anchors"):
         await build_audit_bundle(
-            db, test_org.id, start=None, end=None, now=datetime.now(timezone.utc)
+            db,
+            test_org.id,
+            start=row.created_at - timedelta(days=MAX_SYNC_AUDIT_ANCHORS + 1),
+            end=None,
+            now=datetime.now(timezone.utc),
         )

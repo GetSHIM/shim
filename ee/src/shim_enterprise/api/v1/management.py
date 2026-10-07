@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.api.enterprise_deps import (
-    ORGANIZATION_READERS,
     get_current_user,
     get_invite_user,
     get_org_admin,
@@ -86,7 +85,11 @@ from shim_enterprise.tenants.deployments import (
     validate_deployment_url,
 )
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
-from shim_enterprise.tenants.teams import member_team_ids, require_team
+from shim_enterprise.tenants.teams import (
+    ORGANIZATION_READERS,
+    member_team_ids,
+    require_team,
+)
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import move_user_from_bootstrap
@@ -1013,7 +1016,7 @@ async def list_teams(
     session: AsyncSession = Depends(get_db),
 ) -> list[Team]:
     statement = select(Team).where(Team.organization_id == _tenant_id(user))
-    if user.role not in {"owner", "admin", "auditor"}:
+    if user.role not in ORGANIZATION_READERS:
         statement = statement.where(Team.id.in_(member_team_ids(user)))
     return list((await session.scalars(statement.order_by(Team.name, Team.id))).all())
 
@@ -2253,7 +2256,9 @@ async def export_billing_breakdown(
     content = (
         _billing_breakdown_csv(records)
         if format == "csv"
-        else _billing_breakdown_pdf(records, group_by, start, end)
+        else await asyncio.to_thread(
+            _billing_breakdown_pdf, records, group_by, start, end
+        )
     )
     return Response(
         content,
@@ -3060,7 +3065,8 @@ async def update_model_deployment(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _owned_model_deployment(session, user, deployment_id)
+    # Locked, like the health result, so neither write can overwrite the other.
+    row = await _owned_model_deployment(session, user, deployment_id, for_update=True)
     secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
     if secret.provider != payload.provider:
         raise HTTPException(422, detail="Credential provider does not match deployment")
@@ -3131,7 +3137,8 @@ async def check_model_deployment_health(
                 healthy = response.status_code == 200
     except (httpx.HTTPError, ValueError, TimeoutError):
         healthy = False
-    row = await _owned_model_deployment(session, user, deployment_id)
+    # Locked, so an update committing now cannot be overwritten by a stale result.
+    row = await _owned_model_deployment(session, user, deployment_id, for_update=True)
     if row.updated_at != checked_version:
         raise HTTPException(
             409, detail="Deployment changed during health check; check again"
@@ -3151,18 +3158,23 @@ async def check_model_deployment_health(
 
 
 async def _owned_model_deployment(
-    session: AsyncSession, user: User, deployment_id: UUID
+    session: AsyncSession,
+    user: User,
+    deployment_id: UUID,
+    *,
+    for_update: bool = False,
 ) -> ModelDeployment:
-    row = (
-        await session.execute(
-            select(ModelDeployment)
-            .where(
-                ModelDeployment.id == deployment_id,
-                ModelDeployment.organization_id == _tenant_id(user),
-            )
-            .execution_options(populate_existing=True)
+    statement = (
+        select(ModelDeployment)
+        .where(
+            ModelDeployment.id == deployment_id,
+            ModelDeployment.organization_id == _tenant_id(user),
         )
-    ).scalar_one_or_none()
+        .execution_options(populate_existing=True)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    row = (await session.execute(statement)).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, detail="Model deployment not found")
     return row

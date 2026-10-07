@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.tenants.models import Organization, Team, TeamMembership, User
 
+ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
+
 
 def member_team_ids(user: User, *, administer: bool = False):
     statement = select(TeamMembership.team_id).where(
@@ -37,7 +39,7 @@ async def require_team(
     statement = select(Team).where(
         Team.organization_id == user.organization_id, Team.id == team_id
     )
-    if user.role not in {"owner", "admin", "auditor"}:
+    if user.role not in ORGANIZATION_READERS:
         statement = statement.where(
             Team.id.in_(member_team_ids(user, administer=administer))
         )
