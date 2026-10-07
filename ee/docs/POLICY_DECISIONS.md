@@ -112,3 +112,15 @@ Synchronous limits: at most 10,000 rows and 366 anchors (422 beyond), 404 for a
 window without rows, 422 when `start` is after `end`, and 422 naming the row when
 a stored row holds a float that would not survive the round trip (non-finite or
 `abs(value) >= 1e16`).
+
+## KVKK exposure report
+
+`POST /api/v1/compliance/reports/kvkk` counts two sources. Compliance connector
+findings (provider compliance APIs) appear as before, one CSV row per finding.
+A tenant-wide PDF also has a "Gateway detections" section: per entity type, its
+KVKK category and the sum of the distinct values per request that the gateway
+detected and masked, taken from `request_lifecycle` records started in the
+window. The scope line then reads "all tenant connectors and the gateway". The
+section holds entity names, categories and counts only, and the header names the
+organization by its id. A connector-scoped report and the CSV keep their
+connector-only content.

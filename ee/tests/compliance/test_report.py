@@ -1,6 +1,9 @@
 import asyncio
+import base64
 from datetime import datetime, timedelta, timezone
 import logging
+import re
+import zlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -32,8 +35,10 @@ from shim_enterprise.compliance.services.report import (
     FindingEvidence,
     ReportLimitExceeded,
     _render_csv,
+    _render_pdf,
     collect_exposure_evidence,
 )
+from shim_enterprise.billing.models import RequestLifecycle
 
 
 def _lock_test_service(redis):
@@ -117,7 +122,9 @@ async def test_compliance_report_rejects_findings_over_its_fixed_cap(
 @pytest.mark.asyncio
 async def test_compliance_report_query_is_stably_ordered_and_bounded() -> None:
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: ()))
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalars=lambda: (), all=lambda: [])
+        )
     )
     end = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
@@ -129,7 +136,7 @@ async def test_compliance_report_query_is_stably_ordered_and_bounded() -> None:
         connector_id=None,
     )
 
-    statement = session.execute.await_args.args[0]
+    statement = session.execute.await_args_list[0].args[0]
     compiled = statement.compile(dialect=postgresql.dialect())
     assert (
         "ORDER BY compliance_finding.occurred_at DESC, "
@@ -741,3 +748,71 @@ async def test_finding_references_must_belong_to_its_connector(db, test_org) -> 
     ).one()
     assert references.activity_id is None
     assert references.source_log_file_id is None
+
+
+def _pdf_strings(pdf: bytes) -> list[str]:
+    strings = []
+    for match in re.finditer(
+        rb"/Filter \[ (/ASCII85Decode )?/FlateDecode \][^>]*>>\s*stream\r?\n(.*?)endstream",
+        pdf,
+        re.S,
+    ):
+        data = match.group(2).strip()
+        if match.group(1):
+            data = base64.a85decode(data.removesuffix(b"~>"))
+        strings += [
+            item.decode("latin-1")
+            for item in re.findall(rb"\(((?:[^()\\]|\\.)*)\) Tj", zlib.decompress(data))
+        ]
+    return strings
+
+
+@pytest.mark.asyncio
+async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
+    db, test_api_key
+) -> None:
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=1)
+    tenant_id = test_api_key.organization_id
+    for started_at, entities in (
+        (end - timedelta(hours=1), {"TR_NATIONAL_ID": 2, "EMAIL_ADDRESS": 1}),
+        (end - timedelta(hours=2), {"TR_NATIONAL_ID": 1}),
+        (end - timedelta(hours=3), {}),
+        (start - timedelta(hours=1), {"IBAN_CODE": 5}),
+    ):
+        db.add(
+            RequestLifecycle(
+                organization_id=tenant_id,
+                request_id=f"req_kvkk_{uuid4().hex}",
+                actor_type="api_key",
+                api_key_id=test_api_key.id,
+                source_endpoint="chat.completions",
+                status="accepted",
+                requested_model="gpt-5.6-luna",
+                stream=False,
+                started_at=started_at,
+                reconciliation_due_at=end,
+                lifecycle_metadata={"pii_entities": entities},
+            )
+        )
+    await db.flush()
+
+    tenant_wide = await collect_exposure_evidence(
+        db, tenant_id=tenant_id, start=start, end=end, connector_id=None
+    )
+    connector_scoped = await collect_exposure_evidence(
+        db, tenant_id=tenant_id, start=start, end=end, connector_id=uuid4()
+    )
+    strings = _pdf_strings(_render_pdf(tenant_wide))
+
+    assert tenant_wide.gateway_detections == (
+        ("EMAIL_ADDRESS", "İletişim", 1),
+        ("TR_NATIONAL_ID", "Kimlik", 3),
+    )
+    assert connector_scoped.gateway_detections == ()
+    assert "Gateway detections" in strings
+    assert "Scope: all tenant connectors and the gateway" in strings
+    assert f"Organization: {tenant_id}" in strings
+    assert not any("Architecture Test Tenant" in item for item in strings)
+    assert strings[strings.index("TR_NATIONAL_ID") + 2] == "3"
+    assert "Gateway detections" not in _pdf_strings(_render_pdf(connector_scoped))

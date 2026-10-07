@@ -11,10 +11,11 @@ import io
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import Integer, cast as sql_cast, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim_enterprise.compliance.classification import severity_rank
+from shim_enterprise.billing.models import RequestLifecycle
+from shim_enterprise.compliance.classification import classify, severity_rank
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.compliance.reporting import (
     REPORT_FONT,
@@ -44,6 +45,7 @@ class ExposureEvidence:
     start: datetime
     end: datetime
     findings: tuple[FindingEvidence, ...]
+    gateway_detections: tuple[tuple[str, str, int], ...] = ()
 
     def counts(self, attribute: str, *, limit: int | None = None) -> dict[str, int]:
         values = (
@@ -65,6 +67,11 @@ _CSV_FIELDS = (
     "model",
     "content_id",
     "value_hash",
+)
+_GATEWAY_METHODOLOGY = (
+    "Counts are distinct values per request that the gateway detected and masked "
+    "before the request left, taken from the tenant's request records. No detected "
+    "value is stored."
 )
 _METHODOLOGY = (
     "This evidence contains tenant-scoped detector metadata and salted value "
@@ -129,7 +136,36 @@ async def collect_exposure_evidence(
         )
         for row in rows
     )
-    return ExposureEvidence(tenant_id, connector_id, start, end, findings)
+    if connector_id is not None:
+        return ExposureEvidence(tenant_id, connector_id, start, end, findings)
+    entities = (
+        func.jsonb_each_text(RequestLifecycle.lifecycle_metadata["pii_entities"])
+        .table_valued("key", "value")
+        .lateral()
+    )
+    detections = await session.execute(
+        select(entities.c.key, func.sum(sql_cast(entities.c.value, Integer)))
+        .select_from(RequestLifecycle)
+        .join(entities, true())
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at >= start,
+            RequestLifecycle.started_at <= end,
+        )
+        .group_by(entities.c.key)
+        .order_by(entities.c.key)
+    )
+    return ExposureEvidence(
+        tenant_id,
+        connector_id,
+        start,
+        end,
+        findings,
+        tuple(
+            (entity, classify(entity).kvkk_category, int(count))
+            for entity, count in detections.all()
+        ),
+    )
 
 
 def _safe_csv(value: object | None) -> str:
@@ -184,11 +220,12 @@ def _render_pdf(evidence: ExposureEvidence) -> bytes:
     scope = (
         f"connector {evidence.connector_id}"
         if evidence.connector_id is not None
-        else "all tenant connectors"
+        else "all tenant connectors and the gateway"
     )
     story = [
         Paragraph("KVKK Exposure Evidence", styles["Title"]),
         Paragraph(
+            f"Organization: {evidence.tenant_id}<br/>"
             f"Period: {evidence.start.date()} – {evidence.end.date()}<br/>"
             f"Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}<br/>"
             f"Scope: {scope}",
@@ -230,6 +267,24 @@ def _render_pdf(evidence: ExposureEvidence) -> bytes:
         evidence_table(
             _count_rows(evidence.counts("actor_email", limit=20)),
             ["Actor", "Findings"],
+        ),
+        *(
+            []
+            if evidence.connector_id is not None
+            else [
+                Spacer(1, 5 * mm),
+                Paragraph("Gateway detections", styles["Heading2"]),
+                Paragraph(_GATEWAY_METHODOLOGY, styles["Normal"]),
+                Spacer(1, 3 * mm),
+                evidence_table(
+                    [
+                        [entity, category, str(count)]
+                        for entity, category, count in evidence.gateway_detections
+                    ]
+                    or [["—", "—", "0"]],
+                    ["Entity type", "KVKK category", "Count"],
+                ),
+            ]
         ),
         Spacer(1, 6 * mm),
         Paragraph("Evidence boundary", styles["Heading2"]),
