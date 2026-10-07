@@ -197,3 +197,32 @@ async def test_privacy_stage_runs_scrubbing_off_the_event_loop() -> None:
 
     assert worker_threads
     assert get_ident() not in worker_threads
+
+
+@pytest.mark.asyncio
+async def test_a_continuation_counts_only_values_first_seen_in_this_request() -> None:
+    scrubber = PIIScrubberService()
+    _, parent_map = scrubber.scrub("parent@example.com")
+    continuation_store = SimpleNamespace(
+        load=AsyncMock(return_value=parent_map), ensure_available=AsyncMock()
+    )
+    stage = PrivacyStage(scrubber, continuation_store)
+
+    repeated = await stage.run(
+        _prepared({"previous_response_id": "resp_parent", "input": "Thanks"})
+    )
+    extended = await stage.run(
+        _prepared(
+            {
+                "previous_response_id": "resp_parent",
+                "input": "parent@example.com and new@example.com",
+            }
+        )
+    )
+
+    assert repeated.privacy is not None and extended.privacy is not None
+    assert dict(repeated.privacy.pii_entities) == {}
+    assert repeated.privacy.pii_detected is True
+    assert repeated.privacy.verification_map == parent_map
+    assert dict(extended.privacy.pii_entities) == {"EMAIL_ADDRESS": 1}
+    assert len(extended.privacy.verification_map) == 2

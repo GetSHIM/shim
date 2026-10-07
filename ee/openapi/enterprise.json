@@ -6565,6 +6565,20 @@
               }
             ],
             "title": "Block Secrets"
+          },
+          "entity_actions": {
+            "additionalProperties": {
+              "enum": [
+                "off",
+                "monitor",
+                "mask",
+                "block"
+              ],
+              "type": "string"
+            },
+            "description": "Replaces the stored overrides whole; {} removes them all.",
+            "title": "Entity Actions",
+            "type": "object"
           }
         },
         "title": "PrivacyPatch",
@@ -6591,6 +6605,35 @@
           "block_secrets": {
             "title": "Block Secrets",
             "type": "boolean"
+          },
+          "effective_actions": {
+            "additionalProperties": {
+              "enum": [
+                "off",
+                "monitor",
+                "mask",
+                "block"
+              ],
+              "type": "string"
+            },
+            "description": "The action every entity type gets.",
+            "readOnly": true,
+            "title": "Effective Actions",
+            "type": "object"
+          },
+          "entity_actions": {
+            "additionalProperties": {
+              "enum": [
+                "off",
+                "monitor",
+                "mask",
+                "block"
+              ],
+              "type": "string"
+            },
+            "description": "Stored per-type overrides of the group switches.",
+            "title": "Entity Actions",
+            "type": "object"
           }
         },
         "required": [
@@ -6598,7 +6641,9 @@
           "block_phone",
           "block_credit_card",
           "block_secrets",
-          "block_pii_tr"
+          "block_pii_tr",
+          "entity_actions",
+          "effective_actions"
         ],
         "title": "PrivacySettings",
         "type": "object"
@@ -7283,6 +7328,21 @@
       },
       "RequestActivityView": {
         "properties": {
+          "blocked_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Values that stopped the request under a block action, by entity type.",
+            "title": "Blocked Entities"
+          },
           "completion_outcome": {
             "anyOf": [
               {
@@ -7376,9 +7436,39 @@
             ],
             "title": "Model"
           },
+          "monitored_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Values sent unchanged under a monitor action, by entity type.",
+            "title": "Monitored Entities"
+          },
           "pii_detected": {
             "title": "Pii Detected",
             "type": "boolean"
+          },
+          "pii_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Masked values by entity type; null on older rows.",
+            "title": "Pii Entities"
           },
           "prompt_tokens": {
             "minimum": 0.0,

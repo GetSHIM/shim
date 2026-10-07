@@ -17,6 +17,7 @@ from shim.gateway.contracts.inference import (
     ScanVerdict,
 )
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.privacy.policies import effective_entity_actions
 
 
 router = APIRouter(tags=["scan"])
@@ -42,7 +43,9 @@ async def scan_text(
         result = await asyncio.to_thread(
             request.app.state.scan_privacy.analyze,
             payload.text,
-            config={},
+            actions=effective_entity_actions(
+                None, request.app.state.community_settings.PII_ENTITY_ACTIONS
+            ),
             policy=policy,
         )
     except ScanAnalysisError as exc:

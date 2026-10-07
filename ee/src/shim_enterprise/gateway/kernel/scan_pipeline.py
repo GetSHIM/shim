@@ -163,7 +163,7 @@ class ScanExecutionPipeline:
             try:
                 privacy = self.privacy.analyze(
                     request.text,
-                    config=actor.pii_config,
+                    actions=actor.entity_actions,
                     policy=actor.policy,
                 )
             except ScanAnalysisError:

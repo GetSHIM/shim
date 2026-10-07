@@ -125,8 +125,17 @@ request; `/requests/export` includes the same fields in CSV (unknown values
 are empty cells, and finish-reason maps are JSON). Both expose only the shim
 latency measurement. Audit completion `extra`
 carries the same fields. Historical rows and
-old outbox messages read as null without invented backfills. The community
-JSONL v3 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
+old outbox messages read as null without invented backfills.
+
+`pii_entities`, `monitored_entities` and `blocked_entities` count the values
+first seen in a request by entity type: masked, sent unchanged under `monitor`,
+and refused under `block`. A Responses continuation does not count again the
+placeholders it inherits. New requests always carry all three, `{}` when empty,
+so null marks a row written before they existed. They are in the lifecycle
+metadata, the request list and its CSV (as JSON) and the audit completion
+`extra`; the community JSONL event names the masked map `privacy_counts`.
+
+The community JSONL v4 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
 has no configured installation hashing key. It also carries `cost_center` (the
 first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header

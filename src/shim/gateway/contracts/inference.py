@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from shim.privacy.policies import EntityAction
+
 from . import FrozenContractModel
 
 
@@ -23,3 +25,4 @@ class ScanEntity(FrozenContractModel):
     score: float = Field(ge=0, le=1)
     start: int = Field(ge=0)
     end: int = Field(ge=0)
+    action: EntityAction

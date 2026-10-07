@@ -24,7 +24,7 @@ also remains outside tenant decision evidence.
 | `gateway.model_catalog` | Model is supported by the catalog snapshot, or was rejected. Unsupported caller-supplied model text is omitted from rejected enterprise events. |
 | `rate.requests`, `rate.tokens`, `rate.repeated_requests` | Configured burst/repeat checks passed, were unlimited, or denied admission. `rate.tokens` counts approximate tokens (serialized request bytes divided by four, rounded up; its policy carries `"unit": "approximate_tokens"`), while quota and spend reservation keep the byte count as their upper bound. A denied amount is not added to its window. Repeated content does not establish an automatic retry. |
 | `quota.requests_and_tokens` | Atomic request/token reservation passed or was rejected, using the policy loaded under the accounting lock. The combined limit is not attributed to a particular counter when the atomic check cannot distinguish it. |
-| `privacy.input` | Scrubbing masked data, found no enabled entity, was disabled, blocked unsupported content, or failed closed. |
+| `privacy.input` | Scrubbing masked data (`mask`, `PII_MASKED`), only monitored values (`allow`, `PII_MONITORED`), found no enabled entity (`allow`, `PII_NOT_DETECTED`), was disabled (`skip`, `PII_DISABLED`), found a type whose action is `block` (`deny`, `SECRET_BLOCKED` when a blocked type is `SECRET` or `DB_URI`, otherwise `PII_BLOCKED`), blocked unsupported content (`deny`, `PRIVACY_POLICY_BLOCKED`), or failed closed. Its policy carries the switches and the effective action of every type, so changing an action changes `policy_version`. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
@@ -81,8 +81,8 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 
 | Event | `extra` details |
 | --- | --- |
-| `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches that changed |
-| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off |
+| `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `monitor`, `off` |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
 | `tenant.provider_key_policy_updated` | `before` and `after` of `allow_customer_provider_keys` when it changed |
@@ -113,7 +113,7 @@ contains its own event: `compliance.audit_bundle_exported`,
 applies, the row count, format, frameworks, connector or grouping. List views
 (`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
-Turning any privacy switch off also queues, for every enabled forward target of
+Turning any privacy switch off, or lowering a type's action, also queues, for every enabled forward target of
 the tenant, connector-bound or not, one `compliance.connector_delivery_requested`
 delivery with aggregate type `organization` and the body `{"source": "shim",
 "event_type": "tenant_policy", "kind": "privacy_protection_relaxed", "fields":
@@ -121,7 +121,8 @@ delivery with aggregate type `organization` and the body `{"source": "shim",
 Slack and e-mail show the e-mail address. Its key is derived from the audit
 event id, so a retry does not duplicate it. A tenant without forward targets
 gets the audit event only.
-Turning a switch back on records only `tenant.privacy_policy_updated`.
+Turning a switch back on, or raising a type's action, records only
+`tenant.privacy_policy_updated`.
 
 ## Audit evidence bundle
 

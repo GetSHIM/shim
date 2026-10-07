@@ -612,6 +612,10 @@ class DurableAccountingCoordinator:
                                 for verdict in prepared.policy_verdicts
                             ],
                             "pii_entities": dict(prepared.privacy.pii_entities),
+                            "monitored_entities": dict(
+                                prepared.privacy.monitored_entities
+                            ),
+                            "blocked_entities": dict(prepared.privacy.blocked_entities),
                         }
                     ),
                 },

@@ -207,6 +207,18 @@ class GatewayKernel:
                 ),
                 prepared,
             )
+            assert prepared.privacy is not None
+            if prepared.privacy.block_code is not None:
+                if prepared.protocol != "count_tokens":
+                    await self.usage.record_privacy(prepared)
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": prepared.privacy.block_code,
+                        "message": "Request blocked by privacy policy: "
+                        f"{', '.join(sorted(prepared.privacy.blocked_entities))}.",
+                    },
+                )
             if prepared.protocol == "count_tokens":
                 await self.usage.record_token_count(prepared, None)
 

@@ -61,7 +61,11 @@ request it:
   number comes back in the answer, a missed phone number would have reached the
   provider. Each detected value becomes a
   placeholder before the request leaves, and is restored in the answer before
-  it reaches your caller.
+  it reaches your caller. What happens to each type is its action: `mask` (the
+  default), `monitor` (sent unchanged and counted), `block` (the request is
+  refused with 400 before any provider call, naming the type, never the
+  value) or `off` (not looked for). Community sets them in `PII_ENTITY_ACTIONS`;
+  enterprise per tenant.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request

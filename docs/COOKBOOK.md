@@ -12,6 +12,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Use the Gemini SDK](#use-the-gemini-sdk)
 - [Tag requests and read their cost](#tag-requests-and-read-their-cost)
 - [Scan text before you send it](#scan-text-before-you-send-it)
+- [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
@@ -122,9 +123,9 @@ Attribute each request's tokens and cost to a feature, team or customer.
    shim; it is not forwarded to the provider.
 2. Read the usage event shim writes for each inference request that passed
    authentication and request validation, admitted or refused: one JSON line on
-   the gateway's **stderr**. Token counting writes none. Structured logs go to
-   stdout. Uvicorn's start-up lines also go to stderr, so keep only lines whose
-   `version` is 3.
+   the gateway's **stderr**. Token counting writes none unless it is refused.
+   Structured logs go to stdout. Uvicorn's start-up lines also go to stderr, so
+   keep only lines whose `version` is 4.
 
 Tag rules, from `src/shim/billing/attribution.py`:
 
@@ -146,16 +147,18 @@ client.chat.completions.create(
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
   -e OPENAI_API_KEY ghcr.io/getshim/shim:latest 2>> shim-usage.log
-jq -cR 'fromjson? | select(.version == 3) | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
+jq -cR 'fromjson? | select(.version == 4) | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
 ```
 
 Each event has `version`, `request_id`, `provider`, `model`, `outcome`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
-`deployment_kind`, `privacy_counts` and `policy_verdicts`. `outcome` is
-`completed` for a finished request and `rejected` for one refused at admission;
-other values name a failure.
+`deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`
+and `policy_verdicts`. The three count maps give values by entity type: masked,
+sent unchanged under `monitor`, and refused under `block`; each is `{}` when
+empty. `outcome` is `completed` for a finished request and `rejected` for one
+refused at admission or by a privacy block; other values name a failure.
 
 Notes: `estimated_cost_usd` is a decimal string that can use exponent form
 (`6.5E-7`), so parse it as a decimal; it is `null` for a model without a catalog
@@ -193,10 +196,55 @@ The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`. The
 [README](../README.md#what-it-does) gives examples and known false positives.
 
-Notes: community has no privacy switches; every type above is always on. The
-response also carries the `request_id` in `X-Shim-Request-Id`. This route takes
+Each entity also carries its `action` (see the next recipe); a type whose action
+is `off` is not reported. The response also carries the `request_id` in
+`X-Shim-Request-Id`. This route takes
 the shim key in `Authorization: Bearer` or `x-shim-key`, not `x-api-key`, and its
 errors use the `{"detail": ...}` shape; text over the limit is 422.
+
+## Choose what happens to each data type
+
+Mask most types, watch some, and refuse a request that carries a pasted key.
+
+1. Set `PII_ENTITY_ACTIONS` to a JSON object from entity type to action and
+   restart the gateway. A type you leave out is masked.
+
+   | Action | What shim does |
+   | --- | --- |
+   | `mask` | Replaces the value with a placeholder and restores it in the answer. |
+   | `monitor` | Sends the value unchanged and counts it in `monitored_entities`. |
+   | `block` | Refuses the request with 400 before any provider call, `count_tokens` included. |
+   | `off` | Does not look for the type. |
+
+2. A blocked request answers in the provider's error shape with
+   `SECRET_BLOCKED` when a blocked type is `SECRET` or `DB_URI`, otherwise
+   `PII_BLOCKED`. The message names the types, never the value.
+
+```console
+docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
+  -e PII_ENTITY_ACTIONS='{"SECRET":"block","EMAIL_ADDRESS":"monitor"}' \
+  -e OPENAI_API_KEY ghcr.io/getshim/shim:latest
+```
+
+```python
+import openai
+
+try:
+    client.chat.completions.create(
+        model="gpt-5-nano",
+        messages=[{"role": "user", "content": "Deploy with sk-proj-00000000000000000000000000000000"}],
+    )
+except openai.BadRequestError as error:
+    print(error.response.headers["x-shim-error-code"])  # SECRET_BLOCKED
+    print(error.body["message"])  # Request blocked by privacy policy: SECRET.
+```
+
+Notes: an unknown type or action stops the gateway at start-up with the setting
+named. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
+A type set to `monitor` or `off` is not checked in provider protocol
+identifiers, and a gateway where no type is `mask` or `block` also accepts
+images and files it cannot inspect. Enterprise sets the same actions per tenant;
+see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 
 ## Read errors and retry
 
@@ -243,6 +291,7 @@ except openai.APIStatusError as error:
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
+| A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
 
 In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 `tokens` or `repeated_requests`.

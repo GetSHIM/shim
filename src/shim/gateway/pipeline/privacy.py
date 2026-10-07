@@ -15,12 +15,13 @@ from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import PRIVACY_DETECTION_TOTAL, bounded_label
-from shim.privacy.pii_scrubber import (
-    PIIInputTooLarge,
-    PIIScrubberService,
-    pii_scrubbing_enabled,
+from shim.privacy.pii_scrubber import PIIInputTooLarge, PIIScrubberService
+from shim.privacy.policies import (
+    EntityAction,
+    PrivacyAction,
+    PrivacyOutcome,
+    effective_entity_actions,
 )
-from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.privacy.continuation import PrivacyContinuationStore
 
 _DEEP_PRIVACY_FIELDS = frozenset(
@@ -149,8 +150,10 @@ class PrivacyStage:
         self.chain_store = chain_store
 
     async def run(self, value: PreparedInference) -> PreparedInference:
+        actions = effective_entity_actions(value.pii_config, value.entity_actions)
+        policy = {"pii_config": value.pii_config, "entity_actions": actions}
         try:
-            prepared = await self._run(value)
+            prepared = await self._run(value, actions)
         except BaseException as error:
             value.record_verdict(
                 "privacy.input",
@@ -161,28 +164,35 @@ class PrivacyStage:
                 reason_code="PRIVACY_POLICY_BLOCKED"
                 if isinstance(error, HTTPException) and error.status_code < 500
                 else "PRIVACY_UNAVAILABLE",
-                policy=value.pii_config,
+                policy=policy,
             )
             raise
-        assert prepared.privacy is not None
+        privacy = prepared.privacy
+        assert privacy is not None
+        disabled = value.context.privacy_policy.pii_mode == "disabled"
+        outcome, reason_code = (
+            ("deny", privacy.block_code)
+            if privacy.block_code
+            else ("mask", "PII_MASKED")
+            if privacy.verification_map
+            else ("allow", "PII_MONITORED")
+            if privacy.monitored_entities
+            else ("skip", "PII_DISABLED")
+            if disabled
+            else ("allow", "PII_NOT_DETECTED")
+        )
         prepared.record_verdict(
             "privacy.input",
             stage="privacy",
-            outcome="mask"
-            if prepared.privacy.pii_detected
-            else "skip"
-            if value.context.privacy_policy.pii_mode == "disabled"
-            else "allow",
-            reason_code="PII_MASKED"
-            if prepared.privacy.pii_detected
-            else "PII_DISABLED"
-            if value.context.privacy_policy.pii_mode == "disabled"
-            else "PII_NOT_DETECTED",
-            policy=value.pii_config,
+            outcome=outcome,
+            reason_code=reason_code,
+            policy=policy,
         )
         return prepared
 
-    async def _run(self, value: PreparedInference) -> PreparedInference:
+    async def _run(
+        self, value: PreparedInference, actions: Mapping[str, EntityAction]
+    ) -> PreparedInference:
         parent_map: dict[str, str] = {}
         previous_response_id = (
             value.payload.get("previous_response_id")
@@ -194,21 +204,33 @@ class PrivacyStage:
                 await self.chain_store.load(value.tenant_id, str(previous_response_id))
                 or {}
             )
+        unmasked: dict[str, str] = {}
         safe_payload, verification_map = await asyncio.to_thread(
             scrub_payload,
             value.payload,
-            value.pii_config,
+            actions,
             self.scrubber,
             known_placeholders=parent_map,
             request_model=value.model,
+            unmasked=unmasked,
         )
-        pii_detected = bool(verification_map)
         if (
-            pii_detected
+            verification_map
             and value.provider == "openai"
             and value.protocol == "responses"
         ):
             await self.chain_store.ensure_available()
+        monitored = {
+            item: entity_type
+            for item, entity_type in unmasked.items()
+            if actions[entity_type] == "monitor"
+        }
+        blocked = Counter(
+            entity_type
+            for entity_type in unmasked.values()
+            if actions[entity_type] == "block"
+        )
+        pii_detected = bool(verification_map or unmasked)
         privacy = PrivacyOutcome(
             action=(
                 PrivacyAction.SCRUBBED
@@ -219,11 +241,20 @@ class PrivacyStage:
             ),
             pii_detected=pii_detected,
             verification_map=verification_map,
+            monitored_entities=Counter(monitored.values()),
+            blocked_entities=blocked,
+            monitored_values=frozenset(monitored),
+            inherited_placeholders=frozenset(parent_map),
         )
-        for entity_type, count in privacy.pii_entities.items():
-            PRIVACY_DETECTION_TOTAL.labels(
-                entity_type=bounded_label("entity_type", entity_type)
-            ).inc(count)
+        for counts in (
+            privacy.pii_entities,
+            privacy.monitored_entities,
+            privacy.blocked_entities,
+        ):
+            for entity_type, count in counts.items():
+                PRIVACY_DETECTION_TOTAL.labels(
+                    entity_type=bounded_label("entity_type", entity_type)
+                ).inc(count)
         return replace(value, payload=safe_payload, privacy=privacy)
 
     def trace_metadata(
@@ -236,15 +267,21 @@ class PrivacyStage:
 
 def scrub_payload(
     payload: Mapping[str, Any],
-    config: Mapping[str, Any] | None,
+    entity_actions: Mapping[str, EntityAction] | None,
     scrubber: PIIScrubberService,
     *,
     known_placeholders: Mapping[str, str] | None = None,
     request_model: str | None = None,
+    unmasked: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
+    actions = entity_actions or effective_entity_actions()
     verification_map = dict(known_placeholders or {})
-    if not pii_scrubbing_enabled(config):
+    if all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
+    # Monitored values pass unchanged, so only masked or blocked types refuse
+    # what cannot be rewritten.
+    protects = any(action in {"mask", "block"} for action in actions.values())
+    unmasked = {} if unmasked is None else unmasked
 
     placeholders_by_value = {
         value: placeholder for placeholder, value in verification_map.items()
@@ -268,12 +305,15 @@ def scrub_payload(
 
     def inspect_identifier(value: Any) -> Any:
         if isinstance(value, str):
+            if not protects:
+                return value
             detected = pii_cache.get(value)
             if detected is None:
-                _, found = scrubber.scrub(value, config)
-                detected = bool(found)
+                kept: dict[str, str] = {}
+                _, found = scrubber.scrub(value, actions, unmasked=kept)
+                detected = protected(found, kept)
                 pii_cache[value] = detected
-                if not detected:
+                if not found and not kept:
                     text_cache[value] = value
             if detected:
                 reject("PII is not allowed in provider protocol identifiers.")
@@ -306,17 +346,23 @@ def scrub_payload(
                 return True
         return any(value.get(field) is not None for field in _OPAQUE_MEDIA_FIELDS)
 
+    def protected(found: Mapping[str, str], kept: Mapping[str, str]) -> bool:
+        return bool(found) or any(actions[kind] == "block" for kind in kept.values())
+
     def scrub_text(value: str) -> str:
         if value in text_cache:
             return text_cache[value]
+        kept: dict[str, str] = {}
         scrubbed, found = scrubber.scrub(
             value,
-            config,
+            actions,
             known_placeholders=verification_map,
             placeholders_by_value=placeholders_by_value,
+            unmasked=kept,
         )
         verification_map.update(found)
-        pii_cache[value] = bool(found)
+        unmasked.update(kept)
+        pii_cache[value] = protected(found, kept)
         text_cache[value] = scrubbed
         return scrubbed
 
@@ -327,8 +373,10 @@ def scrub_payload(
             return [visit(item, content=content, deep=deep) for item in value]
         if isinstance(value, dict):
             value_type = value.get("type")
-            if (content or value_type == "image_generation") and contains_opaque_media(
-                value, deep=deep
+            if (
+                protects
+                and (content or value_type == "image_generation")
+                and contains_opaque_media(value, deep=deep)
             ):
                 reject("PII scrubbing does not support opaque media inputs.")
             scrubbed: dict[str, Any] = {}
@@ -390,14 +438,14 @@ class ScanPrivacyStage:
         self,
         text: str,
         *,
-        config: Mapping[str, Any],
+        actions: Mapping[str, EntityAction],
         policy: ScanPolicy,
     ) -> ScanPrivacyOutcome:
         try:
             entities = tuple(
                 ScanEntity.model_validate(entity)
                 for entity in (
-                    self.scrubber.analyze(text, config=config) if text.strip() else ()
+                    self.scrubber.analyze(text, actions) if text.strip() else ()
                 )
             )
         except Exception:

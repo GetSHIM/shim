@@ -124,6 +124,7 @@ def create_community_app(
                 policy_resolver=LocalRequestPolicyResolver(
                     rate_limit_rpm=configured.DEFAULT_RPM_LIMIT,
                     rate_limit_tpm=configured.DEFAULT_TPM_LIMIT,
+                    entity_actions=configured.PII_ENTITY_ACTIONS,
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

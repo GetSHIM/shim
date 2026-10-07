@@ -17,6 +17,7 @@ from shim.privacy.deanonymizer import (
 )
 from shim.privacy import pii_scrubber as pii_scrubber_module
 from shim.privacy.pii_scrubber import PIIInputTooLarge, PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
 
 
 @pytest.fixture
@@ -79,13 +80,15 @@ def test_known_placeholder_is_reused_only_when_explicitly_scoped(
 def test_disabled_scrubbing_preserves_the_original_text(
     scrubber: PIIScrubberService,
 ) -> None:
-    config = {
-        "block_email": False,
-        "block_phone": False,
-        "block_credit_card": False,
-        "block_secrets": False,
-        "block_pii_tr": False,
-    }
+    config = effective_entity_actions(
+        {
+            "block_email": False,
+            "block_phone": False,
+            "block_credit_card": False,
+            "block_secrets": False,
+            "block_pii_tr": False,
+        }
+    )
 
     assert scrubber.scrub("literal%20value", config) == ("literal%20value", {})
 
@@ -410,13 +413,15 @@ def test_disabled_scrubbing_allows_uninspectable_media() -> None:
         "openai",
         {"type": "image_url", "image_url": "https://example.test/image.png"},
     )
-    disabled = {
-        "block_email": False,
-        "block_phone": False,
-        "block_credit_card": False,
-        "block_secrets": False,
-        "block_pii_tr": False,
-    }
+    disabled = effective_entity_actions(
+        {
+            "block_email": False,
+            "block_phone": False,
+            "block_credit_card": False,
+            "block_secrets": False,
+            "block_pii_tr": False,
+        }
+    )
     known_placeholders = {"<EMAIL_ADDRESS_deadbeef>": "alice@example.com"}
     scrubber = Mock(spec=PIIScrubberService)
 
@@ -764,7 +769,10 @@ def test_a_plate_is_one_placeholder_under_the_turkish_identifier_switch(
     assert next(iter(mapping)).startswith("<TR_LICENSE_PLATE_")
     assert "16 GB 512" in scrubbed
     assert scrubber.deanonymize(scrubbed, mapping) == text
-    assert scrubber.scrub(text, {"block_pii_tr": False}) == (text, {})
+    assert scrubber.scrub(text, effective_entity_actions({"block_pii_tr": False})) == (
+        text,
+        {},
+    )
 
 
 def test_native_payload_restores_content_not_metadata_or_ids(
@@ -1291,3 +1299,83 @@ def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
     assert parsed["elapsed"] == 0.0376118499
     assert parsed["contact"].startswith("Tel: <PHONE_NUMBER_")
     assert json.loads(scrubber.deanonymize(scrubbed, mapping)) == json.loads(document)
+
+
+def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
+    defaults = effective_entity_actions()
+    resolved = effective_entity_actions(
+        {"block_email": False, "block_secrets": True},
+        {"SECRET": "block", "PHONE_NUMBER": "monitor", "EMAIL_ADDRESS": "mask"},
+    )
+
+    assert set(defaults.values()) == {"mask"}
+    assert len(defaults) == 13
+    assert resolved["SECRET"] == "block"
+    assert resolved["DB_URI"] == "mask"
+    assert resolved["PHONE_NUMBER"] == "monitor"
+    assert resolved["EMAIL_ADDRESS"] == "mask"
+    assert effective_entity_actions({"block_email": False})["EMAIL_ADDRESS"] == "off"
+    assert list(resolved) == sorted(resolved)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"PERSON": "mask"}, "unknown entity type: PERSON"),
+        ({"SECRET": "warn"}, "unknown entity action: warn"),
+    ],
+)
+def test_entity_actions_reject_unknown_types_and_actions(overrides, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        effective_entity_actions(None, overrides)
+
+
+def test_monitored_values_stay_in_place_beside_masked_ones(
+    scrubber: PIIScrubberService,
+) -> None:
+    actions = effective_entity_actions(None, {"EMAIL_ADDRESS": "monitor"})
+    iban = "TR33 0006 1005 1978 6457 8413 26"
+    unmasked: dict[str, str] = {}
+
+    scrubbed, mapping = scrubber.scrub(
+        f"Mail alice@example.com, IBAN {iban}", actions, unmasked=unmasked
+    )
+
+    assert "alice@example.com" in scrubbed
+    assert iban not in scrubbed
+    assert list(mapping.values()) == [iban]
+    assert unmasked == {"alice@example.com": "EMAIL_ADDRESS"}
+
+
+def test_payload_records_monitored_and_blocked_values_without_placeholders(
+    scrubber: PIIScrubberService,
+) -> None:
+    actions = effective_entity_actions(
+        None, {"EMAIL_ADDRESS": "monitor", "SECRET": "block"}
+    )
+    secret = "sk-proj-" + "0" * 32
+    payload = {
+        "messages": [
+            {"role": "user", "content": f"alice@example.com key {secret}"},
+            {"role": "user", "content": "again alice@example.com"},
+        ]
+    }
+    unmasked: dict[str, str] = {}
+
+    safe, mapping = scrub_payload(payload, actions, scrubber, unmasked=unmasked)
+
+    assert safe == payload
+    assert mapping == {}
+    assert unmasked == {"alice@example.com": "EMAIL_ADDRESS", secret: "SECRET"}
+
+
+def test_analyze_reports_each_entity_action(scrubber: PIIScrubberService) -> None:
+    actions = effective_entity_actions(
+        {"block_phone": False}, {"EMAIL_ADDRESS": "monitor"}
+    )
+
+    findings = scrubber.analyze("alice@example.com +90 532 000 00 00", actions)
+
+    assert [(item["type"], item["action"]) for item in findings] == [
+        ("EMAIL_ADDRESS", "monitor")
+    ]

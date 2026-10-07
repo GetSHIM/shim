@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     UUID as SqlUUID,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -344,6 +345,20 @@ class OrganizationPIIConfig(Base, TimestampMixin):
     """Tenant privacy policy consumed by the gateway privacy stage."""
 
     __tablename__ = "organization_pii_configs"
+    __table_args__ = (
+        CheckConstraint(
+            "placeholder_mode IN ('random', 'stable')",
+            name="ck_organization_pii_configs_placeholder_mode",
+        ),
+        CheckConstraint(
+            "bulk_threshold IS NULL OR bulk_threshold >= 2",
+            name="ck_organization_pii_configs_bulk_threshold",
+        ),
+        CheckConstraint(
+            "response_scan IN ('off', 'count')",
+            name="ck_organization_pii_configs_response_scan",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(
         SqlUUID(as_uuid=True), primary_key=True, default=uuid4
@@ -367,6 +382,18 @@ class OrganizationPIIConfig(Base, TimestampMixin):
     )
     block_pii_tr: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
+    )
+    entity_actions: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    placeholder_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="random", server_default="random"
+    )
+    bulk_threshold: Mapped[int | None] = mapped_column(
+        Integer, default=50, server_default="50"
+    )
+    response_scan: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="off", server_default="off"
     )
 
     organization: Mapped[Organization] = relationship(back_populates="pii_config")

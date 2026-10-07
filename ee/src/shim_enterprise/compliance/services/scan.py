@@ -10,6 +10,7 @@ from shim_enterprise.compliance.classification import classify
 from shim_enterprise.compliance.normalized import NormalizedContent
 from shim_enterprise.core.config import settings
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
 
 
 def value_hash(salt: str, entity_type: str, value: str) -> str:
@@ -48,7 +49,7 @@ class ComplianceScanService:
                 detections = await asyncio.to_thread(
                     self.pii_scrubber.analyze,
                     unit.text,
-                    pii_config,
+                    effective_entity_actions(pii_config),
                 )
             for detection in detections:
                 start = int(detection["start"])

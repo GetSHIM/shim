@@ -19,7 +19,7 @@ from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.kernel.result import InferenceTiming, PreparedInference
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.request_policy import RequestPolicyResolver
-from shim.privacy.pii_scrubber import pii_scrubbing_enabled
+from shim.privacy.policies import effective_entity_actions
 
 if TYPE_CHECKING:
     from shim.secrets.credentials import EphemeralProviderCredential
@@ -81,7 +81,14 @@ class AuthenticateStage:
             tier_policy=policy.tier_policy,
             privacy_policy=PrivacyPolicy(
                 pii_mode=(
-                    "scrub" if pii_scrubbing_enabled(policy.pii_config) else "disabled"
+                    "scrub"
+                    if any(
+                        action != "off"
+                        for action in effective_entity_actions(
+                            policy.pii_config, policy.entity_actions
+                        ).values()
+                    )
+                    else "disabled"
                 ),
             ),
             audit_policy=policy.audit_policy,
@@ -94,6 +101,7 @@ class AuthenticateStage:
             stream=value.stream,
             policy=policy.request_policy,
             pii_config=policy.pii_config,
+            entity_actions=policy.entity_actions,
             provider=ProviderId(value.provider),
             timing=value.timing,
         )

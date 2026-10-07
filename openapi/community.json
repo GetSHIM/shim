@@ -3632,6 +3632,16 @@
       "ScanEntity": {
         "additionalProperties": false,
         "properties": {
+          "action": {
+            "enum": [
+              "off",
+              "monitor",
+              "mask",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
           "end": {
             "minimum": 0.0,
             "title": "End",
@@ -3658,7 +3668,8 @@
           "type",
           "score",
           "start",
-          "end"
+          "end",
+          "action"
         ],
         "title": "ScanEntity",
         "type": "object"

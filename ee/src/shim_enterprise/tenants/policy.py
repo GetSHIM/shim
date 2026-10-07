@@ -22,6 +22,7 @@ from shim.gateway.request_policy import (
     RequestPolicyContext,
     ResolvedRequestPolicy,
 )
+from shim.privacy.policies import EntityAction
 from shim_enterprise.tenants.models import (
     ApiKey,
     OrganizationPIIConfig,
@@ -98,6 +99,7 @@ class ResolvedTenantSettings:
     tenant_id: UUID
     pii_config: dict[str, bool] | None
     tier_definition: dict[str, Any] | None
+    entity_actions: dict[str, EntityAction] | None = None
 
 
 class TenantPolicyService:
@@ -116,21 +118,30 @@ class TenantPolicyService:
             raise ValueError("authenticated API key has no tenant owner")
         pii_config = await self._pii_config(tenant_id, session)
         tier = await self._tier_definition(api_key.tier, session)
+        # A value cached by the previous release has no entity_actions key.
+        entity_actions = (pii_config or {}).get("entity_actions")
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
-            pii_config=pii_config,
+            pii_config=None
+            if pii_config is None
+            else {
+                key: bool(value)
+                for key, value in pii_config.items()
+                if key != "entity_actions"
+            },
             tier_definition=tier,
+            entity_actions=dict(entity_actions) if entity_actions else None,
         )
 
     async def _pii_config(
         self,
         tenant_id: UUID,
         session: AsyncSession,
-    ) -> dict[str, bool] | None:
+    ) -> dict[str, Any] | None:
         cache_key = str(tenant_id)
         cached = await self.cache.get_pii_config(cache_key)
         if cached is not None:
-            return {key: bool(value) for key, value in cached.items()}
+            return cached
         row = (
             await session.execute(
                 select(OrganizationPIIConfig).where(
@@ -146,6 +157,7 @@ class TenantPolicyService:
             "block_credit_card": row.block_credit_card,
             "block_secrets": row.block_secrets,
             "block_pii_tr": row.block_pii_tr,
+            "entity_actions": dict(row.entity_actions),
         }
         await self.cache.set_pii_config(cache_key, value)
         return value
@@ -235,5 +247,6 @@ class TenantRequestPolicyResolver:
                     team=api_key.team,
                 ),
                 pii_config=tenant_settings.pii_config,
+                entity_actions=tenant_settings.entity_actions,
             )
         return resolved

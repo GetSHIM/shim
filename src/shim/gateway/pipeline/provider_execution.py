@@ -129,6 +129,8 @@ ERROR_HINTS = {
     "ZERO_RETENTION_REQUIRED": "Send a request the provider enforces zero retention for, as your tenant policy requires.",
     "RATE_LIMIT_EXCEEDED": "Wait the number of seconds in Retry-After, then retry.",
     "PRIVACY_POLICY_BLOCKED": "Remove the content the privacy policy blocks, or ask an administrator to change the policy.",
+    "SECRET_BLOCKED": "Remove the credential from the request; the privacy policy refuses to send it.",
+    "PII_BLOCKED": "Remove the personal data the message names, or ask an administrator to change the policy.",
     "PRIVACY_STATE_UNAVAILABLE": "Start a new conversation; the privacy state this one refers to is gone.",
     "PROVIDER_NOT_CONFIGURED": "Configure a provider key on the gateway or send one in x-provider-key.",
     "PROVIDER_RATE_LIMITED": "The provider's quota for your provider key is spent; wait for retry-after or raise that quota.",

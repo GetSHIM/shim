@@ -311,6 +311,97 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
     assert projected.details["usage_estimated"] is True
 
 
+@pytest.mark.asyncio
+async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
+    db, test_api_key, monkeypatch
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
+        blocked_entities={"SECRET": 1},
+    )
+    prepared.record_verdict(
+        "privacy.input", stage="privacy", outcome="deny", reason_code="SECRET_BLOCKED"
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    counts = {
+        "pii_entities": {"EMAIL_ADDRESS": 1},
+        "monitored_entities": {},
+        "blocked_entities": {"SECRET": 1},
+    }
+    assert (lifecycle.status, lifecycle.terminal_error_code) == (
+        "rejected",
+        "SECRET_BLOCKED",
+    )
+    assert {key: lifecycle.lifecycle_metadata[key] for key in counts} == counts
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    page = await management.list_requests(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        limit=1,
+        offset=0,
+        user=SimpleNamespace(role="owner", organization_id=prepared.tenant_id),
+        session=db,
+    )
+    item = page.items[0]
+    assert item.status == "rejected"
+    assert (item.pii_entities, item.monitored_entities, item.blocked_entities) == (
+        counts["pii_entities"],
+        counts["monitored_entities"],
+        counts["blocked_entities"],
+    )
+
+
 async def _create_tenant(
     session: AsyncSession,
     label: str,

@@ -7,56 +7,12 @@ import re
 import secrets
 import unicodedata
 from collections.abc import Iterable, Mapping
-from types import MappingProxyType
 from typing import Any
 
 from presidio_analyzer import RecognizerResult
 
+from shim.privacy.policies import EntityAction, effective_entity_actions
 from shim.privacy.presidio_analyzer import PresidioAnalyzer
-
-
-PII_CONFIG_DEFAULTS: Mapping[str, bool] = MappingProxyType(
-    {
-        "block_email": True,
-        "block_phone": True,
-        "block_credit_card": True,
-        "block_secrets": True,
-        "block_pii_tr": True,
-    }
-)
-
-_PII_CONFIG_ENTITIES: Mapping[str, frozenset[str]] = MappingProxyType(
-    {
-        "block_email": frozenset({"EMAIL_ADDRESS"}),
-        "block_phone": frozenset({"PHONE_NUMBER"}),
-        "block_credit_card": frozenset({"CREDIT_CARD"}),
-        "block_secrets": frozenset(
-            {
-                "SECRET",
-                "US_SSN",
-                "IP_ADDRESS",
-                "MAC_ADDRESS",
-                "DB_URI",
-                "FILE_PATH",
-            }
-        ),
-        "block_pii_tr": frozenset(
-            {"TR_NATIONAL_ID", "TR_VKN", "IBAN_CODE", "TR_LICENSE_PLATE"}
-        ),
-    }
-)
-
-
-def effective_pii_config(config: Mapping[str, Any] | None = None) -> dict[str, bool]:
-    overrides = config or {}
-    return {
-        name: bool(overrides.get(name, default))
-        for name, default in PII_CONFIG_DEFAULTS.items()
-    }
-
-
-def pii_scrubbing_enabled(config: Mapping[str, Any] | None = None) -> bool:
-    return any(effective_pii_config(config).values())
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
@@ -208,15 +164,17 @@ class PIIScrubberService:
     def analyze(
         self,
         text: str,
-        config: Mapping[str, Any] | None = None,
+        actions: Mapping[str, EntityAction] | None = None,
     ) -> list[dict[str, Any]]:
-        detections = self._source_detections(text, effective_pii_config(config))
+        actions = actions or effective_entity_actions()
+        detections = self._source_detections(text, actions)
         return [
             {
                 "type": item.entity_type,
                 "start": item.start,
                 "end": item.end,
                 "score": item.score,
+                "action": actions[item.entity_type],
             }
             for item in detections
         ]
@@ -224,17 +182,19 @@ class PIIScrubberService:
     def scrub(
         self,
         text: str,
-        config: Mapping[str, Any] | None = None,
+        actions: Mapping[str, EntityAction] | None = None,
         *,
         known_placeholders: Mapping[str, str] | None = None,
         placeholders_by_value: dict[str, str] | None = None,
+        unmasked: dict[str, str] | None = None,
     ) -> tuple[str, dict[str, str]]:
+        """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type)."""
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
-        effective_config = effective_pii_config(config)
-        if not any(effective_config.values()):
+        actions = actions or effective_entity_actions()
+        if all(action == "off" for action in actions.values()):
             return text, {}
-        detections = self._source_detections(text, effective_config)
+        detections = self._source_detections(text, actions)
         if not detections:
             return text, {}
         if placeholders_by_value is None:
@@ -247,6 +207,10 @@ class PIIScrubberService:
         cursor = 0
         for item in detections:
             value = text[item.start : item.end]
+            if actions[item.entity_type] != "mask":
+                if unmasked is not None:
+                    unmasked[value] = item.entity_type
+                continue
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
                 placeholder = self._placeholder(item.entity_type)
@@ -274,25 +238,24 @@ class PIIScrubberService:
     def _detections(
         self,
         text: str,
-        config: Mapping[str, bool],
+        actions: Mapping[str, EntityAction],
     ) -> list[RecognizerResult]:
-        enabled_entities: set[str] = set()
-        for setting, entity_types in _PII_CONFIG_ENTITIES.items():
-            if config[setting]:
-                enabled_entities.update(entity_types)
+        enabled_entities = {
+            entity_type for entity_type, action in actions.items() if action != "off"
+        }
         return self._deduplicate(self._analyzer.analyze(text, enabled_entities))
 
     def _source_detections(
         self,
         text: str,
-        config: Mapping[str, bool],
+        actions: Mapping[str, EntityAction],
     ) -> list[RecognizerResult]:
         if len(text) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
         prepared, spans = _preprocess_with_spans(text)
         if len(prepared) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
-        detections = self._non_overlapping(self._detections(prepared, config))
+        detections = self._non_overlapping(self._detections(prepared, actions))
         mapped: list[RecognizerResult] = []
         for item in detections:
             matched_spans = spans[item.start : item.end]

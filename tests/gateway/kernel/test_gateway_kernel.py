@@ -1,15 +1,26 @@
+import io
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from starlette.responses import Response
 
+from shim.application import create_community_app
+from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
+from shim.privacy.policies import (
+    PrivacyAction,
+    PrivacyOutcome,
+    effective_entity_actions,
+)
 from shim.services.gateway.service import GatewayService
+
+_NO_PII = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
 
 
 def _kernel(usage) -> GatewayKernel:
@@ -36,7 +47,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
-    prepared = SimpleNamespace(stream=False, protocol="chat")
+    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
     provider_output = object()
     response = Response("ok")
 
@@ -201,7 +212,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
     error_code: str,
     expected_reason: str,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat")
+    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
     failure = ProviderCallError(
         status_code=status_code,
         error_code=error_code,
@@ -228,7 +239,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
 async def test_kernel_maps_post_reservation_admission_abort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat")
+    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):
@@ -251,7 +262,7 @@ async def test_kernel_maps_post_reservation_admission_abort(
 async def test_recovery_session_failure_does_not_mask_original_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat")
+    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):
@@ -267,3 +278,263 @@ async def test_recovery_session_failure_does_not_mask_original_error(
         await _kernel(usage)._execute(SimpleNamespace(provider="openai"))
 
     assert error.value is failure
+
+
+_GATEWAY_KEY = "gateway-secret-12345"
+_PASTED_KEY = "sk-proj-" + "0" * 32
+_CHAT_REPLY = {
+    "id": "chatcmpl-1",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "gpt-5-nano",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
+_ROUTES = {
+    "chat": (
+        "/v1/chat/completions",
+        {"authorization": f"Bearer {_GATEWAY_KEY}"},
+        lambda text: {
+            "model": "gpt-5-nano",
+            "messages": [{"role": "user", "content": text}],
+        },
+    ),
+    "messages": (
+        "/v1/messages",
+        {"x-api-key": _GATEWAY_KEY},
+        lambda text: {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": text}],
+        },
+    ),
+    "count_tokens": (
+        "/v1/messages/count_tokens",
+        {"x-api-key": _GATEWAY_KEY},
+        lambda text: {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": text}],
+        },
+    ),
+    "gemini": (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        {"x-goog-api-key": _GATEWAY_KEY},
+        lambda text: {"contents": [{"role": "user", "parts": [{"text": text}]}]},
+    ),
+}
+
+
+async def _send(
+    actions: dict[str, str],
+    route: str,
+    payload: dict,
+    *,
+    usage=None,
+) -> tuple[httpx.Response, list[httpx.Request], list[dict]]:
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    path, headers = _ROUTES[route][:2]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps(actions),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            if usage is not None:
+                app.state.gateway_service.kernel.usage = usage
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**headers, "x-provider-key": "provider-secret"},
+                    json=payload,
+                )
+    return (
+        response,
+        calls,
+        [json.loads(line) for line in events.getvalue().splitlines()],
+    )
+
+
+def _privacy_verdict(event: dict) -> tuple[str, str, str]:
+    verdict = next(
+        item for item in event["policy_verdicts"] if item["rule_id"] == "privacy.input"
+    )
+    return verdict["outcome"], verdict["reason_code"], verdict["policy_version"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_ROUTES))
+async def test_a_blocked_secret_stops_every_protocol_before_the_provider(route):
+    build = _ROUTES[route][2]
+
+    response, calls, events = await _send(
+        {"SECRET": "block", "EMAIL_ADDRESS": "monitor"},
+        route,
+        build(f"Deploy with {_PASTED_KEY} for alice@example.com"),
+    )
+
+    body = response.json()
+    assert response.status_code == 400
+    assert calls == []
+    assert response.headers["x-shim-error-code"] == "SECRET_BLOCKED"
+    assert _PASTED_KEY not in response.text
+    assert "alice@example.com" not in response.text
+    message = "Request blocked by privacy policy: SECRET."
+    if route == "chat":
+        assert body["error"]["code"] == "SECRET_BLOCKED"
+        assert body["error"]["message"] == message
+    elif route == "gemini":
+        assert body["error"]["code"] == 400
+        assert body["error"]["message"] == message
+        assert body["error"]["details"][0]["reason"] == "SECRET_BLOCKED"
+    else:
+        assert body["type"] == "error"
+        assert body["error"]["code"] == "SECRET_BLOCKED"
+        assert body["error"]["message"] == message
+    [event] = events
+    assert event["outcome"] == "rejected"
+    assert (event["estimated_cost_usd"], event["estimated"]) == ("0", False)
+    assert event["blocked_entities"] == {"SECRET": 1}
+    assert event["monitored_entities"] == {"EMAIL_ADDRESS": 1}
+    assert _privacy_verdict(event)[:2] == ("deny", "SECRET_BLOCKED")
+
+
+@pytest.mark.asyncio
+async def test_a_block_records_privacy_counts_before_refusing():
+    usage = AsyncMock()
+
+    response, calls, _ = await _send(
+        {"TR_NATIONAL_ID": "block", "EMAIL_ADDRESS": "monitor"},
+        "chat",
+        _ROUTES["chat"][2](
+            "TCKN 10000000146, alice@example.com, IBAN TR33 0006 1005 1978 6457 8413 26"
+        ),
+        usage=usage,
+    )
+
+    assert response.status_code == 400
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert response.json()["error"]["message"] == (
+        "Request blocked by privacy policy: TR_NATIONAL_ID."
+    )
+    assert calls == []
+    privacy = usage.record_privacy.await_args.args[0].privacy
+    assert dict(privacy.blocked_entities) == {"TR_NATIONAL_ID": 1}
+    assert dict(privacy.monitored_entities) == {"EMAIL_ADDRESS": 1}
+    assert dict(privacy.pii_entities) == {"IBAN_CODE": 1}
+    assert privacy.monitored_values == {"alice@example.com"}
+    assert "alice@example.com" not in repr(privacy)
+    usage.reserve_provider_spend.assert_not_awaited()
+    usage.mark_provider_started.assert_not_awaited()
+    assert usage.fail.await_args.args[0].policy_verdicts[-1].outcome == "deny"
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_count_tokens_is_rejected_without_a_count():
+    usage = AsyncMock()
+
+    response, calls, _ = await _send(
+        {"SECRET": "block"},
+        "count_tokens",
+        _ROUTES["count_tokens"][2](f"key {_PASTED_KEY}"),
+        usage=usage,
+    )
+
+    assert (response.status_code, calls) == (400, [])
+    usage.record_token_count.assert_not_awaited()
+    usage.record_privacy.assert_not_awaited()
+    usage.reject.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actions", "text", "verdict", "forwarded"),
+    [
+        ({}, "Email alice@example.com", ("mask", "PII_MASKED"), False),
+        (
+            {"EMAIL_ADDRESS": "monitor"},
+            "Email alice@example.com",
+            ("allow", "PII_MONITORED"),
+            True,
+        ),
+        ({}, "Nothing private here", ("allow", "PII_NOT_DETECTED"), None),
+        (
+            {name: "off" for name in effective_entity_actions()},
+            "Email alice@example.com",
+            ("skip", "PII_DISABLED"),
+            True,
+        ),
+    ],
+)
+async def test_the_privacy_verdict_says_what_happened(
+    actions, text, verdict, forwarded
+):
+    response, calls, [event] = await _send(actions, "chat", _ROUTES["chat"][2](text))
+
+    assert response.status_code == 200
+    assert _privacy_verdict(event)[:2] == verdict
+    if forwarded is not None:
+        assert ("alice@example.com" in calls[0].content.decode()) is forwarded
+    if verdict[1] == "PII_MONITORED":
+        assert event["monitored_entities"] == {"EMAIL_ADDRESS": 1}
+        assert event["privacy_counts"] == {}
+        assert response.json()["choices"][0]["message"]["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_changing_an_action_changes_the_privacy_policy_version():
+    payload = _ROUTES["chat"][2]("Nothing private here")
+
+    *_, [masked] = await _send({}, "chat", payload)
+    *_, [monitored] = await _send({"IBAN_CODE": "monitor"}, "chat", payload)
+
+    assert _privacy_verdict(masked)[2] != _privacy_verdict(monitored)[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "user", "name": "alice@example.com", "content": "hi"},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.test/a.png"},
+                }
+            ],
+        },
+    ],
+)
+async def test_an_all_monitor_tenant_is_not_refused_for_media_or_identifiers(
+    message,
+):
+    payload = {"model": "gpt-5-nano", "messages": [message]}
+    monitor_all = {name: "monitor" for name in effective_entity_actions()}
+
+    refused, refused_calls, _ = await _send({}, "chat", payload)
+    sent, sent_calls, _ = await _send(monitor_all, "chat", payload)
+
+    assert (refused.status_code, refused_calls) == (400, [])
+    assert refused.headers["x-shim-error-code"] == "PRIVACY_POLICY_BLOCKED"
+    assert sent.status_code == 200
+    assert json.loads(sent_calls[0].content)["messages"] == [message]

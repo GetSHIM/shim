@@ -378,6 +378,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "ttft_ms",
         "system_prompt_hash",
         "deployment_kind",
+        "pii_entities",
+        "monitored_entities",
+        "blocked_entities",
     }
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
@@ -594,6 +597,8 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "ttft_ms": 42.5,
             "shim_latency_ms": 0,
             "deployment_kind": "internal",
+            "pii_entities": {},
+            "blocked_entities": {"SECRET": 1},
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -644,6 +649,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert "request_duration_ms" not in exported
     assert "latency_ms" not in exported
     assert exported["cost_complete"] == "True"
+    assert exported["pii_entities"] == "{}"
+    assert exported["monitored_entities"] == ""
+    assert exported["blocked_entities"] == '{"SECRET": 1}'
     assert audit.await_args.args[2] == "tenant.requests_exported"
     assert audit.await_args.kwargs["details"]["rows"] == 1
     session.commit.assert_awaited_once()
@@ -1135,6 +1143,121 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
         )
         == 2
     )
+
+
+@pytest.mark.asyncio
+async def test_privacy_defaults_and_entity_actions_round_trip(
+    db, test_user_with_org, audit_events
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+
+    row = await management.ensure_privacy_defaults(db, tenant_id)
+    await db.refresh(row)
+    assert (
+        row.entity_actions,
+        row.placeholder_mode,
+        row.bulk_threshold,
+        row.response_scan,
+    ) == ({}, "random", 50, "off")
+    defaults = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(test_user_with_org, db)
+    )
+    assert defaults.entity_actions == {}
+    assert set(defaults.effective_actions.values()) == {"mask"}
+
+    updated = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(
+                block_email=False,
+                entity_actions={"SECRET": "block", "PHONE_NUMBER": "monitor"},
+            ),
+            request,
+            test_user_with_org,
+            db,
+        )
+    )
+    unchanged = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(block_phone=True), request, test_user_with_org, db
+        )
+    )
+    cleared = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(entity_actions={}),
+            request,
+            test_user_with_org,
+            db,
+        )
+    )
+
+    assert updated.entity_actions == {"SECRET": "block", "PHONE_NUMBER": "monitor"}
+    assert updated.effective_actions["SECRET"] == "block"
+    assert updated.effective_actions["PHONE_NUMBER"] == "monitor"
+    assert updated.effective_actions["EMAIL_ADDRESS"] == "off"
+    assert updated.effective_actions["DB_URI"] == "mask"
+    assert unchanged.entity_actions == updated.entity_actions
+    assert cleared.entity_actions == {}
+    assert cleared.effective_actions["SECRET"] == "mask"
+    policy_updates = [
+        event["extra"]
+        for event in await audit_events(tenant_id)
+        if event["endpoint"] == "tenant.privacy_policy_updated"
+    ]
+    assert policy_updates[0]["before"]["entity_actions"] == {}
+    assert policy_updates[0]["after"]["entity_actions"] == {
+        "SECRET": "block",
+        "PHONE_NUMBER": "monitor",
+    }
+    assert "effective_actions" not in policy_updates[0]["after"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"entity_actions": None},
+        {"entity_actions": {"PERSON": "mask"}},
+        {"entity_actions": {"SECRET": "warn"}},
+        {"entity_actions": {"SECRET": "mask_last4"}},
+    ],
+)
+def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after", "relaxed"),
+    [
+        ({"SECRET": "block"}, {}, ["entity_actions.SECRET"]),
+        ({}, {"EMAIL_ADDRESS": "monitor"}, ["entity_actions.EMAIL_ADDRESS"]),
+        ({"SECRET": "monitor"}, {"SECRET": "block"}, None),
+        ({}, {"IBAN_CODE": "mask"}, None),
+    ],
+)
+async def test_lowering_an_entity_action_is_a_relaxation(
+    db, test_user_with_org, audit_events, before, after, relaxed
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    await management.update_privacy_settings(
+        management.PrivacyPatch(entity_actions=before), request, test_user_with_org, db
+    )
+    seen = {event["request_id"] for event in await audit_events(tenant_id)}
+
+    await management.update_privacy_settings(
+        management.PrivacyPatch(entity_actions=after), request, test_user_with_org, db
+    )
+
+    events = {
+        event["endpoint"]: event["extra"]
+        for event in await audit_events(tenant_id)
+        if event["request_id"] not in seen
+    }
+    assert events.get("tenant.privacy_protection_relaxed", {}).get("relaxed") == relaxed
 
 
 @pytest.mark.asyncio

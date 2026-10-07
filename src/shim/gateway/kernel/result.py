@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,7 +21,7 @@ from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
-from shim.privacy.policies import PrivacyOutcome
+from shim.privacy.policies import EntityAction, PrivacyOutcome
 
 
 StreamItem = TypeVar("StreamItem")
@@ -127,6 +127,7 @@ class PreparedInference:
     policy: _RequestPolicyContext
     pii_config: dict[str, bool] | None
     admission: AdmissionState | None = None
+    entity_actions: Mapping[str, EntityAction] | None = None
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None

@@ -72,3 +72,40 @@ def test_cli_names_the_bad_setting_without_its_value(
     assert exit_info.value.code == 2
     assert "shim: error: SHIM_API_KEY: Value should have at least 16 items" in error
     assert "twelve-chars" not in error
+
+
+def test_pii_entity_actions_are_parsed_from_json_and_default_to_none() -> None:
+    assert CommunitySettings(_env_file=None).PII_ENTITY_ACTIONS == {}
+    settings = CommunitySettings(
+        _env_file=None,
+        PII_ENTITY_ACTIONS='{"SECRET": "block", "EMAIL_ADDRESS": "monitor"}',
+    )
+    assert settings.PII_ENTITY_ACTIONS == {
+        "SECRET": "block",
+        "EMAIL_ADDRESS": "monitor",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("{not json", "Expecting property name"),
+        ('{"PERSON": "mask"}', "unknown entity type: PERSON"),
+        ('{"SECRET": "warn"}', "Input should be 'off', 'monitor', 'mask' or 'block'"),
+        ('["SECRET"]', "Input should be a valid dictionary"),
+    ],
+)
+def test_cli_names_an_invalid_pii_entity_actions_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+    message: str,
+) -> None:
+    monkeypatch.setenv("PII_ENTITY_ACTIONS", value)
+
+    with pytest.raises(SystemExit):
+        cli.main(["serve"])
+
+    error = capsys.readouterr().err
+    assert "shim: error: PII_ENTITY_ACTIONS" in error
+    assert message in error

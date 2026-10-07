@@ -28,6 +28,8 @@ from shim_enterprise.gateway.pipeline.scan_policy import ScanPolicyResolver
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.kernel.scan_pipeline import ScanExecutionPipeline
 from shim_enterprise.tenants.models import ApiKey, Organization, TierDefinition, User
+from shim_enterprise.tenants.service import ensure_privacy_defaults
+from shim.privacy.pii_scrubber import PIIScrubberService
 from shim_enterprise.observability.enterprise_metrics import QUOTA_RESERVATION_TOTAL
 from shim.observability.metrics import (
     PRIVACY_DETECTION_TOTAL,
@@ -48,7 +50,7 @@ class StubScrubber:
         self.before_analyze = before_analyze
         self.calls: list[str] = []
 
-    def analyze(self, text: str, *, config: dict) -> list[dict]:
+    def analyze(self, text: str, actions: dict) -> list[dict]:
         self.calls.append(text)
         if self.before_analyze is not None:
             self.before_analyze()
@@ -84,7 +86,15 @@ async def test_success_persists_terminal_state_audit_outbox_without_raw_pii(
 ) -> None:
     raw_text = "private-sentinel-person@example.com"
     scrubber = StubScrubber(
-        [{"type": "EMAIL_ADDRESS", "score": 0.99, "start": 17, "end": 44}]
+        [
+            {
+                "type": "EMAIL_ADDRESS",
+                "score": 0.99,
+                "start": 17,
+                "end": 44,
+                "action": "mask",
+            }
+        ]
     )
     request_metric = REQUESTS_TOTAL.labels(
         endpoint="/v1/scan",
@@ -336,7 +346,15 @@ async def test_an_api_key_scan_warns_unless_its_tier_chooses_block(
         .values(features={**features, "audit_policy_mode": "off"})
     )
     scrubber = StubScrubber(
-        [{"type": "EMAIL_ADDRESS", "score": 0.99, "start": 6, "end": 23}]
+        [
+            {
+                "type": "EMAIL_ADDRESS",
+                "score": 0.99,
+                "start": 6,
+                "end": 23,
+                "action": "mask",
+            }
+        ]
     )
     scan = ScanExecutionPipeline(scrubber=scrubber).execute(
         ScanInput(text="Email alice@example.com", source="chatgpt"),
@@ -585,3 +603,30 @@ async def test_concurrent_admission_cannot_exceed_tiny_limit(async_engine) -> No
             await cleanup.execute(
                 delete(TierDefinition).where(TierDefinition.slug == tier_slug)
             )
+
+
+@pytest.mark.asyncio
+async def test_scan_reports_the_tenant_entity_actions(
+    db, test_api_key, test_tier
+) -> None:
+    config = await ensure_privacy_defaults(db, test_api_key.organization_id)
+    config.block_email = False
+    config.entity_actions = {"SECRET": "block"}
+    await db.flush()
+
+    actor = await ScanPolicyResolver().resolve(api_key_principal(test_api_key.id), db)
+    result = await ScanExecutionPipeline(scrubber=PIIScrubberService()).execute(
+        ScanInput(
+            text="alice@example.com sk-proj-" + "0" * 32 + " +90 532 000 00 00",
+            source="unknown",
+        ),
+        api_key_principal(test_api_key.id),
+        db,
+    )
+
+    assert actor.entity_actions["SECRET"] == "block"
+    assert actor.entity_actions["EMAIL_ADDRESS"] == "off"
+    assert [(entity.type, entity.action) for entity in result.entities_found] == [
+        ("SECRET", "block"),
+        ("PHONE_NUMBER", "mask"),
+    ]

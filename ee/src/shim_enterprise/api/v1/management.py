@@ -64,6 +64,7 @@ from shim_enterprise.compliance.url_guard import (
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim.privacy.policies import EntityAction, effective_entity_actions
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
@@ -286,6 +287,16 @@ class ProviderSecretView(BaseModel):
     verified_at: datetime | None
 
 
+_PRIVACY_SWITCHES = (
+    "block_email",
+    "block_phone",
+    "block_credit_card",
+    "block_secrets",
+    "block_pii_tr",
+)
+_ACTION_RANK = {"off": 0, "monitor": 1, "mask": 2, "block": 3}
+
+
 class PrivacySettings(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -294,6 +305,17 @@ class PrivacySettings(BaseModel):
     block_credit_card: bool
     block_secrets: bool
     block_pii_tr: bool
+    entity_actions: dict[str, EntityAction] = Field(
+        description="Stored per-type overrides of the group switches."
+    )
+
+    @computed_field(description="The action every entity type gets.")
+    @property
+    def effective_actions(self) -> dict[str, EntityAction]:
+        return effective_entity_actions(
+            {field: getattr(self, field) for field in _PRIVACY_SWITCHES},
+            self.entity_actions,
+        )
 
 
 class ProviderKeySettings(BaseModel):
@@ -313,6 +335,18 @@ class PrivacyPatch(BaseModel):
     block_credit_card: bool | None = None
     block_secrets: bool | None = None
     block_pii_tr: bool | None = None
+    entity_actions: dict[str, EntityAction] = Field(
+        default_factory=dict,
+        description="Replaces the stored overrides whole; {} removes them all.",
+    )
+
+    @field_validator("entity_actions")
+    @classmethod
+    def known_entity_types(
+        cls, value: dict[str, EntityAction]
+    ) -> dict[str, EntityAction]:
+        effective_entity_actions(None, value)
+        return value
 
 
 class TierView(BaseModel):
@@ -610,6 +644,17 @@ class RequestActivityView(BaseModel):
     ttft_ms: float | None = Field(default=None, ge=0)
     system_prompt_hash: str | None = None
     deployment_kind: Literal["internal", "external", "unknown"] | None = None
+    pii_entities: dict[str, int] | None = Field(
+        default=None, description="Masked values by entity type; null on older rows."
+    )
+    monitored_entities: dict[str, int] | None = Field(
+        default=None,
+        description="Values sent unchanged under a monitor action, by entity type.",
+    )
+    blocked_entities: dict[str, int] | None = Field(
+        default=None,
+        description="Values that stopped the request under a block action, by entity type.",
+    )
 
 
 class RequestActivityStatusCountsView(BaseModel):
@@ -1639,18 +1684,29 @@ async def update_privacy_settings(
 ) -> Any:
     tenant_id = _tenant_id(user)
     row = await ensure_privacy_defaults(session, tenant_id)
-    before = {field: getattr(row, field) for field in PrivacySettings.model_fields}
+    before = PrivacySettings.model_validate(row).model_dump()
     for field, value in patch.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
-    after = {field: getattr(row, field) for field in PrivacySettings.model_fields}
+    after = PrivacySettings.model_validate(row).model_dump()
     await _audit(
         session,
         user,
         "tenant.privacy_policy_updated",
         str(tenant_id),
-        details=change_details(before, after),
+        details=change_details(
+            {field: before[field] for field in PrivacySettings.model_fields},
+            {field: after[field] for field in PrivacySettings.model_fields},
+        ),
     )
-    relaxed = [field for field in before if before[field] and not after[field]]
+    relaxed = [
+        field for field in _PRIVACY_SWITCHES if before[field] and not after[field]
+    ] + [
+        f"entity_actions.{entity_type}"
+        for entity_type, action in after["effective_actions"].items()
+        if _ACTION_RANK[action] < _ACTION_RANK[before["effective_actions"][entity_type]]
+        and before["entity_actions"].get(entity_type)
+        != after["entity_actions"].get(entity_type)
+    ]
     if relaxed:
         event_id = await _audit(
             session,
@@ -2099,6 +2155,9 @@ async def list_requests(
                         "shim_latency_ms",
                         "system_prompt_hash",
                         "deployment_kind",
+                        "pii_entities",
+                        "monitored_entities",
+                        "blocked_entities",
                     )
                 },
             )
@@ -2219,6 +2278,9 @@ async def export_requests(
                 "system_prompt_hash",
                 "deployment_kind",
                 "cost_complete",
+                "pii_entities",
+                "monitored_entities",
+                "blocked_entities",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -2254,6 +2316,16 @@ async def export_requests(
                     details.get("system_prompt_hash"),
                     details.get("deployment_kind"),
                     cost_usd is not None,
+                    *(
+                        json.dumps(details[field], sort_keys=True)
+                        if details.get(field) is not None
+                        else None
+                        for field in (
+                            "pii_entities",
+                            "monitored_entities",
+                            "blocked_entities",
+                        )
+                    ),
                 )
             )
             yield output.getvalue().encode("utf-8")

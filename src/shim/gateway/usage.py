@@ -188,6 +188,9 @@ class LocalUsageLifecycle:
         *,
         reason: UsageFailureReason,
     ) -> None:
+        if any(verdict.outcome == "deny" for verdict in prepared.policy_verdicts):
+            await self.reject(prepared)
+            return
         admission = prepared.admission
         prompt_tokens = admission.estimated_input_tokens if admission is not None else 0
         supported = DEFAULT_PRICE_BOOK.supports(
@@ -230,8 +233,9 @@ class LocalUsageLifecycle:
         completion_outcome: str | None = None,
     ) -> None:
         admission = prepared.admission
+        privacy = prepared.privacy
         event = {
-            "version": 3,
+            "version": 4,
             "request_id": str(prepared.request_id),
             "provider": str(prepared.provider),
             "model": model,
@@ -251,11 +255,9 @@ class LocalUsageLifecycle:
             "tags": list(admission.tags) if admission is not None else [],
             "system_prompt_hash": None,
             "deployment_kind": prepared.deployment_kind,
-            "privacy_counts": (
-                dict(prepared.privacy.pii_entities)
-                if prepared.privacy is not None
-                else {}
-            ),
+            "privacy_counts": dict(privacy.pii_entities) if privacy else {},
+            "monitored_entities": dict(privacy.monitored_entities) if privacy else {},
+            "blocked_entities": dict(privacy.blocked_entities) if privacy else {},
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
             ],

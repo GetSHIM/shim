@@ -15,7 +15,7 @@ from shim.gateway.contracts.ids import ApiKeyId, TenantId, UserId
 from shim.gateway.contracts.inference import ScanPolicy
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim_enterprise.gateway.pipeline.audit_intent import resolve_audit_policy
-from shim.privacy.pii_scrubber import effective_pii_config
+from shim.privacy.policies import EntityAction, effective_entity_actions
 from shim_enterprise.tenants.models import (
     Organization,
     OrganizationPIIConfig,
@@ -36,7 +36,7 @@ class ResolvedScanActor:
     policy: ScanPolicy
     scan_limit: int
     audit_mode: Literal["off", "best_effort", "strict"]
-    pii_config: dict[str, bool]
+    entity_actions: Mapping[str, EntityAction]
 
 
 class ScanPolicyResolver:
@@ -63,16 +63,21 @@ class ScanPolicyResolver:
                 )
             )
         ).scalar_one_or_none()
-        overrides = None
-        if config is not None:
-            overrides = {
-                "block_email": config.block_email,
-                "block_phone": config.block_phone,
-                "block_credit_card": config.block_credit_card,
-                "block_secrets": config.block_secrets,
-                "block_pii_tr": config.block_pii_tr,
-            }
-        return replace(actor, pii_config=effective_pii_config(overrides))
+        if config is None:
+            return replace(actor, entity_actions=effective_entity_actions())
+        return replace(
+            actor,
+            entity_actions=effective_entity_actions(
+                {
+                    "block_email": config.block_email,
+                    "block_phone": config.block_phone,
+                    "block_credit_card": config.block_credit_card,
+                    "block_secrets": config.block_secrets,
+                    "block_pii_tr": config.block_pii_tr,
+                },
+                config.entity_actions,
+            ),
+        )
 
     async def _api_key_actor(
         self,
@@ -152,7 +157,7 @@ def _scan_actor(
         policy=policy,
         scan_limit=limit,
         audit_mode=audit_mode,
-        pii_config={},
+        entity_actions={},
     )
 
 

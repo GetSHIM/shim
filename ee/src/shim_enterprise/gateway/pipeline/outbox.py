@@ -206,6 +206,9 @@ _DIAGNOSTIC_FIELDS = (
     "shim_latency_ms",
     "system_prompt_hash",
     "deployment_kind",
+    "pii_entities",
+    "monitored_entities",
+    "blocked_entities",
 )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Protocol
@@ -11,7 +12,7 @@ from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
 from shim.gateway.contracts.ids import TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.local_auth import LOCAL_API_KEY_ID, LOCAL_TENANT_ID
-from shim.privacy.pii_scrubber import effective_pii_config
+from shim.privacy.policies import EntityAction, effective_pii_config
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     audit_policy: AuditPolicy
     request_policy: RequestPolicyContext
     pii_config: dict[str, bool] | None
+    entity_actions: Mapping[str, EntityAction] | None = None
 
 
 class RequestPolicyResolver(Protocol):
@@ -41,11 +43,18 @@ class RequestPolicyResolver(Protocol):
 class LocalRequestPolicyResolver:
     """Resolve the fixed single-user community policy."""
 
-    __slots__ = ("_rate_limit_rpm", "_rate_limit_tpm")
+    __slots__ = ("_entity_actions", "_rate_limit_rpm", "_rate_limit_tpm")
 
-    def __init__(self, *, rate_limit_rpm: int, rate_limit_tpm: int) -> None:
+    def __init__(
+        self,
+        *,
+        rate_limit_rpm: int,
+        rate_limit_tpm: int,
+        entity_actions: Mapping[str, EntityAction] | None = None,
+    ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
+        self._entity_actions = entity_actions
 
     async def resolve(
         self,
@@ -72,4 +81,5 @@ class LocalRequestPolicyResolver:
                 tier="local",
             ),
             pii_config=effective_pii_config(),
+            entity_actions=self._entity_actions,
         )

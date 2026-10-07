@@ -11,11 +11,12 @@ from shim.core.community_config import CommunitySettings
 GATEWAY_KEY = "shim-gateway-key-123"
 
 
-def _application() -> FastAPI:
+def _application(entity_actions: str = "{}") -> FastAPI:
     return create_community_app(
         CommunitySettings(
             BACKEND_CORS_ORIGINS=[],
             SHIM_API_KEY=GATEWAY_KEY,
+            PII_ENTITY_ACTIONS=entity_actions,
             _env_file=None,
         )
     )
@@ -64,7 +65,8 @@ async def test_local_scan_returns_only_the_public_privacy_result() -> None:
     assert body["verdict"] == body["policy"] == "warn"
     assert body["entity_types"] == ["EMAIL_ADDRESS"]
     assert body["entities"][0]["type"] == "EMAIL_ADDRESS"
-    assert set(body["entities"][0]) == {"type", "score", "start", "end"}
+    assert set(body["entities"][0]) == {"type", "score", "start", "end", "action"}
+    assert body["entities"][0]["action"] == "mask"
 
 
 @pytest.mark.asyncio
@@ -122,3 +124,30 @@ async def test_local_scan_sanitizes_analysis_failures(
         }
     }
     assert "private analyzer details" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_local_scan_reports_each_action_and_skips_off_types() -> None:
+    application = _application(
+        '{"EMAIL_ADDRESS": "monitor", "SECRET": "block", "IBAN_CODE": "off"}'
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://shim.test",
+    ) as client:
+        response = await client.post(
+            "/v1/scan",
+            headers={"x-shim-key": GATEWAY_KEY},
+            json={
+                "text": "alice@example.com sk-proj-"
+                + "0" * 32
+                + " TR33 0006 1005 1978 6457 8413 26"
+            },
+        )
+
+    body = response.json()
+    assert [(item["type"], item["action"]) for item in body["entities"]] == [
+        ("EMAIL_ADDRESS", "monitor"),
+        ("SECRET", "block"),
+    ]
+    assert body["entity_types"] == ["EMAIL_ADDRESS", "SECRET"]

@@ -101,6 +101,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated_cost_usd",
         "estimated",
         "privacy_counts",
+        "monitored_entities",
+        "blocked_entities",
         "provider_finish_reasons",
         "completion_outcome",
         "ttft_ms",
@@ -113,7 +115,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
     }
     latency_ms = event.pop("shim_latency_ms")
     assert event == {
-        "version": 3,
+        "version": 4,
         "request_id": "req_local",
         "provider": "openai",
         "model": "gpt-5.6-luna",
@@ -123,6 +125,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated_cost_usd": "0.0000106",
         "estimated": False,
         "privacy_counts": {"EMAIL_ADDRESS": 1},
+        "monitored_entities": {},
+        "blocked_entities": {},
         "provider_finish_reasons": None,
         "completion_outcome": "complete",
         "ttft_ms": None,
@@ -147,10 +151,34 @@ async def test_a_rejection_before_admission_has_no_attribution() -> None:
 
     await lifecycle.aclose()
     event = json.loads(stream.getvalue())
-    assert event["version"] == 3
+    assert event["version"] == 4
     assert event["outcome"] == "rejected"
     assert (event["cost_center"], event["tags"]) == (None, [])
     assert event["completion_outcome"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_privacy_block_is_a_rejection_with_its_counts() -> None:
+    stream = StringIO()
+    prepared = _prepared()
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        monitored_entities={"EMAIL_ADDRESS": 1},
+        blocked_entities={"SECRET": 2},
+    )
+    prepared.policy_verdicts = [SimpleNamespace(outcome="deny", model_dump=dict)]
+    lifecycle = LocalUsageLifecycle(stream)
+
+    await lifecycle.fail(prepared, reason="request_aborted")
+
+    await lifecycle.aclose()
+    event = json.loads(stream.getvalue())
+    assert event["outcome"] == "rejected"
+    assert (event["estimated_cost_usd"], event["estimated"]) == ("0", False)
+    assert event["privacy_counts"] == {}
+    assert event["monitored_entities"] == {"EMAIL_ADDRESS": 1}
+    assert event["blocked_entities"] == {"SECRET": 2}
 
 
 @pytest.mark.asyncio

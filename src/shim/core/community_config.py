@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from shim.privacy.policies import EntityAction, effective_entity_actions
+
 
 class CommunitySettings(BaseSettings):
     PROJECT_NAME: str = "shim trust-boundary gateway"
@@ -40,6 +42,9 @@ class CommunitySettings(BaseSettings):
     ANTHROPIC_POOL_TIMEOUT_SECONDS: float = Field(default=600, gt=0)
     GOOGLE_BASE_URL: str = "https://generativelanguage.googleapis.com"
     GOOGLE_TIMEOUT_SECONDS: float = Field(default=60, gt=0)
+    PII_ENTITY_ACTIONS: Annotated[dict[str, EntityAction], NoDecode] = Field(
+        default_factory=dict
+    )
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,
@@ -66,6 +71,20 @@ class CommunitySettings(BaseSettings):
             if stripped.startswith("["):
                 return json.loads(stripped)
             return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
+
+    @field_validator("PII_ENTITY_ACTIONS", mode="before")
+    @classmethod
+    def parse_entity_actions(cls, value: object) -> object:
+        return json.loads(value) if isinstance(value, str) else value
+
+    @field_validator("PII_ENTITY_ACTIONS")
+    @classmethod
+    def reject_unknown_entity_types(
+        cls,
+        value: dict[str, EntityAction],
+    ) -> dict[str, EntityAction]:
+        effective_entity_actions(None, value)
         return value
 
     @field_validator("SHIM_API_KEY")

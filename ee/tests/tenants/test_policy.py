@@ -172,3 +172,64 @@ async def test_enterprise_policy_preserves_missing_tier_defaults(
 
 def test_enterprise_unlimited_mapping_preserves_existing_bool_semantics() -> None:
     assert policy_module._unlimited_as_none(True) is True
+
+
+class _PolicyCache:
+    def __init__(self, pii_config: dict | None) -> None:
+        self.pii_config = pii_config
+        self.stored: dict | None = None
+
+    async def get_pii_config(self, _tenant_id: str) -> dict | None:
+        return self.pii_config
+
+    async def set_pii_config(self, _tenant_id: str, value: dict) -> None:
+        self.stored = value
+
+    async def get_tier_definition(self, _slug: str) -> dict:
+        return {"features": {}}
+
+
+_SWITCHES = {
+    "block_email": True,
+    "block_phone": False,
+    "block_credit_card": True,
+    "block_secrets": True,
+    "block_pii_tr": True,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "entity_actions"),
+    [
+        (_SWITCHES, None),
+        ({**_SWITCHES, "entity_actions": {}}, None),
+        ({**_SWITCHES, "entity_actions": {"SECRET": "block"}}, {"SECRET": "block"}),
+    ],
+)
+async def test_cached_privacy_settings_decode_old_and_new_values(
+    cached, entity_actions
+) -> None:
+    api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
+    service = policy_module.TenantPolicyService(_PolicyCache(cached))
+
+    resolved = await service.resolve(api_key, session=None)
+
+    assert resolved.pii_config == _SWITCHES
+    assert resolved.entity_actions == entity_actions
+
+
+@pytest.mark.asyncio
+async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
+    row = SimpleNamespace(**_SWITCHES, entity_actions={"EMAIL_ADDRESS": "monitor"})
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: row))
+    )
+    cache = _PolicyCache(None)
+    api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
+
+    resolved = await policy_module.TenantPolicyService(cache).resolve(api_key, session)
+
+    assert cache.stored == {**_SWITCHES, "entity_actions": {"EMAIL_ADDRESS": "monitor"}}
+    assert resolved.pii_config == _SWITCHES
+    assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
