@@ -34,6 +34,7 @@ _CLASSIFICATIONS: dict[str, Classification] = {
     "TR_TCKN": _IDENTITY,
     "US_SSN": _IDENTITY,
     "TR_VKN": Classification("high", "Kimlik", "Identification data"),
+    "TR_LICENSE_PLATE": Classification("high", "Kimlik", "Identification data"),
     "CREDIT_CARD": _FINANCIAL,
     "IBAN_CODE": Classification("high", "Finansal", "Financial data"),
     "IBAN_EU": Classification("high", "Finansal", "Financial data"),

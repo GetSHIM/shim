@@ -23,6 +23,7 @@ from presidio_analyzer.predefined_recognizers import (
     IpRecognizer,
     MacAddressRecognizer,
     PhoneRecognizer,
+    TrLicensePlateRecognizer,
     TrNationalIdRecognizer,
     UsSsnRecognizer,
 )
@@ -349,6 +350,41 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
         return digits[-1] == (10 - checksum % 10) % 10
 
 
+class ShimTurkishPlateRecognizer(PatternRecognizer):
+    """A Turkish plate with the letter and digit counts plates use, not a unit or a currency.
+
+    Presidio's recognizer accepts any province-coded shape, and its context words cannot help
+    because the blank tokenizer gives them nothing to match.
+    """
+
+    _NOT_PLATE_LETTERS = frozenset(
+        "GB MB KB TB GHZ MHZ USD EUR TRY TL KM KG CM MM ML LT".split()
+    )
+
+    def __init__(self) -> None:
+        letter = "[A-PR-VYZ]"
+        super().__init__(
+            supported_entity="TR_LICENSE_PLATE",
+            supported_language=_LANGUAGE,
+            context=TrLicensePlateRecognizer.CONTEXT,
+            patterns=[
+                Pattern(
+                    "Turkish licence plate",
+                    r"\b(?:0[1-9]|[1-7][0-9]|8[01]) ?"
+                    rf"(?:{letter} ?[0-9]{{4}}|{letter}{{2}} ?[0-9]{{3,4}}|"
+                    rf"{letter}{{3}} ?[0-9]{{2,3}})\b",
+                    0.3,
+                )
+            ],
+            # Uppercase only: Presidio's default flags would add IGNORECASE.
+            global_regex_flags=re.DOTALL | re.MULTILINE,
+        )
+
+    def validate_result(self, pattern_text: str) -> bool:
+        letters = "".join(filter(str.isalpha, pattern_text))
+        return letters not in self._NOT_PLATE_LETTERS
+
+
 def _custom_recognizers() -> list[EntityRecognizer]:
     return [
         ShimSecretRecognizer(),
@@ -379,6 +415,7 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             ],
         ),
         ShimTurkishTaxIdRecognizer(),
+        ShimTurkishPlateRecognizer(),
         ShimWrittenAtEmailRecognizer(
             supported_language=_LANGUAGE,
             context=["email", "e-posta", "mail"],

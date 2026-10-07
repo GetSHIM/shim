@@ -658,8 +658,7 @@
           "entity": "TR_LICENSE_PLATE",
           "value": "34 ABC 123"
         }
-      ],
-      "known_gap": "LT-row Plaka, PRD-S17"
+      ]
     },
     {
       "id": "plate-two-letters",
@@ -669,8 +668,7 @@
           "entity": "TR_LICENSE_PLATE",
           "value": "06 AB 1234"
         }
-      ],
-      "known_gap": "LT-row Plaka, PRD-S17"
+      ]
     },
     {
       "id": "not-plate-storage",
@@ -681,6 +679,52 @@
       "id": "not-plate-currency-year",
       "text": "10 USD 2024 fiyatı",
       "expect": []
+    },
+    {
+      "id": "plate-written-together",
+      "text": "34ABC123 plakalı araç",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34ABC123"
+        }
+      ]
+    },
+    {
+      "id": "plate-one-letter",
+      "text": "Araç 06 A 1234 otoparkta",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "06 A 1234"
+        }
+      ]
+    },
+    {
+      "id": "not-plate-distance",
+      "text": "34 KM 120 hızla gitti",
+      "expect": []
+    },
+    {
+      "id": "not-plate-no-digits",
+      "text": "2 x 34 ABC sipariş",
+      "expect": []
+    },
+    {
+      "id": "not-plate-glued-id",
+      "text": "ID 34ABC1234567",
+      "expect": []
+    },
+    {
+      "id": "not-plate-line-broken",
+      "text": "Plaka 34 ABC\n123",
+      "expect": []
+    },
+    {
+      "id": "not-plate-uppercase-date",
+      "text": "Uçuş tarihi 07 OCT 26",
+      "expect": [],
+      "known_gap": "finding S17: uppercase month abbreviation fits the plate rule"
     },
     {
       "id": "person-name",
