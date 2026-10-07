@@ -37,6 +37,7 @@ from shim_enterprise.api.enterprise_deps import (
     get_invite_user,
     get_org_admin,
     get_org_owner,
+    get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
 from shim_enterprise.billing.models import AuditIntent, CostBudget, UsageLedger
@@ -2628,13 +2629,30 @@ async def _require_entitlement(
     tenant_id: UUID,
     feature: str,
 ) -> None:
-    features = await session.scalar(
-        select(TierDefinition.features)
-        .join(Organization, Organization.tier == TierDefinition.slug)
-        .where(Organization.id == tenant_id)
+    current_plan, features = (
+        await session.execute(
+            select(Organization.tier, TierDefinition.features)
+            .outerjoin(TierDefinition, Organization.tier == TierDefinition.slug)
+            .where(Organization.id == tenant_id)
+        )
+    ).one()
+    if isinstance(features, dict) and features.get(feature) is True:
+        return
+    eligible_plans = await session.scalars(
+        select(TierDefinition.slug)
+        .where(TierDefinition.features.contains({feature: True}))
+        .order_by(TierDefinition.slug)
     )
-    if not isinstance(features, dict) or features.get(feature) is not True:
-        raise HTTPException(status_code=403, detail="Plan upgrade required")
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "PLAN_UPGRADE_REQUIRED",
+            "feature": feature,
+            "current_plan": current_plan,
+            "eligible_plans": list(eligible_plans),
+            "message": "This feature needs one of the plans listed in eligible_plans.",
+        },
+    )
 
 
 async def _owned_provider_secret(
@@ -2859,7 +2877,7 @@ class ModelDeploymentView(ModelDeploymentInput):
 
 @router.get("/model-deployments", response_model=list[ModelDeploymentView])
 async def list_model_deployments(
-    user: User = Depends(get_org_admin),
+    user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
 ):
     return (

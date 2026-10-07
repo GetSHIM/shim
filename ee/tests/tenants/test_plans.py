@@ -283,7 +283,7 @@ async def test_free_plan_cannot_add_team_members(
     test_user_with_org,
 ) -> None:
     test_user_with_org.role = "owner"
-    with pytest.raises(management.HTTPException, match="Plan upgrade"):
+    with pytest.raises(management.HTTPException, match="PLAN_UPGRADE_REQUIRED"):
         await management.create_team_invite(
             management.TeamInviteInput(email="new-member@example.com"),
             test_user_with_org,

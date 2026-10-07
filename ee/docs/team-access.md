@@ -13,6 +13,19 @@ an organization member with a delegated membership, not another global role.
 | Member | Own keys; cannot loosen an existing key's model policy or reassign its access team | Read assigned teams | None |
 | Auditor | Read key metadata; cannot issue, rotate, revoke, or use keys | Read organization teams and memberships | Read only |
 
+Auditors can also list the model registry (`GET /api/v1/management/model-deployments`);
+creating, changing and checking deployments stays with owners and admins.
+
+Inviting a teammate needs a plan with team access (`team_rbac`). On a plan
+without it, the invite answers 403 with a body that names the plans that have
+the feature:
+
+```json
+{"code": "PLAN_UPGRADE_REQUIRED", "feature": "team_rbac", "current_plan": "free",
+ "eligible_plans": ["agency", "enterprise"],
+ "message": "This feature needs one of the plans listed in eligible_plans."}
+```
+
 Existing organization overview and member-directory visibility is preserved.
 Team delegation limits mutation authority; it does not introduce a separate
 tenant or hide existing organization aggregate dashboards.

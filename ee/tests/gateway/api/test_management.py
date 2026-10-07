@@ -5,11 +5,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
+import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.api.v1 import management
+from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.core.database import get_db
+from shim_enterprise.tenants.models import Organization
 from shim_enterprise.billing.read_models import BillingReadModels
 from shim.gateway.contracts.ids import TenantId
 
@@ -872,3 +878,55 @@ def test_budget_thresholds_are_fractions_and_say_so() -> None:
     assert accepted.alert_thresholds == [0.5, 1.0]
     schema = management.BudgetInput.model_json_schema()["properties"]
     assert "0.8 means 80 percent" in schema["alert_thresholds"]["description"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "method", "status_code"),
+    [("auditor", "GET", 200), ("auditor", "POST", 403), ("member", "GET", 403)],
+)
+async def test_auditor_reads_the_model_registry_without_writing(
+    monkeypatch: pytest.MonkeyPatch, role: str, method: str, status_code: int
+) -> None:
+    user = SimpleNamespace(role=role, organization_id=uuid4(), is_active=True)
+    monkeypatch.setattr(
+        enterprise_deps, "get_invite_user", AsyncMock(return_value=user)
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+        )
+    )
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[get_db] = lambda: session
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.request(
+            method, "/api/v1/management/model-deployments", json={}
+        )
+
+    assert response.status_code == status_code
+
+
+@pytest.mark.asyncio
+async def test_plan_upgrade_error_names_the_eligible_plans(db) -> None:
+    organization = Organization(
+        id=uuid4(), name="Free plan", slug=f"free-plan-{uuid4().hex}", tier="free"
+    )
+    db.add(organization)
+    await db.flush()
+
+    with pytest.raises(management.HTTPException) as refused:
+        await management._require_entitlement(db, organization.id, "team_rbac")
+
+    assert refused.value.status_code == 403
+    assert refused.value.detail == {
+        "code": "PLAN_UPGRADE_REQUIRED",
+        "feature": "team_rbac",
+        "current_plan": "free",
+        "eligible_plans": ["agency", "enterprise"],
+        "message": "This feature needs one of the plans listed in eligible_plans.",
+    }
