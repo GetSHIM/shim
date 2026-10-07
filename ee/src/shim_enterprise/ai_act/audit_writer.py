@@ -137,9 +137,13 @@ def _metadata(value: Any, *, depth: int = 0) -> Any:
         return [_metadata(child, depth=depth + 1) for child in value[:64]]
     if isinstance(value, str):
         return value[:512]
-    if isinstance(value, float) and not (math.isfinite(value) and abs(value) < 1e16):
-        # jsonb stores these without an exponent (or refuses them), so the stored row
-        # would no longer serialise to the bytes that were hashed.
+    if isinstance(value, float) and (
+        not math.isfinite(value)
+        or abs(value) >= 1e16
+        or (value == 0 and math.copysign(1.0, value) < 0)
+    ):
+        # jsonb stores these in another form (no exponent, no negative zero) or refuses
+        # them, so the stored row would no longer serialise to the bytes that were hashed.
         return repr(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value

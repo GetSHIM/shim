@@ -3059,7 +3059,8 @@ async def update_model_deployment(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _owned_model_deployment(session, user, deployment_id)
+    # Locked, like the health result, so neither write can overwrite the other.
+    row = await _owned_model_deployment(session, user, deployment_id, for_update=True)
     secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
     if secret.provider != payload.provider:
         raise HTTPException(422, detail="Credential provider does not match deployment")

@@ -516,6 +516,58 @@ async def test_health_headers_are_bounded_and_output_view_survives_policy_change
 
 
 @pytest.mark.asyncio
+async def test_deployment_writes_reread_the_row_under_a_lock(
+    db, test_api_key, test_user_with_org, origins, monkeypatch
+):
+    from shim_enterprise.api.v1.management import _owned_model_deployment as owned
+
+    row = (await _deployments(db, test_api_key))[0]
+    test_user_with_org.role = "admin"
+    store = SimpleNamespace(get_secret=AsyncMock(return_value="health-key"))
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+    )
+    locks: list[bool] = []
+
+    async def recording(*args, for_update=False):
+        locks.append(for_update)
+        return await owned(*args, for_update=for_update)
+
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management._owned_model_deployment", recording
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200))
+    ) as client:
+        await check_model_deployment_health(
+            row.id,
+            SimpleNamespace(
+                app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+            ),
+            test_user_with_org,
+            db,
+        )
+    await update_model_deployment(
+        row.id,
+        ModelDeploymentInput(
+            alias=row.alias,
+            provider=row.provider,
+            upstream_model=row.upstream_model,
+            base_url=row.base_url,
+            provider_secret_id=row.provider_secret_id,
+            deployment_kind="internal",
+            declared_version="sha256:locked",
+            owner="Platform",
+        ),
+        test_user_with_org,
+        db,
+    )
+
+    # The probe runs unlocked; each read that leads to a write holds the row.
+    assert locks == [False, True, True]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["json", "sse", "count_tokens"])
 async def test_registered_anthropic_native_messages_and_nonbillable_token_count(
     db, test_api_key, origins, operation

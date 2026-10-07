@@ -514,7 +514,7 @@ async def test_a_float_jsonb_cannot_keep_is_hashed_as_its_string(db, test_org) -
         {
             "organization_id": test_org.id,
             "request_id": "req-big",
-            "extra": {"big": 1e16, "small": 1e-07, "nan": float("nan")},
+            "extra": {"big": 1e16, "small": 1e-07, "nan": float("nan"), "neg": -0.0},
         },
         db,
     )
@@ -527,7 +527,12 @@ async def test_a_float_jsonb_cannot_keep_is_hashed_as_its_string(db, test_org) -
 
     assert bundle is not None
     (row,) = bundle["rows"]
-    assert row["extra"] == {"big": "1e+16", "small": 1e-07, "nan": "nan"}
+    assert row["extra"] == {
+        "big": "1e+16",
+        "small": 1e-07,
+        "nan": "nan",
+        "neg": "-0.0",
+    }
     fields = {key: row[key] for key in audit_writer.CANONICAL_KEYS}
     assert chain_hash(bundle["genesis_hash"], canonical_row(fields)) == row["row_hash"]
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta, timezone
-import json
 from typing import Any, Literal
 from uuid import UUID
 
@@ -211,7 +210,7 @@ async def export_audit_bundle(
     end: datetime | None = Query(default=None),
     current_user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> Response:
+) -> JSONResponse:
     start = _aware(start) if start is not None else None
     end = _aware(end) if end is not None else None
     if start is not None and end is not None and start > end:
@@ -229,14 +228,10 @@ async def export_audit_bundle(
         raise HTTPException(
             status_code=404, detail="No audit rows in the requested window."
         )
-    body = await asyncio.to_thread(
-        lambda: json.dumps(
-            bundle, ensure_ascii=False, allow_nan=False, separators=(",", ":")
-        ).encode()
-    )
-    return Response(
-        body,
-        media_type="application/json",
+    # Rendering tens of megabytes of JSON stays off the event loop.
+    return await asyncio.to_thread(
+        JSONResponse,
+        bundle,
         headers={
             "Content-Disposition": (
                 f'attachment; filename="shim-audit-bundle-{tenant_id}.json"'
