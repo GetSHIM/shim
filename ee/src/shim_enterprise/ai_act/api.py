@@ -7,10 +7,12 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.anchor import write_anchor
+from shim_enterprise.ai_act.bundle import UnverifiableAuditRow, build_audit_bundle
 from shim_enterprise.ai_act.models import (
     AIActAuditLog,
     OversightPolicy,
@@ -190,6 +192,48 @@ async def list_audit_logs(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get(
+    "/audit/bundle",
+    response_class=JSONResponse,
+    responses={
+        200: {"description": "A `shim.audit.bundle` v1 evidence file."},
+        404: {"description": "No audit rows in the requested window."},
+        422: {"description": "Window rejected or above the synchronous limits."},
+    },
+)
+async def export_audit_bundle(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    start = _aware(start) if start is not None else None
+    end = _aware(end) if end is not None else None
+    if start is not None and end is not None and start > end:
+        raise HTTPException(status_code=422, detail="start must not be after end")
+    tenant_id = current_user.organization_id
+    bundle = None
+    if tenant_id is not None:
+        try:
+            bundle = await build_audit_bundle(
+                session, tenant_id, start=start, end=end, now=datetime.now(timezone.utc)
+            )
+        except (AuditVerificationLimitExceeded, UnverifiableAuditRow) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+    if bundle is None:
+        raise HTTPException(
+            status_code=404, detail="No audit rows in the requested window."
+        )
+    return JSONResponse(
+        bundle,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="shim-audit-bundle-{tenant_id}.json"'
+            )
+        },
     )
 
 

@@ -4,11 +4,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from sqlalchemy.dialects import postgresql
 
 import shim_enterprise.ai_act.api as api_module
+import shim_enterprise.ai_act.bundle as bundle_module
+import shim_enterprise.api.enterprise_deps as enterprise_deps
 import shim_enterprise.ai_act.oversight as oversight_module
 import shim_enterprise.ai_act.report as report_module
 import shim_enterprise.workers.ai_act as worker_module
@@ -21,6 +24,9 @@ from shim_enterprise.ai_act.report import EvidenceSnapshot, assess, load_framewo
 from shim_enterprise.ai_act.retention import archive_expired
 from shim_enterprise.ai_act.schemas import AuditReportRequest, OverviewResponse
 from shim_enterprise.ai_act.verify import AuditVerificationLimitExceeded
+from shim_enterprise.ai_act.audit_writer import write_audit_row
+from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.core.database import get_db
 
 
 def test_empty_overview_satisfies_the_typed_public_contract() -> None:
@@ -398,3 +404,75 @@ async def test_worker_main_handles_shutdown_signals_and_cancellation(
     )
     engine.dispose.assert_awaited_once_with()
     shutdown_tracing.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_bundle_window_validation_and_empty_windows(
+    db, test_org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = SimpleNamespace(organization_id=test_org.id)
+    with pytest.raises(HTTPException) as reversed_window:
+        await api_module.export_audit_bundle(
+            start=datetime(2026, 7, 26, tzinfo=timezone.utc),
+            end=datetime(2026, 7, 25, tzinfo=timezone.utc),
+            current_user=user,
+            session=db,
+        )
+    with pytest.raises(HTTPException) as empty:
+        await api_module.export_audit_bundle(
+            start=None, end=None, current_user=user, session=db
+        )
+    for index in range(2):
+        await write_audit_row(
+            {"organization_id": test_org.id, "request_id": f"req-limit-{index}"}, db
+        )
+    monkeypatch.setattr(bundle_module, "MAX_SYNC_AUDIT_ROWS", 1)
+    with pytest.raises(HTTPException, match="limited to 1 rows") as over_limit:
+        await api_module.export_audit_bundle(
+            start=None, end=None, current_user=user, session=db
+        )
+
+    assert reversed_window.value.status_code == 422
+    assert empty.value.status_code == 404
+    assert over_limit.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_bundle_is_for_organization_readers_with_a_user_session(
+    db, test_user_with_org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await write_audit_row(
+        {"organization_id": test_user_with_org.organization_id, "request_id": "req-1"},
+        db,
+    )
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[get_db] = lambda: db
+    path = "/api/v1/compliance/audit/bundle"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        monkeypatch.setattr(
+            enterprise_deps,
+            "jwt_verifier",
+            SimpleNamespace(verify=AsyncMock(return_value=None)),
+        )
+        api_key = await client.get(
+            path, headers={"authorization": "Bearer sk-shim-" + "0" * 32}
+        )
+        application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+            test_user_with_org
+        )
+        test_user_with_org.role = "member"
+        member = await client.get(path)
+        test_user_with_org.role = "auditor"
+        auditor = await client.get(path)
+
+    assert api_key.status_code == 401
+    assert member.status_code == 403
+    assert auditor.status_code == 200
+    assert auditor.headers["content-disposition"] == (
+        "attachment; filename="
+        f'"shim-audit-bundle-{test_user_with_org.organization_id}.json"'
+    )
+    assert auditor.json()["row_count"] == 1

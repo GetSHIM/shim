@@ -94,3 +94,21 @@ delivery with the body `{"source": "shim", "event_type": "tenant_policy",
 "occurred_at": ...}`. Its key is derived from the audit event id, so a retry does
 not duplicate it. A tenant without forward targets gets the audit event only.
 Turning a switch back on records only `tenant.privacy_policy_updated`.
+
+## Audit evidence bundle
+
+`GET /api/v1/compliance/audit/bundle?start=…&end=…` exports the tenant's audit
+chain as a `shim.audit.bundle` v1 file for the independent verifier
+(`shim-audit-verify`, whose repository holds the format document `FORMAT.md`; the
+document wins where it and this export disagree). Owners, admins and auditors can
+call it with a signed-in user session; a gateway API key gets 401. `start` and
+`end` are optional: without them the whole chain is exported, from sequence 1
+anchored to the genesis hash; a window that starts later carries the first row's
+stored link instead. Rows are written exactly as they were hashed, together with
+the daily anchors of the days in the window. The genesis salt never leaves the
+deployment.
+
+Synchronous limits: at most 10,000 rows and 366 anchors (422 beyond), 404 for a
+window without rows, 422 when `start` is after `end`, and 422 naming the row when
+a stored row holds a float that would not survive the round trip (non-finite or
+`abs(value) >= 1e16`).

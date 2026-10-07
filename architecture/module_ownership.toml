@@ -252,6 +252,7 @@ enterprise = [
   "ee/src/shim_enterprise/ai_act/anchor.py",
   "ee/src/shim_enterprise/ai_act/api.py",
   "ee/src/shim_enterprise/ai_act/audit_writer.py",
+  "ee/src/shim_enterprise/ai_act/bundle.py",
   "ee/src/shim_enterprise/ai_act/hashing.py",
   "ee/src/shim_enterprise/ai_act/models.py",
   "ee/src/shim_enterprise/ai_act/oversight.py",
