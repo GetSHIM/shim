@@ -102,7 +102,10 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
             completion = await client.chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": f"Contact {EMAIL}"}],
-                extra_headers={"x-provider-key": PROVIDER_KEY},
+                extra_headers={
+                    "x-provider-key": PROVIDER_KEY,
+                    "X-Shim-Tag": "risk,batch",
+                },
             )
 
     assert health.json() == {"status": "ok", "version": "0.1.3"}
@@ -123,6 +126,8 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
     assert event["provider_finish_reasons"] == {"choices.0.finish_reason": "stop"}
     assert event["ttft_ms"] is None
     assert event["repeat_chain_length"] == 1
+    assert event["cost_center"] == "risk"
+    assert event["tags"] == ["risk", "batch"]
     assert event["deployment_kind"] == "unknown"
     assert event["system_prompt_hash"] is None
     assert EMAIL not in lines[0]

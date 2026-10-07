@@ -52,7 +52,8 @@ request it:
   bytes divided by four), a refused request does not use up its own window, and
   every limit refusal says when to retry in `Retry-After`.
 - **Accounts usage and cost per request**, from that same catalog, attributed
-  by the `X-Shim-Tag` header.
+  by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
+  takes precedence, and header tags remain breakdown dimensions.
 - **Sanitizes provider errors**, so a provider error body does not reach your
   caller unchanged.
 - **Makes at most one billable provider attempt per admitted request**, because

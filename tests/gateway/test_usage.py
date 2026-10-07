@@ -30,7 +30,12 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         api_key_id="key-private",
         headers={"authorization": "credential-private"},
         context=SimpleNamespace(started_at=started_at),
-        admission=SimpleNamespace(estimated_input_tokens=11, repeat_chain_length=1),
+        admission=SimpleNamespace(
+            estimated_input_tokens=11,
+            repeat_chain_length=1,
+            cost_center="risk",
+            tags=("risk", "batch"),
+        ),
         deployment_kind="unknown",
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
@@ -98,13 +103,15 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "provider_finish_reasons",
         "ttft_ms",
         "repeat_chain_length",
+        "cost_center",
+        "tags",
         "system_prompt_hash",
         "deployment_kind",
         "policy_verdicts",
     }
     latency_ms = event.pop("shim_latency_ms")
     assert event == {
-        "version": 2,
+        "version": 3,
         "request_id": "req_local",
         "provider": "openai",
         "model": "gpt-5.6-luna",
@@ -117,11 +124,29 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "provider_finish_reasons": None,
         "ttft_ms": None,
         "repeat_chain_length": 1,
+        "cost_center": "risk",
+        "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
         "policy_verdicts": [],
     }
     assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_before_admission_has_no_attribution() -> None:
+    stream = StringIO()
+    prepared = _prepared()
+    prepared.admission = None
+    lifecycle = LocalUsageLifecycle(stream)
+
+    await lifecycle.reject(prepared)
+
+    await lifecycle.aclose()
+    event = json.loads(stream.getvalue())
+    assert event["version"] == 3
+    assert event["outcome"] == "rejected"
+    assert (event["cost_center"], event["tags"]) == (None, [])
 
 
 @pytest.mark.asyncio

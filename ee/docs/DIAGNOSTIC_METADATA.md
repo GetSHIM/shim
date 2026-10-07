@@ -98,9 +98,12 @@ are empty cells, and finish-reason maps are JSON). Both expose only the shim
 latency measurement. Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills. The community
-JSONL v2 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
+JSONL v3 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
-has no configured installation hashing key.
+has no configured installation hashing key. It also carries `cost_center` (the
+first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
+tags); an event written before admission, such as a rejection, has
+`cost_center: null` and `tags: []`.
 
 ## Unpriced deployment costs
 
