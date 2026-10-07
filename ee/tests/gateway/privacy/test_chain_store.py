@@ -47,9 +47,10 @@ async def test_mapping_is_encrypted_tenant_bound_and_ttl_limited() -> None:
     mapping = {"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"}
 
     await store.save(tenant, "resp_empty", {})
-    assert redis.values == {}
     await store.save(tenant, "resp_same", mapping)
 
+    assert await store.load(tenant, "resp_empty") == {}
+    assert await store.load(tenant, "resp_absent") is None
     assert await store.load(tenant, "resp_same") == mapping
     assert await store.load(other_tenant, "resp_same") is None
     assert set(redis.expirations.values()) == {123}
@@ -57,8 +58,36 @@ async def test_mapping_is_encrypted_tenant_bound_and_ttl_limited() -> None:
     assert "alice@example.com" not in serialized
     assert "EMAIL_ADDRESS" not in serialized
 
+    redis.values[store._key(other_tenant, "resp_empty")] = redis.values[
+        store._key(tenant, "resp_empty")
+    ]
+    with pytest.raises(PrivacyContinuationUnavailableError):
+        await store.load(other_tenant, "resp_empty")
+
     redis.values.clear()
     assert await store.load(tenant, "resp_same") is None
+
+
+class FailingRedis(FakeRedis):
+    async def set(self, key: str, value: str, *, ex: int) -> None:
+        raise ConnectionError("redis unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redis", [None, FailingRedis()])
+async def test_an_empty_marker_is_best_effort_and_a_mapping_is_not(redis) -> None:
+    store = RedisPrivacyContinuationStore(
+        SimpleNamespace(redis=redis),
+        encryption_key=Fernet.generate_key().decode(),
+        ttl_seconds=60,
+    )
+    tenant = TenantId(UUID("11111111-1111-1111-1111-111111111111"))
+
+    await store.save(tenant, "resp_empty", {})
+    with pytest.raises(PrivacyContinuationUnavailableError):
+        await store.save(
+            tenant, "resp_mapping", {"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"}
+        )
 
 
 @pytest.mark.asyncio

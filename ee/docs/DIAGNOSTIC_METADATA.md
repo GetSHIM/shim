@@ -102,6 +102,15 @@ JSONL v2 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
 has no configured installation hashing key.
 
+## Responses continuation markers
+
+Enterprise writes an encrypted continuation marker to Redis for every Responses
+turn, with the `PRIVACY_CHAIN_TTL_SECONDS` lifetime, so a later
+`previous_response_id` can restore that turn's placeholders. The marker of a turn
+without personal data is empty and best-effort: if Redis cannot store it, the
+turn still succeeds. A missing marker still reads as a turn without personal
+data; a later release will make it fail closed.
+
 ## Unpriced deployment costs
 
 An unknown deployment price is not a free request. A terminal spend settlement
