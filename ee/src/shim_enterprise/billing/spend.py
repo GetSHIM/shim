@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import logging
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -25,6 +27,8 @@ from shim_enterprise.outbox.publisher import OutboxWriter
 
 MAX_BUDGET_ALERT_THRESHOLDS = 10
 MAX_BUDGET_NOTIFY_TARGETS = 10
+_BUDGET_PAGE_SIZE = 100
+logger = logging.getLogger(__name__)
 
 
 class BudgetConfigurationError(ValueError):
@@ -321,6 +325,46 @@ class BudgetEvaluator:
                     "next_attempt_at": now,
                 },
             )
+
+
+async def evaluate_enabled_budgets(
+    session_factory: Callable[[], Any], *, now: datetime
+) -> None:
+    """Evaluate every tenant's enabled budgets, each in its own short transaction."""
+    evaluator = BudgetEvaluator()
+    after: UUID | None = None
+    while True:
+        async with session_factory() as session:
+            page = (
+                await session.scalars(
+                    select(CostBudget.id)
+                    .where(
+                        CostBudget.enabled.is_(True),
+                        *([CostBudget.id > after] if after is not None else []),
+                    )
+                    .order_by(CostBudget.id)
+                    .limit(_BUDGET_PAGE_SIZE)
+                )
+            ).all()
+        for budget_id in page:
+            async with session_factory() as session:
+                budget = await session.scalar(
+                    select(CostBudget)
+                    .where(CostBudget.id == budget_id, CostBudget.enabled.is_(True))
+                    .with_for_update(read=True, of=CostBudget)
+                )
+                if budget is None:
+                    continue
+                try:
+                    await evaluator.evaluate(session, budget, now=now)
+                except BudgetConfigurationError:
+                    await session.rollback()
+                    logger.warning("Skipped invalid budget budget_id=%s", budget_id)
+                    continue
+                await session.commit()
+        if len(page) < _BUDGET_PAGE_SIZE:
+            return
+        after = page[-1]
 
 
 def _period_key(value: datetime) -> str:

@@ -1,26 +1,46 @@
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.api.v1 import management
 from shim.billing.attribution import CostAttribution, UNTAGGED, normalize_attribution
-from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.billing.ledger import (
+    DurableAccountingRepository,
+    FinalizationCommand,
+    QuotaPolicySnapshot,
+    QuotaReservationCommand,
+    TerminalAction,
+)
+from shim_enterprise.billing.models import (
+    CostBudget,
+    CostBudgetAlertState,
+    QuotaPeriodUsage,
+    RequestLifecycle,
+    UsageLedger,
+)
 from shim_enterprise.billing.read_models import BillingReadModels
 from shim_enterprise.billing.spend import (
     BudgetConfigurationError,
     BudgetEvaluator,
     BudgetUsage,
+    evaluate_enabled_budgets,
     validate_budget_notification_config,
 )
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.outbox.handlers import _budget_text
+from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.tenants.models import ApiKey, Organization, User
 
 
 def test_header_tags_define_primary_and_complete_attribution() -> None:
@@ -89,7 +109,7 @@ def test_billing_breakdown_index_matches_tenant_reconciliation_filter() -> None:
 
 def test_budget_patch_reuses_create_threshold_validation() -> None:
     for thresholds in ([0], [5.01], [float("nan")], None):
-        with pytest.raises(ValidationError, match="alert thresholds"):
+        with pytest.raises(ValidationError, match=r"\(0, 5\]"):
             management.BudgetPatch(alert_thresholds=thresholds)
 
     assert management.BudgetInput(
@@ -668,3 +688,198 @@ async def test_budget_alert_labels_incomplete_known_spend(monkeypatch) -> None:
     assert payload["cost_complete"] is False
     assert payload["unpriced_requests"] == 2
     assert "known spend only; 2 unpriced requests" in _budget_text(payload)
+
+
+async def _tenant_with_settled_tokens(session: AsyncSession, tokens: int) -> UUID:
+    organization_id, user_id, api_key_id = uuid4(), uuid4(), uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO tier_definitions "
+            "(slug, name, rate_limit_rpm, rate_limit_tpm, "
+            "monthly_request_limit, monthly_token_limit, features) "
+            "VALUES ('free', 'Free', 60, 15000, 1000, 1000000, '{}') "
+            "ON CONFLICT (slug) DO NOTHING"
+        )
+    )
+    session.add(
+        Organization(
+            id=organization_id,
+            name="Budget cadence",
+            slug=f"budget-cadence-{organization_id}",
+        )
+    )
+    await session.flush()
+    session.add(
+        User(
+            id=user_id, organization_id=organization_id, email=f"{user_id}@example.com"
+        )
+    )
+    await session.flush()
+    session.add(
+        ApiKey(
+            id=api_key_id,
+            organization_id=organization_id,
+            user_id=user_id,
+            key_hash=uuid4().hex,
+            prefix="sk-budget",
+            tier="free",
+            is_active=True,
+        )
+    )
+    await session.flush()
+    request_id = f"req_budget_{uuid4().hex}"
+    now = datetime.now(timezone.utc)
+    repository = DurableAccountingRepository()
+    await repository.reserve_quota(
+        session,
+        QuotaReservationCommand(
+            tenant_id=TenantId(organization_id),
+            api_key_id=api_key_id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=now,
+            reconciliation_due_at=now + timedelta(minutes=2),
+            estimated_input_tokens=tokens,
+            maximum_output_tokens=0,
+            policy=QuotaPolicySnapshot("budget-cadence", None, None, None),
+        ),
+    )
+    await repository.finalize(
+        session,
+        FinalizationCommand(
+            tenant_id=TenantId(organization_id),
+            request_id=request_id,
+            quota_action=TerminalAction.SETTLE,
+            prompt_tokens=tokens,
+        ),
+    )
+    return organization_id
+
+
+async def _drop_budget_tenants(factory, organization_ids: list[UUID]) -> None:
+    async with factory.begin() as cleanup:
+        for model in (
+            CostBudget,
+            OutboxEvent,
+            UsageLedger,
+            RequestLifecycle,
+            QuotaPeriodUsage,
+            ApiKey,
+            User,
+        ):
+            await cleanup.execute(
+                delete(model).where(model.organization_id.in_(organization_ids))
+            )
+        await cleanup.execute(
+            delete(Organization).where(Organization.id.in_(organization_ids))
+        )
+
+
+async def _fired(factory, budgets: list[CostBudget]) -> set[tuple[UUID, float]]:
+    async with factory() as session:
+        rows = await session.execute(
+            select(
+                CostBudgetAlertState.budget_id, CostBudgetAlertState.threshold
+            ).where(
+                CostBudgetAlertState.budget_id.in_([budget.id for budget in budgets])
+            )
+        )
+        return {(budget_id, float(threshold)) for budget_id, threshold in rows}
+
+
+@pytest.mark.asyncio
+async def test_scheduled_evaluation_covers_enabled_budgets_of_every_tenant(
+    async_engine, caplog
+) -> None:
+    caplog.set_level(logging.WARNING, logger="shim_enterprise.billing.spend")
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory.begin() as setup:
+        tenants = [await _tenant_with_settled_tokens(setup, 50) for _ in range(2)]
+        first, second, disabled, invalid = budgets = [
+            CostBudget(
+                organization_id=tenants[0],
+                scope_type="org",
+                limit_tokens=10,
+                alert_thresholds=[0.5, 1.0],
+            ),
+            CostBudget(
+                organization_id=tenants[1],
+                scope_type="org",
+                limit_tokens=10,
+                alert_thresholds=[1.0],
+            ),
+            CostBudget(
+                organization_id=tenants[1],
+                scope_type="org",
+                limit_tokens=10,
+                enabled=False,
+            ),
+            CostBudget(
+                organization_id=tenants[0],
+                scope_type="org",
+                limit_tokens=10,
+                alert_thresholds=[50],
+            ),
+        ]
+        setup.add_all(budgets)
+
+    try:
+        await evaluate_enabled_budgets(factory, now=datetime.now(timezone.utc))
+
+        assert await _fired(factory, budgets) == {
+            (first.id, 0.5),
+            (first.id, 1.0),
+            (second.id, 1.0),
+        }
+        assert f"budget_id={invalid.id}" in caplog.text
+        assert str(disabled.id) not in caplog.text
+    finally:
+        await _drop_budget_tenants(factory, tenants)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_scheduled_evaluations_enqueue_each_alert_once(
+    async_engine,
+) -> None:
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory.begin() as setup:
+        tenant = await _tenant_with_settled_tokens(setup, 50)
+        budget = CostBudget(
+            organization_id=tenant,
+            scope_type="org",
+            limit_tokens=10,
+            alert_thresholds=[0.5, 1.0],
+            notify_targets=[
+                {
+                    "kind": "webhook",
+                    "endpoint_origin": "https://alerts.example",
+                    "secret_ref": "secret:budget-cadence",
+                }
+            ],
+        )
+        setup.add(budget)
+
+    try:
+        now = datetime.now(timezone.utc)
+        await asyncio.gather(
+            evaluate_enabled_budgets(factory, now=now),
+            evaluate_enabled_budgets(factory, now=now),
+        )
+
+        async with factory() as session:
+            alerts = (
+                await session.scalars(
+                    select(OutboxEvent.idempotency_key).where(
+                        OutboxEvent.organization_id == tenant,
+                        OutboxEvent.event_type == "budget.threshold_crossed",
+                    )
+                )
+            ).all()
+        assert sorted(alerts) == sorted(
+            f"budget:{budget.id}:{now:%Y-%m}:{threshold}:target:0"
+            for threshold in ("0.5", "1.0")
+        )
+        assert await _fired(factory, [budget]) == {(budget.id, 0.5), (budget.id, 1.0)}
+    finally:
+        await _drop_budget_tenants(factory, [tenant])

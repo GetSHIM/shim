@@ -854,3 +854,16 @@ async def test_billing_export_rejects_more_than_500_groups(
         )
 
     assert error.value.status_code == 422
+
+
+def test_budget_thresholds_are_fractions_and_say_so() -> None:
+    with pytest.raises(ValidationError, match="thresholds are fractions") as refused:
+        management.BudgetInput(scope_type="org", limit_usd=1, alert_thresholds=[50])
+    assert "50 is outside (0, 5]" in str(refused.value)
+
+    accepted = management.BudgetInput(
+        scope_type="org", limit_usd=1, alert_thresholds=[0.5, 1.0]
+    )
+    assert accepted.alert_thresholds == [0.5, 1.0]
+    schema = management.BudgetInput.model_json_schema()["properties"]
+    assert "0.8 means 80 percent" in schema["alert_thresholds"]["description"]

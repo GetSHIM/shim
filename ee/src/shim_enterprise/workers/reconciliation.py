@@ -7,9 +7,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import logging
 import signal
+from time import monotonic
 from typing import Any
 
 from shim_enterprise.billing.ledger import DurableAccountingRepository
+from shim_enterprise.billing.spend import evaluate_enabled_budgets
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim_enterprise.gateway.pipeline.reconciliation import ScanReconciler
@@ -75,6 +77,7 @@ class ReconciliationWorker:
             "Gateway reconciliation worker started interval_seconds=%s",
             self.interval_seconds,
         )
+        budgets_due = monotonic()
         while not stop_event.is_set():
             try:
                 recovered = await self.run_once()
@@ -90,6 +93,18 @@ class ReconciliationWorker:
                     "Gateway reconciliation pass failed type=%s",
                     type(exc).__name__,
                 )
+            if (clock := monotonic()) >= budgets_due:
+                budgets_due = clock + settings.BUDGET_EVALUATION_INTERVAL_SECONDS
+                try:
+                    await evaluate_enabled_budgets(
+                        self.session_factory, now=datetime.now(timezone.utc)
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "Budget evaluation pass failed type=%s", type(exc).__name__
+                    )
             try:
                 await asyncio.wait_for(
                     stop_event.wait(),

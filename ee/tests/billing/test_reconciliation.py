@@ -345,6 +345,50 @@ async def test_worker_repeats_reconciliation_until_stopped(monkeypatch) -> None:
     assert wait_timeouts == [23, 23]
 
 
+@pytest.mark.asyncio
+async def test_worker_evaluates_budgets_first_and_then_on_their_interval(
+    monkeypatch,
+) -> None:
+    worker = ReconciliationWorker(
+        accounting=SimpleNamespace(),
+        scans=SimpleNamespace(),
+        session_factory=lambda: None,
+        batch_size=10,
+        interval_seconds=30,
+    )
+    stop_event = asyncio.Event()
+    passes = 0
+
+    async def run_once() -> int:
+        nonlocal passes
+        passes += 1
+        if passes == 4:
+            stop_event.set()
+        return 0
+
+    async def wait_for(waitable, *, timeout: int):
+        waitable.close()
+        raise TimeoutError
+
+    clock = iter([1000.0, 1000.0, 1100.0, 1300.0, 1350.0])
+    evaluate = AsyncMock(side_effect=[RuntimeError("budgets unavailable"), None])
+    monkeypatch.setattr(worker, "run_once", run_once)
+    monkeypatch.setattr(worker_module, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker_module, "evaluate_enabled_budgets", evaluate)
+    monkeypatch.setattr(
+        worker_module.settings, "BUDGET_EVALUATION_INTERVAL_SECONDS", 300
+    )
+    monkeypatch.setattr(worker_module.asyncio, "wait_for", wait_for)
+
+    await worker.run(stop_event)
+
+    assert passes == 4
+    assert evaluate.await_count == 2
+    assert all(
+        call.args == (worker.session_factory,) for call in evaluate.await_args_list
+    )
+
+
 @pytest.mark.parametrize(
     "bounds",
     [{"batch_size": 0}, {"interval_seconds": 0}],

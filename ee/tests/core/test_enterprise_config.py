@@ -80,3 +80,39 @@ def test_enterprise_settings_inherit_csv_list_parsing() -> None:
     )
 
     assert configured.TRUSTED_PROXIES == ["10.0.0.1", "10.0.0.2"]
+
+
+@pytest.mark.parametrize("seconds", [30, 300, 86_400])
+def test_budget_evaluation_interval_accepts_its_bounds(seconds: int) -> None:
+    configured = Settings(
+        **ENTERPRISE_REQUIRED_VALUES,
+        BUDGET_EVALUATION_INTERVAL_SECONDS=seconds,
+        _env_file=None,
+    )
+
+    assert configured.BUDGET_EVALUATION_INTERVAL_SECONDS == seconds
+
+
+@pytest.mark.parametrize("seconds", [0, 29, 86_401])
+def test_budget_evaluation_interval_rejects_values_outside_its_bounds(
+    seconds: int,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            **ENTERPRISE_REQUIRED_VALUES,
+            BUDGET_EVALUATION_INTERVAL_SECONDS=seconds,
+            _env_file=None,
+        )
+
+
+def test_budget_evaluation_interval_defaults_to_five_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BUDGET_EVALUATION_INTERVAL_SECONDS", raising=False)
+
+    assert (
+        Settings(
+            **ENTERPRISE_REQUIRED_VALUES, _env_file=None
+        ).BUDGET_EVALUATION_INTERVAL_SECONDS
+        == 300
+    )

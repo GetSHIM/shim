@@ -136,6 +136,9 @@ Worker readiness failures do not trigger restart loops during a database outage.
 Return dead-lettered audit-chain appends to the queue with `python
 ee/scripts/redrive_audit_events.py [--organization UUID] [--dry-run]`. The append
 deduplicates, so re-driving an event whose audit row exists adds no second row.
+The reconciliation worker evaluates enabled budget alerts every
+`BUDGET_EVALUATION_INTERVAL_SECONDS` (default 300); `POST
+/api/v1/management/cost/budgets/evaluate` remains for an immediate run.
 
 All application containers run without root, elevated capabilities, a writable
 root filesystem, or a Kubernetes service-account token. Writable temporary and
