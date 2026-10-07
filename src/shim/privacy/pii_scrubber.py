@@ -321,10 +321,10 @@ class PIIScrubberService:
         priority = {
             "DB_URI": 100,
             "SECRET": 90,
+            "IBAN_CODE": 85,
             "CREDIT_CARD": 80,
             "TR_NATIONAL_ID": 70,
             "TR_VKN": 70,
-            "IBAN_CODE": 60,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))
         selected: list[RecognizerResult] = []

@@ -650,6 +650,31 @@ def test_private_key_is_scrubbed_as_one_secret(
     assert private_key not in scrubbed
 
 
+def test_a_spaced_iban_is_masked_whole_even_where_a_card_fits_inside(
+    scrubber: PIIScrubberService,
+) -> None:
+    iban = "TR96 1569 9085 0078 9107 8735 82"
+
+    scrubbed, mapping = scrubber.scrub(f"Ödeme {iban} hesabına")
+
+    assert list(mapping.values()) == [iban]
+    assert next(iter(mapping)).startswith("<IBAN_CODE_")
+    assert "TR96" not in scrubbed
+    assert "8735 82" not in scrubbed
+
+
+@pytest.mark.parametrize("card", ["9792 0000 0000 0003", "2221-0000-0000-0009"])
+def test_troy_and_mastercard_two_series_are_one_card(
+    scrubber: PIIScrubberService,
+    card: str,
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"Kart {card} ile öde")
+
+    assert list(mapping.values()) == [card]
+    assert next(iter(mapping)).startswith("<CREDIT_CARD_")
+    assert card not in scrubbed
+
+
 @pytest.mark.parametrize(
     ("text", "secret"),
     [

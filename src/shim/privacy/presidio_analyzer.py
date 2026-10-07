@@ -238,7 +238,23 @@ def _build_registry() -> RecognizerRegistry:
             supported_regions=(*PhoneRecognizer.DEFAULT_SUPPORTED_REGIONS, "TR"),
             context=[*PhoneRecognizer.CONTEXT, "telefon", "cep", "gsm"],
         ),
-        CreditCardRecognizer(supported_language=_LANGUAGE),
+        CreditCardRecognizer(
+            supported_language=_LANGUAGE,
+            patterns=[
+                *CreditCardRecognizer.PATTERNS,
+                Pattern(
+                    "Troy (weak)",
+                    r"\b9792[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b",
+                    0.3,
+                ),
+                Pattern(
+                    "Mastercard 2-series (weak)",
+                    r"\b(?:222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[01]\d|2720)"
+                    r"[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b",
+                    0.3,
+                ),
+            ],
+        ),
         IbanRecognizer(supported_language=_LANGUAGE),
         IpRecognizer(supported_language=_LANGUAGE),
         MacAddressRecognizer(supported_language=_LANGUAGE),
