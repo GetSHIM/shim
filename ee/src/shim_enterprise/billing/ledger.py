@@ -1518,7 +1518,7 @@ class DurableAccountingRepository:
         organization = await session.scalar(
             select(Organization)
             .where(Organization.id == tenant_id)
-            .with_for_update(of=Organization)
+            .with_for_update(of=Organization, key_share=True)
         )
         if organization is None:
             raise AccountingConflictError("accounting organization does not exist")

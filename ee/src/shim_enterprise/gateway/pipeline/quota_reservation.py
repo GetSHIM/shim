@@ -149,7 +149,7 @@ class AccountingPolicyLoader:
             await session.execute(
                 select(Organization)
                 .where(Organization.id == prepared.tenant_id)
-                .with_for_update(of=Organization)
+                .with_for_update(of=Organization, key_share=True)
             )
         ).scalar_one_or_none()
         if organization is None:
@@ -180,7 +180,7 @@ class AccountingPolicyLoader:
                 ApiKey.id == prepared.api_key_id,
             )
             .execution_options(populate_existing=True)
-            .with_for_update()
+            .with_for_update(key_share=True)
         )
         api_key = (await session.execute(api_key_statement)).scalar_one_or_none()
         if api_key is None:
@@ -327,7 +327,7 @@ class AccountingPolicyLoader:
             .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
             .limit(1)
             .execution_options(populate_existing=True)
-            .with_for_update()
+            .with_for_update(key_share=True)
         )
         secret = (await session.execute(statement)).scalar_one_or_none()
         if secret is None:
