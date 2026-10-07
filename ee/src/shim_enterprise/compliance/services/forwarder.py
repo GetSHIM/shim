@@ -94,6 +94,46 @@ class ComplianceForwarderService:
             )
         return {"deliveries_queued": len(targets)}
 
+    async def send_privacy_protection_relaxed(
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+        *,
+        fields: list[str],
+        actor: str,
+        event_id: str,
+    ) -> None:
+        body = {
+            "source": "shim",
+            "event_type": "tenant_policy",
+            "kind": "privacy_protection_relaxed",
+            "fields": fields,
+            "actor": actor,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+        }
+        rows = (
+            await session.execute(
+                select(ComplianceConnector, ComplianceForwardTarget)
+                .join(
+                    ComplianceForwardTarget,
+                    ComplianceForwardTarget.connector_id == ComplianceConnector.id,
+                )
+                .where(
+                    ComplianceConnector.organization_id == tenant_id,
+                    ComplianceForwardTarget.enabled.is_(True),
+                )
+                .with_for_update(read=True, of=ComplianceForwardTarget)
+            )
+        ).all()
+        for connector, target in rows:
+            await self._append(
+                session,
+                connector,
+                target,
+                body=body,
+                delivery_key=f"privacy_protection_relaxed:{event_id}",
+            )
+
     @staticmethod
     async def _targets(
         session: AsyncSession,

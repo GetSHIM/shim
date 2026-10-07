@@ -441,8 +441,12 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
     tenant_id = uuid4()
     row = SimpleNamespace(
         id=uuid4(),
+        scope_type="org",
+        scope_value=None,
+        period="monthly",
         limit_usd=Decimal("10"),
         limit_tokens=100,
+        alert_thresholds=[0.8, 1.0],
         notify_targets=[],
         enabled=True,
     )

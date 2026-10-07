@@ -305,6 +305,7 @@ def test_audit_api_preserves_signed_duration_and_nullable_shim_measurement(
     )
     row = AIActAuditLog(id=TENANT_ID, **link)
     view = AuditLogRead.model_validate(row)
+    assert view.extra == link["extra"]
     assert row.latency_ms == 20000
     assert "latency_ms" not in view.model_dump()
     assert "request_duration_ms" not in view.model_dump()

@@ -70,3 +70,27 @@ Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,
 pre-admission denials, masking and privacy rejection, audit failure modes,
 redelivery, and chain verification. The repository-wide gate is in `AGENTS.md`.
+
+## Management change details
+
+Management actions append an `audit.chain_append_requested` event in the same
+transaction as the change. The audit API returns the stored `extra` object as
+written, so these details are readable through `GET /v1/compliance/audit/logs`.
+
+| Event | `extra` details |
+| --- | --- |
+| `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches that changed |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off |
+| `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
+| `tenant.budget_updated` | `before` and `after` of the fields that changed |
+| `tenant.provider_secret_created` / `_updated` / `_verified` / `_rejected` / `_deleted` | `provider`, `name`, `monthly_limit_usd`, `key_rotated` (true only when an update replaced the key) |
+
+No key, secret reference, masked key or fingerprint is recorded.
+
+Turning any privacy switch off also queues, for every enabled compliance forward
+target of the tenant's connectors, one `compliance.connector_delivery_requested`
+delivery with the body `{"source": "shim", "event_type": "tenant_policy",
+"kind": "privacy_protection_relaxed", "fields": [...], "actor": <user id>,
+"occurred_at": ...}`. Its key is derived from the audit event id, so a retry does
+not duplicate it. A tenant without forward targets gets the audit event only.
+Turning a switch back on records only `tenant.privacy_policy_updated`.
