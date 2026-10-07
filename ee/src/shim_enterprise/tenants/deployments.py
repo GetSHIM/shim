@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import ipaddress
+import logging
 from typing import cast, Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK
@@ -21,8 +23,11 @@ from shim.gateway.kernel.result import (
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.api.v1.chat import model_record
 from shim_enterprise.core.config import settings
+from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
 from shim_enterprise.tenants.teams import require_team
+
+logger = logging.getLogger(__name__)
 
 
 def validate_deployment_url(url: str) -> str:
@@ -252,21 +257,25 @@ class DeploymentResolver:
     async def catalog(
         self, principal: AuthenticatedPrincipal, provider: str
     ) -> list[dict[str, object]]:
-        async with self.session_factory() as session:
-            key = await self._active_key(session, principal.api_key_id)
-            rows = (
-                (
-                    await session.execute(
-                        select(ModelDeployment)
-                        .where(
-                            ModelDeployment.organization_id == key.organization_id,
+        try:
+            async with self.session_factory() as session:
+                key = await self._active_key(session, principal.api_key_id)
+                rows = (
+                    (
+                        await session.execute(
+                            select(ModelDeployment)
+                            .where(
+                                ModelDeployment.organization_id == key.organization_id,
+                            )
+                            .order_by(ModelDeployment.alias)
                         )
-                        .order_by(ModelDeployment.alias)
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
-            )
+        except (SQLAlchemyError, OSError) as exc:
+            logger.error("Model catalog unavailable type=%s", type(exc).__name__)
+            raise_persistence_error()
         records = (
             {}
             if settings.MODEL_DEPLOYMENT_REQUIRED

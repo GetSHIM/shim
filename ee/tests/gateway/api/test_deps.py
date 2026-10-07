@@ -1,13 +1,16 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import delete
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
@@ -19,9 +22,13 @@ from shim.api.v1.chat import chat_completions
 from shim.api.v1.gemini import generate_content, stream_generate_content
 from shim.api.v1.messages import messages
 from shim.api.v1.responses import responses
+from shim.gateway.contracts.ids import ApiKeyId
+from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.secrets.credentials import EphemeralProviderCredential
 from shim.services.gateway.service import GatewayService
+from shim_enterprise.application import create_enterprise_app
+from shim_enterprise.tenants.deployments import DeploymentResolver
 from shim_enterprise.tenants.models import Organization, User
 from shim_enterprise.tenants.service import JwtIdentityVerifier, ensure_privacy_defaults
 
@@ -470,3 +477,93 @@ async def test_auditor_only_allows_read_only_posts(monkeypatch, path, allowed):
         with pytest.raises(HTTPException) as error:
             await enterprise_deps.get_current_user(request, None, None)
         assert error.value.status_code == 403
+
+
+def _failing_sessions(error: Exception):
+    @asynccontextmanager
+    async def session_scope():
+        yield SimpleNamespace(execute=AsyncMock(side_effect=error))
+
+    return session_scope
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        OperationalError("SELECT 1", {}, ConnectionRefusedError()),
+        ConnectionResetError(),
+    ],
+)
+async def test_database_authenticator_answers_503_when_the_database_fails(
+    error: Exception,
+) -> None:
+    authenticator = enterprise_deps.DatabaseGatewayAuthenticator(
+        _failing_sessions(error)  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        await authenticator.resolve("sk-shim-" + "0" * 32)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail["code"] == "INTERNAL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_database_authenticator_does_not_hide_programming_errors() -> None:
+    authenticator = enterprise_deps.DatabaseGatewayAuthenticator(
+        _failing_sessions(TypeError("bug"))  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(TypeError):
+        await authenticator.resolve("sk-shim-" + "0" * 32)
+
+
+@pytest.mark.asyncio
+async def test_database_outage_answers_every_provider_in_its_native_shape() -> None:
+    unavailable = _failing_sessions(
+        OperationalError("SELECT 1", {}, ConnectionRefusedError())
+    )
+    application = create_enterprise_app()
+    application.state.gateway_service = SimpleNamespace()
+    application.state.gateway_authenticator = (
+        enterprise_deps.DatabaseGatewayAuthenticator(unavailable)  # type: ignore[arg-type]
+    )
+    user = [{"role": "user", "content": "hi"}]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://shim.test",
+        headers={"x-shim-key": "sk-shim-" + "0" * 32},
+    ) as client:
+        chat = await client.post(
+            "/v1/chat/completions", json={"model": "gpt-5.6-luna", "messages": user}
+        )
+        message = await client.post(
+            "/v1/messages",
+            json={"model": "claude-haiku-4-5", "max_tokens": 8, "messages": user},
+        )
+        gemini = await client.post(
+            "/v1beta/models/gemini-3.5-flash-lite:generateContent",
+            json={"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+        )
+        application.state.gateway_authenticator = SimpleNamespace(
+            resolve=AsyncMock(
+                return_value=AuthenticatedPrincipal(
+                    actor_type="api_key",
+                    api_key_id=ApiKeyId(uuid4()),
+                    authenticated_at=datetime.now(timezone.utc),
+                )
+            )
+        )
+        application.state.model_catalog = DeploymentResolver(unavailable).catalog  # type: ignore[arg-type]
+        models = await client.get("/v1/models")
+
+    for response in (chat, message, gemini, models):
+        assert response.status_code == 503
+        assert response.headers["content-type"] == "application/json"
+    assert chat.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert models.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert message.json()["type"] == "error"
+    assert message.json()["error"]["type"] == "api_error"
+    assert gemini.json()["error"]["status"] == "UNAVAILABLE"

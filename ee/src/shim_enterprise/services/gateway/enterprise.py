@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 from starlette.responses import Response
@@ -31,6 +33,8 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
 from shim.secrets.credentials import EphemeralProviderCredential
 from shim.services.gateway.service import GatewayService
 from shim_enterprise.tenants.policy import TenantPolicyConfigurationError
+
+logger = logging.getLogger(__name__)
 
 
 class EnterpriseGatewayService(GatewayService):
@@ -87,6 +91,9 @@ class EnterpriseGatewayService(GatewayService):
             raise_accounting_limit("SPEND_LIMIT_EXCEEDED")
         except TenantPolicyConfigurationError:
             raise_tenant_policy_error()
+        except (SQLAlchemyError, OSError) as exc:
+            logger.error("Gateway state unavailable type=%s", type(exc).__name__)
+            raise_persistence_error()
 
     async def dispatch_scan(
         self,

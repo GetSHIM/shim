@@ -12,10 +12,12 @@ from fastapi.security import (
 )
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.database import AsyncSessionLocal, get_db
 from shim_enterprise.core.config import settings
+from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.tenants.oidc import current_oidc_user
 from shim.gateway.auth import authentication_error, select_gateway_credential
 from shim.gateway.contracts.ids import ApiKeyId, UserId
@@ -58,9 +60,15 @@ class DatabaseGatewayAuthenticator:
         self._session_factory = session_factory
 
     async def resolve(self, candidate: str | None) -> AuthenticatedPrincipal:
-        async with self._session_factory() as session:
-            api_key = await _authenticate_gateway_key(session, candidate)
-            return _api_key_principal(api_key)
+        try:
+            async with self._session_factory() as session:
+                api_key = await _authenticate_gateway_key(session, candidate)
+                return _api_key_principal(api_key)
+        except (SQLAlchemyError, OSError) as exc:
+            logger.error(
+                "Gateway authentication state unavailable type=%s", type(exc).__name__
+            )
+            raise_persistence_error()
 
 
 async def _load_or_sync_supabase_user(
