@@ -1177,7 +1177,8 @@ def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubbe
         '{"created": 1757496600, "amount": 2000}',
         "Elapsed: 0.0376118499 s",
         '{"total_cost_usd": 0.03761184999}',
-        "casino 4155552671",
+        "Invoice 4829104455 is paid",
+        '{"duration_ms": 4155552671}',
         "version 1.2.3.4",
         "release v1.2.3.4",
     ],
@@ -1211,6 +1212,13 @@ def test_ids_numbers_and_versions_are_not_phones_or_addresses(
         ("IP 1.2.3.4 engellendi", "IP_ADDRESS", "1.2.3.4"),
         ("gateway 10.0.0.1 down", "IP_ADDRESS", "10.0.0.1"),
         ("izin ver 10.0.0.5", "IP_ADDRESS", "10.0.0.5"),
+        ("casino 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("John Smith 2125551234 New York", "PHONE_NUMBER", "2125551234"),
+        ("Kunde Hans, 01725955200", "PHONE_NUMBER", "01725955200"),
+        ("Reach me at 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("patient ID 12345678901", "PHONE_NUMBER", "12345678901"),
+        ("DNS server 8.8.8.8 is down", "IP_ADDRESS", "8.8.8.8"),
+        ("release 10.20.30.40 failed", "IP_ADDRESS", "10.20.30.40"),
     ],
 )
 def test_shaped_or_cued_phones_and_real_addresses_still_match(

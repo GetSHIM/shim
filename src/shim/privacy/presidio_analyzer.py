@@ -131,16 +131,28 @@ class ShimIbanRecognizer(IbanRecognizer):
 
 
 class ShimPhoneRecognizer(PhoneRecognizer):
-    """A bare digit run is a phone only with a Turkish phone shape or a phone cue."""
+    """A digit run is a phone unless something marks it as another kind of number.
+
+    Recall first: a masked order number is restored in the answer, a missed phone
+    number reaches the provider.
+    """
 
     _BARE = re.compile(r"\d+")
     _DECIMAL = re.compile(r"\d+\.\d+")
     _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
     _CUE = re.compile(
-        r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|fax|whatsapp|call|numara|num|no)"
+        r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|cell|fax|whatsapp|call|contact|"
+        r"numara|num|no)"
         r"(?:[ _-]?(?:number|numaras[ıi]|numaram|no|num))?\b[\"':=. ]{0,4}$",
         re.IGNORECASE,
     )
+    _NOT_PHONE_CUE = re.compile(
+        r"\b(?:order|sipari[şs]|fatura|invoice|ticket|ref|reference|sku|kod|code|"
+        r"timestamp|epoch|created|updated|value|amount|total|count)"
+        r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
+        re.IGNORECASE,
+    )
+    _JSON_NUMBER = re.compile(r"\"\s*:\s*$")
     _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
     _LETTER = re.compile(r"[A-Za-z]")
 
@@ -163,15 +175,22 @@ class ShimPhoneRecognizer(PhoneRecognizer):
         if self._DECIMAL.fullmatch(raw) or self._in_decimal(text, start, end):
             return False
         bare = self._BARE.fullmatch(raw)
+        window = max(0, start - 24)
         if (bare and self._TURKISH.fullmatch(raw)) or self._CUE.search(
-            text, max(0, start - 24), start
+            text, window, start
         ):
             return True
         if start and text[start - 1] in "-_./":
             tail = self._IDENTIFIER_TAIL.search(text, max(0, start - 65), start - 1)
             if tail is not None and self._LETTER.search(tail.group()):
                 return False
-        return not bare
+        return not (
+            bare
+            and (
+                self._NOT_PHONE_CUE.search(text, window, start)
+                or self._JSON_NUMBER.search(text, window, start)
+            )
+        )
 
     @staticmethod
     def _in_decimal(text: str, start: int, end: int) -> bool:
@@ -184,9 +203,7 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 class ShimIpRecognizer(IpRecognizer):
     """A version string is not an IP address."""
 
-    _VERSION_CUE = re.compile(r"\b(?:v|version|sürüm|release)\W{0,2}$", re.IGNORECASE)
-    _IP_CUE = re.compile(r"\b(?:ip|addr|address|adres|host)\b", re.IGNORECASE)
-    _SINGLE_DIGIT_QUAD = re.compile(r"\d\.\d\.\d\.\d")
+    _VERSION_CUE = re.compile(r"\b(?:v|version|sürüm)\W{0,2}$", re.IGNORECASE)
 
     def analyze(
         self,
@@ -202,13 +219,7 @@ class ShimIpRecognizer(IpRecognizer):
         ]
 
     def _is_address(self, text: str, start: int, end: int) -> bool:
-        window = max(0, start - 16)
-        if self._VERSION_CUE.search(text, window, start):
-            return False
-        return not (
-            self._SINGLE_DIGIT_QUAD.fullmatch(text[start:end])
-            and not self._IP_CUE.search(text, window, start)
-        )
+        return not self._VERSION_CUE.search(text, max(0, start - 16), start)
 
 
 class ShimSecretRecognizer(EntityRecognizer):
