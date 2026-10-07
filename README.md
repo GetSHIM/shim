@@ -104,6 +104,15 @@ client.chat.completions.create(
 )
 ```
 
+Gemini works the same way; the shim key goes where the SDK puts its API key:
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(api_key="your-shim-key", http_options=HttpOptions(base_url="http://localhost:8000"))
+```
+
 Under a masking policy the provider receives placeholders in place of the
 detected values, in the form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
 They are generated per request, so the same value gets a different placeholder
@@ -111,7 +120,9 @@ next time, and the reply is restored before it reaches your caller.
 
 Provider credentials come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
 `GOOGLE_API_KEY`, or per request through `x-provider-key`. The shim key
-authenticates your caller and is never forwarded to a provider. The default bind
+authenticates your caller and is never forwarded to a provider. On a keyless
+loopback gateway, a Google key also goes in `x-provider-key` or `GOOGLE_API_KEY`,
+never in `x-goog-api-key`, which shim reads only as the shim key. The default bind
 is loopback; set a `SHIM_API_KEY` of at least 16 characters before binding
 anywhere else. A non-streaming request is bounded by the provider read timeout
 (`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by

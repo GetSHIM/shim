@@ -5212,6 +5212,11 @@
         "name": "x-api-key",
         "type": "apiKey"
       },
+      "GoogleAPIKey": {
+        "in": "header",
+        "name": "x-goog-api-key",
+        "type": "apiKey"
+      },
       "HTTPBearer": {
         "scheme": "bearer",
         "type": "http"
@@ -6547,6 +6552,9 @@
           },
           {
             "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
           }
         ],
         "summary": "Generate Content"
@@ -6620,6 +6628,9 @@
           },
           {
             "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
           }
         ],
         "summary": "Stream Generate Content"
