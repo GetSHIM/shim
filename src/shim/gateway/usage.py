@@ -178,6 +178,7 @@ class LocalUsageLifecycle:
             estimated=usage.estimated,
             provider_finish_reasons=usage.provider_finish_reasons,
             ttft_ms=usage.ttft_ms,
+            completion_outcome=usage.completion_outcome,
             shim_latency_ms=terminal.shim_latency_ms,
         )
 
@@ -226,9 +227,11 @@ class LocalUsageLifecycle:
         shim_latency_ms: int,
         provider_finish_reasons: dict[str, str] | None = None,
         ttft_ms: float | None = None,
+        completion_outcome: str | None = None,
     ) -> None:
+        admission = prepared.admission
         event = {
-            "version": 2,
+            "version": 3,
             "request_id": str(prepared.request_id),
             "provider": str(prepared.provider),
             "model": model,
@@ -239,12 +242,13 @@ class LocalUsageLifecycle:
             "estimated_cost_usd": str(cost_usd) if cost_usd is not None else None,
             "estimated": estimated,
             "provider_finish_reasons": provider_finish_reasons,
+            "completion_outcome": completion_outcome,
             "ttft_ms": ttft_ms,
             "repeat_chain_length": (
-                prepared.admission.repeat_chain_length
-                if prepared.admission is not None
-                else None
+                admission.repeat_chain_length if admission is not None else None
             ),
+            "cost_center": admission.cost_center if admission is not None else None,
+            "tags": list(admission.tags) if admission is not None else [],
             "system_prompt_hash": None,
             "deployment_kind": prepared.deployment_kind,
             "privacy_counts": (

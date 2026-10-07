@@ -40,7 +40,9 @@ _PII_CONFIG_ENTITIES: Mapping[str, frozenset[str]] = MappingProxyType(
                 "FILE_PATH",
             }
         ),
-        "block_pii_tr": frozenset({"TR_NATIONAL_ID", "TR_VKN", "IBAN_CODE"}),
+        "block_pii_tr": frozenset(
+            {"TR_NATIONAL_ID", "TR_VKN", "IBAN_CODE", "TR_LICENSE_PLATE"}
+        ),
     }
 )
 
@@ -321,10 +323,10 @@ class PIIScrubberService:
         priority = {
             "DB_URI": 100,
             "SECRET": 90,
+            "IBAN_CODE": 85,
             "CREDIT_CARD": 80,
             "TR_NATIONAL_ID": 70,
             "TR_VKN": 70,
-            "IBAN_CODE": 60,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))
         selected: list[RecognizerResult] = []
