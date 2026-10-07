@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-import time
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.hashing import compute_row_hash, genesis_hash
@@ -19,7 +18,6 @@ from shim_enterprise.core.config import settings
 
 
 LOCK_MAX_WAIT_SECONDS = 5.0
-LOCK_RETRY_SECONDS = 0.05
 CANONICAL_KEYS = (
     "seq",
     "organization_id",
@@ -267,17 +265,25 @@ async def _acquire_tenant_lock(
     session: AsyncSession,
     organization_id: UUID,
 ) -> None:
-    deadline = time.monotonic() + LOCK_MAX_WAIT_SECONDS
-    while True:
-        acquired = await session.scalar(
-            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:tenant, 0))"),
+    # Oversight transactions also append; their later statements keep their own timeout.
+    previous = await session.scalar(text("SELECT current_setting('lock_timeout')"))
+    await session.execute(
+        text("SELECT set_config('lock_timeout', :timeout, true)"),
+        {"timeout": f"{LOCK_MAX_WAIT_SECONDS:g}s"},
+    )
+    try:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant, 0))"),
             {"tenant": str(organization_id)},
         )
-        if acquired:
-            return
-        if time.monotonic() >= deadline:
-            raise TimeoutError("tenant audit lock timed out")
-        await asyncio.sleep(LOCK_RETRY_SECONDS)
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) == "55P03":
+            raise TimeoutError("tenant audit lock timed out") from exc
+        raise
+    await session.execute(
+        text("SELECT set_config('lock_timeout', :previous, true)"),
+        {"previous": previous},
+    )
 
 
 async def write_audit_row(

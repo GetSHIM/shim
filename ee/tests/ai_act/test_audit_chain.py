@@ -1,25 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+import pytest_asyncio
+from sqlalchemy import delete, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from shim_enterprise.ai_act import audit_writer
 from shim_enterprise.ai_act.anchor import compute_daily_anchor, write_anchor
-from shim_enterprise.ai_act.audit_writer import next_link, write_audit_row
+from shim_enterprise.ai_act.audit_writer import (
+    append_audit_row_deduplicated,
+    next_link,
+    write_audit_row,
+)
 from shim_enterprise.ai_act.hashing import compute_row_hash
+from shim_enterprise.ai_act.models import AIActAuditLog
 import shim_enterprise.ai_act.verify as verify_module
 from shim_enterprise.ai_act.verify import (
     AuditVerificationLimitExceeded,
     verify_anchors,
     verify_chain,
 )
+from shim_enterprise.tenants.models import Organization
 
 
 TENANT_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -298,3 +309,99 @@ def test_audit_api_preserves_signed_duration_and_nullable_shim_measurement(
     assert "latency_ms" not in view.model_dump()
     assert "request_duration_ms" not in view.model_dump()
     assert view.shim_latency_ms == shim_latency_ms
+
+
+@pytest_asyncio.fixture
+async def committed_tenant(async_engine, monkeypatch):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    monkeypatch.setattr("shim_enterprise.core.database.AsyncSessionLocal", factory)
+    organization_id = uuid4()
+    async with factory.begin() as session:
+        session.add(
+            Organization(
+                id=organization_id,
+                name="Audit chain load",
+                slug=f"audit-chain-{organization_id}",
+            )
+        )
+    try:
+        yield factory, organization_id
+    finally:
+        async with factory.begin() as cleanup:
+            # Audit rows are append-only; the guard is lifted inside this transaction only.
+            await cleanup.execute(
+                text(
+                    "ALTER TABLE ai_act_audit_log "
+                    "DISABLE TRIGGER ai_act_audit_log_append_only"
+                )
+            )
+            await cleanup.execute(
+                delete(AIActAuditLog).where(
+                    AIActAuditLog.organization_id == organization_id
+                )
+            )
+            await cleanup.execute(
+                text(
+                    "ALTER TABLE ai_act_audit_log "
+                    "ENABLE TRIGGER ai_act_audit_log_append_only"
+                )
+            )
+            await cleanup.execute(
+                delete(Organization).where(Organization.id == organization_id)
+            )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_tenant_appends_form_one_gapless_chain(
+    committed_tenant,
+) -> None:
+    factory, organization_id = committed_tenant
+
+    rows = await asyncio.gather(
+        *(
+            append_audit_row_deduplicated(
+                {"organization_id": organization_id, "request_id": f"req-load-{index}"}
+            )
+            for index in range(30)
+        )
+    )
+    async with factory() as session:
+        result = await verify_chain(session, organization_id)
+
+    assert sorted(row.seq for row in rows) == list(range(1, 31))
+    assert result["ok"] is True
+    assert result["rows_checked"] == 30
+
+
+@pytest.mark.asyncio
+async def test_append_waits_for_a_held_tenant_lock_until_the_timeout(
+    committed_tenant, monkeypatch
+) -> None:
+    factory, organization_id = committed_tenant
+    monkeypatch.setattr(audit_writer, "LOCK_MAX_WAIT_SECONDS", 1.0)
+
+    async with factory() as holder:
+        await holder.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant, 0))"),
+            {"tenant": str(organization_id)},
+        )
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="tenant audit lock timed out"):
+            await append_audit_row_deduplicated(
+                {"organization_id": organization_id, "request_id": "req-held"}
+            )
+        waited = time.monotonic() - started
+        await holder.rollback()
+
+    assert 0.9 <= waited < 3
+
+
+@pytest.mark.asyncio
+async def test_append_restores_the_callers_lock_timeout(db, test_org) -> None:
+    await db.execute(text("SET LOCAL lock_timeout = '7s'"))
+
+    await write_audit_row(
+        {"organization_id": test_org.id, "request_id": "req-timeout-restored"}, db
+    )
+
+    assert await db.scalar(text("SHOW lock_timeout")) == "7s"
