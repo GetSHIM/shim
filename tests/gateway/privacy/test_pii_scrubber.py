@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from unittest.mock import Mock
 
 from fastapi import HTTPException
@@ -575,7 +576,7 @@ def test_validated_request_model_bypasses_identifier_pii_detection() -> None:
 def test_model_pii_still_rejected_when_not_the_validated_request_model() -> None:
     with pytest.raises(HTTPException, match="protocol identifier") as error:
         scrub_payload(
-            {"model": "claude-sonnet-4-5-20250929"},
+            {"model": "private@example.com"},
             None,
             PIIScrubberService(),
             request_model="claude-sonnet-4-5",
@@ -648,6 +649,122 @@ def test_private_key_is_scrubbed_as_one_secret(
     assert next(iter(mapping)).startswith("<SECRET_")
     assert list(mapping.values()) == [private_key]
     assert private_key not in scrubbed
+
+
+def test_a_spaced_iban_is_masked_whole_even_where_a_card_fits_inside(
+    scrubber: PIIScrubberService,
+) -> None:
+    iban = "TR96 1569 9085 0078 9107 8735 82"
+
+    scrubbed, mapping = scrubber.scrub(f"Ödeme {iban} hesabına")
+
+    assert list(mapping.values()) == [iban]
+    assert next(iter(mapping)).startswith("<IBAN_CODE_")
+    assert "TR96" not in scrubbed
+    assert "8735 82" not in scrubbed
+
+
+@pytest.mark.parametrize("card", ["9792 0000 0000 0003", "2221-0000-0000-0009"])
+def test_troy_and_mastercard_two_series_are_one_card(
+    scrubber: PIIScrubberService,
+    card: str,
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"Kart {card} ile öde")
+
+    assert list(mapping.values()) == [card]
+    assert next(iter(mapping)).startswith("<CREDIT_CARD_")
+    assert card not in scrubbed
+
+
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("GOOGLE_API_KEY=AIza" + "0" * 35, "AIza" + "0" * 35),
+        ("Maps AIza" + "0" * 35, "AIza" + "0" * 35),
+        (
+            "Slack xoxb-" + "0" * 10 + "-" + "0" * 13,
+            "xoxb-" + "0" * 10 + "-" + "0" * 13,
+        ),
+        ("user xoxp-" + "0" * 24, "xoxp-" + "0" * 24),
+        ("Hub hf_" + "0" * 34, "hf_" + "0" * 34),
+        ("GitLab glpat-" + "0" * 20, "glpat-" + "0" * 20),
+        ("ŞİFRE: x123456", "x123456"),
+        ('parolam="Gizli Parola 2026"', "Gizli Parola 2026"),
+        ("Geçici şifreniz: Abc12345", "Abc12345"),
+        ("sifresi: Abc12345", "Abc12345"),
+        ("parolanız: Abc12345", "Abc12345"),
+    ],
+)
+def test_vendor_tokens_and_turkish_passwords_are_one_secret(
+    scrubber: PIIScrubberService,
+    text: str,
+    secret: str,
+) -> None:
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert len(mapping) == 1
+    assert next(iter(mapping)).startswith("<SECRET_")
+    assert list(mapping.values()) == [secret]
+    assert secret not in scrubbed
+
+
+@pytest.mark.parametrize(
+    ("value", "entity"),
+    [
+        ("100 000 001 46", "TR_NATIONAL_ID"),
+        ("100-000-00-146", "TR_NATIONAL_ID"),
+        ("tr33 0006 1005 1978 6457 8413 26", "IBAN_CODE"),
+        ("TR33 0006 1005 1978\n  6457 8413 26", "IBAN_CODE"),
+        ("jane[at]example.com", "EMAIL_ADDRESS"),
+        ("jane( AT )example.com", "EMAIL_ADDRESS"),
+    ],
+)
+def test_identifiers_written_around_the_detector_are_one_placeholder(
+    scrubber: PIIScrubberService,
+    value: str,
+    entity: str,
+) -> None:
+    text = f"Müşteri bilgisi: {value}, teşekkürler"
+
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert list(mapping.values()) == [value]
+    assert next(iter(mapping)).startswith(f"<{entity}_")
+    assert value not in scrubbed
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "iban"),
+    [
+        ("BE68 5390 0754 7034 adlı hesap", "BE68 5390 0754 7034"),
+        ("AT61 1904 3002 3457 3201 adet", "AT61 1904 3002 3457 3201"),
+        ("BE68 5390 0754 7034\n2026 yılında", "BE68 5390 0754 7034"),
+    ],
+)
+def test_a_lowercase_word_or_next_line_after_an_iban_does_not_hide_it(
+    scrubber: PIIScrubberService,
+    text: str,
+    iban: str,
+) -> None:
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text)
+    ] == [("IBAN_CODE", iban)]
+
+
+def test_a_plate_is_one_placeholder_under_the_turkish_identifier_switch(
+    scrubber: PIIScrubberService,
+) -> None:
+    text = "Araç 34 ABC 123, 16 GB 512 RAM"
+
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert list(mapping.values()) == ["34 ABC 123"]
+    assert next(iter(mapping)).startswith("<TR_LICENSE_PLATE_")
+    assert "16 GB 512" in scrubbed
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+    assert scrubber.scrub(text, {"block_pii_tr": False}) == (text, {})
 
 
 def test_native_payload_restores_content_not_metadata_or_ids(
@@ -1048,3 +1165,117 @@ def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubbe
             assert len(buffers.get((0,), "")) <= 256
     for literal in ("1 < 2", "<UNKNOWN>", "<EM AIL", "plain text"):
         assert restore_fragment({}, (0,), literal, mapping, scrubber) == literal
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Sipariş numarası 4829104455",
+        "model claude-sonnet-4-5-20250929 kullan",
+        "stok SKU-ABC-4829104455 tükendi",
+        "artifact build_7.20250929 hazır",
+        '{"created": 1757496600, "amount": 2000}',
+        "Elapsed: 0.0376118499 s",
+        '{"total_cost_usd": 0.03761184999}',
+        "casino 4155552671",
+        "version 1.2.3.4",
+        "release v1.2.3.4",
+    ],
+)
+def test_ids_numbers_and_versions_are_not_phones_or_addresses(
+    scrubber: PIIScrubberService,
+    text: str,
+) -> None:
+    assert scrubber.analyze(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "entity", "value"),
+    [
+        ('"phone": "4155552671"', "PHONE_NUMBER", "4155552671"),
+        ("Telefon 5321234567", "PHONE_NUMBER", "5321234567"),
+        ("Bana 05321234567 yaz", "PHONE_NUMBER", "05321234567"),
+        ("Tel: 0212 555 12 34", "PHONE_NUMBER", "0212 555 12 34"),
+        ("Call (555) 123-4567", "PHONE_NUMBER", "(555) 123-4567"),
+        ("Ruf +49 172 5955200", "PHONE_NUMBER", "+49 172 5955200"),
+        ("Tel.05321234567", "PHONE_NUMBER", "05321234567"),
+        ("Tel.0532 123 45 67", "PHONE_NUMBER", "0532 123 45 67"),
+        ("fax.02125551234", "PHONE_NUMBER", "02125551234"),
+        ("GSM-05321234567", "PHONE_NUMBER", "05321234567"),
+        ("https://wa.me/905321234567", "PHONE_NUMBER", "905321234567"),
+        ('{"phone_number": "4155552671"}', "PHONE_NUMBER", "4155552671"),
+        ('{"phoneNumber": "4155552671"}', "PHONE_NUMBER", "4155552671"),
+        ("Phone number: 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("Telefon numarası: 2125551234", "PHONE_NUMBER", "2125551234"),
+        ("Cep numaram 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("IP 1.2.3.4 engellendi", "IP_ADDRESS", "1.2.3.4"),
+        ("gateway 10.0.0.1 down", "IP_ADDRESS", "10.0.0.1"),
+        ("izin ver 10.0.0.5", "IP_ADDRESS", "10.0.0.5"),
+    ],
+)
+def test_shaped_or_cued_phones_and_real_addresses_still_match(
+    scrubber: PIIScrubberService,
+    text: str,
+    entity: str,
+    value: str,
+) -> None:
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text)
+    ] == [(entity, value)]
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "a" * 65 + "@example.com",
+        "x" * 63 + ".y@example.com",
+        "b" * 70 + "[at]example.com",
+    ],
+)
+def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
+    scrubber: PIIScrubberService, address: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"Bilgi: {address}")
+
+    assert list(mapping.values()) == [address]
+    assert scrubbed == f"Bilgi: {next(iter(mapping))}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a." * 16000 + "@",
+        "a." * 16000 + " [at] ",
+    ],
+)
+def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
+    started = time.perf_counter()
+    scrubber.analyze(text)
+
+    # Unbounded, the email patterns took 20 s and more on 32 KB.
+    assert time.perf_counter() - started < 5
+
+
+def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
+    scrubber: PIIScrubberService,
+) -> None:
+    document = json.dumps(
+        {
+            "created": 1757496600,
+            "created_ms": 1757496600123,
+            "elapsed": 0.0376118499,
+            "mean": 0.9876543210,
+            "contact": "Tel: 0212 555 12 34",
+        }
+    )
+
+    scrubbed, mapping = scrubber.scrub(document)
+    parsed = json.loads(scrubbed)
+
+    assert list(mapping.values()) == ["0212 555 12 34"]
+    assert parsed["created"] == 1757496600
+    assert parsed["created_ms"] == 1757496600123
+    assert parsed["elapsed"] == 0.0376118499
+    assert parsed["contact"].startswith("Tel: <PHONE_NUMBER_")
+    assert json.loads(scrubber.deanonymize(scrubbed, mapping)) == json.loads(document)

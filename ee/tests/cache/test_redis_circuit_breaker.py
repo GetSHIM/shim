@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
+from shim_enterprise.application import tenant_target_circuit
 from shim_enterprise.cache.circuit_breaker import RedisCircuitBreaker
 
 
@@ -104,3 +107,24 @@ async def test_missing_redis_fails_open_without_state_mutation() -> None:
     assert await breaker.acquire_call() is True
     await breaker.record_failure()
     await breaker.record_success()
+
+
+def test_enterprise_circuits_are_per_tenant_and_target() -> None:
+    circuit_for = tenant_target_circuit("anthropic", SimpleNamespace(redis=None))
+    first, second = uuid4(), uuid4()
+    deployment = SimpleNamespace(base_url="https://a.internal/v1")
+    other = SimpleNamespace(base_url="https://b.internal/v1")
+
+    def provider_id(tenant, target) -> str:
+        return circuit_for(SimpleNamespace(tenant_id=tenant, target=target)).provider_id
+
+    catalog = {provider_id(first, None), provider_id(second, None)}
+    targets = {provider_id(first, deployment), provider_id(first, other)}
+
+    assert len(catalog) == 2
+    assert len(targets) == 2
+    assert not catalog & targets
+    assert provider_id(first, None) == provider_id(first, None)
+    for value in catalog | targets:
+        assert re.fullmatch(r"anthropic-[0-9a-f]{40}", value)
+        assert str(first) not in value and str(second) not in value

@@ -59,15 +59,17 @@ def install_http_middleware(
                 "Content-Disposition",
                 "X-Shim-Request-Id",
                 "X-Shim-Latency-Ms",
+                "X-Shim-Error-Code",
                 "request-id",
                 "retry-after",
                 "x-goog-request-id",
+                "x-should-retry",
                 "x-request-id",
             ],
         )
     application.add_middleware(
         GlobalRateLimitMiddleware,
-        limit=1000,
+        limit=settings.GLOBAL_RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
         trusted_proxies=settings.TRUSTED_PROXIES,
         limiter=rate_limiter,

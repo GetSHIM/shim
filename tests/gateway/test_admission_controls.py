@@ -96,3 +96,16 @@ def test_expiry_index_handles_mixed_windows_and_bounds_evicted_entries():
     now = 12.0
     assert counters.increment("fresh", amount=1, window_seconds=1) == 1
     assert list(counters.windows) == ["fresh"]
+
+
+@pytest.mark.asyncio
+async def test_in_memory_rate_limiter_refuses_without_consuming() -> None:
+    limiter = InMemoryRateLimiter(clock=lambda: 100.0)
+
+    assert await limiter.allow("key", limit=10, window_seconds=60, amount=6)
+    assert not await limiter.allow("key", limit=10, window_seconds=60, amount=5)
+    assert await limiter.allow("key", limit=10, window_seconds=60, amount=4)
+    assert not await limiter.allow("key", limit=10, window_seconds=60, amount=1)
+    assert not await limiter.allow("fresh", limit=10, window_seconds=60, amount=11)
+    assert "fresh" not in limiter._counters.windows
+    assert await limiter.allow("fresh", limit=10, window_seconds=60, amount=10)
