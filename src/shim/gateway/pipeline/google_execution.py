@@ -9,17 +9,21 @@ from typing import Any, cast
 import httpx
 from google import genai
 from google.genai import errors, types
+from pydantic import ValidationError
 
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.pipeline.provider_execution import (
+    ERROR_HINTS,
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
     google_error,
+    provider_reason,
     record_provider_error,
     retry_after_header,
+    sdk_rejected_request,
     status_error_code,
 )
 from shim.gateway.streaming.sse import encode_data
@@ -427,6 +431,7 @@ def _error(
     retryable: bool,
     request_id: str | None = None,
     retry_after: str | None = None,
+    message: str | None = None,
 ) -> ProviderCallError:
     return ProviderCallError(
         status_code,
@@ -435,6 +440,7 @@ def _error(
         provider="google",
         request_id=request_id,
         retry_after=retry_after,
+        message=message,
     )
 
 
@@ -456,7 +462,14 @@ def _public_error(exc: Exception) -> ProviderCallError:
             status_code in {409, 429} or status_code >= 500,
             _error_request_id(exc),
             retry_after,
+            provider_reason(status_code, exc.details),
         )
+    # Only the SDK's request model: a malformed provider answer fails validation too.
+    if (
+        isinstance(exc, ValidationError)
+        and exc.title == types._GenerateContentParameters.__name__
+    ):
+        return sdk_rejected_request("google")
     if isinstance(exc, httpx.TransportError):
         return _error(503, "PROVIDER_UNAVAILABLE", True)
     return _error(502, "PROVIDER_UNAVAILABLE", False)
@@ -504,6 +517,7 @@ def _stream_error(error: ProviderCallError) -> bytes:
             error.status_code,
             "The Google stream ended with an error.",
             error.error_code,
+            ERROR_HINTS.get(error.error_code),
         )
     )
 

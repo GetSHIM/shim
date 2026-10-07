@@ -135,6 +135,7 @@ async def test_missing_models_raise_native_sanitized_sdk_errors() -> None:
             "type": "not_found_error",
             "param": None,
             "code": "MODEL_NOT_FOUND",
+            "hint": "List the available models with GET /v1/models.",
         }
     }
     assert anthropic_error.value.response.json() == {
@@ -142,6 +143,8 @@ async def test_missing_models_raise_native_sanitized_sdk_errors() -> None:
         "error": {
             "type": "not_found_error",
             "message": "The requested model is not available.",
+            "code": "MODEL_NOT_FOUND",
+            "hint": "List the available models with GET /v1/models.",
         },
     }
     assert openai_missing not in openai_error.value.response.text

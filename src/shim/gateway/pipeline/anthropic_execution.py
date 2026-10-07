@@ -19,12 +19,15 @@ from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.pipeline.provider_execution import (
+    ERROR_HINTS,
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    provider_reason,
     record_provider_error,
     retry_after_header,
     sdk_create_kwargs,
+    sdk_rejected_request,
     select_headers,
     status_error_code,
 )
@@ -156,8 +159,14 @@ class AnthropicExecution:
                     if item.strip()
                 ]
             with prepared.timing.exclude():
-                result: Any = await create(**kwargs)
+                try:
+                    result: Any = await create(**kwargs)
+                except TypeError:
+                    raise sdk_rejected_request("anthropic") from None
         except asyncio.CancelledError:
+            await circuit.release_probe()
+            raise
+        except ProviderCallError:
             await circuit.release_probe()
             raise
         except Exception as exc:
@@ -320,6 +329,7 @@ def _public_error(exc: Exception) -> ProviderCallError:
             provider="anthropic",
             request_id=getattr(exc, "request_id", None),
             retry_after=retry_after_header(exc),
+            message=provider_reason(exc.status_code, exc.body),
         )
     if isinstance(exc, APIConnectionError):
         return ProviderCallError(
@@ -362,6 +372,7 @@ def _error_event(error: ProviderCallError) -> bytes:
             "type": "api_error",
             "code": error.error_code,
             "message": message,
+            "hint": ERROR_HINTS.get(error.error_code),
         },
     }
     if error.request_id:

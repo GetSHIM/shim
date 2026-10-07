@@ -64,8 +64,11 @@ or secret controller. Mounting a projected Secret permits token rotation without
 rebuilding the image. The Vault adapter reads the current token for each operation.
 For private CAs, create a ConfigMap containing `ca.pem`, a PEM bundle including all
 required roots; the chart sets `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS`. Never
-disable certificate verification. PostgreSQL TLS configuration remains part of
-the database URL/customer database policy.
+disable certificate verification. Internal Slack, SIEM or webhook alert
+destinations also need `ALERT_ALLOWED_ORIGINS`; see
+[alert delivery on a closed network](../docs/ON_PREM_IDENTITY.md#alert-delivery-on-a-closed-network).
+PostgreSQL TLS configuration remains part of the database URL/customer database
+policy.
 
 Create a private `values.yaml`:
 

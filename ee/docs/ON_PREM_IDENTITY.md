@@ -40,9 +40,33 @@ a supported managed secret backend, and the existing offline licence check.
 Only local development can use HTTP. Never disable certificate verification.
 
 Use a customer CA bundle through `SSL_CERT_FILE` for Python HTTP clients and
-`NODE_EXTRA_CA_CERTS` for the dashboard. Standard HTTP(S) proxy and `NO_PROXY`
-variables are honored by HTTPX; direct Node-to-API networking must be permitted.
-Do not assume a proxy environment variable changes Node fetch routing.
+`NODE_EXTRA_CA_CERTS` for the dashboard. Model deployments and alert delivery
+use `OUTBOUND_CA_BUNDLE` instead when it is set; it replaces the system roots
+for those two clients, so it must hold every root they need. Standard HTTP(S)
+proxy and `NO_PROXY` variables are honored by HTTPX, except by alert delivery,
+which connects directly to the address it vetted; direct Node-to-API
+networking must be permitted. Do not assume a proxy environment variable
+changes Node fetch routing.
+
+## Alert delivery on a closed network
+
+Budget alerts and forward targets accept public HTTPS destinations only, unless
+the platform operator approves an internal origin:
+
+| Variable | Example |
+| --- | --- |
+| `ALERT_ALLOWED_ORIGINS` | `["https://siem.corp.example:8443","https://slack-relay.corp.example"]` |
+| `OUTBOUND_CA_BUNDLE` | `/etc/shim/internal-ca.pem`, for an internal endpoint with a private CA |
+
+An entry is an exact `https://host[:port]` origin; anything else stops the
+process at startup. A destination on an approved origin may resolve to a private
+address, but never to a link-local, cloud-metadata, multicast or unspecified
+one, and the connection is pinned to the address that was checked. Tenants
+cannot change the list.
+
+E-mail alerts go through Resend's public API and are unavailable on a closed
+network. Use a Slack target, or a `siem_webhook` target that points at an
+internal relay which turns the JSON body into e-mail.
 
 ## Identity and authorization contract
 

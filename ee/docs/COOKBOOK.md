@@ -15,6 +15,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Attribute spend to teams](#attribute-spend-to-teams)
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
+- [Send tenant alerts](#send-tenant-alerts)
+- [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
@@ -52,9 +54,12 @@ curl 'http://localhost:8000/api/v1/management/billing/breakdown?group_by=team_id
   -H "Authorization: Bearer $USER_TOKEN"
 ```
 
-Each row has `key`, `request_count`, `prompt_tokens`, `completion_tokens`,
+Each row has `key`, `label`, `request_count`, `prompt_tokens`, `completion_tokens`,
 `cost_usd`, `unpriced_requests` and `cost_complete`; `cost_usd` is `null` when
-any request in the row had no price.
+any request in the row had no price. With `group_by=team_id`, `label` is the
+team's current name, and `null` for `unassigned` or a deleted team; the other
+groupings leave it `null`. The CSV export adds it as the last column, and the
+PDF prints the name in place of the team id.
 
 Notes:
 
@@ -77,14 +82,22 @@ Get a Slack message or a webhook call when spend or tokens cross a share of a mo
 1. `POST /api/v1/management/cost/budgets` (owner or admin) with:
    - `scope_type`: `org`, `tag` or `team`, and `scope_value` for the last two.
      `tag` matches requests carrying that `X-Shim-Tag` tag; `team` matches the
-     key's billing label `team`, not its `team_id`. Both are stored lowercased
-     and `scope_value` is compared as written, so write it in lowercase.
-   - `limit_usd`, `limit_tokens`, or both.
-   - `alert_thresholds`: fractions greater than 0 and at most 5, unique, at
-     most 10; `0.8` means 80 percent. Default `[0.8, 1.0]`.
-   - `notify_targets`: at most 10 of `{"kind": "slack" | "webhook", "endpoint": ...}`.
-     An endpoint must be a public HTTPS URL, otherwise 422 "Unsafe notification
-     URL". It is kept in the secret store; responses show only `endpoint_origin`.
+     key's billing label `team`, not its `team_id`. `scope_value` is normalized
+     the way those labels are: `Payments` is stored and matched as `payments`,
+     and a value outside letters, digits, `.`, `_`, `:` and `-` (at most
+     `COST_TAG_MAX_LENGTH`) answers 422.
+   - `limit_usd`, `limit_tokens`, or both, each greater than 0.
+   - `alert_thresholds`: one to 10 unique fractions greater than 0 and at most
+     5; `0.8` means 80 percent and `1.5` means 150 percent. Default
+     `[0.8, 1.0]`. Responses repeat them as percentages in
+     `alert_thresholds_percent`.
+   - `notify_targets`: one to 10 of `{"kind": "slack" | "webhook", "endpoint": ...}`;
+     a budget nobody hears about answers 422. A webhook may add `"secret"` (at
+     least 16 characters) to sign its deliveries. An endpoint must be a public
+     HTTPS URL or an origin the operator approved in `ALERT_ALLOWED_ORIGINS`
+     ([on-prem alerts](ON_PREM_IDENTITY.md#alert-delivery-on-a-closed-network)),
+     otherwise 422 "Unsafe notification URL". Endpoint and secret are kept in
+     the secret store; responses show only `endpoint_origin` and `signed`.
 2. Wait for the reconciliation worker, which evaluates enabled budgets every
    `BUDGET_EVALUATION_INTERVAL_SECONDS` (default 300, from 30 to 86,400), or run
    `POST /api/v1/management/cost/budgets/evaluate` for an immediate pass.
@@ -110,7 +123,13 @@ Notes:
   tokens over `limit_tokens`.
 - The outbox worker delivers the alert. A webhook receives
   `{"event": "budget.threshold_crossed", "payload": {...}}` with an
-  `idempotency-key` header; Slack receives a text message.
+  `idempotency-key` header and, when it has a secret, `X-Shim-Signature:
+  sha256=<hex HMAC-SHA256 of the raw body with the secret>`, the same scheme as
+  compliance forward targets. `payload.percent_used` keeps full precision;
+  Slack receives a text message with the percentage rounded to a whole number.
+- Budgets stored before these checks, with a zero limit, no threshold or no
+  target, still evaluate and simply never alert; a `PATCH` that sends one of
+  those values answers 422.
 - A budget alerts and never refuses a request. For a hard stop, use a stored
   provider credential's `monthly_limit_usd`, which refuses with
   `SPEND_LIMIT_EXCEEDED`, or team quotas.
@@ -141,9 +160,71 @@ curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
 
 Notes: every change records a `tenant.privacy_policy_updated` audit event.
 Turning a switch off also records `tenant.privacy_protection_relaxed` and queues
-one delivery to every enabled forward target of the tenant's compliance
-connectors; turning it back on records only the update. Event details and the
+one delivery to every enabled [forward target](#send-tenant-alerts) of the
+tenant; turning it back on records only the update. Event details and the
 forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-details).
+
+## Send tenant alerts
+
+Receive tenant alerts, such as privacy protection turned off, in Slack, a SIEM
+webhook or e-mail. No compliance connector is needed.
+
+1. `POST /api/v1/compliance/forward-targets` (owner or admin) with `kind`
+   (`siem_webhook`, `slack` or `email`), `endpoint` (an HTTPS URL, or the
+   recipient for `email`), an optional `secret` (SIEM webhooks only, at least 16
+   characters), `min_severity` (default `high`, applies to connector findings)
+   and `enabled` (default true). It answers 201 with the target's `id`;
+   `connector_id` is null.
+2. Optionally pass `?connector_id=<id>` to bind the target to a compliance
+   connector: it then also receives that connector's findings and health
+   alerts. A tenant-level target receives tenant alerts only. Deleting a
+   connector deletes the targets bound to it.
+3. List, change or delete targets with `GET /api/v1/compliance/forward-targets`
+   (optionally `?connector_id=`), `PATCH` and `DELETE
+   /api/v1/compliance/forward-targets/{id}`.
+
+```console
+curl -X POST http://localhost:8000/api/v1/compliance/forward-targets \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind": "slack", "endpoint": "https://hooks.slack.com/services/T000/B000/XXXX"}'
+```
+
+Notes: each alert is one delivery per enabled target, sent by the outbox worker
+with an `idempotency-key` header. A signed SIEM webhook carries
+`X-Shim-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. An endpoint must
+be public HTTPS or an origin approved in `ALERT_ALLOWED_ORIGINS`; e-mail goes
+through Resend (`RESEND_API_KEY`, `COMPLIANCE_EMAIL_FROM`) and is unavailable
+on a closed network, see
+[on-prem alerts](ON_PREM_IDENTITY.md#alert-delivery-on-a-closed-network).
+
+## Refuse provider keys sent in requests
+
+Make every request use the provider keys stored for your tenant, so their
+spending limits always apply.
+
+1. Read the switch with `GET /api/v1/management/settings/provider-keys`. It is
+   `true` by default.
+2. Turn it off with `PUT /api/v1/management/settings/provider-keys` (owner or admin).
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/settings/provider-keys \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"allow_customer_provider_keys": false}'
+```
+
+Notes:
+
+- With the switch on, a provider key the caller sends in `x-provider-key` (or
+  `x-openai-api-key` on OpenAI routes) wins over the stored key on catalog
+  models, for OpenAI, Anthropic and Gemini. The stored key's `monthly_limit_usd`
+  does not apply to it, because the spend is on the caller's provider account;
+  key and team quotas and budget alerts still do.
+- With the switch off, such a request gets 403 `PROVIDER_KEY_NOT_ALLOWED` before
+  any provider call, and the refusal is recorded in the audit trail. Requests
+  without a provider key are unaffected.
+- A [registered deployment](#register-a-private-model-deployment) always uses
+  its stored key and ignores the header, whatever the switch says.
+- Every change records a `tenant.provider_key_policy_updated` audit event.
 
 ## Export and verify the audit trail
 
@@ -166,15 +247,20 @@ uvx shim-audit-verify shim-audit-bundle-*.json
 Notes:
 
 - The export answers 422 above 10,000 rows or 366 anchors, or when `start` is
-  after `end`, and 404 for a window without rows. The file is saved as
+  after `end`, and 404 for a window without rows. A tenant writing more than
+  10,000 rows a day exports hour-sized windows. The file is saved as
   `shim-audit-bundle-<organization id>.json`.
 - The server-side check is `POST /api/v1/compliance/audit/verify?from=…&to=…`:
-  its parameters are `from` and `to`, not `start` and `end`, and it reads the
-  chain from sequence 1 up to `to` whatever `from` is. A tenant with more than
-  10,000 rows before `to` therefore gets 422 there; export a bundle and verify it
-  offline instead. With both bounds set, the window may span at most 31 days. It
-  answers `ok`, `rows_checked`, `first_break`, `last_verified_seq`,
-  `anchors_checked` and `anchor_mismatches`.
+  its parameters are `from` and `to`, not `start` and `end`. With `from`, it
+  starts after the latest daily anchor dated before `from` and checks that the
+  chain still links to that anchor's tip (`anchor_link_mismatch` otherwise);
+  without an earlier anchor, or without `from`, it starts at sequence 1. It reads
+  at most 10,000 rows (422 beyond). With both bounds set, the window may span at
+  most 31 days. It answers `ok`, `chain_start` (`from_seq`, `anchor_date`),
+  `rows_checked`, `first_break`, `last_verified_seq`, `anchors_checked` and
+  `anchor_mismatches`. A check that starts at an anchor trusts that stored
+  anchor; see [decision evidence](POLICY_DECISIONS.md#audit-evidence-bundle).
+- Exports, verifications and reports are themselves recorded in the audit chain.
 - Read the verifier's "What it does not prove" before relying on a result. The
   format and limits are in [decision evidence](POLICY_DECISIONS.md#audit-evidence-bundle).
 - Audit-chain appends that the outbox dead-lettered can be queued again from the
@@ -218,8 +304,8 @@ Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
 1. As the platform operator, approve the server's origin in the gateway's
    environment and restart it: `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` is a JSON list
    of exact scheme, host and port origins. For a private certificate authority,
-   point `MODEL_DEPLOYMENT_CA_BUNDLE` at its CA file; certificate verification
-   stays on.
+   point `OUTBOUND_CA_BUNDLE` at its CA file; certificate verification stays
+   on.
 2. Store the server's credential: `POST /api/v1/management/providers` with
    `provider`, `key` (at least 10 characters) and an optional `name` (owner or
    admin with a verified email). It answers 201 with the credential's `id`.
@@ -233,12 +319,14 @@ Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
    exists.
 4. Check health: `POST /api/v1/management/model-deployments/{id}/health` asks
    the server's model list for 5 seconds and marks the deployment `healthy` on
-   HTTP 200, otherwise `unhealthy`.
+   HTTP 200, otherwise `unhealthy`. An `unhealthy` mark refuses the alias with
+   503 `DEPLOYMENT_UNHEALTHY` for 300 seconds; disable the deployment to keep
+   traffic away for longer.
 5. Call the alias as the model name, with a gateway key.
 
 ```text
 MODEL_DEPLOYMENT_ALLOWED_ORIGINS=["https://models.internal:8443"]
-MODEL_DEPLOYMENT_CA_BUNDLE=/etc/shim/internal-ca.pem
+OUTBOUND_CA_BUNDLE=/etc/shim/internal-ca.pem
 ```
 
 ```console

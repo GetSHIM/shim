@@ -103,6 +103,28 @@
       },
       "AnthropicErrorDetail": {
         "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -1365,6 +1387,18 @@
             "title": "Key",
             "type": "string"
           },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The team's current name when grouped by team_id.",
+            "title": "Label"
+          },
           "prompt_tokens": {
             "minimum": 0.0,
             "title": "Prompt Tokens",
@@ -1600,6 +1634,7 @@
               "type": "number"
             },
             "maxItems": 10,
+            "minItems": 1,
             "title": "Alert Thresholds",
             "type": "array"
           },
@@ -1611,7 +1646,7 @@
           "limit_tokens": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -1623,7 +1658,7 @@
           "limit_usd": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "number"
               },
               {
@@ -1641,6 +1676,7 @@
               "$ref": "#/components/schemas/NotificationTargetInput"
             },
             "maxItems": 10,
+            "minItems": 1,
             "title": "Notify Targets",
             "type": "array"
           },
@@ -1666,7 +1702,8 @@
           }
         },
         "required": [
-          "scope_type"
+          "scope_type",
+          "notify_targets"
         ],
         "title": "BudgetInput",
         "type": "object"
@@ -1680,6 +1717,7 @@
                   "type": "number"
                 },
                 "maxItems": 10,
+                "minItems": 1,
                 "type": "array"
               },
               {
@@ -1703,7 +1741,7 @@
           "limit_tokens": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -1715,7 +1753,7 @@
           "limit_usd": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "number"
               },
               {
@@ -1735,6 +1773,7 @@
                   "$ref": "#/components/schemas/NotificationTargetInput"
                 },
                 "maxItems": 10,
+                "minItems": 1,
                 "type": "array"
               },
               {
@@ -1754,6 +1793,14 @@
               "type": "number"
             },
             "title": "Alert Thresholds",
+            "type": "array"
+          },
+          "alert_thresholds_percent": {
+            "items": {
+              "type": "number"
+            },
+            "readOnly": true,
+            "title": "Alert Thresholds Percent",
             "type": "array"
           },
           "created_at": {
@@ -1841,7 +1888,8 @@
           "alert_thresholds",
           "notify_targets",
           "enabled",
-          "created_at"
+          "created_at",
+          "alert_thresholds_percent"
         ],
         "title": "BudgetView",
         "type": "object"
@@ -1868,6 +1916,33 @@
           "reason"
         ],
         "title": "ChainBreak",
+        "type": "object"
+      },
+      "ChainStart": {
+        "description": "Where the chain check started: genesis, or after a stored daily anchor.",
+        "properties": {
+          "anchor_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Date"
+          },
+          "from_seq": {
+            "exclusiveMinimum": 0.0,
+            "title": "From Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_seq"
+        ],
+        "title": "ChainStart",
         "type": "object"
       },
       "ChatRequest": {
@@ -3272,9 +3347,16 @@
       "ForwardTargetRead": {
         "properties": {
           "connector_id": {
-            "format": "uuid",
-            "title": "Connector Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connector Id"
           },
           "created_at": {
             "anyOf": [
@@ -5170,6 +5252,19 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "minLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Signs webhook deliveries with X-Shim-Signature.",
+            "title": "Secret"
           }
         },
         "required": [
@@ -5192,11 +5287,16 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "signed": {
+            "title": "Signed",
+            "type": "boolean"
           }
         },
         "required": [
           "kind",
-          "endpoint_origin"
+          "endpoint_origin",
+          "signed"
         ],
         "title": "NotificationTargetView",
         "type": "object"
@@ -5213,6 +5313,17 @@
               }
             ],
             "title": "Code"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
           },
           "message": {
             "title": "Message",
@@ -6490,6 +6601,20 @@
           "block_pii_tr"
         ],
         "title": "PrivacySettings",
+        "type": "object"
+      },
+      "ProviderKeySettings": {
+        "properties": {
+          "allow_customer_provider_keys": {
+            "description": "When false, a request carrying its own provider key (x-provider-key) on a catalog route is refused with 403 PROVIDER_KEY_NOT_ALLOWED.",
+            "title": "Allow Customer Provider Keys",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allow_customer_provider_keys"
+        ],
+        "title": "ProviderKeySettings",
         "type": "object"
       },
       "ProviderSecretInput": {
@@ -9528,6 +9653,9 @@
             "title": "Anchors Checked",
             "type": "integer"
           },
+          "chain_start": {
+            "$ref": "#/components/schemas/ChainStart"
+          },
           "first_break": {
             "anyOf": [
               {
@@ -9562,6 +9690,7 @@
         },
         "required": [
           "ok",
+          "chain_start",
           "rows_checked",
           "anchors_checked"
         ],
@@ -10985,11 +11114,18 @@
           {
             "in": "query",
             "name": "connector_id",
-            "required": true,
+            "required": false,
             "schema": {
-              "format": "uuid",
-              "title": "Connector Id",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
             }
           }
         ],
@@ -13447,6 +13583,76 @@
           }
         ],
         "summary": "Update Privacy Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/settings/provider-keys": {
+      "get": {
+        "operationId": "get_provider_key_settings_api_v1_management_settings_provider_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeySettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Provider Key Settings",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "update_provider_key_settings_api_v1_management_settings_provider_keys_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeySettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeySettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Provider Key Settings",
         "tags": [
           "management"
         ]

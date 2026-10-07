@@ -1,7 +1,9 @@
 """Transactional audit intent shared by management and identity synchronization."""
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from decimal import Decimal
+from typing import Any
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,3 +43,35 @@ async def record_management_action(
         },
     )
     return event_id
+
+
+def change_details(
+    before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> dict[str, object]:
+    """Before/after of the fields that differ; one side only for create or delete."""
+    changed = [
+        field
+        for field in after or before or {}
+        if before is None or after is None or before[field] != after[field]
+    ]
+    return {
+        label: {
+            field: str(facts[field])
+            if isinstance(facts[field], (Decimal, UUID))
+            else facts[field]
+            for field in changed
+        }
+        for label, facts in (("before", before), ("after", after))
+        if facts is not None
+    }
+
+
+def export_details(
+    start: datetime | None, end: datetime | None, **facts: object
+) -> dict[str, object]:
+    """The window and size of an evidence export, for its read audit event."""
+    return {
+        "start": start.isoformat() if start is not None else None,
+        "end": end.isoformat() if end is not None else None,
+        **facts,
+    }

@@ -24,6 +24,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -68,6 +69,7 @@ from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
+from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -294,6 +296,17 @@ class PrivacySettings(BaseModel):
     block_pii_tr: bool
 
 
+class ProviderKeySettings(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    allow_customer_provider_keys: bool = Field(
+        description=(
+            "When false, a request carrying its own provider key (x-provider-key) "
+            "on a catalog route is refused with 403 PROVIDER_KEY_NOT_ALLOWED."
+        )
+    )
+
+
 class PrivacyPatch(BaseModel):
     block_email: bool | None = None
     block_phone: bool | None = None
@@ -362,20 +375,41 @@ class TeamRolePatch(BaseModel):
 class NotificationTargetInput(BaseModel):
     kind: Literal["slack", "webhook"]
     endpoint: str = Field(min_length=1, max_length=2_048)
+    secret: str | None = Field(
+        default=None,
+        min_length=16,
+        repr=False,
+        description="Signs webhook deliveries with X-Shim-Signature.",
+    )
+
+    @model_validator(mode="after")
+    def validate_signing(self) -> NotificationTargetInput:
+        if self.secret is not None and self.kind != "webhook":
+            raise ValueError("only webhook targets support signing secrets")
+        return self
 
 
 class NotificationTargetView(BaseModel):
     kind: Literal["slack", "webhook"]
     endpoint_origin: str
+    signed: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def signed_from_reference(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {**value, "signed": "signing_secret_ref" in value}
+        return value
 
 
 class BudgetInput(BaseModel):
     scope_type: Literal["tag", "team", "org"]
     scope_value: str | None = None
-    limit_usd: Decimal | None = Field(default=None, ge=0)
-    limit_tokens: int | None = Field(default=None, ge=0)
+    limit_usd: Decimal | None = Field(default=None, gt=0)
+    limit_tokens: int | None = Field(default=None, gt=0)
     alert_thresholds: list[float] = Field(
         default_factory=lambda: [0.8, 1.0],
+        min_length=1,
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
         description=(
             "Fractions of the budget limit, greater than 0 and at most 5. "
@@ -383,7 +417,7 @@ class BudgetInput(BaseModel):
         ),
     )
     notify_targets: list[NotificationTargetInput] = Field(
-        default_factory=list,
+        min_length=1,
         max_length=MAX_BUDGET_NOTIFY_TARGETS,
     )
     enabled: bool = True
@@ -415,18 +449,21 @@ class BudgetInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_budget(self) -> BudgetInput:
-        if self.scope_type != "org" and not self.scope_value:
-            raise ValueError("scoped budgets require scope_value")
+        if self.scope_type != "org":
+            if not self.scope_value:
+                raise ValueError("scoped budgets require scope_value")
+            self.scope_value = _validate_attribution(self.scope_value)
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
 
 
 class BudgetPatch(BaseModel):
-    limit_usd: Decimal | None = Field(default=None, ge=0)
-    limit_tokens: int | None = Field(default=None, ge=0)
+    limit_usd: Decimal | None = Field(default=None, gt=0)
+    limit_tokens: int | None = Field(default=None, gt=0)
     alert_thresholds: list[float] | None = Field(
         default=None,
+        min_length=1,
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
         description=(
             "Fractions of the budget limit, greater than 0 and at most 5. "
@@ -435,6 +472,7 @@ class BudgetPatch(BaseModel):
     )
     notify_targets: list[NotificationTargetInput] | None = Field(
         default=None,
+        min_length=1,
         max_length=MAX_BUDGET_NOTIFY_TARGETS,
     )
     enabled: bool | None = None
@@ -475,6 +513,11 @@ class BudgetView(BaseModel):
     notify_targets: list[NotificationTargetView]
     enabled: bool
     created_at: datetime
+
+    @computed_field
+    @property
+    def alert_thresholds_percent(self) -> list[float]:
+        return [float(Decimal(str(value)) * 100) for value in self.alert_thresholds]
 
 
 class BudgetEvaluationItem(BaseModel):
@@ -688,6 +731,9 @@ class BillingBreakdownRow(BaseModel):
     unpriced_requests: int = 0
     cost_complete: bool = True
     key: str = Field(min_length=1)
+    label: str | None = Field(
+        default=None, description="The team's current name when grouped by team_id."
+    )
     request_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
@@ -715,15 +761,30 @@ async def update_profile(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> UserView:
+    # The audit chain is immutable, so a person's name is recorded as changed, never stored.
+    previous_full_name = user.full_name
     if "full_name" in patch.model_fields_set:
         user.full_name = patch.full_name
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
     if patch.organization_name is not None:
         _require_role(user, "owner", "admin")
         tenant = await session.get(Organization, _tenant_id(user))
         if tenant is None:
             raise HTTPException(status_code=403, detail="Tenant does not exist")
+        before["organization_name"] = tenant.name
         tenant.name = patch.organization_name.strip()
-    await _audit(session, user, "tenant.profile_updated", str(user.id))
+        after["organization_name"] = tenant.name
+    await _audit(
+        session,
+        user,
+        "tenant.profile_updated",
+        str(user.id),
+        details={
+            **change_details(before, after),
+            "full_name_changed": user.full_name != previous_full_name,
+        },
+    )
     await session.commit()
     await session.refresh(user)
     return await _user_view(session, user)
@@ -758,6 +819,13 @@ async def list_team_members(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> list[User]:
+    # Team admins pick members to add from this list; ordinary members do not see it.
+    if user.role not in ORGANIZATION_READERS and not await session.scalar(
+        select(member_team_ids(user, administer=True).exists())
+    ):
+        raise HTTPException(
+            status_code=403, detail="Organization reader or team admin required"
+        )
     return list(
         (
             await session.execute(
@@ -1312,14 +1380,16 @@ async def update_api_key(
             await require_team(session, user, patch.team_id, administer=True)
     if "allowed_models" in patch.model_fields_set:
         await require_model_aliases(session, _tenant_id(user), patch.allowed_models)
-    for field, value in patch.model_dump(exclude_unset=True).items():
+    changes = patch.model_dump(exclude_unset=True)
+    before = {field: getattr(api_key, field) for field in changes}
+    for field, value in changes.items():
         setattr(api_key, field, value)
     await _audit(
         session,
         user,
         "tenant.api_key_updated",
         str(api_key.id),
-        details={"changes": patch.model_dump(mode="json", exclude_unset=True)},
+        details=change_details(before, changes),
     )
     await session.commit()
     await session.refresh(api_key)
@@ -1417,6 +1487,7 @@ async def update_provider_secret(
     purpose = _provider_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
+    before = _provider_secret_details(row)
     if "name" in patch.model_fields_set:
         row.name = patch.name
     if "monthly_limit_usd" in patch.model_fields_set:
@@ -1438,7 +1509,10 @@ async def update_provider_secret(
             user,
             "tenant.provider_secret_updated",
             str(row.id),
-            details=_provider_secret_details(row, key_rotated=patch.key is not None),
+            details={
+                **change_details(before, _provider_secret_details(row)),
+                "key_rotated": patch.key is not None,
+            },
         )
         await session.commit()
     except BaseException:
@@ -1574,7 +1648,7 @@ async def update_privacy_settings(
         user,
         "tenant.privacy_policy_updated",
         str(tenant_id),
-        details=_change_details(before, after),
+        details=change_details(before, after),
     )
     relaxed = [field for field in before if before[field] and not after[field]]
     if relaxed:
@@ -1590,6 +1664,7 @@ async def update_privacy_settings(
             TenantId(tenant_id),
             fields=relaxed,
             actor=str(user.id),
+            actor_email=user.email,
             event_id=event_id,
         )
     await session.commit()
@@ -1602,6 +1677,39 @@ async def update_privacy_settings(
         )
     await session.refresh(row)
     return row
+
+
+@router.get("/settings/provider-keys", response_model=ProviderKeySettings)
+async def get_provider_key_settings(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant = await session.get(Organization, _tenant_id(user))
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    return tenant
+
+
+@router.put("/settings/provider-keys", response_model=ProviderKeySettings)
+async def update_provider_key_settings(
+    payload: ProviderKeySettings,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    before = {"allow_customer_provider_keys": tenant.allow_customer_provider_keys}
+    tenant.allow_customer_provider_keys = payload.allow_customer_provider_keys
+    await _audit(
+        session,
+        user,
+        "tenant.provider_key_policy_updated",
+        str(tenant.id),
+        details=change_details(before, payload.model_dump()),
+    )
+    await session.commit()
+    return tenant
 
 
 @router.get("/tier-info", response_model=TierView)
@@ -1683,7 +1791,7 @@ async def create_budget(
             user,
             "tenant.budget_created",
             str(row.id),
-            details=_change_details(None, _budget_facts(row)),
+            details=change_details(None, _budget_facts(row)),
         )
         await session.commit()
     except BaseException:
@@ -1732,7 +1840,7 @@ async def update_budget(
             user,
             "tenant.budget_updated",
             str(row.id),
-            details=_change_details(before, _budget_facts(row)),
+            details=change_details(before, _budget_facts(row)),
         )
         await session.commit()
     except BaseException:
@@ -1760,7 +1868,7 @@ async def delete_budget(
     targets = list(row.notify_targets or [])
     _reject_oversized_legacy_targets(targets)
     await _cancel_budget_deliveries(session, _tenant_id(user), row.id)
-    details = _change_details(_budget_facts(row), None)
+    details = change_details(_budget_facts(row), None)
     await session.delete(row)
     await _audit(session, user, "tenant.budget_deleted", str(row.id), details=details)
     await session.commit()
@@ -1828,6 +1936,13 @@ async def evaluate_budgets(
     except BudgetConfigurationError as exc:
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    await _audit(
+        session,
+        user,
+        "tenant.budgets_evaluated",
+        str(_tenant_id(user)),
+        details={"budgets_evaluated": len(results)},
+    )
     await session.commit()
     return BudgetEvaluationView(
         period=now.strftime("%Y-%m"),
@@ -2063,6 +2178,21 @@ async def export_requests(
             ),
         )
 
+    # Buffered, not session.stream(): server-side cursors break on the
+    # statement_cache_size=0 engine (core/database.py). The cap bounds memory.
+    rows = (
+        await session.execute(rows_statement.limit(_MAX_SYNC_REQUEST_EXPORT_ROWS))
+    ).all()
+    # Recorded after the rows are read, so the export never contains its own event.
+    await _audit(
+        session,
+        user,
+        "tenant.requests_exported",
+        str(tenant_id),
+        details=export_details(start_at, end_at, rows=len(rows)),
+    )
+    await session.commit()
+
     async def content() -> AsyncIterator[bytes]:
         output = io.StringIO()
         writer = csv.writer(output)
@@ -2092,49 +2222,41 @@ async def export_requests(
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        result = await session.stream(
-            rows_statement.limit(_MAX_SYNC_REQUEST_EXPORT_ROWS)
-        )
-        try:
-            async for row, cost_usd in result:
-                details = row.details or {}
-                output.seek(0)
-                output.truncate(0)
-                writer.writerow(
-                    _safe_csv(value)
-                    for value in (
-                        row.request_id,
-                        row.timestamp.isoformat(),
-                        row.path,
-                        row.model,
-                        _request_provider(row),
-                        _request_activity_status(row.details),
-                        row.prompt_tokens,
-                        row.completion_tokens,
-                        Decimal(str(cost_usd)) if cost_usd is not None else None,
-                        details.get("shim_latency_ms"),
-                        row.pii_detected,
-                        ",".join(row.tags or []),
-                        row.cost_center,
-                        row.team,
-                        (
-                            json.dumps(
-                                details["provider_finish_reasons"], sort_keys=True
-                            )
-                            if details.get("provider_finish_reasons") is not None
-                            else None
-                        ),
-                        details.get("completion_outcome"),
-                        details.get("repeat_chain_length"),
-                        details.get("ttft_ms"),
-                        details.get("system_prompt_hash"),
-                        details.get("deployment_kind"),
-                        cost_usd is not None,
-                    )
+        for row, cost_usd in rows:
+            details = row.details or {}
+            output.seek(0)
+            output.truncate(0)
+            writer.writerow(
+                _safe_csv(value)
+                for value in (
+                    row.request_id,
+                    row.timestamp.isoformat(),
+                    row.path,
+                    row.model,
+                    _request_provider(row),
+                    _request_activity_status(row.details),
+                    row.prompt_tokens,
+                    row.completion_tokens,
+                    Decimal(str(cost_usd)) if cost_usd is not None else None,
+                    details.get("shim_latency_ms"),
+                    row.pii_detected,
+                    ",".join(row.tags or []),
+                    row.cost_center,
+                    row.team,
+                    (
+                        json.dumps(details["provider_finish_reasons"], sort_keys=True)
+                        if details.get("provider_finish_reasons") is not None
+                        else None
+                    ),
+                    details.get("completion_outcome"),
+                    details.get("repeat_chain_length"),
+                    details.get("ttft_ms"),
+                    details.get("system_prompt_hash"),
+                    details.get("deployment_kind"),
+                    cost_usd is not None,
                 )
-                yield output.getvalue().encode("utf-8")
-        finally:
-            await result.close()
+            )
+            yield output.getvalue().encode("utf-8")
 
     return StreamingResponse(
         content(),
@@ -2210,11 +2332,14 @@ async def billing_breakdown(
         group_by=group_by,
         limit=limit,
     )
+    labels = await _team_labels(session, user, group_by)
     return BillingBreakdownView(
         period=BillingPeriodView(start=start, end=end),
         group_by=group_by,
         rows=[
-            BillingBreakdownRow.model_validate(record.as_public_record())
+            BillingBreakdownRow.model_validate(
+                record.as_public_record() | {"label": labels.get(record.key)}
+            )
             for record in records
         ],
         limit=limit,
@@ -2253,11 +2378,22 @@ async def export_billing_breakdown(
                 f"{MAX_BILLING_BREAKDOWN_ROWS} groups"
             ),
         )
+    labels = await _team_labels(session, user, group_by)
+    await _audit(
+        session,
+        user,
+        "tenant.billing_exported",
+        str(_tenant_id(user)),
+        details=export_details(
+            start, end, rows=len(records), group_by=group_by, format=format
+        ),
+    )
+    await session.commit()
     content = (
-        _billing_breakdown_csv(records)
+        _billing_breakdown_csv(records, labels)
         if format == "csv"
         else await asyncio.to_thread(
-            _billing_breakdown_pdf, records, group_by, start, end
+            _billing_breakdown_pdf, records, labels, group_by, start, end
         )
     )
     return Response(
@@ -2267,26 +2403,6 @@ async def export_billing_breakdown(
             "Content-Disposition": f'attachment; filename="shim_billing_{group_by}.{format}"'
         },
     )
-
-
-def _change_details(
-    before: dict[str, Any] | None, after: dict[str, Any] | None
-) -> dict[str, object]:
-    changed = [
-        field
-        for field in after or before or {}
-        if before is None or after is None or before[field] != after[field]
-    ]
-    return {
-        label: {
-            field: str(facts[field])
-            if isinstance(facts[field], Decimal)
-            else facts[field]
-            for field in changed
-        }
-        for label, facts in (("before", before), ("after", after))
-        if facts is not None
-    }
 
 
 def _budget_facts(row: CostBudget) -> dict[str, Any]:
@@ -2565,7 +2681,18 @@ def _safe_csv(value: object) -> str:
     )
 
 
-def _billing_breakdown_csv(records: list[Any]) -> bytes:
+async def _team_labels(
+    session: AsyncSession, user: User, group_by: BillingBreakdownGroup
+) -> dict[str, str]:
+    if group_by != "team_id":
+        return {}
+    rows = await session.execute(
+        select(Team.id, Team.name).where(Team.organization_id == _tenant_id(user))
+    )
+    return {str(team_id): name for team_id, name in rows}
+
+
+def _billing_breakdown_csv(records: list[Any], labels: dict[str, str]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -2577,6 +2704,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
             "cost_usd",
             "unpriced_requests",
             "cost_complete",
+            "label",
         )
     )
     for record in records:
@@ -2590,6 +2718,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
                 None if record.unpriced_requests else record.cost_usd,
                 record.unpriced_requests,
                 record.unpriced_requests == 0,
+                labels.get(record.key),
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -2597,6 +2726,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
 
 def _billing_breakdown_pdf(
     records: list[Any],
+    labels: dict[str, str],
     group_by: BillingBreakdownGroup,
     start: datetime,
     end: datetime,
@@ -2638,7 +2768,7 @@ def _billing_breakdown_pdf(
             evidence_table(
                 [
                     [
-                        record.key,
+                        labels.get(record.key, record.key),
                         str(record.request_count),
                         str(record.prompt_tokens + record.completion_tokens),
                         str(record.cost_usd)
@@ -2846,13 +2976,21 @@ async def _store_budget_targets(
                 target.endpoint,
                 {"kind": target.kind},
             )
-            stored.append(
-                {
-                    "kind": target.kind,
-                    "endpoint_origin": _endpoint_origin(target.endpoint),
-                    "secret_ref": str(reference),
-                }
-            )
+            entry = {
+                "kind": target.kind,
+                "endpoint_origin": _endpoint_origin(target.endpoint),
+                "secret_ref": str(reference),
+            }
+            stored.append(entry)
+            if target.secret is not None:
+                entry["signing_secret_ref"] = str(
+                    await store.put_secret(
+                        TenantId(tenant_id),
+                        "budget-alert-signing",
+                        target.secret,
+                        {"kind": target.kind},
+                    )
+                )
     except BaseException:
         await _delete_budget_targets(tenant_id, stored)
         raise
@@ -2864,14 +3002,15 @@ async def _delete_budget_targets(
     targets: list[dict[str, str]],
 ) -> None:
     for target in targets:
-        reference = target.get("secret_ref")
-        if reference is None:
-            continue
-        await _delete_secret_best_effort(
-            tenant_id,
-            SecretRef(reference),
-            "budget-alert-endpoint",
-        )
+        for field, purpose in (
+            ("secret_ref", "budget-alert-endpoint"),
+            ("signing_secret_ref", "budget-alert-signing"),
+        ):
+            reference = target.get(field)
+            if reference is not None:
+                await _delete_secret_best_effort(
+                    tenant_id, SecretRef(reference), purpose
+                )
 
 
 def _reject_oversized_legacy_targets(targets: list[dict[str, str]]) -> None:
@@ -3070,7 +3209,9 @@ async def update_model_deployment(
     secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
     if secret.provider != payload.provider:
         raise HTTPException(422, detail="Credential provider does not match deployment")
-    for field, value in payload.model_dump().items():
+    configuration = payload.model_dump()
+    before = {field: getattr(row, field) for field in configuration}
+    for field, value in configuration.items():
         setattr(row, field, value)
     row.health, row.health_checked_at = "unknown", None
     try:
@@ -3079,7 +3220,7 @@ async def update_model_deployment(
             user,
             "tenant.model_deployment_updated",
             str(row.id),
-            details={"configuration": payload.model_dump(mode="json")},
+            details=change_details(before, configuration),
         )
         await session.commit()
     except IntegrityError:

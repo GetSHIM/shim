@@ -36,6 +36,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    # Unnamed statements; server-side cursors (session.stream) are unsafe here.
     connect_args={"statement_cache_size": 0},
 )
 AsyncSessionLocal = async_sessionmaker(

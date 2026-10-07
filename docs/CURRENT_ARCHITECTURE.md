@@ -143,7 +143,10 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 - Gemini SDKs carry the shim key in `x-goog-api-key` on Gemini routes; it is
   never inferred to be a provider credential.
 - `x-shim-key` is the explicit provider-independent gateway-key header.
-- `x-provider-key` is an invocation-scoped provider credential.
+- `x-provider-key` is an invocation-scoped provider credential. In enterprise it
+  wins over the tenant's stored key on catalog routes, is ignored on registered
+  deployments, and is refused with 403 `PROVIDER_KEY_NOT_ALLOWED` when the tenant
+  turns `allow_customer_provider_keys` off.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
 
 Credential-bearing headers are removed before request metadata is recorded.
@@ -158,27 +161,44 @@ never forwarded wholesale.
 | Anthropic | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` | Messages use native named events ending in `message_stop`; token counting returns JSON |
 | Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
 
-OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
-Anthropic errors retain `{type: "error", error: {type, message}}`. Gemini errors
-retain the google.rpc.Status `{error: {code, message, status}}` shape. Upstream
-details that could contain credentials or PII are discarded. A stream failure
-after headers is emitted as a sanitized terminal event. A provider 429 keeps its
-status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`; it is the
-caller's quota, so it neither opens nor closes the provider circuit.
+OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
+errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
+where `request_id` keeps its native meaning, the provider's request id, and is
+present only when the provider sent one. Gemini errors use the google.rpc.Status
+`{error: {code, message, status, details}}` shape. Upstream details that could
+contain credentials or PII are discarded, with one exception: for a provider
+400, 404, 413 or 422 the provider's own message is the error message, trimmed to
+500 characters and never restored, so masked values stay placeholders. A stream
+failure after headers is emitted as a sanitized terminal event. A provider 429
+keeps its status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`;
+it is the caller's quota, so it neither opens nor closes the provider circuit.
+A provider 400, 403, 404, 413 or 422 keeps its status with the code
+`PROVIDER_REJECTED_REQUEST`, and a provider 401 keeps its status with
+`INVALID_PROVIDER_CREDENTIAL`, so it is never mistaken for a bad shim key. A
+request the provider SDK refuses before sending it is 400 `INVALID_REQUEST` with
+a fixed message; a provider answer the SDK cannot parse stays 502
+`PROVIDER_UNAVAILABLE`.
 
 Every gateway error response whose code shim knows carries it in
 `X-Shim-Error-Code`, in all three shapes, and browsers may read that header.
-OpenAI bodies repeat the code in `error.code`; Gemini bodies, JSON and stream,
-carry it as a google.rpc `ErrorInfo` detail (`reason`, domain `getshim.tech`)
-beside a google.rpc `status`; Anthropic bodies keep exactly their native keys.
+OpenAI and Anthropic bodies repeat the code in `error.code`; Gemini bodies, JSON
+and stream, carry it as a google.rpc `ErrorInfo` detail (`reason`, domain
+`getshim.tech`) beside a google.rpc `status`. The same bodies carry a `hint`, one
+sentence on what to do next: `error.hint` in OpenAI and Anthropic bodies and
+stream error events, `ErrorInfo.metadata.hint` in Gemini. Hints come from one
+table keyed by code, `ERROR_HINTS` in `src/shim/gateway/pipeline/provider_execution.py`;
+a raise site may override it with `detail["hint"]`, and a new code adds one entry
+there. An error raised after authentication also carries `X-Shim-Request-Id`.
 The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
 `MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `PROVIDER_NOT_ALLOWED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
-`PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
+`PROVIDER_REJECTED_REQUEST`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and
+`INTERNAL_ERROR`; enterprise adds
 `MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
 `MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
+`PROVIDER_KEY_NOT_ALLOWED`,
 `SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY` and
 `AUDIT_INTENT_FAILED`. A request
 that fails schema validation carries the validator's error type instead.

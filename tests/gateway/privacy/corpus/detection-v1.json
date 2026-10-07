@@ -326,6 +326,61 @@
       "expect": []
     },
     {
+      "id": "not-secret-token-budget",
+      "text": "token budget exceeded for this request",
+      "expect": []
+    },
+    {
+      "id": "not-secret-refresh-token-expired",
+      "text": "the refresh token expired yesterday",
+      "expect": []
+    },
+    {
+      "id": "not-secret-password-protected",
+      "text": "this file is password protected",
+      "expect": []
+    },
+    {
+      "id": "not-secret-secret-ingredient",
+      "text": "the secret ingredient is love",
+      "expect": []
+    },
+    {
+      "id": "not-secret-desifre-colon",
+      "text": "deşifre: merhaba dünya",
+      "expect": []
+    },
+    {
+      "id": "password-space-separated",
+      "text": "password hunter2abc",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "hunter2abc"
+        }
+      ]
+    },
+    {
+      "id": "api-key-env-space-separated",
+      "text": "export API_KEY abcdef123456",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "abcdef123456"
+        }
+      ]
+    },
+    {
+      "id": "sifre-glued-to-key",
+      "text": "db_şifre: abcdefg1",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "abcdefg1"
+        }
+      ]
+    },
+    {
       "id": "sifreniz-colon",
       "text": "Geçici şifreniz: Gizli.Parola2026",
       "expect": [
@@ -451,8 +506,7 @@
     {
       "id": "mean-decimal",
       "text": "mean=0.1234567890",
-      "expect": [],
-      "known_gap": "tier 3, VKN cue rule"
+      "expect": []
     },
     {
       "id": "int32-overflow",
@@ -530,10 +584,79 @@
       ]
     },
     {
+      "id": "not-ip-five-parts",
+      "text": "1.2.3.4.5",
+      "expect": []
+    },
+    {
+      "id": "not-ip-after-ver",
+      "text": "ver 1.2.3.4",
+      "expect": []
+    },
+    {
+      "id": "ip-sentence-final-dot",
+      "text": "Server at 10.0.0.1.",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.0.0.1"
+        }
+      ]
+    },
+    {
       "id": "vkn-shaped-order-number",
       "text": "Fatura numarası 1234567890",
-      "expect": [],
-      "known_gap": "tier 3, VKN cue rule"
+      "expect": []
+    },
+    {
+      "id": "not-vkn-after-invoice",
+      "text": "invoice 1234567890",
+      "expect": []
+    },
+    {
+      "id": "not-vkn-created-at",
+      "text": "created_at 1700000003",
+      "expect": []
+    },
+    {
+      "id": "vkn-after-fatura-label",
+      "text": "Fatura VKN: 1234567890",
+      "expect": [
+        {
+          "entity": "TR_VKN",
+          "value": "1234567890"
+        }
+      ]
+    },
+    {
+      "id": "vkn-vergi-numarasi",
+      "text": "Firma vergi numarası 1234567890",
+      "expect": [
+        {
+          "entity": "TR_VKN",
+          "value": "1234567890"
+        }
+      ]
+    },
+    {
+      "id": "vkn-bare",
+      "text": "1700000003",
+      "expect": [
+        {
+          "entity": "TR_VKN",
+          "value": "1700000003"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-mobile-after-order-no",
+      "text": "Sipariş no 5321234564",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "5321234564"
+        }
+      ]
     },
     {
       "id": "phone-json-us",
@@ -712,6 +835,26 @@
         {
           "entity": "PHONE_NUMBER",
           "value": "05321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-dotted-area-code",
+      "text": "0532.1234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "0532.1234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-dotted-after-word",
+      "text": "Ara: 0532.1234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "0532.1234567"
         }
       ]
     },
@@ -928,32 +1071,87 @@
     {
       "id": "not-plate-uppercase-date",
       "text": "Uçuş tarihi 07 OCT 26",
-      "expect": [],
-      "known_gap": "tier 3, plate precision: month abbreviation"
+      "expect": []
     },
     {
       "id": "not-plate-voltage",
       "text": "Adaptör 12 V 2000 mA",
-      "expect": [],
-      "known_gap": "tier 3, plate precision: unit letter"
+      "expect": []
     },
     {
       "id": "not-plate-amperage",
       "text": "Sigorta 16 A 3500 W",
-      "expect": [],
-      "known_gap": "tier 3, plate precision: unit letter"
+      "expect": []
     },
     {
       "id": "not-plate-clock-time",
       "text": "Saat 10 PM 2024-10-07",
-      "expect": [],
-      "known_gap": "tier 3, plate precision: PM"
+      "expect": []
     },
     {
       "id": "not-plate-product-name",
       "text": "APPLE IPHONE 15 PRO 256 GB",
-      "expect": [],
-      "known_gap": "tier 3, plate precision: product name"
+      "expect": []
+    },
+    {
+      "id": "plate-one-letter-five-digits",
+      "text": "34 A 12345",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34 A 12345"
+        }
+      ]
+    },
+    {
+      "id": "plate-dashed",
+      "text": "34-ABC-123",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34-ABC-123"
+        }
+      ]
+    },
+    {
+      "id": "plate-written-together-bare",
+      "text": "34ABC123",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34ABC123"
+        }
+      ]
+    },
+    {
+      "id": "plate-lowercase-after-cue",
+      "text": "plaka: 34 abc 123",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34 abc 123"
+        }
+      ]
+    },
+    {
+      "id": "not-plate-three-letters-four-digits",
+      "text": "34 ABC 1234",
+      "expect": []
+    },
+    {
+      "id": "not-plate-lowercase-duration",
+      "text": "15 dk 30",
+      "expect": []
+    },
+    {
+      "id": "not-plate-lowercase-months",
+      "text": "12 ay 24",
+      "expect": []
+    },
+    {
+      "id": "not-plate-currency-amount",
+      "text": "50 GBP 100",
+      "expect": []
     },
     {
       "id": "person-name",
@@ -964,7 +1162,8 @@
           "value": "Ahmet Yılmaz"
         }
       ],
-      "known_gap": "tier 4, no PRD"
+      "known_gap": "tier 4, no PRD",
+      "known_actual": []
     },
     {
       "id": "street-address",
@@ -975,7 +1174,8 @@
           "value": "Atatürk Cad. No 5 Kadıköy"
         }
       ],
-      "known_gap": "tier 4, no PRD"
+      "known_gap": "tier 4, no PRD",
+      "known_actual": []
     }
   ]
 }

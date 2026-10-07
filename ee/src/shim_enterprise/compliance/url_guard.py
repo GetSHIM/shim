@@ -8,9 +8,11 @@ import socket
 from typing import cast
 from urllib.parse import urlsplit
 
+from shim_enterprise.core.config import settings
+
 
 class UnsafeForwardURL(ValueError):
-    """Raised when an outbound target can reach a non-public address."""
+    """Raised when an outbound target can reach a forbidden address."""
 
 
 def _parse_address(value: str) -> IPv4Address | IPv6Address | None:
@@ -20,12 +22,34 @@ def _parse_address(value: str) -> IPv4Address | IPv6Address | None:
         return None
 
 
+# Cloud metadata services outside the link-local ranges (AWS IPv6, Alibaba).
+_METADATA_ADDRESSES = frozenset(map(ip_address, ("fd00:ec2::254", "100.100.100.200")))
+
+
 def _is_public(address: IPv4Address | IPv6Address) -> bool:
     return address.is_global
 
 
+def _is_approved_internal(address: IPv4Address | IPv6Address) -> bool:
+    if isinstance(address, IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return not (
+        address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address in _METADATA_ADDRESSES
+    )
+
+
+def _operator_approved(host: str, port: int) -> bool:
+    return any(
+        (item.hostname, item.port or 443) == (host, port)
+        for item in map(urlsplit, settings.ALERT_ALLOWED_ORIGINS)
+    )
+
+
 async def assert_safe_forward_url(url: str) -> IPv4Address | IPv6Address:
-    """Require a public HTTPS target and return its first resolved address."""
+    """Require a public or operator-approved HTTPS target; return its first address."""
 
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname:
@@ -37,9 +61,14 @@ async def assert_safe_forward_url(url: str) -> IPv4Address | IPv6Address:
     except ValueError as exc:
         raise UnsafeForwardURL("outbound destination has an invalid port") from exc
 
+    allowed = (
+        _is_approved_internal
+        if _operator_approved(parts.hostname, port)
+        else _is_public
+    )
     literal = _parse_address(parts.hostname)
     if literal is not None:
-        if not _is_public(literal):
+        if not allowed(literal):
             raise UnsafeForwardURL("outbound destination must use a public address")
         return literal
 
@@ -53,7 +82,7 @@ async def assert_safe_forward_url(url: str) -> IPv4Address | IPv6Address:
         raise UnsafeForwardURL("outbound destination could not be resolved") from exc
     resolved = [_parse_address(cast(str, result[4][0])) for result in addresses]
     if not resolved or any(
-        address is None or not _is_public(address) for address in resolved
+        address is None or not allowed(address) for address in resolved
     ):
         raise UnsafeForwardURL("outbound destination resolved to a non-public address")
     return cast(IPv4Address | IPv6Address, resolved[0])

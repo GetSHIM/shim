@@ -3,6 +3,7 @@
 import asyncio
 import csv
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import io
 from types import SimpleNamespace
 from uuid import uuid4
@@ -748,7 +749,9 @@ async def test_member_reads_requests_of_own_and_administered_team_keys(
         second = (
             await client.get("/requests", params={"limit": 3, "offset": 3})
         ).json()
-        exported = await client.get("/requests/export")
+        # Two exports on one pooled connection: the second used to bind the
+        # cached rows statement against the count query's unnamed statement.
+        exports = [await client.get("/requests/export") for _ in range(2)]
         current = owner
         everything = (await client.get("/requests", params={"limit": 200})).json()
 
@@ -757,8 +760,276 @@ async def test_member_reads_requests_of_own_and_administered_team_keys(
     assert first["summary"]["requests"] == 4
     assert [len(first["items"]), len(second["items"])] == [3, 1]
     assert {item["request_id"] for item in first["items"] + second["items"]} == readable
-    assert {
-        row["request_id"]
-        for row in csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
-    } == readable
+    for exported in exports:
+        assert exported.status_code == 200
+        assert {
+            row["request_id"]
+            for row in csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
+        } == readable
     assert everything["total"] == 8
+
+
+@pytest.mark.asyncio
+async def test_member_list_is_for_organization_readers_and_team_admins(
+    db, test_user_with_org
+):
+    owner = test_user_with_org
+    owner.role = "owner"
+    other_org = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(other_org)
+    await db.flush()
+
+    def person(organization_id, role):
+        return User(
+            id=uuid4(),
+            organization_id=organization_id,
+            email=f"{role}-{uuid4()}@example.com",
+            role=role,
+            is_active=True,
+            is_verified=True,
+        )
+
+    users = {role: person(owner.organization_id, role) for role in ("admin", "auditor")}
+    users |= {
+        name: person(owner.organization_id, "member")
+        for name in ("member", "team member", "team admin")
+    }
+    outsider = person(other_org.id, "member")
+    team = Team(id=uuid4(), organization_id=owner.organization_id, name="Team")
+    other_team = Team(id=uuid4(), organization_id=other_org.id, name="Team")
+    db.add_all([*users.values(), outsider, team, other_team])
+    await db.flush()
+    db.add_all(
+        [
+            TeamMembership(
+                organization_id=owner.organization_id,
+                team_id=team.id,
+                user_id=users["team member"].id,
+                role="member",
+            ),
+            TeamMembership(
+                organization_id=owner.organization_id,
+                team_id=team.id,
+                user_id=users["team admin"].id,
+                role="team_admin",
+            ),
+            TeamMembership(
+                organization_id=other_org.id,
+                team_id=other_team.id,
+                user_id=outsider.id,
+                role="team_admin",
+            ),
+        ]
+    )
+    await db.flush()
+
+    app = FastAPI()
+    app.include_router(management.router)
+    current = owner
+    app.dependency_overrides[get_current_user] = lambda: current
+    app.dependency_overrides[get_db] = lambda: db
+    statuses, listed = {}, {}
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        for name, current in {"owner": owner, **users, "outsider": outsider}.items():
+            response = await client.get("/team/members")
+            statuses[name] = response.status_code
+            if response.status_code == 200:
+                listed[name] = {row["email"] for row in response.json()}
+
+    assert statuses == {
+        "owner": 200,
+        "admin": 200,
+        "auditor": 200,
+        "member": 403,
+        "team member": 403,
+        "team admin": 200,
+        "outsider": 200,
+    }
+    organization = {owner.email, *(user.email for user in users.values())}
+    assert all(listed[name] == organization for name in listed if name != "outsider")
+    assert listed["outsider"] == {outsider.email}
+
+
+@pytest.mark.asyncio
+async def test_team_breakdown_rows_carry_the_tenant_team_name(
+    db, test_api_key, monkeypatch
+):
+    organization_id = test_api_key.organization_id
+    other_org = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(other_org)
+    await db.flush()
+    team = Team(id=uuid4(), organization_id=organization_id, name="Payments")
+    foreign = Team(id=uuid4(), organization_id=other_org.id, name="Foreign")
+    db.add_all([team, foreign])
+    await db.flush()
+    at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    for team_id in (str(team.id), str(foreign.id), None):
+        request_id = f"req_label_{uuid4().hex}"
+        db.add(
+            RequestLifecycle(
+                request_id=request_id,
+                organization_id=organization_id,
+                actor_type="api_key",
+                api_key_id=test_api_key.id,
+                user_id=None,
+                source_endpoint="chat.completions",
+                status="completed",
+                provider="openai",
+                provider_model="gpt-5-mini",
+                requested_model="gpt-5-mini",
+                stream=False,
+                started_at=at,
+                completed_at=at,
+                reconciled_at=at,
+                lifecycle_metadata={} if team_id is None else {"team_id": team_id},
+            )
+        )
+        reservation = UsageLedger(
+            request_id=request_id,
+            organization_id=organization_id,
+            api_key_id=test_api_key.id,
+            requested_model="gpt-5-mini",
+            provider="openai",
+            provider_model="gpt-5-mini",
+            event_type="spend_reservation",
+            idempotency_key=f"{request_id}:spend:reservation",
+            cost_usd=Decimal("0.01"),
+        )
+        db.add(reservation)
+        await db.flush()
+        db.add(
+            UsageLedger(
+                request_id=request_id,
+                organization_id=organization_id,
+                api_key_id=test_api_key.id,
+                requested_model="gpt-5-mini",
+                provider="openai",
+                provider_model="gpt-5-mini",
+                event_type="spend_settlement",
+                idempotency_key=f"{request_id}:spend:settlement",
+                reservation_event_id=reservation.id,
+                cost_usd=Decimal("0.01"),
+            )
+        )
+    await db.flush()
+
+    from shim_enterprise.compliance import reporting
+
+    pdf_rows = []
+
+    def evidence_table(rows, headers):
+        pdf_rows.extend(rows)
+        return real_evidence_table(rows, headers)
+
+    real_evidence_table = reporting.evidence_table
+    monkeypatch.setattr(reporting, "evidence_table", evidence_table)
+    owner = await db.get(User, test_api_key.user_id)
+    owner.role = "owner"
+    app = FastAPI()
+    app.include_router(management.router)
+    app.dependency_overrides[get_current_user] = lambda: owner
+    app.dependency_overrides[get_db] = lambda: db
+    query = {"group_by": "team_id"}
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        rows = (await client.get("/billing/breakdown", params=query)).json()["rows"]
+        team.name = "Payments EU"
+        await db.flush()
+        renamed = (await client.get("/billing/breakdown", params=query)).json()
+        exported = await client.get("/billing/export", params=query)
+        pdf = await client.get("/billing/export", params=query | {"format": "pdf"})
+        by_model = (await client.get("/billing/breakdown")).json()["rows"]
+
+    assert {row["key"]: row["label"] for row in rows} == {
+        str(team.id): "Payments",
+        str(foreign.id): None,
+        "unassigned": None,
+    }
+    assert {row["key"]: row["label"] for row in renamed["rows"]}[
+        str(team.id)
+    ] == "Payments EU"
+    reader = csv.reader(io.StringIO(exported.content.decode("utf-8-sig")))
+    header, *lines = list(reader)
+    assert header[-1] == "label"
+    assert {line[0]: line[-1] for line in lines} == {
+        str(team.id): "Payments EU",
+        str(foreign.id): "",
+        "unassigned": "",
+    }
+    assert pdf.status_code == 200
+    assert {row[0] for row in pdf_rows} == {
+        "Payments EU",
+        str(foreign.id),
+        "unassigned",
+    }
+    assert [row["label"] for row in by_model] == [None]
+
+
+@pytest.mark.asyncio
+async def test_only_organization_admins_change_the_customer_provider_key_policy(
+    db, test_user_with_org
+):
+    owner = test_user_with_org
+    owner.role = "owner"
+    users = {
+        role: User(
+            id=uuid4(),
+            organization_id=owner.organization_id,
+            email=f"{role}-{uuid4()}@example.com",
+            role=role,
+            is_active=True,
+            is_verified=True,
+        )
+        for role in ("admin", "member", "auditor")
+    }
+    db.add_all(users.values())
+    await db.flush()
+    path = "/settings/provider-keys"
+
+    app = FastAPI()
+    app.include_router(management.router)
+    current = users["member"]
+    app.dependency_overrides[get_current_user] = lambda: current
+    app.dependency_overrides[get_db] = lambda: db
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        read = await client.get(path)
+        refused = {"allow_customer_provider_keys": False}
+        denied = {}
+        for role in ("member", "auditor"):
+            current = users[role]
+            denied[role] = (await client.put(path, json=refused)).status_code
+        current = users["admin"]
+        changed = await client.put(path, json=refused)
+        current = owner
+        reread = await client.get(path)
+
+    assert read.status_code == 200
+    assert read.json() == {"allow_customer_provider_keys": True}
+    assert denied == {"member": 403, "auditor": 403}
+    assert changed.status_code == 200, changed.text
+    assert changed.json() == reread.json() == refused
+    organization = await db.get(Organization, owner.organization_id)
+    assert organization.allow_customer_provider_keys is False
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == owner.organization_id
+            )
+        )
+    ).all()
+    assert [(event.payload["actor"], event.payload["extra"]) for event in events] == [
+        (
+            str(users["admin"].id),
+            {
+                "subject_id": str(owner.organization_id),
+                "before": {"allow_customer_provider_keys": True},
+                "after": {"allow_customer_provider_keys": False},
+            },
+        )
+    ]
+    assert events[0].payload["endpoint"] == "tenant.provider_key_policy_updated"

@@ -48,7 +48,8 @@ required" on organization-wide reads.
 | `/compliance/overview`, `/compliance/audit/logs`, `/compliance/audit/bundle`, `POST /compliance/audit/verify`, `POST /compliance/reports/audit`, `POST /compliance/reports/kvkk` | Yes | 403 |
 | Compliance connectors, findings, forward targets, oversight and oversight policies (`GET`) | Yes | 403 |
 | `/management/model-deployments` (`GET`) | Yes | 403 |
-| `/auth/me`, `/subscription`, `/tier-info`, `GET /settings/pii`, `/team/members`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
+| `/team/members` (names and emails of the organization's users) | Yes | Team administrators only; other members 403 |
+| `/auth/me`, `/subscription`, `/tier-info`, `GET /settings/pii`, `GET /settings/provider-keys`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
 
 ## Attribution and migration
 
@@ -59,8 +60,9 @@ names, preserving the original spelling. It does not assign memberships or
 bind existing keys. Administrators explicitly assign access teams after
 migration; historical request and billing labels are unchanged. Every request now
 records its key's `team_id`; `GET /api/v1/management/billing/breakdown?group_by=team_id`
-groups by it (`unassigned` for keys without a team and older requests), while
-`group_by=team` keeps grouping by the label.
+groups by it (`unassigned` for keys without a team and older requests), and each
+row's `label` carries the team's current name (`null` for `unassigned` and for a
+team that no longer exists), while `group_by=team` keeps grouping by the label.
 
 ## Rotation and model policies
 

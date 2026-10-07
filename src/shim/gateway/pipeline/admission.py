@@ -155,6 +155,33 @@ class AdmissionStage:
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
+        token_limit = tier.rate_limit_tpm
+        if token_limit is not None and approximate_tokens > token_limit:
+            value.record_verdict(
+                "rate.tokens",
+                stage="admission",
+                outcome="deny",
+                reason_code="RATE_LIMIT_EXCEEDED",
+                policy={
+                    "limit": token_limit,
+                    "window_seconds": 60,
+                    "unit": "approximate_tokens",
+                },
+            )
+            # Checked before any window is charged: it can never be admitted, so SDKs must not wait.
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "RATE_LIMIT_EXCEEDED",
+                    "dimension": "tokens",
+                    "message": (
+                        f"This request is about {approximate_tokens} tokens, more than "
+                        f"the limit of {token_limit} tokens per minute."
+                    ),
+                    "hint": "Send a smaller request or ask for a higher tokens-per-minute limit; retrying it unchanged fails again.",
+                },
+                headers={"x-should-retry": "false"},
+            )
         for dimension, limit, key, amount, unit in (
             ("requests", tier.rate_limit_rpm, key_hash, 1, {}),
             (
@@ -183,14 +210,10 @@ class AdmissionStage:
                 policy={"limit": limit, "window_seconds": 60, **unit},
             )
             if denied:
-                # Larger than the whole window, it can never be admitted: SDKs must not wait.
-                never_fits = limit is not None and amount > limit
                 raise HTTPException(
                     status_code=429,
                     detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": dimension},
-                    headers={"x-should-retry": "false"}
-                    if never_fits
-                    else {"Retry-After": "60"},
+                    headers={"Retry-After": "60"},
                 )
         repeat_material = _repeat_material(
             {

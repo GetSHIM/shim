@@ -130,6 +130,33 @@ class ShimIbanRecognizer(IbanRecognizer):
         return super().validate_result(pattern_text.upper())
 
 
+# A word in front of a digit run that marks it as another kind of number than a phone or
+# a tax ID: an order, a time, an amount.
+_NOT_ID_WORD = re.compile(
+    r"\b(?:order|sipari[şs]|fatura|invoice|ticket|ref|reference|sku|kod|code|"
+    r"timestamp|epoch|ts|duration|created|updated|value|amount|total|count)"
+    r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
+    re.IGNORECASE,
+)
+_IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
+_LETTER = re.compile(r"[A-Za-z]")
+
+
+def _in_decimal(text: str, start: int, end: int) -> bool:
+    # The matcher can start after "0.", leaving the fraction of a decimal literal.
+    return (start >= 2 and text[start - 1] == "." and text[start - 2].isdigit()) or (
+        text[end : end + 1] == "." and text[end + 1 : end + 2].isdigit()
+    )
+
+
+def _glued_to_identifier(text: str, start: int) -> bool:
+    """SKU-ABC-4829104455, claude-sonnet-4-5-20250929, build_7.20250929."""
+    if not start or text[start - 1] not in "-_.":
+        return False
+    tail = _IDENTIFIER_TAIL.search(text, max(0, start - 65), start - 1)
+    return tail is not None and bool(_LETTER.search(tail.group()))
+
+
 class ShimPhoneRecognizer(PhoneRecognizer):
     """A digit run is a phone unless something marks it as another kind of number.
 
@@ -138,7 +165,8 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     """
 
     _BARE = re.compile(r"\d+")
-    _DECIMAL = re.compile(r"\d+\.\d+")
+    # 0532.1234567 is a dotted phone; 0.123 is a decimal.
+    _DECIMAL = re.compile(r"(?!0\d)\d+\.\d+")
     _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
     _CUE = re.compile(
         r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|cell|fax|whatsapp|call|contact|"
@@ -146,19 +174,11 @@ class ShimPhoneRecognizer(PhoneRecognizer):
         r"(?:[ _-]?(?:number|numaras[ıi]|numaram|no|num))?\b[\"':=. ]{0,4}$",
         re.IGNORECASE,
     )
-    _NOT_PHONE_CUE = re.compile(
-        r"\b(?:order|sipari[şs]|fatura|invoice|ticket|ref|reference|sku|kod|code|"
-        r"timestamp|epoch|ts|duration|created|updated|value|amount|total|count)"
-        r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
-        re.IGNORECASE,
-    )
     # Anywhere in the window and inside keys (customer_phone, mobilePhone): it overrules
     # a non-phone word, so "contact code 4155552671" stays a phone.
     _PHONE_WORD = re.compile(
         r"tel|phone|mobil|gsm|cell|msisdn|fax|whatsapp|contact|cep", re.IGNORECASE
     )
-    _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
-    _LETTER = re.compile(r"[A-Za-z]")
 
     def analyze(
         self,
@@ -176,7 +196,7 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 
     def _is_phone(self, text: str, start: int, end: int) -> bool:
         raw = text[start:end]
-        if self._DECIMAL.fullmatch(raw) or self._in_decimal(text, start, end):
+        if self._DECIMAL.fullmatch(raw) or _in_decimal(text, start, end):
             return False
         bare = self._BARE.fullmatch(raw)
         window = max(0, start - 24)
@@ -184,28 +204,22 @@ class ShimPhoneRecognizer(PhoneRecognizer):
             text, window, start
         ):
             return True
-        if start and text[start - 1] in "-_.":
-            tail = self._IDENTIFIER_TAIL.search(text, max(0, start - 65), start - 1)
-            if tail is not None and self._LETTER.search(tail.group()):
-                return False
+        if _glued_to_identifier(text, start):
+            return False
         return not (
             bare
-            and self._NOT_PHONE_CUE.search(text, window, start)
+            and _NOT_ID_WORD.search(text, window, start)
             and not self._PHONE_WORD.search(text, window, start)
         )
 
-    @staticmethod
-    def _in_decimal(text: str, start: int, end: int) -> bool:
-        # The matcher can start after "0.", leaving the fraction of a decimal literal.
-        return (
-            start >= 2 and text[start - 1] == "." and text[start - 2].isdigit()
-        ) or (text[end : end + 1] == "." and text[end + 1 : end + 2].isdigit())
-
 
 class ShimIpRecognizer(IpRecognizer):
-    """A version string is not an IP address."""
+    """A version string, or a run of more than four numbers, is not an IP address."""
 
-    _VERSION_CUE = re.compile(r"\b(?:v|version|sürüm)\W{0,2}$", re.IGNORECASE)
+    # A bare "ver" after a word is the Turkish verb: "izin ver 10.0.0.5" is an address.
+    _VERSION_CUE = re.compile(
+        r"(?:\b(?:v|version|sürüm|ver\.)|(?<!\w\s)\bver)\W{0,2}$", re.IGNORECASE
+    )
 
     def analyze(
         self,
@@ -221,7 +235,10 @@ class ShimIpRecognizer(IpRecognizer):
         ]
 
     def _is_address(self, text: str, start: int, end: int) -> bool:
-        return not self._VERSION_CUE.search(text, max(0, start - 16), start)
+        return not (
+            _in_decimal(text, start, end)
+            or self._VERSION_CUE.search(text, max(0, start - 16), start)
+        )
 
 
 class ShimSecretRecognizer(EntityRecognizer):
@@ -229,9 +246,15 @@ class ShimSecretRecognizer(EntityRecognizer):
         r"password|passwd|pwd|api[_-]?key|secret|token|db[_-]?pass|"
         r"postgres_password"
     )
-    _ASSIGNMENT_PREFIX = rf"[\"']?(?:{_SECRET_KEY})[\"']?\s*(?:(?:=|:)\s*|\s+)"
-    # An explicit separator, unlike the English keys, so "şifre unuttum" is not a finding.
-    _TURKISH_ASSIGNMENT_PREFIX = r"[\"']?(?:[şs]ifre(?:si|m|n|niz)?|parola(?:s[ıi]|m|n|n[ıi]z)?)[\"']?\s*(?:=|:)\s*"
+    _ASSIGNMENT_PREFIX = rf"[\"']?(?:{_SECRET_KEY})[\"']?\s*[=:]\s*"
+    # A key and a value separated by a space alone: "password hunter2", "export API_KEY x".
+    # The key starts a word and the value carries a digit or a symbol, so prose such as
+    # "token budget" or "password protected" is not a finding.
+    _SPACED_PREFIX = rf"(?<![^\W_])(?:{_SECRET_KEY})[\"']?\s+"
+    _SPACED_VALUE = r"(?=[^\s,}\]\"']*[0-9!#$%&*+./;<=>?@^_|~-])"
+    # An explicit separator, unlike the English keys, so "şifre unuttum" is not a finding,
+    # and a word start, so "deşifre:" is not one either.
+    _TURKISH_ASSIGNMENT_PREFIX = r"(?<![^\W\d_])[\"']?(?:[şs]ifre(?:si|m|n|niz)?|parola(?:s[ıi]|m|n|n[ıi]z)?)[\"']?\s*(?:=|:)\s*"
     _PATTERNS: tuple[tuple[re.Pattern[str], str | None, float], ...] = (
         (
             re.compile(
@@ -268,7 +291,7 @@ class ShimSecretRecognizer(EntityRecognizer):
         ),
         (
             re.compile(
-                rf"{_ASSIGNMENT_PREFIX}(?P<quote>[\"'])"
+                rf"(?:{_ASSIGNMENT_PREFIX}|{_SPACED_PREFIX})(?P<quote>[\"'])"
                 r"(?P<value>[^\r\n]{6,}?)(?P=quote)",
                 re.IGNORECASE,
             ),
@@ -278,6 +301,14 @@ class ShimSecretRecognizer(EntityRecognizer):
         (
             re.compile(
                 rf"{_ASSIGNMENT_PREFIX}(?P<value>[^\s,}}\]\"']{{6,}})",
+                re.IGNORECASE,
+            ),
+            "value",
+            0.97,
+        ),
+        (
+            re.compile(
+                rf"{_SPACED_PREFIX}{_SPACED_VALUE}(?P<value>[^\s,}}\]\"']{{6,}})",
                 re.IGNORECASE,
             ),
             "value",
@@ -352,7 +383,14 @@ class ShimSecretRecognizer(EntityRecognizer):
 
 
 class ShimTurkishTaxIdRecognizer(PatternRecognizer):
+    """Ten digits with a valid checksum, unless the phone rule marks them as another number.
+
+    About one ten-digit number in ten passes the checksum, so an invoice number, a
+    timestamp or a decimal fraction would be masked; a tax word in front overrules.
+    """
+
     COUNTRY_CODE = "tr"
+    _TAX_WORD = re.compile(r"vergi|vkn|tax", re.IGNORECASE)
 
     def __init__(self) -> None:
         super().__init__(
@@ -361,6 +399,27 @@ class ShimTurkishTaxIdRecognizer(PatternRecognizer):
             supported_language=_LANGUAGE,
             context=["vergi", "vkn", "tax", "vergi kimlik", "vergi numarası"],
             patterns=[Pattern("Turkish tax ID", r"(?<!\d)\d{10}(?!\d)", 0.4)],
+        )
+
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+        regex_flags: int | None = None,
+    ) -> list[RecognizerResult]:
+        return [
+            result
+            for result in super().analyze(text, entities, nlp_artifacts, regex_flags)
+            if self._is_tax_id(text, result.start, result.end)
+        ]
+
+    def _is_tax_id(self, text: str, start: int, end: int) -> bool:
+        window = max(0, start - 24)
+        return bool(self._TAX_WORD.search(text, window, start)) or not (
+            _in_decimal(text, start, end)
+            or _glued_to_identifier(text, start)
+            or _NOT_ID_WORD.search(text, window, start)
         )
 
     def validate_result(self, pattern_text: str) -> bool:
@@ -379,34 +438,56 @@ class ShimTurkishPlateRecognizer(PatternRecognizer):
     """A Turkish plate with the letter and digit counts plates use, not a unit or a currency.
 
     Presidio's recognizer accepts any province-coded shape, and its context words cannot help
-    because the blank tokenizer gives them nothing to match.
+    because the blank tokenizer gives them nothing to match. Lowercase counts only after a
+    plate word, so "15 dk 30" and "12 ay 24" stay prose.
     """
 
     _NOT_PLATE_LETTERS = frozenset(
-        "GB MB KB TB GHZ MHZ USD EUR TRY TL KM KG CM MM ML LT".split()
+        "GB MB KB TB GHZ MHZ KM KG CM MM ML LT AM PM "
+        "USD EUR TRY TL GBP CHF JPY CNY CAD AUD RUB SEK NOK DKK PLN AED SAR "
+        "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC "
+        "OCA SUB NIS HAZ TEM AGU EYL EKI KAS ARA".split()
     )
+    _CUE = re.compile(r"\b(?:plaka|plate)\w*\W{0,3}$", re.IGNORECASE)
 
     def __init__(self) -> None:
-        letter = "[A-PR-VYZ]"
+        letter = "[A-PR-VYZa-pr-vyz]"
         super().__init__(
             supported_entity="TR_LICENSE_PLATE",
             supported_language=_LANGUAGE,
             patterns=[
                 Pattern(
                     "Turkish licence plate",
-                    r"\b(?:0[1-9]|[1-7][0-9]|8[01]) ?"
-                    rf"(?:{letter} ?[0-9]{{4}}|{letter}{{2}} ?[0-9]{{3,4}}|"
-                    rf"{letter}{{3}} ?[0-9]{{2,3}})\b",
+                    r"(?<![\w-])(?:0[1-9]|[1-7][0-9]|8[01])(?P<separator>[ -]?)"
+                    rf"(?:{letter}(?P=separator)[0-9]{{4,5}}|"
+                    rf"{letter}{{2}}(?P=separator)[0-9]{{3,4}}|"
+                    rf"{letter}{{3}}(?P=separator)[0-9]{{2,3}})"
+                    # Not a longer number, a date or a version, and not a quantity.
+                    r"(?!\w|[-./:,]\d)(?!\s*(?:W|V|A|mA|mAh|kW|Hz|GB|MB|TB|rpm)\b)",
                     0.3,
                 )
             ],
-            # Uppercase only: Presidio's default flags would add IGNORECASE.
+            # Case-sensitive units: Presidio's default flags would add IGNORECASE.
             global_regex_flags=re.DOTALL | re.MULTILINE,
         )
 
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+        regex_flags: int | None = None,
+    ) -> list[RecognizerResult]:
+        return [
+            result
+            for result in super().analyze(text, entities, nlp_artifacts, regex_flags)
+            if text[result.start : result.end].isupper()
+            or self._CUE.search(text, max(0, result.start - 24), result.start)
+        ]
+
     def validate_result(self, pattern_text: str) -> bool:
         letters = "".join(filter(str.isalpha, pattern_text))
-        return letters not in self._NOT_PLATE_LETTERS
+        return letters.upper() not in self._NOT_PLATE_LETTERS
 
 
 def _custom_recognizers() -> list[EntityRecognizer]:

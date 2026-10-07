@@ -736,7 +736,7 @@ def run(args):
             "VAULT_ADDR": "https://fixture:8444",
             "VAULT_TOKEN_FILE": "/var/run/shim-vault/token",
             "MODEL_DEPLOYMENT_ALLOWED_ORIGINS": json.dumps(["https://fixture:8445"]),
-            "MODEL_DEPLOYMENT_CA_BUNDLE": "/var/run/shim-ca/ca.pem",
+            "OUTBOUND_CA_BUNDLE": "/var/run/shim-ca/ca.pem",
         }
         backend["DATABASE_URL"] = (
             f"postgresql+asyncpg://shim:{backend['POSTGRES_PASSWORD']}@smoke-postgres:5432/shim"

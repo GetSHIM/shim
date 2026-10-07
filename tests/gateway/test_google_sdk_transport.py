@@ -622,3 +622,32 @@ def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
             sync_http_client=httpx.Client(),
             **circuits,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a refused request never leaves the gateway")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared({"contents": [{"role": "user", "parts": "x"}]}),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert (raised.value.status_code, raised.value.error_code) == (
+        400,
+        "INVALID_REQUEST",
+    )
+    assert "parts" not in str(raised.value.message)
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()

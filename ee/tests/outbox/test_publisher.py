@@ -1,8 +1,11 @@
 import asyncio
+import hashlib
+import hmac
 from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import socket
+import ssl
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -239,7 +242,9 @@ async def test_forward_post_pins_the_vetted_resolution(
         timeout=10.0,
         follow_redirects=False,
         trust_env=False,
+        verify=client_factory.call_args.kwargs["verify"],
     )
+    assert isinstance(client_factory.call_args.kwargs["verify"], ssl.SSLContext)
     client.stream.assert_called_once()
     posted_method, posted_url = client.stream.call_args.args
     posted_options = client.stream.call_args.kwargs
@@ -422,25 +427,25 @@ async def test_tenant_policy_delivery_keeps_its_body_shape(
     monkeypatch: pytest.MonkeyPatch, target_kind: str
 ) -> None:
     organization_id = uuid4()
-    connector_id = uuid4()
     body = {
         "source": "shim",
         "event_type": "tenant_policy",
         "kind": "privacy_protection_relaxed",
         "fields": ["block_email"],
         "actor": str(uuid4()),
+        "actor_email": "owner@example.com",
         "occurred_at": datetime.now(timezone.utc).isoformat(),
     }
     event = OutboxMessage(
         id=uuid4(),
         organization_id=organization_id,
         event_type=handlers.COMPLIANCE_DELIVERY,
-        aggregate_type="compliance_connector",
-        aggregate_id=str(connector_id),
+        aggregate_type="organization",
+        aggregate_id=str(organization_id),
         idempotency_key="compliance:tenant-policy",
         payload={
             "organization_id": str(organization_id),
-            "connector_id": str(connector_id),
+            "connector_id": None,
             "target_id": str(uuid4()),
             "target_kind": target_kind,
             "secret_ref": "fernet:v2:target",
@@ -468,7 +473,7 @@ async def test_tenant_policy_delivery_keeps_its_body_shape(
 
     await handlers.deliver_compliance_event(event)
 
-    text = f"shim privacy protection turned off: block_email (by user {body['actor']})"
+    text = "shim privacy protection turned off: block_email (by owner@example.com)"
     if target_kind == "email":
         assert emailed.await_args.kwargs["subject"] == (
             "shim privacy protection turned off"
@@ -480,3 +485,112 @@ async def test_tenant_policy_delivery_keeps_its_body_shape(
         assert delivered == body
     else:
         assert delivered == {"text": text}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("aggregate_type", "aggregate_id", "payload_organization", "connector_id"),
+    [
+        ("organization", "other", None, None),
+        ("organization", None, str(uuid4()), None),
+        ("compliance_connector", "connector-a", None, "connector-b"),
+        ("compliance_connector", None, None, None),
+        ("budget", None, None, None),
+    ],
+)
+async def test_compliance_delivery_rejects_a_mismatched_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    aggregate_type: str,
+    aggregate_id: str | None,
+    payload_organization: str | None,
+    connector_id: str | None,
+) -> None:
+    organization_id = uuid4()
+    store = SimpleNamespace(get_secret=AsyncMock())
+    monkeypatch.setattr(handlers, "get_secret_store", lambda: store)
+    event = OutboxMessage(
+        id=uuid4(),
+        organization_id=organization_id,
+        event_type=handlers.COMPLIANCE_DELIVERY,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id or str(organization_id),
+        idempotency_key="compliance:mismatch",
+        payload={
+            "organization_id": payload_organization or str(organization_id),
+            "connector_id": connector_id,
+            "target_id": str(uuid4()),
+            "target_kind": "slack",
+            "secret_ref": "fernet:v2:target",
+            "body": {"kind": "privacy_protection_relaxed"},
+        },
+        attempt_count=1,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="mismatch"):
+        await handlers.deliver_compliance_event(event)
+    store.get_secret.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["webhook", "signed_webhook", "slack"])
+async def test_budget_delivery_signs_on_request_and_rounds_for_people(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    organization_id = uuid4()
+    alert = {
+        "organization_id": str(organization_id),
+        "budget_id": str(uuid4()),
+        "scope_type": "tag",
+        "scope_value": "checkout",
+        "period": "2026-10",
+        "threshold": 0.8,
+        "percent_used": 81.23456,
+    }
+    target = {"kind": "slack" if kind == "slack" else "webhook", "secret_ref": "e"}
+    if kind == "signed_webhook":
+        target["signing_secret_ref"] = "s"
+    secrets = {
+        ("e", "budget-alert-endpoint"): "https://alerts.example.com/shim",
+        ("s", "budget-alert-signing"): "budget-signing-secret-0000",
+    }
+    store = SimpleNamespace(
+        get_secret=AsyncMock(
+            side_effect=lambda tenant, ref, expected_purpose: secrets[
+                (ref, expected_purpose)
+            ]
+        )
+    )
+    posted = AsyncMock()
+    monkeypatch.setattr(handlers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(handlers, "_post_forward_url", posted)
+
+    await handlers.deliver_budget_alert(
+        OutboxMessage(
+            id=uuid4(),
+            organization_id=organization_id,
+            event_type=handlers.BUDGET_THRESHOLD,
+            aggregate_type="budget",
+            aggregate_id=alert["budget_id"],
+            idempotency_key="budget:alert",
+            payload={**alert, "target": target},
+            attempt_count=1,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    content = posted.await_args.kwargs["content"]
+    headers = posted.await_args.kwargs["headers"]
+    if kind == "slack":
+        assert json.loads(content) == {
+            "text": "shim budget checkout: 81% used in 2026-10"
+        }
+    else:
+        assert json.loads(content)["payload"]["percent_used"] == 81.23456
+    if kind == "signed_webhook":
+        expected = hmac.new(
+            b"budget-signing-secret-0000", content, hashlib.sha256
+        ).hexdigest()
+        assert headers["x-shim-signature"] == f"sha256={expected}"
+    else:
+        assert "x-shim-signature" not in headers

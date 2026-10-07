@@ -14,7 +14,11 @@ from pydantic import BaseModel, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
-from shim.gateway.pipeline.provider_execution import ProviderCallError, google_error
+from shim.gateway.pipeline.provider_execution import (
+    ERROR_HINTS,
+    ProviderCallError,
+    google_error,
+)
 
 
 class OpenAIErrorDetail(BaseModel):
@@ -22,6 +26,7 @@ class OpenAIErrorDetail(BaseModel):
     type: str
     param: JsonValue | None = None
     code: str | None = None
+    hint: str | None = None
 
 
 class OpenAIErrorResponse(BaseModel):
@@ -31,6 +36,8 @@ class OpenAIErrorResponse(BaseModel):
 class AnthropicErrorDetail(BaseModel):
     type: str
     message: str
+    code: str | None = None
+    hint: str | None = None
 
 
 class AnthropicErrorResponse(BaseModel):
@@ -114,7 +121,7 @@ def native_gateway_error_response(
     provider = _gateway_provider(path, request_headers)
     if provider is None:
         return None
-    message, code, param = _error_parts(detail, status_code)
+    message, code, param, hint = _error_parts(detail, status_code)
     if code is None and headers is not None:
         code = headers.get("X-Shim-Error-Code")
     return _native_error_response(
@@ -123,6 +130,7 @@ def native_gateway_error_response(
         message=message,
         code=code,
         param=param,
+        hint=hint,
         headers=headers,
     )
 
@@ -134,9 +142,11 @@ def _native_error_response(
     message: str,
     code: str | None = None,
     param: JsonValue = None,
+    hint: str | None = None,
     headers: Mapping[str, str] | None = None,
     request_id: str | None = None,
 ) -> JSONResponse:
+    hint = hint or ERROR_HINTS.get(code or "")
     if provider == "openai":
         content = {
             "error": {
@@ -144,18 +154,18 @@ def _native_error_response(
                 "type": _openai_error_type(status_code),
                 "param": param,
                 "code": code,
+                "hint": hint,
             }
         }
     elif provider == "google":
-        content = google_error(status_code, message, code)
+        content = google_error(status_code, message, code, hint)
     else:
-        content = {
-            "type": "error",
-            "error": {
-                "type": _anthropic_error_type(status_code),
-                "message": message,
-            },
-        }
+        error = {"type": _anthropic_error_type(status_code), "message": message}
+        if code:
+            error["code"] = code
+        if hint:
+            error["hint"] = hint
+        content = {"type": "error", "error": error}
         if request_id:
             content["request_id"] = request_id
     if code:
@@ -179,17 +189,21 @@ def _gateway_provider(
     return None
 
 
-def _error_parts(detail: Any, status_code: int) -> tuple[str, str | None, JsonValue]:
+def _error_parts(
+    detail: Any, status_code: int
+) -> tuple[str, str | None, JsonValue, str | None]:
     if isinstance(detail, str):
-        return detail, None, None
+        return detail, None, None, None
     if isinstance(detail, Mapping):
         message = detail.get("message")
         code = detail.get("code")
         param = detail.get("param", detail.get("dimension"))
+        hint = detail.get("hint")
         return (
             message if isinstance(message, str) else _status_message(status_code, code),
             code if isinstance(code, str) else None,
             param if isinstance(param, (str, int, float, bool)) else None,
+            hint if isinstance(hint, str) else None,
         )
     if isinstance(detail, Sequence) and detail:
         first = detail[0]
@@ -207,8 +221,9 @@ def _error_parts(detail: Any, status_code: int) -> tuple[str, str | None, JsonVa
                 message if isinstance(message, str) else _status_message(status_code),
                 error_type if isinstance(error_type, str) else "INVALID_REQUEST",
                 param or None,
+                None,
             )
-    return _status_message(status_code), None, None
+    return _status_message(status_code), None, None, None
 
 
 def _status_message(status_code: int, code: object = None) -> str:
@@ -241,6 +256,8 @@ def provider_error_response(exc: ProviderCallError) -> JSONResponse:
         ] = exc.request_id
     if exc.retry_after:
         headers["retry-after"] = exc.retry_after
+    if exc.shim_request_id:
+        headers["X-Shim-Request-Id"] = exc.shim_request_id
     return _native_error_response(
         provider=exc.provider,
         status_code=exc.status_code,
@@ -257,6 +274,8 @@ def _provider_message(exc: ProviderCallError) -> str:
         "anthropic": "Anthropic",
         "google": "Google",
     }.get(exc.provider, "Provider")
+    if exc.message:
+        return exc.message
     if exc.error_code == "PROVIDER_NOT_CONFIGURED":
         return (
             f"No {provider} credential is configured for this gateway. "
@@ -264,6 +283,10 @@ def _provider_message(exc: ProviderCallError) -> str:
         )
     if exc.error_code == "PROVIDER_RATE_LIMITED":
         return f"The {provider} request was rate limited."
+    if exc.error_code == "INVALID_PROVIDER_CREDENTIAL":
+        return f"{provider} rejected the provider credential."
+    if exc.error_code == "PROVIDER_REJECTED_REQUEST":
+        return f"{provider} rejected the request."
     return (
         f"The {provider} request timed out."
         if exc.error_code == "PROVIDER_TIMEOUT"

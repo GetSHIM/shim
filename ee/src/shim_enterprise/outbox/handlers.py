@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import json
 import logging
+import ssl
+
 import httpx
 
 from shim_enterprise.compliance.url_guard import (
@@ -39,6 +41,7 @@ async def _post_forward_url(
         timeout=_DELIVERY_TIMEOUT_SECONDS,
         follow_redirects=False,
         trust_env=False,
+        verify=ssl.create_default_context(cafile=settings.OUTBOUND_CA_BUNDLE),
     ) as client:
         async with client.stream(
             "POST",
@@ -91,7 +94,8 @@ async def deliver_budget_alert(message: OutboxMessage) -> None:
     secret_ref = target.get("secret_ref")
     if not isinstance(secret_ref, str):
         raise ValueError("budget alert target requires a secret reference")
-    url = await get_secret_store().get_secret(
+    store = get_secret_store()
+    url = await store.get_secret(
         TenantId(message.organization_id),
         SecretRef(secret_ref),
         expected_purpose="budget-alert-endpoint",
@@ -103,23 +107,36 @@ async def deliver_budget_alert(message: OutboxMessage) -> None:
         if target["kind"] == "slack"
         else {"event": BUDGET_THRESHOLD, "payload": alert}
     )
-    try:
-        await _post_forward_url(
-            url,
-            content=json.dumps(body).encode(),
-            headers={
-                "content-type": "application/json",
-                "idempotency-key": message.idempotency_key,
-            },
+    content = json.dumps(body).encode()
+    headers = {
+        "content-type": "application/json",
+        "idempotency-key": message.idempotency_key,
+    }
+    signing_ref = target.get("signing_secret_ref")
+    if isinstance(signing_ref, str):
+        headers["x-shim-signature"] = _signature(
+            await store.get_secret(
+                TenantId(message.organization_id),
+                SecretRef(signing_ref),
+                expected_purpose="budget-alert-signing",
+            ),
+            content,
         )
+    try:
+        await _post_forward_url(url, content=content, headers=headers)
     except UnsafeForwardURL as exc:
         raise ValueError("budget alert endpoint is unsafe") from exc
 
 
 async def deliver_compliance_event(message: OutboxMessage) -> None:
-    payload = _tenant_payload(message, aggregate_type="compliance_connector")
-    if payload.get("connector_id") != message.aggregate_id:
-        raise ValueError("compliance connector identity mismatch")
+    tenant_level = message.aggregate_type == "organization"
+    payload = _tenant_payload(
+        message,
+        aggregate_type="organization" if tenant_level else "compliance_connector",
+    )
+    owner = payload["organization_id"] if tenant_level else payload.get("connector_id")
+    if owner != message.aggregate_id:
+        raise ValueError("compliance delivery identity mismatch")
     body = payload.get("body")
     if not isinstance(body, dict):
         raise ValueError("compliance delivery body must be an object")
@@ -161,13 +178,13 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
         "idempotency-key": message.idempotency_key,
     }
     if signing_secret:
-        digest = hmac.new(
-            signing_secret.encode("utf-8"),
-            encoded,
-            hashlib.sha256,
-        ).hexdigest()
-        headers["x-shim-signature"] = f"sha256={digest}"
+        headers["x-shim-signature"] = _signature(signing_secret, encoded)
     await _post_forward_url(endpoint, content=encoded, headers=headers)
+
+
+def _signature(secret: str, content: bytes) -> str:
+    digest = hmac.new(secret.encode("utf-8"), content, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
 
 
 async def _send_compliance_email(
@@ -214,10 +231,8 @@ def _compliance_text(body: dict) -> str:
         )
     if body.get("kind") == "privacy_protection_relaxed":
         fields = ", ".join(map(str, body.get("fields", [])))
-        return (
-            f"shim privacy protection turned off: {fields} "
-            f"(by user {body.get('actor', 'unknown')})"
-        )
+        actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
+        return f"shim privacy protection turned off: {fields} (by {actor})"
     return f"shim compliance alert: {body.get('message', body.get('kind', 'event'))}"
 
 
@@ -253,7 +268,7 @@ def _tenant_payload(
 def _budget_text(payload: dict) -> str:
     scope = payload.get("scope_value") or payload.get("scope_type")
     return (
-        f"shim budget {scope}: {payload.get('percent_used')}% used in "
+        f"shim budget {scope}: {payload.get('percent_used', 0):.0f}% used in "
         f"{payload.get('period')}"
         + (
             f" (known spend only; {payload.get('unpriced_requests')} unpriced requests)"

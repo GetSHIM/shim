@@ -94,7 +94,6 @@ class ScanPolicyResolver:
             user_id=None,
             subject_id=api_key.user_id,
             tier=tier,
-            default_policy="block",
         )
 
     async def _user_actor(
@@ -123,7 +122,6 @@ class ScanPolicyResolver:
             user_id=UserId(user.id),
             subject_id=user.id,
             tier=tier,
-            default_policy="warn",
         )
 
 
@@ -135,12 +133,11 @@ def _scan_actor(
     user_id: UserId | None,
     subject_id: UUID,
     tier: TierDefinition,
-    default_policy: ScanPolicy,
 ) -> ResolvedScanActor:
     features = tier.features or {}
     if not isinstance(features, Mapping):
         raise _scan_policy_unavailable()
-    policy = features.get("scan_policy", default_policy)
+    policy = features.get("scan_policy", "warn")
     limit = features.get("monthly_scan_limit", 200)
     if policy not in {"warn", "block"} or not isinstance(limit, int) or limit < -1:
         raise _scan_policy_unavailable()

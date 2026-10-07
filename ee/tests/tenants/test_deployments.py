@@ -17,7 +17,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from shim.application import create_community_app
@@ -801,17 +801,16 @@ async def test_registry_management_requires_admin_and_audits_configuration(
             )
         )
     ).all()
-    configs = {
-        event.payload["endpoint"]: event.payload["extra"]["configuration"]
-        for event in events
-        if "configuration" in event.payload.get("extra", {})
-    }
-    assert configs["tenant.model_deployment_created"]["declared_version"] == "sha256:v1"
-    assert configs["tenant.model_deployment_updated"]["declared_version"] == "sha256:v2"
-    assert configs["tenant.model_deployment_created"]["provider_secret_id"] == str(
-        rows[0].provider_secret_id
+    extras = {event.payload["endpoint"]: event.payload["extra"] for event in events}
+    created_config = extras["tenant.model_deployment_created"]["configuration"]
+    assert created_config["declared_version"] == "sha256:v1"
+    assert created_config["provider_secret_id"] == str(rows[0].provider_secret_id)
+    assert "key" not in created_config
+    updated = extras["tenant.model_deployment_updated"]
+    assert (updated["before"], updated["after"]) == (
+        {"declared_version": "sha256:v1", "enabled": True},
+        {"declared_version": "sha256:v2", "enabled": False},
     )
-    assert all("key" not in config for config in configs.values())
 
 
 @pytest.mark.asyncio
@@ -910,6 +909,9 @@ async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["error"]["code"] == "DEPLOYMENT_UNHEALTHY"
+    assert 295 <= int(refused.headers["retry-after"]) <= 300
+    assert refused.headers["x-should-retry"] == "false"
+    assert refused.headers["x-shim-request-id"].startswith("req_")
     assert "gpt-5.6-luna" not in listed
     assert (healthy.status_code, updated.status_code) == (200, 200)
     assert deployment.health == "unknown"
@@ -930,4 +932,169 @@ async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
         and verdict["outcome"] == "deny"
         and verdict["reason_code"] == "DEPLOYMENT_UNHEALTHY"
         for verdict in verdicts
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checked_ago", [timedelta(seconds=301), None])
+async def test_an_unhealthy_mark_expires_and_the_deployment_serves_again(
+    db, test_api_key, origins, checked_ago: timedelta | None
+):
+    deployment = (await _deployments(db, test_api_key))[1]
+    deployment.health = "unhealthy"
+    deployment.health_checked_at = (
+        None if checked_ago is None else datetime.now(timezone.utc) - checked_ago
+    )
+    await db.flush()
+    calls = []
+
+    def upstream(request):
+        calls.append(request.url.host)
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        served = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": deployment.alias,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+        listed = {row["id"] for row in (await client.get("/v1/models")).json()["data"]}
+
+    assert served.status_code == 200, served.text
+    assert deployment.alias in listed
+    assert calls == ["b.internal"]
+
+
+_CATALOG_REQUESTS = {
+    "openai": (
+        "/v1/chat/completions",
+        {"model": "gpt-5-nano", "messages": [{"role": "user", "content": "hi"}]},
+    ),
+    "anthropic": (
+        "/v1/messages",
+        {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    ),
+    "google": (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", sorted(_CATALOG_REQUESTS))
+async def test_tenant_can_refuse_customer_provider_keys_before_any_upstream_call(
+    db, test_api_key, provider
+):
+    organization = await db.get(Organization, test_api_key.organization_id)
+    organization.allow_customer_provider_keys = False
+    calls = []
+    async with _gateway(db, test_api_key, calls.append) as (client, _, store):
+        path, payload = _CATALOG_REQUESTS[provider]
+        refused = await client.post(path, json=payload)
+    assert refused.status_code == 403, refused.text
+    assert refused.headers["x-shim-error-code"] == "PROVIDER_KEY_NOT_ALLOWED"
+    assert calls == []
+    store.get_secret.assert_not_awaited()
+    denial = await db.scalar(
+        select(AuditIntent).where(
+            AuditIntent.organization_id == test_api_key.organization_id,
+            AuditIntent.event_type == "preflight",
+        )
+    )
+    assert (denial.provider, denial.lifecycle_status) == (provider, "spend_denied")
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    assert "PROVIDER_KEY_NOT_ALLOWED" in {
+        verdict["reason_code"]
+        for event in events
+        for verdict in event.payload.get("policy_verdicts", [])
+    }
+
+
+@pytest.mark.asyncio
+async def test_refusing_customer_keys_keeps_deployments_on_the_managed_key(
+    db, test_api_key, origins
+):
+    rows = await _deployments(db, test_api_key)
+    organization = await db.get(Organization, test_api_key.organization_id)
+    organization.allow_customer_provider_keys = False
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _store):
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": rows[0].alias,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert [request.headers["authorization"] for request in calls] == ["Bearer key-a"]
+
+
+@pytest.mark.asyncio
+async def test_allowed_customer_key_still_wins_on_catalog_routes(db, test_api_key):
+    organization = await db.get(Organization, test_api_key.organization_id)
+    assert organization.allow_customer_provider_keys is True
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5-nano",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            },
+        )
+
+    async with _gateway(db, test_api_key, upstream) as (client, app, store):
+        execution = app.state.gateway_service.kernel.executions["openai"]
+        execution.circuit_for = lambda prepared: InMemoryCircuitBreaker()
+        path, payload = _CATALOG_REQUESTS["openai"]
+        response = await client.post(path, json=payload)
+    assert response.status_code == 200, response.text
+    assert [request.headers["authorization"] for request in calls] == [
+        "Bearer ignored-override"
+    ]
+    store.get_secret.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_customer_provider_keys_default_to_allowed_for_existing_rows(db):
+    organization_id = db.info["tenant_id"]
+    await db.execute(
+        text("INSERT INTO organizations (id, name, slug) VALUES (:id, 'Old', :slug)"),
+        {"id": organization_id, "slug": f"old-{organization_id}"},
+    )
+    assert await db.scalar(
+        select(Organization.allow_customer_provider_keys).where(
+            Organization.id == organization_id
+        )
     )

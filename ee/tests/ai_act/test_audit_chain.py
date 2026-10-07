@@ -158,7 +158,7 @@ async def test_interactive_verification_rejects_results_over_its_fixed_cap(
 @pytest.mark.parametrize(
     ("operation", "ordering", "sentinel"),
     [
-        (verify_chain, "ai_act_audit_log.seq", 10_001),
+        (verify_chain, "ai_act_audit_log.seq", 2_000),
         (verify_anchors, "ai_act_audit_anchor.anchor_date", 367),
     ],
 )
@@ -567,3 +567,171 @@ async def test_bundle_refuses_more_anchors_than_the_synchronous_limit(
             end=None,
             now=datetime.now(timezone.utc),
         )
+
+
+DAY_ONE = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
+WINDOW = (
+    datetime(2026, 7, 3, tzinfo=timezone.utc),
+    datetime(2026, 7, 3, 23, 59, tzinfo=timezone.utc),
+)
+
+
+def _seed_chain(organization_id, times: list[datetime]) -> list:
+    """Append linked rows with chosen timestamps, as the writer would have."""
+    tip = None
+    rows = []
+    for index, created_at in enumerate(times):
+        values = next_link(
+            tip,
+            {"organization_id": organization_id, "request_id": f"req-seeded-{index}"},
+            salt=audit_writer.audit_salt(),
+            now=created_at,
+            gateway_version="shim-gateway/test",
+        )
+        rows.append(AIActAuditLog(**values))
+        tip = (values["seq"], values["row_hash"])
+    return rows
+
+
+def _anchored_history_and_window(organization_id, monkeypatch) -> list:
+    """Eight anchored rows on day one (over a cap of five), three in the window."""
+    monkeypatch.setattr(verify_module, "MAX_SYNC_AUDIT_ROWS", 5)
+    monkeypatch.setattr(verify_module, "_PAGE_ROWS", 2)
+    history = [DAY_ONE + timedelta(minutes=index) for index in range(8)]
+    window = [WINDOW[0] + timedelta(hours=index + 1) for index in range(3)]
+    return _seed_chain(organization_id, history + window)
+
+
+@pytest.mark.asyncio
+async def test_window_verification_starts_after_the_last_anchor_before_it(
+    db, test_org, monkeypatch
+) -> None:
+    rows = _anchored_history_and_window(test_org.id, monkeypatch)
+    db.add_all(rows)
+    await db.flush()
+    await write_anchor(db, test_org.id, DAY_ONE.date())
+
+    result = await verify_chain(db, test_org.id, start=WINDOW[0], end=WINDOW[1])
+
+    assert result["ok"] is True
+    assert result["chain_start"] == {"from_seq": 9, "anchor_date": "2026-07-01"}
+    assert (result["rows_checked"], result["rows_selected"]) == (3, 3)
+    assert result["last_verified_seq"] == 11
+    with pytest.raises(AuditVerificationLimitExceeded, match="limited to 5 rows"):
+        await verify_chain(db, test_org.id, end=WINDOW[1])
+
+
+@pytest.mark.asyncio
+async def test_window_verification_detects_tampering_after_the_anchor(
+    db, test_org, monkeypatch
+) -> None:
+    rows = _anchored_history_and_window(test_org.id, monkeypatch)
+    rows[9].request_id = "req-rewritten"
+    db.add_all(rows)
+    await db.flush()
+    await write_anchor(db, test_org.id, DAY_ONE.date())
+
+    result = await verify_chain(db, test_org.id, start=WINDOW[0], end=WINDOW[1])
+
+    assert result["ok"] is False
+    assert result["first_break"] == {
+        "seq": 10,
+        "id": str(rows[9].id),
+        "reason": "row_hash_mismatch",
+    }
+    assert result["last_verified_seq"] == 9
+
+
+@pytest.mark.asyncio
+async def test_window_verification_rejects_an_anchor_tip_the_chain_lacks(
+    db, test_org, monkeypatch
+) -> None:
+    rows = _anchored_history_and_window(test_org.id, monkeypatch)
+    db.add_all(rows)
+    await db.flush()
+    db.add(
+        AIActAuditAnchor(
+            organization_id=test_org.id,
+            anchor_date=DAY_ONE.date(),
+            root_hash="0" * 64,
+            tip_hash="f" * 64,
+            row_count=8,
+            from_seq=1,
+            to_seq=8,
+        )
+    )
+    await db.flush()
+
+    result = await verify_chain(db, test_org.id, start=WINDOW[0], end=WINDOW[1])
+
+    assert result["ok"] is False
+    assert result["first_break"] == {
+        "seq": 8,
+        "id": str(rows[7].id),
+        "reason": "anchor_link_mismatch",
+    }
+    assert result["rows_checked"] == 0
+
+
+@pytest.mark.asyncio
+async def test_window_verification_without_an_anchor_starts_at_genesis(
+    db, test_org
+) -> None:
+    rows = _seed_chain(test_org.id, [DAY_ONE, WINDOW[0] + timedelta(hours=1)])
+    db.add_all(rows)
+    await db.flush()
+
+    result = await verify_chain(db, test_org.id, start=WINDOW[0], end=WINDOW[1])
+
+    assert result["ok"] is True
+    assert result["chain_start"] == {"from_seq": 1, "anchor_date": None}
+    assert (result["rows_checked"], result["rows_selected"]) == (2, 1)
+
+
+@pytest.mark.asyncio
+async def test_audit_report_succeeds_for_a_tenant_past_the_row_cap(
+    db, test_user_with_org, monkeypatch
+) -> None:
+    from shim_enterprise.ai_act import api as api_module
+    from shim_enterprise.ai_act.schemas import AuditReportRequest
+
+    organization_id = test_user_with_org.organization_id
+    rows = _anchored_history_and_window(organization_id, monkeypatch)
+    db.add_all(rows)
+    await db.flush()
+    await write_anchor(db, organization_id, DAY_ONE.date())
+
+    response = await api_module.generate_audit_report_endpoint(
+        AuditReportRequest(start=WINDOW[0], end=WINDOW[1], format="csv"),
+        current_user=test_user_with_org,
+        session=db,
+    )
+
+    assert response.status_code == 200
+    assert "chain verified with" in bytes(response.body).decode("utf-8-sig")
+
+
+@pytest.mark.asyncio
+async def test_bundle_window_edges_are_resolved_to_a_sequence_range(
+    db, test_org
+) -> None:
+    # Row 3 came from an instance whose clock ran two minutes behind.
+    minute = timedelta(minutes=1)
+    rows = _seed_chain(
+        test_org.id,
+        [DAY_ONE, DAY_ONE + 2 * minute, DAY_ONE, DAY_ONE + 4 * minute],
+    )
+    db.add_all(rows)
+    await db.flush()
+
+    bundle = await build_audit_bundle(
+        db,
+        test_org.id,
+        start=DAY_ONE + minute,
+        end=DAY_ONE + 3 * minute,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert bundle is not None
+    assert [row["seq"] for row in bundle["rows"]] == [2, 3]
+    assert bundle["chain_start"] == {"from_seq": 2, "prev_hash": rows[0].row_hash}

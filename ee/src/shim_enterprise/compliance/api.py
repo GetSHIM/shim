@@ -53,6 +53,8 @@ from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import SecretStore, get_secret_store
+from shim_enterprise.tenants.audit import change_details, export_details
+from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import User
 
 
@@ -322,6 +324,14 @@ async def create_connector(
     _promote_provider_config(connector, config)
     session.add(connector)
     try:
+        await session.flush()
+        await _audit(
+            session,
+            current_user,
+            "compliance.connector_created",
+            str(connector.id),
+            details=change_details(None, _connector_facts(connector)),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -408,6 +418,7 @@ async def update_connector(
         connector_id,
         for_update=True,
     )
+    before = _connector_facts(connector)
     if payload.status is not None:
         connector.status = payload.status
         if payload.status == "active":
@@ -418,6 +429,13 @@ async def update_connector(
         _validate_config(connector.provider, config)
         connector.config = config
         _promote_provider_config(connector, config)
+    await _audit(
+        session,
+        current_user,
+        "compliance.connector_updated",
+        str(connector.id),
+        details=change_details(before, _connector_facts(connector)),
+    )
     await session.commit()
     await session.refresh(connector)
     return _connector_view(connector)
@@ -453,6 +471,13 @@ async def delete_connector(
         tenant_id,
         *(target.id for target in targets),
     )
+    await _audit(
+        session,
+        current_user,
+        "compliance.connector_deleted",
+        str(connector.id),
+        details=change_details(_connector_facts(connector), None),
+    )
     await session.delete(connector)
     await session.commit()
     store = get_secret_store()
@@ -468,6 +493,14 @@ async def run_connector(
     session: AsyncSession = Depends(get_db),
 ) -> RunResult:
     connector = await _load_connector(session, _tenant_id(current_user), connector_id)
+    await _audit(
+        session,
+        current_user,
+        "compliance.connector_run_requested",
+        str(connector.id),
+        details={"provider": connector.provider},
+    )
+    await session.commit()
     from shim_enterprise.compliance.services.ingest import ComplianceIngestService
 
     result = await ComplianceIngestService(cache=request.app.state.cache).run_once(
@@ -660,7 +693,10 @@ async def _validate_forward_url(endpoint: str) -> None:
     except UnsafeForwardURL as exc:
         raise HTTPException(
             status_code=422,
-            detail="Forward target must resolve to a public HTTPS destination",
+            detail=(
+                "Forward target must resolve to a public or operator-approved "
+                "HTTPS destination"
+            ),
         ) from exc
 
 
@@ -705,13 +741,9 @@ async def _load_target(
     target = (
         await session.execute(
             select(ComplianceForwardTarget)
-            .join(
-                ComplianceConnector,
-                ComplianceForwardTarget.connector_id == ComplianceConnector.id,
-            )
             .where(
                 ComplianceForwardTarget.id == target_id,
-                ComplianceConnector.organization_id == tenant_id,
+                ComplianceForwardTarget.organization_id == tenant_id,
             )
             .with_for_update(of=ComplianceForwardTarget)
         )
@@ -727,18 +759,14 @@ async def _load_target(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_forward_target(
-    connector_id: UUID,
     payload: ForwardTargetCreate,
+    connector_id: UUID | None = Query(default=None),
     current_user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
-    connector = await _load_connector(
-        session,
-        tenant_id,
-        connector_id,
-        for_update=True,
-    )
+    if connector_id is not None:
+        await _load_connector(session, tenant_id, connector_id, for_update=True)
     endpoint = await _validate_target_destination(
         payload.kind,
         payload.endpoint,
@@ -752,7 +780,8 @@ async def create_forward_target(
         metadata={"kind": payload.kind},
     )
     target = ComplianceForwardTarget(
-        connector_id=connector.id,
+        organization_id=tenant_id,
+        connector_id=connector_id,
         kind=payload.kind,
         endpoint_origin=_endpoint_origin(payload.kind, endpoint),
         signed=payload.secret is not None,
@@ -762,6 +791,14 @@ async def create_forward_target(
     assign_secret_reference(target, secret_ref)
     session.add(target)
     try:
+        await session.flush()
+        await _audit(
+            session,
+            current_user,
+            "compliance.forward_target_created",
+            str(target.id),
+            details=change_details(None, _target_facts(target)),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -783,13 +820,8 @@ async def list_forward_targets(
     session: AsyncSession = Depends(get_db),
 ) -> list[ForwardTargetRead]:
     tenant_id = _tenant_id(current_user)
-    statement = (
-        select(ComplianceForwardTarget)
-        .join(
-            ComplianceConnector,
-            ComplianceForwardTarget.connector_id == ComplianceConnector.id,
-        )
-        .where(ComplianceConnector.organization_id == tenant_id)
+    statement = select(ComplianceForwardTarget).where(
+        ComplianceForwardTarget.organization_id == tenant_id
     )
     if connector_id is not None:
         statement = statement.where(
@@ -808,6 +840,7 @@ async def update_forward_target(
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
     target = await _load_target(session, tenant_id, target_id)
+    before = _target_facts(target)
     store: SecretStore | None = None
     previous_ref: str | None = None
     replacement_ref: str | None = None
@@ -860,6 +893,16 @@ async def update_forward_target(
                 target.id,
                 str(replacement_ref),
             )
+        await _audit(
+            session,
+            current_user,
+            "compliance.forward_target_updated",
+            str(target.id),
+            details={
+                **change_details(before, _target_facts(target)),
+                "destination_rotated": replacement_ref is not None,
+            },
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -896,6 +939,13 @@ async def delete_forward_target(
     target = await _load_target(session, tenant_id, target_id)
     secret_ref = target.secret_ref
     await _cancel_forward_deliveries(session, tenant_id, target.id)
+    await _audit(
+        session,
+        current_user,
+        "compliance.forward_target_deleted",
+        str(target.id),
+        details=change_details(_target_facts(target), None),
+    )
     await session.delete(target)
     await session.commit()
     await _delete_secret_best_effort(
@@ -981,8 +1031,41 @@ async def generate_kvkk_report(
         )
     except ReportLimitExceeded as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    await _audit(
+        session,
+        current_user,
+        "compliance.kvkk_report_generated",
+        str(tenant_id),
+        details=export_details(
+            start,
+            end,
+            format=payload.format,
+            connector_id=(
+                str(payload.connector_id) if payload.connector_id is not None else None
+            ),
+        ),
+    )
+    await session.commit()
     return Response(
         content=content,
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _connector_facts(connector: ComplianceConnector) -> dict[str, Any]:
+    return {
+        "provider": connector.provider,
+        "status": connector.status,
+        "config": _redacted_config(connector.config or {}),
+    }
+
+
+def _target_facts(target: ComplianceForwardTarget) -> dict[str, Any]:
+    return {
+        "kind": target.kind,
+        "endpoint_origin": target.endpoint_origin,
+        "signed": target.signed,
+        "min_severity": target.min_severity,
+        "enabled": target.enabled,
+    }

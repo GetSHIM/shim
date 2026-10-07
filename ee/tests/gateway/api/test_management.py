@@ -37,19 +37,6 @@ from shim_enterprise.billing.read_models import BillingReadModels
 from shim.gateway.contracts.ids import TenantId
 
 
-class AsyncRows:
-    def __init__(self, rows) -> None:
-        self.rows = rows
-        self.close = AsyncMock()
-
-    def __aiter__(self):
-        async def iterate():
-            for row in self.rows:
-                yield row
-
-        return iterate()
-
-
 @pytest.mark.asyncio
 async def test_profile_patch_can_clear_full_name(
     monkeypatch: pytest.MonkeyPatch,
@@ -588,9 +575,9 @@ async def test_provider_verification_updates_only_conclusive_results(
 
 
 @pytest.mark.asyncio
-async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas() -> (
-    None
-):
+async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tenant_id = uuid4()
     row = SimpleNamespace(
         id=uuid4(),
@@ -616,11 +603,15 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         cost_center="platform",
         team="@ops",
     )
-    rows = AsyncRows([(row, Decimal("0.000001"))])
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=1),
-        stream=AsyncMock(return_value=rows),
+        execute=AsyncMock(
+            return_value=SimpleNamespace(all=lambda: [(row, Decimal("0.000001"))])
+        ),
+        commit=AsyncMock(),
     )
+    audit = AsyncMock()
+    monkeypatch.setattr(management, "_audit", audit)
 
     response = await management.export_requests(
         start=None,
@@ -653,8 +644,10 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert "request_duration_ms" not in exported
     assert "latency_ms" not in exported
     assert exported["cost_complete"] == "True"
-    rows.close.assert_awaited_once()
-    statement = session.stream.await_args.args[0]
+    assert audit.await_args.args[2] == "tenant.requests_exported"
+    assert audit.await_args.kwargs["details"]["rows"] == 1
+    session.commit.assert_awaited_once()
+    statement = session.execute.await_args.args[0]
     compiled = statement.compile(dialect=postgresql.dialect())
     count_compiled = session.scalar.await_args.args[0].compile(
         dialect=postgresql.dialect()
@@ -671,7 +664,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
 @pytest.mark.asyncio
 async def test_request_export_rejects_oversized_window_before_query() -> None:
     end = datetime(2026, 8, 1, tzinfo=timezone.utc)
-    session = SimpleNamespace(scalar=AsyncMock(), stream=AsyncMock())
+    session = SimpleNamespace(scalar=AsyncMock(), execute=AsyncMock())
 
     with pytest.raises(management.HTTPException, match="31 days") as error:
         await management.export_requests(
@@ -689,14 +682,14 @@ async def test_request_export_rejects_oversized_window_before_query() -> None:
 
     assert error.value.status_code == 422
     session.scalar.assert_not_awaited()
-    session.stream.assert_not_awaited()
+    session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_request_export_rejects_more_than_10000_rows() -> None:
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=10_001),
-        stream=AsyncMock(),
+        execute=AsyncMock(),
     )
 
     with pytest.raises(management.HTTPException, match="10000 rows") as error:
@@ -714,7 +707,7 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
         )
 
     assert error.value.status_code == 422
-    session.stream.assert_not_awaited()
+    session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -764,11 +757,12 @@ def test_billing_exports_render_safe_csv_and_pdf() -> None:
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)
 
-    assert "'=formula" in management._billing_breakdown_csv([record]).decode(
-        "utf-8-sig"
-    )
+    exported = management._billing_breakdown_csv(
+        [record], {"=formula": "=team"}
+    ).decode("utf-8-sig")
+    assert "'=formula" in exported and "'=team" in exported
     assert management._billing_breakdown_pdf(
-        [record], "provider", start, end
+        [record], {}, "provider", start, end
     ).startswith(b"%PDF")
 
 
@@ -838,11 +832,15 @@ async def test_billing_usage_rejects_more_than_500_rows(
 
 
 @pytest.mark.asyncio
-async def test_billing_export_caps_grouped_results() -> None:
+async def test_billing_export_caps_grouped_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     end = datetime(2026, 8, 1, tzinfo=timezone.utc)
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: []))
+        execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
+        commit=AsyncMock(),
     )
+    monkeypatch.setattr(management, "_audit", AsyncMock())
 
     response = await management.export_billing_breakdown(
         start_date=end - timedelta(days=30),
@@ -889,11 +887,19 @@ async def test_billing_export_rejects_more_than_500_groups(
 
 def test_budget_thresholds_are_fractions_and_say_so() -> None:
     with pytest.raises(ValidationError, match="thresholds are fractions") as refused:
-        management.BudgetInput(scope_type="org", limit_usd=1, alert_thresholds=[50])
+        management.BudgetInput(
+            scope_type="org",
+            limit_usd=1,
+            alert_thresholds=[50],
+            notify_targets=[{"kind": "slack", "endpoint": "https://hooks.example"}],
+        )
     assert "50 is outside (0, 5]" in str(refused.value)
 
     accepted = management.BudgetInput(
-        scope_type="org", limit_usd=1, alert_thresholds=[0.5, 1.0]
+        scope_type="org",
+        limit_usd=1,
+        alert_thresholds=[0.5, 1.0],
+        notify_targets=[{"kind": "slack", "endpoint": "https://hooks.example"}],
     )
     assert accepted.alert_thresholds == [0.5, 1.0]
     schema = management.BudgetInput.model_json_schema()["properties"]
@@ -1014,19 +1020,9 @@ def _stored_extra(details: dict[str, object]) -> dict[str, object]:
     )["extra"]
 
 
-async def _audit_events(db, organization_id) -> list[dict]:
-    events = await db.scalars(
-        select(OutboxEvent).where(
-            OutboxEvent.organization_id == organization_id,
-            OutboxEvent.event_type == "audit.chain_append_requested",
-        )
-    )
-    return [event.payload for event in events]
-
-
 @pytest.mark.asyncio
 async def test_relaxing_privacy_records_before_after_and_forwards_once_per_target(
-    db, test_user_with_org
+    db, test_user_with_org, audit_events
 ) -> None:
     test_user_with_org.role = "admin"
     tenant_id = test_user_with_org.organization_id
@@ -1042,14 +1038,17 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
     await db.flush()
     targets = [
         ComplianceForwardTarget(
-            connector_id=connector.id,
+            organization_id=tenant_id,
+            connector_id=connector_id,
             endpoint_origin=f"https://siem-{index}.example",
             secret_ref=f"fernet:v2:target-{index}",
             secret_backend="fernet",
             secret_version="v2",
             enabled=enabled,
         )
-        for index, enabled in enumerate((True, True, False))
+        for index, (connector_id, enabled) in enumerate(
+            ((connector.id, True), (None, True), (connector.id, False))
+        )
     ]
     db.add_all(targets)
     await db.flush()
@@ -1064,7 +1063,7 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
         db,
     )
     relaxed_events = {
-        event["endpoint"]: event for event in await _audit_events(db, tenant_id)
+        event["endpoint"]: event for event in await audit_events(tenant_id)
     }
     delivery_events = (
         await db.scalars(
@@ -1083,7 +1082,7 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
     )
     restored_events = [
         event
-        for event in await _audit_events(db, tenant_id)
+        for event in await audit_events(tenant_id)
         if event["request_id"]
         not in {event["request_id"] for event in relaxed_events.values()}
     ]
@@ -1117,6 +1116,7 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
                 "kind": "privacy_protection_relaxed",
                 "fields": ["block_email", "block_phone"],
                 "actor": str(test_user_with_org.id),
+                "actor_email": test_user_with_org.email,
                 "occurred_at": None,
             },
             sort_keys=True,
@@ -1135,6 +1135,74 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
         )
         == 2
     )
+
+
+@pytest.mark.asyncio
+async def test_profile_key_budget_run_and_exports_record_one_audit_event_each(
+    db, test_api_key, test_user_with_org, audit_events
+) -> None:
+    user = test_user_with_org
+    user.role = "owner"
+    tenant_id = user.organization_id
+    organization = await db.get(Organization, tenant_id)
+    assert organization is not None
+    previous_name = organization.name
+
+    await management.update_profile(
+        management.UserPatch(full_name="Renamed User", organization_name="Renamed"),
+        user,
+        db,
+    )
+    await management.update_api_key(
+        test_api_key.id, management.ApiKeyPatch(cost_center="finance"), user, db
+    )
+    await management.evaluate_budgets(user, db)
+    exported = await management.export_requests(
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=user,
+        session=db,
+    )
+    content = b"".join([chunk async for chunk in exported.body_iterator])
+    await management.export_billing_breakdown(None, None, "model", "csv", user, db)
+
+    events = await audit_events(tenant_id)
+    extra = {event["endpoint"]: event["extra"] for event in events}
+    assert sorted(event["endpoint"] for event in events) == [
+        "tenant.api_key_updated",
+        "tenant.billing_exported",
+        "tenant.budgets_evaluated",
+        "tenant.profile_updated",
+        "tenant.requests_exported",
+    ]
+    assert all(event["actor"] == str(user.id) for event in events)
+    profile = extra["tenant.profile_updated"]
+    assert (profile["before"], profile["after"]) == (
+        {"organization_name": previous_name},
+        {"organization_name": "Renamed"},
+    )
+    # A person's name never enters the immutable chain; only the fact that it changed.
+    assert profile["full_name_changed"] is True
+    assert "Renamed User" not in str(profile)
+    key = extra["tenant.api_key_updated"]
+    assert (key["before"], key["after"]) == (
+        {"cost_center": None},
+        {"cost_center": "finance"},
+    )
+    assert extra["tenant.budgets_evaluated"]["budgets_evaluated"] == 0
+    # The export holds only its header: its own audit event is not a request row.
+    assert content.decode("utf-8-sig").count("\n") == 1
+    assert extra["tenant.requests_exported"]["rows"] == 0
+    assert {
+        name: extra["tenant.billing_exported"][name]
+        for name in ("group_by", "format", "rows")
+    } == {"group_by": "model", "format": "csv", "rows": 0}
 
 
 @pytest.mark.asyncio
@@ -1210,16 +1278,15 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
 
     await management.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(key=secret),
+        management.ProviderSecretPatch(key=secret, name="Renamed"),
         SimpleNamespace(organization_id=row.organization_id),
         SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
     )
 
     details = audit.await_args.kwargs["details"]
     assert details == {
-        "provider": "openai",
-        "name": "Primary",
-        "monthly_limit_usd": "10",
+        "before": {"name": "Primary"},
+        "after": {"name": "Renamed"},
         "key_rotated": True,
     }
     stored = json.dumps(_stored_extra(details))

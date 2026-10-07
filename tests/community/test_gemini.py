@@ -297,6 +297,9 @@ async def test_gemini_validation_precedes_one_sanitized_provider_attempt() -> No
                     "@type": "type.googleapis.com/google.rpc.ErrorInfo",
                     "reason": "PROVIDER_UNAVAILABLE",
                     "domain": "getshim.tech",
+                    "metadata": {
+                        "hint": "The provider failed or could not be reached; retry later."
+                    },
                 }
             ],
         }

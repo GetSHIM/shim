@@ -3,6 +3,28 @@
     "schemas": {
       "AnthropicErrorDetail": {
         "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -2763,6 +2785,17 @@
               }
             ],
             "title": "Code"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
           },
           "message": {
             "title": "Message",

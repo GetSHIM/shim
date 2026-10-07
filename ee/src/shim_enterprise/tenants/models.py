@@ -73,6 +73,10 @@ class Organization(Base, TimestampMixin):
     billing_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # False refuses x-provider-key on catalog routes; deployments ignore the header.
+    allow_customer_provider_keys: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
 
     users: Mapped[list[User]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"

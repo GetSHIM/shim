@@ -37,6 +37,9 @@ from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.api.errors import gateway_exception_handler
+from shim.gateway.pipeline.provider_execution import ERROR_HINTS
+
+_INVALID_KEY_HINT = ERROR_HINTS["INVALID_API_KEY"]
 
 
 def _application(service) -> FastAPI:
@@ -110,6 +113,7 @@ async def test_native_clients_receive_gateway_auth_error_envelopes() -> None:
             "type": "authentication_error",
             "param": None,
             "code": "INVALID_API_KEY",
+            "hint": _INVALID_KEY_HINT,
         }
     }
     assert anthropic_error.value.response.json() == {
@@ -117,6 +121,8 @@ async def test_native_clients_receive_gateway_auth_error_envelopes() -> None:
         "error": {
             "type": "authentication_error",
             "message": "Invalid API Key",
+            "code": "INVALID_API_KEY",
+            "hint": _INVALID_KEY_HINT,
         },
     }
 
@@ -488,12 +494,19 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
     assert unpriced.value.status_code == 400
     assert unpriced.value.response.headers["x-shim-error-code"] == "MODEL_NOT_PRICED"
     assert set(unpriced.value.response.json()) == {"type", "error"}
-    assert set(unpriced.value.response.json()["error"]) == {"type", "message"}
+    assert unpriced.value.response.json()["error"]["code"] == "MODEL_NOT_PRICED"
+    assert set(unpriced.value.response.json()["error"]) == {
+        "type",
+        "message",
+        "code",
+        "hint",
+    }
     assert gemini_unpriced.value.details["error"]["details"] == [
         {
             "@type": "type.googleapis.com/google.rpc.ErrorInfo",
             "reason": "MODEL_NOT_PRICED",
             "domain": "getshim.tech",
+            "metadata": {"hint": ERROR_HINTS["MODEL_NOT_PRICED"]},
         }
     ]
     assert [error.response.status_code for error in rejected] == [401, 401, 401]

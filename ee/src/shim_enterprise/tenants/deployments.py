@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import ipaddress
 import logging
+import math
 from typing import cast, Literal
 from urllib.parse import urlsplit
 
@@ -28,6 +29,16 @@ from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
 from shim_enterprise.tenants.teams import require_team
 
 logger = logging.getLogger(__name__)
+# After this, the per-tenant provider circuit breaker guards a failing deployment.
+UNHEALTHY_MARK_SECONDS = 300
+
+
+def _unhealthy_seconds_left(deployment: ModelDeployment) -> int:
+    checked_at = deployment.health_checked_at
+    if deployment.health != "unhealthy" or checked_at is None:
+        return 0
+    elapsed = (datetime.now(timezone.utc) - checked_at).total_seconds()
+    return max(0, math.ceil(UNHEALTHY_MARK_SECONDS - elapsed))
 
 
 def validate_deployment_url(url: str) -> str:
@@ -207,7 +218,8 @@ class DeploymentResolver:
                     "message": "The model is disabled or does not support this provider protocol.",
                 },
             )
-        if deployment.health == "unhealthy":
+        retry_after = _unhealthy_seconds_left(deployment)
+        if retry_after:
             prepared.record_verdict(
                 "deployment.registry",
                 stage="admission",
@@ -224,6 +236,7 @@ class DeploymentResolver:
                     "code": "DEPLOYMENT_UNHEALTHY",
                     "message": "The model deployment is marked unhealthy.",
                 },
+                headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
             )
         try:
             base_url = validate_deployment_url(deployment.base_url)
@@ -304,7 +317,11 @@ class DeploymentResolver:
         )
         for row in rows:
             records.pop(row.alias, None)
-            if not row.enabled or row.health == "unhealthy" or row.provider != provider:
+            if (
+                not row.enabled
+                or _unhealthy_seconds_left(row)
+                or row.provider != provider
+            ):
                 continue
             records[row.alias] = (
                 {

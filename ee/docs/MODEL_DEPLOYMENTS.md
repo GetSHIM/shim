@@ -20,7 +20,8 @@ exact scheme/host/port origins, for example `["https://models.internal:8443"]`.
 API users cannot expand this policy. URL credentials, queries, fragments,
 metadata addresses and redirects are rejected. Internal HTTP origins require
 explicit approval; use HTTPS in production. Add private certificate authorities
-with `MODEL_DEPLOYMENT_CA_BUNDLE`; certificate verification stays enabled.
+with `OUTBOUND_CA_BUNDLE` (the earlier name `MODEL_DEPLOYMENT_CA_BUNDLE` is still
+read); certificate verification stays enabled.
 Enforce DNS and outbound network policy at the deployment boundary as well.
 
 For OpenAI-compatible deployments, use the API base including `/v1`; for
@@ -28,10 +29,15 @@ Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
 There is no retry or failover. A five-second model-list health probe records
 only HTTP success/failure and never reads an unbounded response body. A
-deployment marked `unhealthy` receives no traffic: requests for its alias get 503
-`DEPLOYMENT_UNHEALTHY` and it leaves `/v1/models`, until a health check marks it
-healthy or an update resets it to `unknown`. Nothing is routed to another
-deployment or to the public catalog instead, and no probe runs automatically.
+deployment marked `unhealthy` receives no traffic for 300 seconds from that
+check: requests for its alias get 503 `DEPLOYMENT_UNHEALTHY` with `Retry-After`
+set to the seconds left and `x-should-retry: false`, and it leaves `/v1/models`.
+The mark ends sooner when a health check marks it healthy or an update resets it
+to `unknown`. After 300 seconds the deployment serves again and the per-tenant
+provider circuit breaker protects callers if it is still failing; a mark without
+a check time never refuses traffic. To keep traffic away for longer, disable the
+deployment (`enabled: false`). Nothing is routed to another deployment or to the
+public catalog instead, and no probe runs automatically.
 Health is not a version-verification guarantee.
 
 The declared version/hash/digest is operator supplied and included in the

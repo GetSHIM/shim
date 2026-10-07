@@ -48,7 +48,7 @@ class CommunitySettings(BaseSettings):
 
     GLOBAL_RATE_LIMIT_PER_MINUTE: int = Field(default=1000, ge=1)
     DEFAULT_RPM_LIMIT: int = Field(default=60, ge=1)
-    DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
+    DEFAULT_TPM_LIMIT: int = Field(default=1_000_000, ge=1)
     COST_TAG_MAX_LENGTH: int = Field(default=64, ge=1, le=256)
 
     LOOP_REPEAT_LIMIT: int = Field(default=8, ge=2, le=100)

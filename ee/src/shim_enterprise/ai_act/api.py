@@ -49,6 +49,8 @@ from shim_enterprise.ai_act.verify import (
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.tenants.audit import change_details, export_details
+from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import Organization, User
 
 
@@ -113,6 +115,17 @@ def _validate_policy_trigger(trigger: dict[str, object]) -> None:
         validate_trigger(trigger)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+def _policy_facts(policy: OversightPolicy) -> dict[str, Any]:
+    return {
+        "name": policy.name,
+        "enabled": policy.enabled,
+        "mode": policy.mode,
+        "trigger": policy.trigger,
+        "ttl_seconds": policy.ttl_seconds,
+        "default_on_timeout": policy.default_on_timeout,
+    }
 
 
 async def _tenant_policy(
@@ -228,6 +241,15 @@ async def export_audit_bundle(
         raise HTTPException(
             status_code=404, detail="No audit rows in the requested window."
         )
+    # The event reaches the chain through the outbox, after this export was read.
+    await _audit(
+        session,
+        current_user,
+        "compliance.audit_bundle_exported",
+        str(tenant_id),
+        details=export_details(start, end, rows=bundle["row_count"]),
+    )
+    await session.commit()
     # Rendering tens of megabytes of JSON stays off the event loop.
     return await asyncio.to_thread(
         JSONResponse,
@@ -261,9 +283,19 @@ async def verify_audit_chain(
         )
     except AuditVerificationLimitExceeded as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    ok = bool(chain["ok"] and anchors["ok"])
+    await _audit(
+        session,
+        current_user,
+        "compliance.audit_verified",
+        str(tenant_id),
+        details=export_details(start, end, rows=chain["rows_checked"], ok=ok),
+    )
+    await session.commit()
     return VerifyResult.model_validate(
         {
-            "ok": chain["ok"] and anchors["ok"],
+            "ok": ok,
+            "chain_start": chain["chain_start"],
             "rows_checked": chain["rows_checked"],
             "first_break": chain["first_break"],
             "last_verified_seq": chain["last_verified_seq"],
@@ -305,6 +337,22 @@ async def generate_audit_report_endpoint(
         )
     except AuditVerificationLimitExceeded as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    await _audit(
+        session,
+        current_user,
+        "compliance.audit_report_generated",
+        str(tenant_id),
+        details=export_details(
+            start,
+            end,
+            frameworks=requested,
+            format=payload.format,
+            connector_id=(
+                str(payload.connector_id) if payload.connector_id is not None else None
+            ),
+        ),
+    )
+    await session.commit()
     return Response(
         content=content,
         media_type=media_type,
@@ -334,6 +382,14 @@ async def create_oversight_policy(
         default_on_timeout=payload.default_on_timeout,
     )
     session.add(policy)
+    await session.flush()
+    await _audit(
+        session,
+        current_user,
+        "compliance.oversight_policy_created",
+        str(policy.id),
+        details=change_details(None, _policy_facts(policy)),
+    )
     await session.commit()
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
@@ -373,8 +429,16 @@ async def update_oversight_policy(
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
     if "trigger" in updates:
         _validate_policy_trigger(updates["trigger"])
+    before = _policy_facts(policy)
     for field, value in updates.items():
         setattr(policy, field, value)
+    await _audit(
+        session,
+        current_user,
+        "compliance.oversight_policy_updated",
+        str(policy.id),
+        details=change_details(before, _policy_facts(policy)),
+    )
     await session.commit()
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
@@ -393,6 +457,13 @@ async def delete_oversight_policy(
     if tenant_id is None:
         raise HTTPException(status_code=404, detail="Oversight policy not found.")
     policy = await _tenant_policy(session, tenant_id, policy_id)
+    await _audit(
+        session,
+        current_user,
+        "compliance.oversight_policy_deleted",
+        str(policy.id),
+        details=change_details(_policy_facts(policy), None),
+    )
     await session.delete(policy)
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -467,6 +538,13 @@ async def trigger_oversight_evaluation(
     tenant_id = await _tenant_for_write(session, current_user)
     created = await run_oversight_evaluation(session, org_id=tenant_id)
     expired = await expire_pending(session, org_id=tenant_id)
+    await _audit(
+        session,
+        current_user,
+        "compliance.oversight_evaluated",
+        str(tenant_id),
+        details={**created, **expired},
+    )
     await session.commit()
     return {**created, **expired}
 
@@ -486,6 +564,16 @@ async def trigger_anchor(
         )
     tenant_id = await _tenant_for_write(session, current_user)
     anchor = await write_anchor(session, tenant_id, target)
+    await _audit(
+        session,
+        current_user,
+        "compliance.audit_anchored",
+        str(tenant_id),
+        details={
+            "anchor_date": target.isoformat(),
+            "row_count": anchor.row_count if anchor is not None else 0,
+        },
+    )
     await session.commit()
     if anchor is None:
         return AnchorResult(
