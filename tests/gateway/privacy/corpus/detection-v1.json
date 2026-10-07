@@ -578,8 +578,7 @@
           "entity": "TR_NATIONAL_ID",
           "value": "100 000 001 46"
         }
-      ],
-      "known_gap": "LT-B31, PRD-S16"
+      ]
     },
     {
       "id": "tckn-dashed-groups",
@@ -589,8 +588,7 @@
           "entity": "TR_NATIONAL_ID",
           "value": "100-000-001-46"
         }
-      ],
-      "known_gap": "LT-B31, PRD-S16"
+      ]
     },
     {
       "id": "iban-lowercase",
@@ -600,8 +598,7 @@
           "entity": "IBAN_CODE",
           "value": "tr330006100519786457841326"
         }
-      ],
-      "known_gap": "LT-B31, PRD-S16"
+      ]
     },
     {
       "id": "email-at-in-brackets",
@@ -611,8 +608,7 @@
           "entity": "EMAIL_ADDRESS",
           "value": "jane[at]example.com"
         }
-      ],
-      "known_gap": "LT-B31, PRD-S16"
+      ]
     },
     {
       "id": "iban-line-broken",
@@ -622,8 +618,37 @@
           "entity": "IBAN_CODE",
           "value": "TR33 0006 1005 1978\n6457 8413 26"
         }
-      ],
-      "known_gap": "LT-B31, PRD-S16"
+      ]
+    },
+    {
+      "id": "not-tckn-spaced-date",
+      "text": "Tarih 2026 10 07 olarak girildi",
+      "expect": []
+    },
+    {
+      "id": "not-tckn-spaced-amount",
+      "text": "Tutar 100 000 TL ödendi",
+      "expect": []
+    },
+    {
+      "id": "phone-spaced-not-tckn",
+      "text": "Ara 532 123 45 67",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "532 123 45 67"
+        }
+      ]
+    },
+    {
+      "id": "not-email-at-in-prose",
+      "text": "Toplantı notu: [at] etiketi taslakta kaldı",
+      "expect": []
+    },
+    {
+      "id": "not-iban-lowercase-bad-checksum",
+      "text": "sipariş tr330006100519786457841327 iptal",
+      "expect": []
     },
     {
       "id": "plate-three-letters",
