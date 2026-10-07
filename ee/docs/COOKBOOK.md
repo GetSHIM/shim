@@ -1,0 +1,286 @@
+# shim enterprise cookbook
+
+Recipes for operators running `shim-enterprise` as described in
+[customer-operated deployment](../deploy/README.md), reachable at
+`http://localhost:8000`. Management and compliance routes under `/api/v1` take
+a signed-in user's bearer token, never a gateway key: a Supabase access token,
+or with `AUTH_MODE=oidc` a token for `OIDC_API_AUDIENCE`
+([on-prem identity](ON_PREM_IDENTITY.md)). The examples read it from
+`$USER_TOKEN`, and assume an owner or admin unless a recipe says otherwise.
+Gateway keys are the `sk-shim-` plaintext that
+`POST /api/v1/management/api-keys` returns once; the examples read one from
+`$SHIM_KEY`. Calling the provider routes works as in the
+[community cookbook](../../docs/COOKBOOK.md). All data in the examples is synthetic.
+
+- [Attribute spend to teams](#attribute-spend-to-teams)
+- [Alert on a budget](#alert-on-a-budget)
+- [Change the privacy settings](#change-the-privacy-settings)
+- [Export and verify the audit trail](#export-and-verify-the-audit-trail)
+- [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
+- [Register a private model deployment](#register-a-private-model-deployment)
+
+## Attribute spend to teams
+
+Report tokens and cost per team, per cost center and per header tag.
+
+1. Create a team: `POST /api/v1/management/teams` with a `name` of up to 128
+   characters (owner or admin). It answers 201 with the team's `id`, or 409 when
+   the name exists. The optional `daily_request_limit`, `monthly_request_limit`
+   and `monthly_token_limit` are team quotas, described in
+   [team access](team-access.md#quotas).
+2. Put a key in the team: `PATCH /api/v1/management/api-keys/{id}` with
+   `team_id`. Only owners and admins move a key between teams. The same call sets
+   the key's billing label `team` and its `cost_center`, both lowercased and
+   limited to `a-z`, `0-9`, `_`, `.`, `:` and `-`. A new key can carry the same
+   fields in `POST /api/v1/management/api-keys`.
+3. Read `GET /api/v1/management/billing/breakdown`. `group_by=team_id` groups by
+   the key's team, with keys outside a team and older requests under
+   `unassigned`. `group_by=team` groups by the label, `untagged` when it is
+   unset. The other groupings are `model` (default), `tag`, `cost_center` and
+   `provider`.
+
+```console
+TEAM_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/teams \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "payments"}' | jq -r .id)
+
+curl -X PATCH "http://localhost:8000/api/v1/management/api-keys/$KEY_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"team_id\": \"$TEAM_ID\", \"team\": \"payments\", \"cost_center\": \"payments\"}"
+
+curl 'http://localhost:8000/api/v1/management/billing/breakdown?group_by=team_id' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Each row has `key`, `request_count`, `prompt_tokens`, `completion_tokens`,
+`cost_usd`, `unpriced_requests` and `cost_complete`; `cost_usd` is `null` when
+any request in the row had no price.
+
+Notes:
+
+- A key's `cost_center` becomes the cost center of every request it makes and
+  wins over `X-Shim-Tag`. The header's tags are still recorded, and
+  `group_by=tag` counts a multi-tag request once in each of its tag rows. Without
+  a key cost center, the first valid header tag is the cost center, as in
+  [community](../../docs/COOKBOOK.md#tag-requests-and-read-their-cost).
+- The window is `start_date` to `end_date`, by default the last 30 days and at
+  most 31 days; `limit` is 100 rows by default and at most 500.
+  `GET /api/v1/management/billing/export` takes the same `group_by` with
+  `format=csv` or `format=pdf`.
+- Owners, admins and auditors read billing; members get 403. The full read scope
+  is in [team access](team-access.md#read-scope).
+
+## Alert on a budget
+
+Get a Slack message or a webhook call when spend or tokens cross a share of a monthly limit.
+
+1. `POST /api/v1/management/cost/budgets` (owner or admin) with:
+   - `scope_type`: `org`, `tag` or `team`, and `scope_value` for the last two.
+     `tag` matches requests carrying that `X-Shim-Tag` tag; `team` matches the
+     key's billing label `team`, not its `team_id`. Both are stored lowercased
+     and `scope_value` is compared as written, so write it in lowercase.
+   - `limit_usd`, `limit_tokens`, or both.
+   - `alert_thresholds`: fractions greater than 0 and at most 5, unique, at
+     most 10; `0.8` means 80 percent. Default `[0.8, 1.0]`.
+   - `notify_targets`: at most 10 of `{"kind": "slack" | "webhook", "endpoint": ...}`.
+     An endpoint must be a public HTTPS URL, otherwise 422 "Unsafe notification
+     URL". It is kept in the secret store; responses show only `endpoint_origin`.
+2. Wait for the reconciliation worker, which evaluates enabled budgets every
+   `BUDGET_EVALUATION_INTERVAL_SECONDS` (default 300, from 30 to 86,400), or run
+   `POST /api/v1/management/cost/budgets/evaluate` for an immediate pass.
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/cost/budgets \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"scope_type": "tag", "scope_value": "checkout", "limit_usd": 500,
+       "alert_thresholds": [0.5, 0.9, 1.0],
+       "notify_targets": [{"kind": "webhook", "endpoint": "https://alerts.example.com/shim"}]}'
+
+curl -X POST http://localhost:8000/api/v1/management/cost/budgets/evaluate \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+The evaluate call answers `period` (`YYYY-MM`) and one result per enabled budget
+with `budget_id`, `fraction`, `fired` (thresholds crossed now) and `enqueued`.
+
+Notes:
+
+- The period is the UTC calendar month. Each threshold fires once per budget per
+  month. The fraction is the larger of known settled spend over `limit_usd` and
+  tokens over `limit_tokens`.
+- The outbox worker delivers the alert. A webhook receives
+  `{"event": "budget.threshold_crossed", "payload": {...}}` with an
+  `idempotency-key` header; Slack receives a text message.
+- A budget alerts and never refuses a request. For a hard stop, use a stored
+  provider credential's `monthly_limit_usd`, which refuses with
+  `SPEND_LIMIT_EXCEEDED`, or team quotas.
+- One evaluate call handles at most 100 budgets and 100 potential deliveries;
+  beyond that it answers 422.
+
+## Change the privacy settings
+
+Choose which entity groups shim masks for your tenant. All five switches are on by default.
+
+1. Read the current switches with `GET /api/v1/management/settings/pii`.
+2. Send only the switches you change in `PUT /api/v1/management/settings/pii`
+   (owner or admin). The response holds all five.
+
+| Switch | Entity types |
+| --- | --- |
+| `block_email` | `EMAIL_ADDRESS` |
+| `block_phone` | `PHONE_NUMBER` |
+| `block_credit_card` | `CREDIT_CARD` |
+| `block_secrets` | `SECRET`, `US_SSN`, `IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI`, `FILE_PATH` |
+| `block_pii_tr` | `TR_NATIONAL_ID`, `TR_VKN`, `IBAN_CODE`, `TR_LICENSE_PLATE` |
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"block_pii_tr": false}'
+```
+
+Notes: every change records a `tenant.privacy_policy_updated` audit event.
+Turning a switch off also records `tenant.privacy_protection_relaxed` and queues
+one delivery to every enabled forward target of the tenant's compliance
+connectors; turning it back on records only the update. Event details and the
+forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-details).
+
+## Export and verify the audit trail
+
+Hand an auditor the tenant's audit chain and let them check it on their own machine.
+
+1. Export with `GET /api/v1/compliance/audit/bundle?start=…&end=…`, as an owner,
+   admin or auditor with a user session. A gateway key gets 401 and a member 403.
+   `start` and `end` are optional; without them the whole chain is exported from
+   sequence 1.
+2. Verify offline with [`shim-audit-verify`](https://github.com/GetSHIM/shim-audit-verify).
+   It exits 0 when the bundle verifies, 1 when it was altered, and 2 when the
+   file is not a well-formed bundle.
+
+```console
+curl -OJ 'http://localhost:8000/api/v1/compliance/audit/bundle?start=2026-09-01T00:00:00Z&end=2026-09-30T23:59:59Z' \
+  -H "Authorization: Bearer $USER_TOKEN"
+uvx shim-audit-verify shim-audit-bundle-*.json
+```
+
+Notes:
+
+- The export answers 422 above 10,000 rows or 366 anchors, or when `start` is
+  after `end`, and 404 for a window without rows. The file is saved as
+  `shim-audit-bundle-<organization id>.json`.
+- The server-side check is `POST /api/v1/compliance/audit/verify?from=…&to=…`:
+  its parameters are `from` and `to`, not `start` and `end`, and it reads the
+  chain from sequence 1 up to `to` whatever `from` is. A tenant with more than
+  10,000 rows before `to` therefore gets 422 there; export a bundle and verify it
+  offline instead. With both bounds set, the window may span at most 31 days. It
+  answers `ok`, `rows_checked`, `first_break`, `last_verified_seq`,
+  `anchors_checked` and `anchor_mismatches`.
+- Read the verifier's "What it does not prove" before relying on a result. The
+  format and limits are in [decision evidence](POLICY_DECISIONS.md#audit-evidence-bundle).
+- Audit-chain appends that the outbox dead-lettered can be queued again from the
+  enterprise image, where the scripts live under `ee/scripts`.
+  `--dry-run` prints the count only; without it the events go back to pending
+  and the count is printed. `--organization <uuid>` limits it to one tenant. The
+  append deduplicates, so re-driving an event whose row exists adds no second row.
+
+```console
+python ee/scripts/redrive_audit_events.py --dry-run
+python ee/scripts/redrive_audit_events.py
+```
+
+## Produce a KVKK exposure report
+
+Produce the KVKK personal-data exposure report for a period, as PDF or CSV.
+
+1. `POST /api/v1/compliance/reports/kvkk`, as an owner, admin or auditor, with
+   an optional `connector_id`, `start` and `end` (default: the last 30 days, at
+   most 31 days), and `format` `pdf` (default) or `csv`.
+2. Save the attachment, named `kvkk_exposure_<YYYYMMDD>.pdf` or `.csv` after the end date.
+
+```console
+curl -X POST http://localhost:8000/api/v1/compliance/reports/kvkk \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"start": "2026-09-01T00:00:00Z", "end": "2026-09-30T23:59:59Z"}' \
+  -o kvkk_exposure.pdf
+```
+
+Notes: a tenant-wide PDF, one without `connector_id`, adds a "Gateway
+detections" section: per entity type, its KVKK category and the sum over
+requests started in the window of the distinct values the gateway detected and
+masked in each. A connector-scoped report and every CSV hold compliance
+connector findings only. More than 10,000 findings answers 422. Details are in
+[decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
+
+## Register a private model deployment
+
+Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
+
+1. As the platform operator, approve the server's origin in the gateway's
+   environment and restart it: `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` is a JSON list
+   of exact scheme, host and port origins. For a private certificate authority,
+   point `MODEL_DEPLOYMENT_CA_BUNDLE` at its CA file; certificate verification
+   stays on.
+2. Store the server's credential: `POST /api/v1/management/providers` with
+   `provider`, `key` (at least 10 characters) and an optional `name` (owner or
+   admin with a verified email). It answers 201 with the credential's `id`.
+3. Register the deployment: `POST /api/v1/management/model-deployments` with
+   `alias`, `provider` (`openai` or `anthropic`), `upstream_model`, `base_url`,
+   `provider_secret_id`, `deployment_kind` (`internal` or `external`),
+   `declared_version`, `owner`, and optionally `timeout_seconds` (default 60, at
+   most 300) and `enabled`. An OpenAI-compatible `base_url` includes `/v1`; an
+   Anthropic one is the server root. It answers 201, 422 for an origin that is
+   not approved or a credential of another provider, and 409 for an alias that
+   exists.
+4. Check health: `POST /api/v1/management/model-deployments/{id}/health` asks
+   the server's model list for 5 seconds and marks the deployment `healthy` on
+   HTTP 200, otherwise `unhealthy`.
+5. Call the alias as the model name, with a gateway key.
+
+```text
+MODEL_DEPLOYMENT_ALLOWED_ORIGINS=["https://models.internal:8443"]
+MODEL_DEPLOYMENT_CA_BUNDLE=/etc/shim/internal-ca.pem
+```
+
+```console
+SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"provider\": \"openai\", \"name\": \"internal-llm\", \"key\": \"$MODEL_SERVER_KEY\"}" | jq -r .id)
+
+DEPLOYMENT_ID=$(jq -n --arg secret "$SECRET_ID" '{
+    alias: "support-llm", provider: "openai", upstream_model: "llama-3.3-70b-instruct",
+    base_url: "https://models.internal:8443/v1", provider_secret_id: $secret,
+    deployment_kind: "internal", declared_version: "2026-09-30", owner: "platform-team"}' |
+  curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
+    -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @- |
+  jq -r .id)
+
+curl -X POST "http://localhost:8000/api/v1/management/model-deployments/$DEPLOYMENT_ID/health" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+```python
+import os
+
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key=os.environ["SHIM_KEY"])
+client.chat.completions.create(
+    model="support-llm",
+    messages=[{"role": "user", "content": "Summarise ticket 4521 for jane.doe@example.com"}],
+)
+```
+
+Notes:
+
+- A deployment marked `unhealthy` gets no traffic: its alias answers 503
+  `DEPLOYMENT_UNHEALTHY` and leaves `/v1/models`. Nothing probes it
+  automatically and nothing fails over. Run the health check again, or update the
+  deployment with `PUT`, which resets it to `unknown`.
+- With `MODEL_DEPLOYMENT_REQUIRED=true`, a model that is not a registered alias
+  gets 403 `MODEL_NOT_REGISTERED`, and `/v1/models` lists only aliases. A
+  disabled alias gets 403 `MODEL_NOT_ALLOWED`; one whose origin was later
+  removed from the allow-list gets 503 `DEPLOYMENT_NOT_APPROVED`.
+- A key with `allowed_models` must list the alias. An upstream model outside the
+  public price catalog is unpriced, so a provider spending limit refuses it with
+  403 `MODEL_PRICE_UNKNOWN`. The full contract is in
+  [model deployments](MODEL_DEPLOYMENTS.md).

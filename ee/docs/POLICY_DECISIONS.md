@@ -70,7 +70,8 @@ policy engine, content archive, signature or independent trust anchor.
 Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,
 pre-admission denials, masking and privacy rejection, audit failure modes,
-redelivery, and chain verification. The repository-wide gate is in `AGENTS.md`.
+redelivery, and chain verification. The repository-wide gate is in [the developer
+guide](../../DEVELOPER_GUIDE.md#required-gates).
 
 ## Management change details
 
@@ -110,7 +111,11 @@ the daily anchors of the days in the window. The genesis salt never leaves the
 deployment.
 
 Synchronous limits: at most 10,000 rows and 366 anchors (422 beyond), 404 for a
-window without rows, and 422 when `start` is after `end`. A float that jsonb
+window without rows, and 422 when `start` is after `end`. The server-side check,
+`POST /api/v1/compliance/audit/verify`, names its window `from` and `to` and
+always reads the chain from sequence 1 up to `to`, so a tenant with more than
+10,000 rows before `to` gets 422 there whatever `from` is; export a bundle and
+verify it offline instead. A float that jsonb
 would store in another form (non-finite, or `abs(value) >= 1e16`) is written to
 the chain as its string, so every stored row re-hashes as written.
 

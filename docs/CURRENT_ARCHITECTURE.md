@@ -2,7 +2,7 @@
 
 Status: current implementation contract
 
-Last verified: 2026-09-11
+Last verified: 2026-10-07
 
 This document describes the code in this branch. When it disagrees with prose,
 use this order of authority:
@@ -179,7 +179,8 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
 `MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
 `MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
-`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND` and `AUDIT_INTENT_FAILED`. A request
+`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY` and
+`AUDIT_INTENT_FAILED`. A request
 that fails schema validation carries the validator's error type instead.
 
 `background=true` Responses requests remain unsupported because shim has no
