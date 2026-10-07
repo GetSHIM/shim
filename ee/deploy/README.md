@@ -133,6 +133,9 @@ worker intervals or measured pass duration (defaults allow the hourly audit job)
 Readiness is not proof that every outbox message was delivered; monitor backlog,
 dead letters, reconciliation lag, database capacity and the existing metrics.
 Worker readiness failures do not trigger restart loops during a database outage.
+Return dead-lettered audit-chain appends to the queue with `python
+ee/scripts/redrive_audit_events.py [--organization UUID] [--dry-run]`. The append
+deduplicates, so re-driving an event whose audit row exists adds no second row.
 
 All application containers run without root, elevated capabilities, a writable
 root filesystem, or a Kubernetes service-account token. Writable temporary and

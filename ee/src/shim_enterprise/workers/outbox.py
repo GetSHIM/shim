@@ -31,6 +31,7 @@ from shim_enterprise.outbox.dead_letter import (
     next_retry_at,
     sanitize_failure,
 )
+from shim_enterprise.outbox.handlers import AUDIT_CHAIN_APPEND
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage, OutboxPublisher
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -240,11 +241,28 @@ class OutboxWorker:
             except BaseException:
                 await session.rollback()
                 raise
-        outcomes = await asyncio.gather(
-            *(self._deliver(message, fixed_now=now) for message in messages)
-        )
+        groups: dict[tuple[str, UUID], list[OutboxMessage]] = {}
+        for message in messages:
+            # One tenant's chain appends contend for one lock; send them in claim order.
+            key = (
+                ("audit", message.organization_id)
+                if message.event_type == AUDIT_CHAIN_APPEND
+                else ("event", message.id)
+            )
+            groups.setdefault(key, []).append(message)
+
+        async def deliver(group: list[OutboxMessage]) -> list[DeliveryOutcome]:
+            return [await self._deliver(message, fixed_now=now) for message in group]
+
+        results = await asyncio.gather(*map(deliver, groups.values()))
+        delivered = [
+            pair
+            for group, group_outcomes in zip(groups.values(), results, strict=True)
+            for pair in zip(group, group_outcomes, strict=True)
+        ]
+        outcomes = [outcome for _, outcome in delivered]
         await self._observe(now or datetime.now(timezone.utc))
-        for message, outcome in zip(messages, outcomes, strict=True):
+        for message, outcome in delivered:
             if outcome == "dead_letter":
                 OUTBOX_DEAD_LETTER_TOTAL.labels(
                     event_type=bounded_label("event_type", message.event_type)

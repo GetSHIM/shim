@@ -2,12 +2,13 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
 
 import shim_enterprise.workers.outbox as worker_module
+from shim_enterprise.outbox.handlers import AUDIT_CHAIN_APPEND
 from shim_enterprise.outbox.publisher import OutboxMessage, OutboxPublisher
 from shim_enterprise.workers.outbox import (
     OutboxLeaseRepository,
@@ -27,11 +28,16 @@ class SessionContext:
         return None
 
 
-def make_message(attempt_count: int = 1) -> OutboxMessage:
+def make_message(
+    attempt_count: int = 1,
+    *,
+    event_type: str = "test.created",
+    organization_id: UUID | None = None,
+) -> OutboxMessage:
     return OutboxMessage(
         id=uuid4(),
-        organization_id=uuid4(),
-        event_type="test.created",
+        organization_id=organization_id or uuid4(),
+        event_type=event_type,
         aggregate_type="test",
         aggregate_id="aggregate-1",
         idempotency_key="test:aggregate-1:created",
@@ -235,3 +241,53 @@ async def test_repository_fences_stale_attempts_and_expired_leases(db) -> None:
     assert acknowledged is False
     assert rejected is None
     assert status == "processing"
+
+
+@pytest.mark.asyncio
+async def test_worker_delivers_one_tenants_audit_appends_in_claim_order() -> None:
+    tenant = uuid4()
+    first, second = (
+        make_message(event_type=AUDIT_CHAIN_APPEND, organization_id=tenant)
+        for _ in range(2)
+    )
+    other_tenant = make_message(event_type=AUDIT_CHAIN_APPEND)
+    same_tenant_plain = make_message(organization_id=tenant)
+    claimed = (first, other_tenant, same_tenant_plain, second)
+    repository = SimpleNamespace(
+        claim=AsyncMock(return_value=claimed),
+        acknowledge=AsyncMock(return_value=True),
+        reject=AsyncMock(),
+        lag=AsyncMock(return_value={}),
+    )
+    spans: dict[UUID, tuple[float, float]] = {}
+
+    async def handler(message: OutboxMessage) -> None:
+        started = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.05)
+        spans[message.id] = (started, asyncio.get_running_loop().time())
+
+    publisher = OutboxPublisher()
+    publisher.register(AUDIT_CHAIN_APPEND, handler)
+    publisher.register("test.created", handler)
+    worker = OutboxWorker(
+        publisher,
+        repository=repository,
+        session_factory=SessionContext,
+        limits=WorkerLimits(batch_size=10, lease_seconds=10, max_attempts=3),
+        worker_id="worker-1",
+        interval_seconds=1,
+    )
+
+    result = await worker.run_once(now=datetime(2026, 7, 12, 1, tzinfo=timezone.utc))
+
+    def overlap(left: OutboxMessage, right: OutboxMessage) -> bool:
+        return (
+            spans[left.id][0] < spans[right.id][1]
+            and spans[right.id][0] < spans[left.id][1]
+        )
+
+    assert result.processed == len(claimed)
+    assert spans[first.id][1] <= spans[second.id][0]
+    assert overlap(first, other_tenant)
+    assert overlap(first, same_tenant_plain)
+    assert overlap(other_tenant, same_tenant_plain)
