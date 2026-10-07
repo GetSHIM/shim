@@ -20,7 +20,8 @@ exact scheme/host/port origins, for example `["https://models.internal:8443"]`.
 API users cannot expand this policy. URL credentials, queries, fragments,
 metadata addresses and redirects are rejected. Internal HTTP origins require
 explicit approval; use HTTPS in production. Add private certificate authorities
-with `MODEL_DEPLOYMENT_CA_BUNDLE`; certificate verification stays enabled.
+with `OUTBOUND_CA_BUNDLE` (the earlier name `MODEL_DEPLOYMENT_CA_BUNDLE` is still
+read); certificate verification stays enabled.
 Enforce DNS and outbound network policy at the deployment boundary as well.
 
 For OpenAI-compatible deployments, use the API base including `/v1`; for

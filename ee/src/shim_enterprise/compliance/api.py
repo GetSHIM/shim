@@ -693,7 +693,10 @@ async def _validate_forward_url(endpoint: str) -> None:
     except UnsafeForwardURL as exc:
         raise HTTPException(
             status_code=422,
-            detail="Forward target must resolve to a public HTTPS destination",
+            detail=(
+                "Forward target must resolve to a public or operator-approved "
+                "HTTPS destination"
+            ),
         ) from exc
 
 
@@ -738,13 +741,9 @@ async def _load_target(
     target = (
         await session.execute(
             select(ComplianceForwardTarget)
-            .join(
-                ComplianceConnector,
-                ComplianceForwardTarget.connector_id == ComplianceConnector.id,
-            )
             .where(
                 ComplianceForwardTarget.id == target_id,
-                ComplianceConnector.organization_id == tenant_id,
+                ComplianceForwardTarget.organization_id == tenant_id,
             )
             .with_for_update(of=ComplianceForwardTarget)
         )
@@ -760,18 +759,14 @@ async def _load_target(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_forward_target(
-    connector_id: UUID,
     payload: ForwardTargetCreate,
+    connector_id: UUID | None = Query(default=None),
     current_user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
-    connector = await _load_connector(
-        session,
-        tenant_id,
-        connector_id,
-        for_update=True,
-    )
+    if connector_id is not None:
+        await _load_connector(session, tenant_id, connector_id, for_update=True)
     endpoint = await _validate_target_destination(
         payload.kind,
         payload.endpoint,
@@ -785,7 +780,8 @@ async def create_forward_target(
         metadata={"kind": payload.kind},
     )
     target = ComplianceForwardTarget(
-        connector_id=connector.id,
+        organization_id=tenant_id,
+        connector_id=connector_id,
         kind=payload.kind,
         endpoint_origin=_endpoint_origin(payload.kind, endpoint),
         signed=payload.secret is not None,
@@ -824,13 +820,8 @@ async def list_forward_targets(
     session: AsyncSession = Depends(get_db),
 ) -> list[ForwardTargetRead]:
     tenant_id = _tenant_id(current_user)
-    statement = (
-        select(ComplianceForwardTarget)
-        .join(
-            ComplianceConnector,
-            ComplianceForwardTarget.connector_id == ComplianceConnector.id,
-        )
-        .where(ComplianceConnector.organization_id == tenant_id)
+    statement = select(ComplianceForwardTarget).where(
+        ComplianceForwardTarget.organization_id == tenant_id
     )
     if connector_id is not None:
         statement = statement.where(

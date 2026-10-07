@@ -160,7 +160,7 @@ class ForwardTargetRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    connector_id: UUID
+    connector_id: UUID | None
     kind: Literal["siem_webhook", "slack", "email"]
     endpoint_origin: str
     signed: bool

@@ -7,7 +7,14 @@ from typing import Literal, Self
 from uuid import UUID
 from urllib.parse import urlsplit
 
-from pydantic import EmailStr, Field, RedisDsn, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    EmailStr,
+    Field,
+    RedisDsn,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import SettingsConfigDict
 
 from shim.core.community_config import CommunitySettings
@@ -18,7 +25,14 @@ class Settings(CommunitySettings):
     DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     MODEL_DEPLOYMENT_REQUIRED: bool = False
     MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
-    MODEL_DEPLOYMENT_CA_BUNDLE: str | None = None
+    ALERT_ALLOWED_ORIGINS: list[str] = []
+    # The model-deployment name shipped in 0.1.4; existing installs still set it.
+    OUTBOUND_CA_BUNDLE: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OUTBOUND_CA_BUNDLE", "MODEL_DEPLOYMENT_CA_BUNDLE"
+        ),
+    )
 
     API_PREFIX: Literal["/api/v1"] = "/api/v1"
 
@@ -112,6 +126,29 @@ class Settings(CommunitySettings):
                     "OIDC team mappings require group, team_id, and member/team_admin role"
                 )
             UUID(mapping["team_id"])
+        return value
+
+    @field_validator("ALERT_ALLOWED_ORIGINS")
+    @classmethod
+    def validate_alert_origins(cls, value: list[str]) -> list[str]:
+        error = (
+            "ALERT_ALLOWED_ORIGINS entries must be exact https://host[:port] origins"
+        )
+        for origin in value:
+            parsed = urlsplit(origin)
+            try:
+                parsed.port
+            except ValueError:
+                raise ValueError(error) from None
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(error)
         return value
 
     @field_validator("WORKER_HEARTBEAT_PATH")

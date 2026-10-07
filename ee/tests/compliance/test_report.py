@@ -190,6 +190,7 @@ async def test_forward_target_rotation_rebinds_queued_delivery_before_cleanup(
     tenant_id = uuid4()
     target = ComplianceForwardTarget(
         id=uuid4(),
+        organization_id=tenant_id,
         connector_id=uuid4(),
         kind="siem_webhook",
         endpoint_origin="https://old.example",
@@ -887,8 +888,8 @@ async def test_connector_and_forward_target_changes_runs_and_reports_are_audited
         db,
     )
     target = await compliance_api.create_forward_target(
-        connector.id,
         ForwardTargetCreate(endpoint="https://siem.example/hook"),
+        connector.id,
         user,
         db,
     )

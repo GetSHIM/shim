@@ -1670,6 +1670,7 @@
               "type": "number"
             },
             "maxItems": 10,
+            "minItems": 1,
             "title": "Alert Thresholds",
             "type": "array"
           },
@@ -1681,7 +1682,7 @@
           "limit_tokens": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -1693,7 +1694,7 @@
           "limit_usd": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "number"
               },
               {
@@ -1711,6 +1712,7 @@
               "$ref": "#/components/schemas/NotificationTargetInput"
             },
             "maxItems": 10,
+            "minItems": 1,
             "title": "Notify Targets",
             "type": "array"
           },
@@ -1736,7 +1738,8 @@
           }
         },
         "required": [
-          "scope_type"
+          "scope_type",
+          "notify_targets"
         ],
         "title": "BudgetInput",
         "type": "object"
@@ -1750,6 +1753,7 @@
                   "type": "number"
                 },
                 "maxItems": 10,
+                "minItems": 1,
                 "type": "array"
               },
               {
@@ -1773,7 +1777,7 @@
           "limit_tokens": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -1785,7 +1789,7 @@
           "limit_usd": {
             "anyOf": [
               {
-                "minimum": 0.0,
+                "exclusiveMinimum": 0.0,
                 "type": "number"
               },
               {
@@ -1805,6 +1809,7 @@
                   "$ref": "#/components/schemas/NotificationTargetInput"
                 },
                 "maxItems": 10,
+                "minItems": 1,
                 "type": "array"
               },
               {
@@ -1824,6 +1829,14 @@
               "type": "number"
             },
             "title": "Alert Thresholds",
+            "type": "array"
+          },
+          "alert_thresholds_percent": {
+            "items": {
+              "type": "number"
+            },
+            "readOnly": true,
+            "title": "Alert Thresholds Percent",
             "type": "array"
           },
           "created_at": {
@@ -1911,7 +1924,8 @@
           "alert_thresholds",
           "notify_targets",
           "enabled",
-          "created_at"
+          "created_at",
+          "alert_thresholds_percent"
         ],
         "title": "BudgetView",
         "type": "object"
@@ -3473,9 +3487,16 @@
       "ForwardTargetRead": {
         "properties": {
           "connector_id": {
-            "format": "uuid",
-            "title": "Connector Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connector Id"
           },
           "created_at": {
             "anyOf": [
@@ -5371,6 +5392,19 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "minLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Signs webhook deliveries with X-Shim-Signature.",
+            "title": "Secret"
           }
         },
         "required": [
@@ -5393,11 +5427,16 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "signed": {
+            "title": "Signed",
+            "type": "boolean"
           }
         },
         "required": [
           "kind",
-          "endpoint_origin"
+          "endpoint_origin",
+          "signed"
         ],
         "title": "NotificationTargetView",
         "type": "object"
@@ -11242,11 +11281,18 @@
           {
             "in": "query",
             "name": "connector_id",
-            "required": true,
+            "required": false,
             "schema": {
-              "format": "uuid",
-              "title": "Connector Id",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connector Id"
             }
           }
         ],

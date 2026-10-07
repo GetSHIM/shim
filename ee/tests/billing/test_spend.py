@@ -6,14 +6,17 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import delete, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.api.v1 import management
+from shim_enterprise.api.v1.router import management_router
 from shim.billing.attribution import CostAttribution, UNTAGGED, normalize_attribution
 from shim_enterprise.billing.ledger import (
     DurableAccountingRepository,
@@ -37,10 +40,15 @@ from shim_enterprise.billing.spend import (
     evaluate_enabled_budgets,
     validate_budget_notification_config,
 )
+from shim_enterprise.core.config import settings
+from shim_enterprise.core.database import get_db
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.outbox.handlers import _budget_text
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import ApiKey, Organization, User
+
+
+_TARGET = {"kind": "webhook", "endpoint": "https://alerts.example/hook"}
 
 
 def test_api_key_cost_center_wins_and_header_tags_stay_dimensions() -> None:
@@ -124,7 +132,7 @@ def test_budget_patch_reuses_create_threshold_validation() -> None:
             management.BudgetPatch(alert_thresholds=thresholds)
 
     assert management.BudgetInput(
-        scope_type="org", limit_tokens=1
+        scope_type="org", limit_tokens=1, notify_targets=[_TARGET]
     ).alert_thresholds == [0.8, 1.0]
     assert management.BudgetPatch(alert_thresholds=[5]).alert_thresholds == [5]
 
@@ -169,7 +177,12 @@ def test_budget_notification_fanout_accepts_ten_unique_entries(model) -> None:
     if model is management.BudgetInput:
         values = {"scope_type": "org", "limit_tokens": 1, **values}
 
-    assert model.model_validate(values).model_dump(include=values.keys()) == values
+    assert (
+        model.model_validate(values).model_dump(
+            include=set(values), exclude={"notify_targets": {"__all__": {"secret"}}}
+        )
+        == values
+    )
 
 
 @pytest.mark.parametrize(
@@ -294,7 +307,7 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     with pytest.raises(HTTPException, match="require migration"):
         await management.update_budget(
             row.id,
-            management.BudgetPatch(notify_targets=[]),
+            management.BudgetPatch(notify_targets=[_TARGET]),
             user,
             session,
         )
@@ -898,3 +911,214 @@ async def test_concurrent_scheduled_evaluations_enqueue_each_alert_once(
         assert await _fired(factory, [budget]) == {(budget.id, 0.5), (budget.id, 1.0)}
     finally:
         await _drop_budget_tenants(factory, [tenant])
+
+
+@pytest.mark.parametrize("scope_type", ["tag", "team"])
+def test_budget_scope_uses_the_ingest_label_normalization(scope_type: str) -> None:
+    def budget(value: str) -> management.BudgetInput:
+        return management.BudgetInput(
+            scope_type=scope_type,
+            scope_value=value,
+            limit_usd=1,
+            notify_targets=[_TARGET],
+        )
+
+    assert budget(" Payments ").scope_value == "payments"
+    for invalid in ("bad tag", "café", "x" * (settings.COST_TAG_MAX_LENGTH + 1), " "):
+        with pytest.raises(ValidationError):
+            budget(invalid)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"limit_usd": 0},
+        {"limit_tokens": 0},
+        {"limit_usd": "-1"},
+        {"alert_thresholds": []},
+        {"notify_targets": []},
+    ],
+)
+def test_budget_settings_that_could_never_alert_are_rejected(values) -> None:
+    with pytest.raises(ValidationError):
+        management.BudgetInput.model_validate(
+            {"scope_type": "org", "limit_usd": 1, "notify_targets": [_TARGET]} | values
+        )
+    with pytest.raises(ValidationError):
+        management.BudgetPatch.model_validate(values)
+
+
+@pytest.mark.asyncio
+async def test_budget_routes_answer_422_for_a_budget_without_targets(
+    db, test_user_with_org
+) -> None:
+    test_user_with_org.role = "admin"
+    legacy = CostBudget(
+        organization_id=test_user_with_org.organization_id,
+        scope_type="org",
+        limit_usd=0,
+        alert_thresholds=[],
+        notify_targets=[],
+    )
+    db.add(legacy)
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/v1/management/cost/budgets",
+            json={"scope_type": "org", "limit_usd": 1, "notify_targets": []},
+        )
+        patched = await client.patch(
+            f"/api/v1/management/cost/budgets/{legacy.id}",
+            json={"notify_targets": []},
+        )
+        disabled = await client.patch(
+            f"/api/v1/management/cost/budgets/{legacy.id}", json={"enabled": False}
+        )
+
+    assert (created.status_code, patched.status_code) == (422, 422)
+    assert disabled.status_code == 200
+    assert disabled.json()["alert_thresholds_percent"] == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_scopes_match_normalized_request_labels(db) -> None:
+    organization_id = await _tenant_with_settled_tokens(db, 50)
+    await db.execute(
+        text(
+            "UPDATE request_lifecycle SET metadata = "
+            "metadata || CAST(:labels AS jsonb) WHERE organization_id = :org"
+        ),
+        {
+            "labels": '{"tags": ["payments"], "team": "payments"}',
+            "org": organization_id,
+        },
+    )
+    evaluator = BudgetEvaluator()
+    now = datetime.now(timezone.utc)
+
+    fired = []
+    for scope_type in ("tag", "team"):
+        payload = management.BudgetInput(
+            scope_type=scope_type,
+            scope_value="Payments",
+            limit_tokens=10,
+            alert_thresholds=[1.0],
+            notify_targets=[_TARGET],
+        )
+        budget = CostBudget(
+            organization_id=organization_id,
+            scope_type=scope_type,
+            scope_value=payload.scope_value,
+            limit_tokens=payload.limit_tokens,
+            alert_thresholds=payload.alert_thresholds,
+            notify_targets=[
+                {
+                    "kind": "webhook",
+                    "endpoint_origin": "https://alerts.example",
+                    "secret_ref": "fernet:v2:target",
+                }
+            ],
+        )
+        db.add(budget)
+        await db.flush()
+        fired.append((await evaluator.evaluate(db, budget, now=now))["fired"])
+
+    assert fired == [[1.0], [1.0]]
+
+
+@pytest.mark.asyncio
+async def test_legacy_budget_without_limits_or_thresholds_still_evaluates(db) -> None:
+    organization_id = await _tenant_with_settled_tokens(db, 50)
+    legacy = CostBudget(
+        organization_id=organization_id,
+        scope_type="org",
+        limit_usd=0,
+        limit_tokens=0,
+        alert_thresholds=[],
+        notify_targets=[],
+    )
+    db.add(legacy)
+    await db.flush()
+
+    result = await BudgetEvaluator().evaluate(
+        db, legacy, now=datetime.now(timezone.utc)
+    )
+
+    assert (result["fraction"], result["fired"], result["enqueued"]) == (0.0, [], 0)
+
+
+def test_budget_view_shows_thresholds_as_percent_and_signed_targets() -> None:
+    view = management.BudgetView.model_validate(
+        SimpleNamespace(
+            id=uuid4(),
+            organization_id=uuid4(),
+            scope_type="org",
+            scope_value=None,
+            period="monthly",
+            limit_usd=Decimal("1"),
+            limit_tokens=None,
+            alert_thresholds=[0.07, 0.8, 1.5],
+            notify_targets=[
+                {
+                    "kind": "webhook",
+                    "endpoint_origin": "https://alerts.example",
+                    "secret_ref": "fernet:v2:endpoint",
+                    "signing_secret_ref": "fernet:v2:signing",
+                },
+                {
+                    "kind": "slack",
+                    "endpoint_origin": "https://hooks.slack.com",
+                    "secret_ref": "fernet:v2:slack",
+                },
+            ],
+            enabled=True,
+            created_at=datetime.now(timezone.utc),
+        )
+    ).model_dump()
+
+    assert view["alert_thresholds_percent"] == [7.0, 80.0, 150.0]
+    assert [target["signed"] for target in view["notify_targets"]] == [True, False]
+    assert "signing_secret_ref" not in str(view)
+
+
+@pytest.mark.asyncio
+async def test_budget_signing_secrets_live_in_the_secret_store(monkeypatch) -> None:
+    store = SimpleNamespace(
+        put_secret=AsyncMock(side_effect=lambda *args: f"ref:{args[1]}:{args[2]}"),
+        delete_secret=AsyncMock(),
+    )
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    tenant_id = uuid4()
+    secret = "s" * 32
+
+    stored = await management._store_budget_targets(
+        tenant_id,
+        [
+            management.NotificationTargetInput(**_TARGET, secret=secret),
+            management.NotificationTargetInput(
+                kind="slack", endpoint="https://hooks.slack.com/services/x"
+            ),
+        ],
+    )
+    await management._delete_budget_targets(tenant_id, stored)
+
+    assert stored[0]["signing_secret_ref"] == f"ref:budget-alert-signing:{secret}"
+    assert "signing_secret_ref" not in stored[1]
+    assert sorted(
+        call.kwargs["expected_purpose"] for call in store.delete_secret.await_args_list
+    ) == ["budget-alert-endpoint", "budget-alert-endpoint", "budget-alert-signing"]
+    with pytest.raises(ValidationError, match="webhook"):
+        management.NotificationTargetInput(
+            kind="slack", endpoint="https://hooks.slack.com/services/x", secret=secret
+        )
+    with pytest.raises(ValidationError):
+        management.NotificationTargetInput(**_TARGET, secret="short")

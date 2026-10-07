@@ -238,6 +238,8 @@ enterprise = [
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
+  "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
+  "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
   "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
   "ee/deploy/test/fixtures.py",
@@ -371,6 +373,8 @@ enterprise = [
   "ee/tests/compliance/test_compliance_scan.py",
   "ee/tests/compliance/test_openai_adapter.py",
   "ee/tests/compliance/test_report.py",
+  "ee/tests/compliance/test_tenant_alerts.py",
+  "ee/tests/compliance/test_url_guard.py",
   "ee/tests/conftest.py",
   "ee/tests/core/test_database.py",
   "ee/tests/core/test_enterprise_config.py",
@@ -402,6 +406,7 @@ enterprise = [
   "ee/tests/tenants/test_policy.py",
   "ee/tests/tenants/test_service.py",
   "ee/tests/tenants/test_teams.py",
+  "ee/tests/test_alert_migrations.py",
   "ee/tests/workers/test_readiness.py",
 ]
 

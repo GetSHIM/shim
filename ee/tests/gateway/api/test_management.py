@@ -886,11 +886,19 @@ async def test_billing_export_rejects_more_than_500_groups(
 
 def test_budget_thresholds_are_fractions_and_say_so() -> None:
     with pytest.raises(ValidationError, match="thresholds are fractions") as refused:
-        management.BudgetInput(scope_type="org", limit_usd=1, alert_thresholds=[50])
+        management.BudgetInput(
+            scope_type="org",
+            limit_usd=1,
+            alert_thresholds=[50],
+            notify_targets=[{"kind": "slack", "endpoint": "https://hooks.example"}],
+        )
     assert "50 is outside (0, 5]" in str(refused.value)
 
     accepted = management.BudgetInput(
-        scope_type="org", limit_usd=1, alert_thresholds=[0.5, 1.0]
+        scope_type="org",
+        limit_usd=1,
+        alert_thresholds=[0.5, 1.0],
+        notify_targets=[{"kind": "slack", "endpoint": "https://hooks.example"}],
     )
     assert accepted.alert_thresholds == [0.5, 1.0]
     schema = management.BudgetInput.model_json_schema()["properties"]
@@ -1029,14 +1037,17 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
     await db.flush()
     targets = [
         ComplianceForwardTarget(
-            connector_id=connector.id,
+            organization_id=tenant_id,
+            connector_id=connector_id,
             endpoint_origin=f"https://siem-{index}.example",
             secret_ref=f"fernet:v2:target-{index}",
             secret_backend="fernet",
             secret_version="v2",
             enabled=enabled,
         )
-        for index, enabled in enumerate((True, True, False))
+        for index, (connector_id, enabled) in enumerate(
+            ((connector.id, True), (None, True), (connector.id, False))
+        )
     ]
     db.add_all(targets)
     await db.flush()
@@ -1104,6 +1115,7 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
                 "kind": "privacy_protection_relaxed",
                 "fields": ["block_email", "block_phone"],
                 "actor": str(test_user_with_org.id),
+                "actor_email": test_user_with_org.email,
                 "occurred_at": None,
             },
             sort_keys=True,

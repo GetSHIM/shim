@@ -112,12 +112,14 @@ contains its own event: `compliance.audit_bundle_exported`,
 applies, the row count, format, frameworks, connector or grouping. List views
 (`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
-Turning any privacy switch off also queues, for every enabled compliance forward
-target of the tenant's connectors, one `compliance.connector_delivery_requested`
-delivery with the body `{"source": "shim", "event_type": "tenant_policy",
-"kind": "privacy_protection_relaxed", "fields": [...], "actor": <user id>,
-"occurred_at": ...}`. Its key is derived from the audit event id, so a retry does
-not duplicate it. A tenant without forward targets gets the audit event only.
+Turning any privacy switch off also queues, for every enabled forward target of
+the tenant, connector-bound or not, one `compliance.connector_delivery_requested`
+delivery with aggregate type `organization` and the body `{"source": "shim",
+"event_type": "tenant_policy", "kind": "privacy_protection_relaxed", "fields":
+[...], "actor": <user id>, "actor_email": <user e-mail>, "occurred_at": ...}`.
+Slack and e-mail show the e-mail address. Its key is derived from the audit
+event id, so a retry does not duplicate it. A tenant without forward targets
+gets the audit event only.
 Turning a switch back on records only `tenant.privacy_policy_updated`.
 
 ## Audit evidence bundle

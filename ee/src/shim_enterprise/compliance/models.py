@@ -192,7 +192,7 @@ class ComplianceFinding(Base, TimestampMixin):
 
 
 class ComplianceForwardTarget(Base, TimestampMixin):
-    """Outbound SIEM destination represented by a SecretStore endpoint bundle."""
+    """Tenant alert destination represented by a SecretStore endpoint bundle."""
 
     __tablename__ = "compliance_forward_target"
     __table_args__ = (
@@ -204,14 +204,23 @@ class ComplianceForwardTarget(Base, TimestampMixin):
             "min_severity IN ('low', 'medium', 'high', 'critical')",
             name="ck_compliance_forward_target_severity",
         ),
+        Index("ix_compliance_forward_target_tenant", "organization_id"),
     )
 
     id: Mapped[UUID] = mapped_column(
         SqlUUID(as_uuid=True), primary_key=True, default=uuid4
     )
-    connector_id: Mapped[UUID] = mapped_column(
-        ForeignKey("compliance_connector.id", ondelete="CASCADE"),
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            ondelete="CASCADE",
+            name="fk_compliance_forward_target_organization",
+        ),
         nullable=False,
+    )
+    # Null for a tenant-level target; a connector's findings reach only its own.
+    connector_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("compliance_connector.id", ondelete="CASCADE"),
         index=True,
     )
     kind: Mapped[str] = mapped_column(
@@ -234,7 +243,7 @@ class ComplianceForwardTarget(Base, TimestampMixin):
         Boolean, nullable=False, default=True, server_default="true"
     )
 
-    connector: Mapped[ComplianceConnector] = relationship(
+    connector: Mapped[ComplianceConnector | None] = relationship(
         back_populates="forward_targets"
     )
 

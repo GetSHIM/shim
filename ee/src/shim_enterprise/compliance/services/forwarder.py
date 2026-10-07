@@ -101,38 +101,50 @@ class ComplianceForwarderService:
         *,
         fields: list[str],
         actor: str,
+        actor_email: str,
         event_id: str,
     ) -> None:
-        body = {
-            "source": "shim",
-            "event_type": "tenant_policy",
-            "kind": "privacy_protection_relaxed",
-            "fields": fields,
-            "actor": actor,
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
-        }
-        rows = (
+        await self.send_tenant_alert(
+            session,
+            tenant_id,
+            body={
+                "source": "shim",
+                "event_type": "tenant_policy",
+                "kind": "privacy_protection_relaxed",
+                "fields": fields,
+                "actor": actor,
+                "actor_email": actor_email,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            },
+            delivery_key=f"privacy_protection_relaxed:{event_id}",
+        )
+
+    async def send_tenant_alert(
+        self,
+        session: AsyncSession,
+        tenant_id: TenantId,
+        *,
+        body: dict[str, Any],
+        delivery_key: str,
+    ) -> int:
+        """Queue one delivery per enabled forward target of the tenant."""
+        targets = (
             await session.execute(
-                select(ComplianceConnector, ComplianceForwardTarget)
-                .join(
-                    ComplianceForwardTarget,
-                    ComplianceForwardTarget.connector_id == ComplianceConnector.id,
-                )
+                select(ComplianceForwardTarget)
                 .where(
-                    ComplianceConnector.organization_id == tenant_id,
+                    ComplianceForwardTarget.organization_id == tenant_id,
                     ComplianceForwardTarget.enabled.is_(True),
                 )
                 .with_for_update(read=True, of=ComplianceForwardTarget)
             )
-        ).all()
-        for connector, target in rows:
+        ).scalars()
+        queued = 0
+        for target in targets:
             await self._append(
-                session,
-                connector,
-                target,
-                body=body,
-                delivery_key=f"privacy_protection_relaxed:{event_id}",
+                session, None, target, body=body, delivery_key=delivery_key
             )
+            queued += 1
+        return queued
 
     @staticmethod
     async def _targets(
@@ -152,26 +164,31 @@ class ComplianceForwarderService:
     @staticmethod
     async def _append(
         session: AsyncSession,
-        connector: ComplianceConnector,
+        connector: ComplianceConnector | None,
         target: ComplianceForwardTarget,
         *,
         body: dict[str, Any],
         delivery_key: str,
     ) -> None:
-        tenant_id = TenantId(connector.organization_id)
+        tenant_id = TenantId(target.organization_id)
+        aggregate_type, aggregate_id = (
+            ("organization", str(tenant_id))
+            if connector is None
+            else ("compliance_connector", str(connector.id))
+        )
         await OutboxWriter().append(
             session,
             organization_id=tenant_id,
             values={
                 "event_type": DELIVERY_EVENT,
-                "aggregate_type": "compliance_connector",
-                "aggregate_id": str(connector.id),
+                "aggregate_type": aggregate_type,
+                "aggregate_id": aggregate_id,
                 "idempotency_key": (
-                    f"compliance:{connector.id}:target:{target.id}:{delivery_key}"
+                    f"compliance:{aggregate_id}:target:{target.id}:{delivery_key}"
                 ),
                 "payload": {
                     "organization_id": str(tenant_id),
-                    "connector_id": str(connector.id),
+                    "connector_id": None if connector is None else str(connector.id),
                     "target_id": str(target.id),
                     "target_kind": target.kind,
                     "secret_ref": target.secret_ref,

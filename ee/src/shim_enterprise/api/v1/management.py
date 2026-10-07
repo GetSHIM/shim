@@ -24,6 +24,7 @@ from pydantic import (
     ConfigDict,
     EmailStr,
     Field,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -363,20 +364,41 @@ class TeamRolePatch(BaseModel):
 class NotificationTargetInput(BaseModel):
     kind: Literal["slack", "webhook"]
     endpoint: str = Field(min_length=1, max_length=2_048)
+    secret: str | None = Field(
+        default=None,
+        min_length=16,
+        repr=False,
+        description="Signs webhook deliveries with X-Shim-Signature.",
+    )
+
+    @model_validator(mode="after")
+    def validate_signing(self) -> NotificationTargetInput:
+        if self.secret is not None and self.kind != "webhook":
+            raise ValueError("only webhook targets support signing secrets")
+        return self
 
 
 class NotificationTargetView(BaseModel):
     kind: Literal["slack", "webhook"]
     endpoint_origin: str
+    signed: bool
+
+    @model_validator(mode="before")
+    @classmethod
+    def signed_from_reference(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {**value, "signed": "signing_secret_ref" in value}
+        return value
 
 
 class BudgetInput(BaseModel):
     scope_type: Literal["tag", "team", "org"]
     scope_value: str | None = None
-    limit_usd: Decimal | None = Field(default=None, ge=0)
-    limit_tokens: int | None = Field(default=None, ge=0)
+    limit_usd: Decimal | None = Field(default=None, gt=0)
+    limit_tokens: int | None = Field(default=None, gt=0)
     alert_thresholds: list[float] = Field(
         default_factory=lambda: [0.8, 1.0],
+        min_length=1,
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
         description=(
             "Fractions of the budget limit, greater than 0 and at most 5. "
@@ -384,7 +406,7 @@ class BudgetInput(BaseModel):
         ),
     )
     notify_targets: list[NotificationTargetInput] = Field(
-        default_factory=list,
+        min_length=1,
         max_length=MAX_BUDGET_NOTIFY_TARGETS,
     )
     enabled: bool = True
@@ -416,18 +438,21 @@ class BudgetInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_budget(self) -> BudgetInput:
-        if self.scope_type != "org" and not self.scope_value:
-            raise ValueError("scoped budgets require scope_value")
+        if self.scope_type != "org":
+            if not self.scope_value:
+                raise ValueError("scoped budgets require scope_value")
+            self.scope_value = _validate_attribution(self.scope_value)
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
 
 
 class BudgetPatch(BaseModel):
-    limit_usd: Decimal | None = Field(default=None, ge=0)
-    limit_tokens: int | None = Field(default=None, ge=0)
+    limit_usd: Decimal | None = Field(default=None, gt=0)
+    limit_tokens: int | None = Field(default=None, gt=0)
     alert_thresholds: list[float] | None = Field(
         default=None,
+        min_length=1,
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
         description=(
             "Fractions of the budget limit, greater than 0 and at most 5. "
@@ -436,6 +461,7 @@ class BudgetPatch(BaseModel):
     )
     notify_targets: list[NotificationTargetInput] | None = Field(
         default=None,
+        min_length=1,
         max_length=MAX_BUDGET_NOTIFY_TARGETS,
     )
     enabled: bool | None = None
@@ -476,6 +502,11 @@ class BudgetView(BaseModel):
     notify_targets: list[NotificationTargetView]
     enabled: bool
     created_at: datetime
+
+    @computed_field
+    @property
+    def alert_thresholds_percent(self) -> list[float]:
+        return [float(Decimal(str(value)) * 100) for value in self.alert_thresholds]
 
 
 class BudgetEvaluationItem(BaseModel):
@@ -1612,6 +1643,7 @@ async def update_privacy_settings(
             TenantId(tenant_id),
             fields=relaxed,
             actor=str(user.id),
+            actor_email=user.email,
             event_id=event_id,
         )
     await session.commit()
@@ -2872,13 +2904,21 @@ async def _store_budget_targets(
                 target.endpoint,
                 {"kind": target.kind},
             )
-            stored.append(
-                {
-                    "kind": target.kind,
-                    "endpoint_origin": _endpoint_origin(target.endpoint),
-                    "secret_ref": str(reference),
-                }
-            )
+            entry = {
+                "kind": target.kind,
+                "endpoint_origin": _endpoint_origin(target.endpoint),
+                "secret_ref": str(reference),
+            }
+            stored.append(entry)
+            if target.secret is not None:
+                entry["signing_secret_ref"] = str(
+                    await store.put_secret(
+                        TenantId(tenant_id),
+                        "budget-alert-signing",
+                        target.secret,
+                        {"kind": target.kind},
+                    )
+                )
     except BaseException:
         await _delete_budget_targets(tenant_id, stored)
         raise
@@ -2890,14 +2930,15 @@ async def _delete_budget_targets(
     targets: list[dict[str, str]],
 ) -> None:
     for target in targets:
-        reference = target.get("secret_ref")
-        if reference is None:
-            continue
-        await _delete_secret_best_effort(
-            tenant_id,
-            SecretRef(reference),
-            "budget-alert-endpoint",
-        )
+        for field, purpose in (
+            ("secret_ref", "budget-alert-endpoint"),
+            ("signing_secret_ref", "budget-alert-signing"),
+        ):
+            reference = target.get(field)
+            if reference is not None:
+                await _delete_secret_best_effort(
+                    tenant_id, SecretRef(reference), purpose
+                )
 
 
 def _reject_oversized_legacy_targets(targets: list[dict[str, str]]) -> None:

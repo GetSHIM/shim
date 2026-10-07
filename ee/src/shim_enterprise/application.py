@@ -134,7 +134,7 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     http_client = httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=False,
-        verify=ssl.create_default_context(cafile=settings.MODEL_DEPLOYMENT_CA_BUNDLE),
+        verify=ssl.create_default_context(cafile=settings.OUTBOUND_CA_BUNDLE),
     )
     application.state.http_client = http_client
     google_sync_client = httpx.Client()
