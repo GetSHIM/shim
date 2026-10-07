@@ -228,8 +228,7 @@
           "entity": "SECRET",
           "value": "AIza00000000000000000000000000000000000"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "slack-bot-token-bare",
@@ -239,8 +238,7 @@
           "entity": "SECRET",
           "value": "xoxb-0000000000-0000000000000"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "hugging-face-token-bare",
@@ -250,8 +248,7 @@
           "entity": "SECRET",
           "value": "hf_0000000000000000000000000000000000"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "gitlab-token-bare",
@@ -261,8 +258,7 @@
           "entity": "SECRET",
           "value": "glpat-00000000000000000000"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "sifre-colon",
@@ -272,8 +268,7 @@
           "entity": "SECRET",
           "value": "Gizli.Parola2026"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "parola-colon",
@@ -283,8 +278,7 @@
           "entity": "SECRET",
           "value": "Gizli.Parola2026"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
     },
     {
       "id": "sifre-upper-equals",
@@ -294,8 +288,32 @@
           "entity": "SECRET",
           "value": "Gizli.Parola2026"
         }
-      ],
-      "known_gap": "LT-B11, PRD-S10"
+      ]
+    },
+    {
+      "id": "not-secret-xoxo-prose",
+      "text": "Görüşürüz, xoxo",
+      "expect": []
+    },
+    {
+      "id": "not-secret-hf-identifier",
+      "text": "load hf_model_name from config",
+      "expect": []
+    },
+    {
+      "id": "not-secret-aiza-inside-word",
+      "text": "id XAIza00000000000000000000000000000000000",
+      "expect": []
+    },
+    {
+      "id": "not-secret-sifre-unuttum",
+      "text": "şifre unuttum, yardım eder misin",
+      "expect": []
+    },
+    {
+      "id": "not-secret-parola-degisti",
+      "text": "parola değiştirildi",
+      "expect": []
     },
     {
       "id": "card-troy",

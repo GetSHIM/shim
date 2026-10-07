@@ -650,6 +650,35 @@ def test_private_key_is_scrubbed_as_one_secret(
     assert private_key not in scrubbed
 
 
+@pytest.mark.parametrize(
+    ("text", "secret"),
+    [
+        ("GOOGLE_API_KEY=AIza" + "0" * 35, "AIza" + "0" * 35),
+        ("Maps AIza" + "0" * 35, "AIza" + "0" * 35),
+        (
+            "Slack xoxb-" + "0" * 10 + "-" + "0" * 13,
+            "xoxb-" + "0" * 10 + "-" + "0" * 13,
+        ),
+        ("user xoxp-" + "0" * 24, "xoxp-" + "0" * 24),
+        ("Hub hf_" + "0" * 34, "hf_" + "0" * 34),
+        ("GitLab glpat-" + "0" * 20, "glpat-" + "0" * 20),
+        ("ŞİFRE: x123456", "x123456"),
+        ('parolam="Gizli Parola 2026"', "Gizli Parola 2026"),
+    ],
+)
+def test_vendor_tokens_and_turkish_passwords_are_one_secret(
+    scrubber: PIIScrubberService,
+    text: str,
+    secret: str,
+) -> None:
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert len(mapping) == 1
+    assert next(iter(mapping)).startswith("<SECRET_")
+    assert list(mapping.values()) == [secret]
+    assert secret not in scrubbed
+
+
 def test_native_payload_restores_content_not_metadata_or_ids(
     scrubber: PIIScrubberService,
 ) -> None:
