@@ -18,6 +18,7 @@ def select_gateway_credential(
     headers: Mapping[str, str],
     *,
     accept_anthropic_key: bool = False,
+    accept_google_key: bool = False,
 ) -> str | None:
     folded = {name.casefold(): value for name, value in headers.items()}
     if "x-shim-key" in folded:
@@ -27,6 +28,8 @@ def select_gateway_credential(
         return credential if separator and scheme.casefold() == "bearer" else ""
     if accept_anthropic_key and "x-api-key" in folded:
         return folded["x-api-key"]
+    if accept_google_key and "x-goog-api-key" in folded:
+        return folded["x-goog-api-key"]
     return None
 
 

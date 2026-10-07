@@ -138,6 +138,8 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 
 - OpenAI SDKs carry the shim key in `Authorization: Bearer ...`.
 - Anthropic SDKs carry the shim key in `x-api-key` on Anthropic routes.
+- Gemini SDKs carry the shim key in `x-goog-api-key` on Gemini routes; it is
+  never inferred to be a provider credential.
 - `x-shim-key` is the explicit provider-independent gateway-key header.
 - `x-provider-key` is an invocation-scoped provider credential.
 - Anthropic `x-api-key` is never inferred to be a provider credential.

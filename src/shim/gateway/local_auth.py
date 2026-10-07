@@ -36,11 +36,13 @@ class LocalAuthenticator:
         headers: Mapping[str, str],
         *,
         accept_anthropic_key: bool = False,
+        accept_google_key: bool = False,
     ) -> AuthenticatedPrincipal:
         return self._resolve(
             select_gateway_credential(
                 headers,
                 accept_anthropic_key=accept_anthropic_key,
+                accept_google_key=accept_google_key,
             )
         )
 

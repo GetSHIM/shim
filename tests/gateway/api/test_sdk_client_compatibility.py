@@ -419,13 +419,12 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
         ) as http,
     ):
 
-        def gemini(headers: dict[str, str]) -> genai.Client:
+        def gemini(api_key: str) -> genai.Client:
             return genai.Client(
-                api_key="provider-key",
+                api_key=api_key,
                 http_options=genai_types.HttpOptions(
                     base_url="http://127.0.0.1",
                     api_version="v1beta",
-                    headers=headers,
                     retry_options=genai_types.HttpRetryOptions(attempts=1),
                     httpx_async_client=http,
                 ),
@@ -444,7 +443,7 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
                 messages=[{"role": "user", "content": "hello"}],
             )
         with pytest.raises(genai_errors.ClientError) as gemini_unpriced:
-            await gemini({"x-shim-key": gateway_key}).aio.models.generate_content(
+            await gemini(gateway_key).aio.models.generate_content(
                 model="gemini-not-in-the-catalog", contents="hello"
             )
 
@@ -470,11 +469,11 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
                 messages=[{"role": "user", "content": "hi"}],
                 extra_headers={"X-Api-Key": AnthropicOmit()},
             ),
-            gemini({}).aio.models.generate_content(
+            gemini("not-the-gateway-key").aio.models.generate_content(
                 model="gemini-3.5-flash", contents="hi"
             ),
         )
-        missing = []
+        rejected = []
         for call in anonymous:
             with pytest.raises(
                 (
@@ -484,7 +483,7 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
                 )
             ) as raised:
                 await call
-            missing.append(raised.value)
+            rejected.append(raised.value)
 
     assert unpriced.value.status_code == 400
     assert unpriced.value.response.headers["x-shim-error-code"] == "MODEL_NOT_PRICED"
@@ -497,8 +496,10 @@ async def test_every_sdk_sees_the_gateway_error_code() -> None:
             "domain": "getshim.tech",
         }
     ]
-    assert [error.response.status_code for error in missing] == [401, 401, 401]
-    assert [error.response.headers["x-shim-error-code"] for error in missing] == [
-        "MISSING_API_KEY"
-    ] * 3
-    assert missing[0].response.json()["error"]["code"] == "MISSING_API_KEY"
+    assert [error.response.status_code for error in rejected] == [401, 401, 401]
+    assert [error.response.headers["x-shim-error-code"] for error in rejected] == [
+        "MISSING_API_KEY",
+        "MISSING_API_KEY",
+        "INVALID_API_KEY",
+    ]
+    assert rejected[0].response.json()["error"]["code"] == "MISSING_API_KEY"
