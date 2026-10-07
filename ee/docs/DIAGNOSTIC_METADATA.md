@@ -132,6 +132,15 @@ first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
 tags); an event written before admission, such as a rejection, has
 `cost_center: null` and `tags: []`.
 
+## Responses continuation markers
+
+Enterprise writes an encrypted continuation marker to Redis for every Responses
+turn, with the `PRIVACY_CHAIN_TTL_SECONDS` lifetime, so a later
+`previous_response_id` can restore that turn's placeholders. The marker of a turn
+without personal data is empty and best-effort: if Redis cannot store it, the
+turn still succeeds. A missing marker still reads as a turn without personal
+data; a later release will make it fail closed.
+
 ## Unpriced deployment costs
 
 An unknown deployment price is not a free request. A terminal spend settlement

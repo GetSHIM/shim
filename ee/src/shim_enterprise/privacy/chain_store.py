@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from collections.abc import Mapping
 
 from cryptography.fernet import Fernet
@@ -13,6 +14,8 @@ from shim_enterprise.cache.redis_index import CacheService
 from shim_enterprise.core.config import settings
 from shim.gateway.contracts.ids import TenantId
 from shim.privacy.continuation import PrivacyContinuationUnavailableError
+
+logger = logging.getLogger(__name__)
 
 
 class RedisPrivacyContinuationStore:
@@ -73,11 +76,6 @@ class RedisPrivacyContinuationStore:
         response_id: str,
         mapping: Mapping[str, str],
     ) -> None:
-        if not mapping:
-            return
-        client = self._cache.redis
-        if client is None:
-            raise PrivacyContinuationUnavailableError()
         payload = json.dumps(
             {"tenant_id": str(tenant_id), "mapping": dict(mapping)},
             sort_keys=True,
@@ -85,13 +83,21 @@ class RedisPrivacyContinuationStore:
         )
         encrypted = self._cipher.encrypt(payload.encode()).decode()
         try:
+            client = self._cache.redis
+            if client is None:
+                raise PrivacyContinuationUnavailableError()
             await client.set(
                 self._key(tenant_id, response_id),
                 encrypted,
                 ex=self._ttl_seconds,
             )
         except Exception as exc:
-            raise PrivacyContinuationUnavailableError() from exc
+            if mapping:
+                raise PrivacyContinuationUnavailableError() from exc
+            # The provider call already happened; an empty marker is best-effort.
+            logger.warning(
+                "Privacy continuation marker not stored type=%s", type(exc).__name__
+            )
 
     @staticmethod
     def _key(tenant_id: TenantId, response_id: str) -> str:
