@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from shim.gateway.streaming import StreamMeter, StreamSession
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.pipeline.postprocess import _ManagedStreamingResponse
 from shim.gateway.kernel.result import InferenceTiming
 
@@ -350,3 +351,26 @@ async def test_shim_latency_excludes_provider_and_client_waits(monkeypatch, disc
     assert terminal.terminal_status == (
         "client_disconnected" if disconnect else "completed"
     )
+
+
+@pytest.mark.asyncio
+async def test_meter_only_usage_is_metered_and_never_sent() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer)
+    usage_chunk = (
+        b'data: {"choices":[],"usage":{"prompt_tokens":61,"completion_tokens":9}}\n\n'
+    )
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+        yield MeterOnly(usage_chunk)
+        yield b"data: [DONE]\n\n"
+
+    session.bind(events())
+    wire = b"".join([chunk async for chunk in session])
+    terminal, _ = await session.finalize("completed")
+
+    assert usage_chunk not in wire
+    assert b"[DONE]" in wire
+    assert (terminal.usage.prompt_tokens, terminal.usage.completion_tokens) == (61, 9)
+    assert terminal.usage.estimated is False

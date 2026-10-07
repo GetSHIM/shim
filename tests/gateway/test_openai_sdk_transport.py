@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,10 +14,11 @@ from openai.types.responses import ResponseErrorEvent
 import shim.gateway.pipeline.anthropic_execution as anthropic_execution
 import shim.gateway.pipeline.google_execution as google_execution
 import shim.gateway.pipeline.openai_execution as openai_execution
+from shim.application import create_community_app
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
-from shim.gateway.kernel.result import InferenceTiming
+from shim.gateway.kernel.result import InferenceTiming, ProviderTarget
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
@@ -1028,6 +1030,7 @@ async def test_chat_stream_rejects_eof_before_every_choice_finishes() -> None:
                     state,
                     close_stream,
                     execution.circuit,
+                    False,
                 )
             ]
         )
@@ -1095,6 +1098,7 @@ async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error(
                     {"closed": False, "recorded": False},
                     AsyncMock(),
                     execution.circuit,
+                    False,
                 )
             ]
         )
@@ -1387,3 +1391,130 @@ async def test_local_exceptions_release_the_probe_without_counting(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+def _usage_aware_upstream(seen: list[dict]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        base = {
+            "id": "chat_usage",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-5.6-luna",
+        }
+        events = [
+            {
+                **base,
+                "choices": [
+                    {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+            },
+        ]
+        if (body.get("stream_options") or {}).get("include_usage") is True:
+            events.append(
+                {
+                    **base,
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 61,
+                        "completion_tokens": 9,
+                        "total_tokens": 70,
+                    },
+                }
+            )
+        content = (
+            "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+            + "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, text=content, headers={"content-type": "text/event-stream"}
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_asked", [False, True])
+async def test_chat_streams_are_metered_from_provider_usage(client_asked: bool) -> None:
+    seen: list[dict] = []
+    events = StringIO()
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(_usage_aware_upstream(seen))
+    )
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1",
+            BACKEND_CORS_ORIGINS=[],
+            _env_file=None,
+        ),
+        http_client=upstream,
+        event_stream=events,
+    )
+    body = {
+        "model": "gpt-5.6-luna",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hello"}],
+        **({"stream_options": {"include_usage": True}} if client_asked else {}),
+    }
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"x-openai-api-key": "sk-provider"},
+            json=body,
+        )
+    await upstream.aclose()
+
+    usage_chunks = [
+        line for line in response.text.splitlines() if '"choices":[]' in line
+    ]
+    event = json.loads(events.getvalue().splitlines()[-1])
+    assert seen[0]["stream_options"] == {"include_usage": True}
+    assert len(usage_chunks) == (1 if client_asked else 0)
+    assert (event["prompt_tokens"], event["completion_tokens"]) == (61, 9)
+    assert event["estimated"] is False
+
+
+@pytest.mark.asyncio
+async def test_registry_targets_are_not_asked_for_stream_usage() -> None:
+    seen: list[dict] = []
+    prepared = _prepared(
+        {"model": "gpt-5.6-luna", "messages": [], "stream": True},
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol="chat",
+    )
+    prepared.target = ProviderTarget(
+        deployment_id="deployment",
+        base_url="https://registry.test/v1",
+        upstream_model="gpt-5.6-luna",
+        credential_reference="managed-reference",
+        timeout_seconds=30.0,
+        declared_version="1",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_usage_aware_upstream(seen))
+    ) as http:
+        execution = OpenAIExecution(
+            credential_resolver=SimpleNamespace(
+                resolve=AsyncMock(return_value="sk-registry")
+            ),
+            circuit=InMemoryCircuitBreaker(),
+            settings=settings,
+            http_client=http,
+            chain_store=SimpleNamespace(save=AsyncMock()),
+        )
+        result = await execution.execute(
+            invocation=SimpleNamespace(db=object(), provider_credential=None),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [chunk async for chunk in result.events]
+
+    assert "stream_options" not in seen[0]
