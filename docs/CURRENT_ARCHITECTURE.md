@@ -103,7 +103,7 @@ from the same public kernel and provider executions:
 ```text
 create_enterprise_app
 |-- DatabaseGatewayAuthenticator and tenant policy
-|-- Redis admission, loop, circuit, and continuation adapters
+|-- Redis admission, loop, circuit (per tenant and target), and continuation adapters
 |-- ManagedProviderCredentialResolver
 |-- DurableUsageLifecycle and accounting coordinator
 |-- enterprise scan pipeline and error composition
@@ -115,7 +115,9 @@ PostgreSQL is authoritative for request lifecycle, quota and spend
 reservations, audit intent, reconciliation, and outbox delivery. Redis is an
 accelerator for burst control, loop detection, circuit state, tenant-policy
 caching, and encrypted privacy-continuation mappings. Redis is never a second
-accounting truth store.
+accounting truth store. Each provider circuit is keyed by tenant and target (the
+deployment base URL, or the catalog route), so one tenant's failing traffic does
+not open another tenant's circuit; community keeps one circuit per provider.
 
 No database transaction spans the provider call. Provider-start, heartbeat,
 finalization, and reconciliation use their established short transaction

@@ -536,3 +536,61 @@ async def test_requests_share_one_tls_context_but_never_a_credential(
         client.close.assert_called_once()
         client.aio.aclose.assert_awaited_once()
     assert clients[0][1] is not clients[1][1]
+
+
+@pytest.mark.asyncio
+async def test_circuit_for_is_asked_once_and_serves_the_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    chunk = {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    circuit = _circuit()
+    circuit_for = Mock(return_value=circuit)
+    prepared = _prepared(_HELLO, stream=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await GoogleExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("google", {}),
+            circuit_for=circuit_for,
+            settings=settings,
+            http_client=http,
+            sync_http_client=httpx.Client(),
+        ).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [event async for event in result.events]
+
+    circuit_for.assert_called_once_with(prepared)
+    circuit.acquire_call.assert_awaited_once()
+    circuit.record_success.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "circuits", [{}, {"circuit": InMemoryCircuitBreaker(), "circuit_for": Mock()}]
+)
+def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
+    with pytest.raises(ValueError, match="exactly one of circuit and circuit_for"):
+        GoogleExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("google", {}),
+            settings=settings,
+            http_client=SimpleNamespace(),  # type: ignore[arg-type]
+            sync_http_client=httpx.Client(),
+            **circuits,
+        )

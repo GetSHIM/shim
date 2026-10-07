@@ -4,7 +4,7 @@ import asyncio
 from io import StringIO
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -1518,3 +1518,76 @@ async def test_registry_targets_are_not_asked_for_stream_usage() -> None:
         [chunk async for chunk in result.events]
 
     assert "stream_options" not in seen[0]
+
+
+def _recording_circuit() -> SimpleNamespace:
+    return SimpleNamespace(
+        acquire_call=AsyncMock(return_value=True),
+        record_success=AsyncMock(),
+        record_failure=AsyncMock(),
+        release_probe=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_circuit_for_is_asked_once_and_serves_the_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    chunk = {
+        "id": "chat_circuit",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    circuit = _recording_circuit()
+    circuit_for = Mock(return_value=circuit)
+    prepared = _prepared(
+        {"model": "gpt-5.6-luna", "messages": [], "stream": True},
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol="chat",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await OpenAIExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("openai", {}),
+            circuit_for=circuit_for,
+            settings=settings,
+            http_client=http,
+            chain_store=SimpleNamespace(save=AsyncMock()),
+        ).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-key"),
+            ),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [event async for event in result.events]
+
+    circuit_for.assert_called_once_with(prepared)
+    circuit.acquire_call.assert_awaited_once()
+    circuit.record_success.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "circuits", [{}, {"circuit": InMemoryCircuitBreaker(), "circuit_for": Mock()}]
+)
+def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
+    with pytest.raises(ValueError, match="exactly one of circuit and circuit_for"):
+        OpenAIExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("openai", {}),
+            settings=settings,
+            http_client=SimpleNamespace(),  # type: ignore[arg-type]
+            chain_store=SimpleNamespace(save=AsyncMock()),
+            **circuits,
+        )
