@@ -63,6 +63,7 @@ def install_http_middleware(
                 "request-id",
                 "retry-after",
                 "x-goog-request-id",
+                "x-should-retry",
                 "x-request-id",
             ],
         )

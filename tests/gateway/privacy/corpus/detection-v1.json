@@ -31,6 +31,16 @@
       ]
     },
     {
+      "id": "email-long-local-part",
+      "text": "mail aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
+        }
+      ]
+    },
+    {
       "id": "card-visa-spaced",
       "text": "Card 4111 1111 1111 1111 on file",
       "expect": [
@@ -653,6 +663,16 @@
         {
           "entity": "IP_ADDRESS",
           "value": "10.0.0.5"
+        }
+      ]
+    },
+    {
+      "id": "phone-shape-beats-glued-id",
+      "text": "ORD-5321234567 iptal",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "5321234567"
         }
       ]
     },

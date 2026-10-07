@@ -698,6 +698,14 @@ def completion_outcome(
     return "complete"
 
 
+def settled_outcome(
+    outcome: CompletionOutcome | None, *, completed: bool
+) -> CompletionOutcome | None:
+    """A provider block is an answer; any other failure has none to classify."""
+
+    return outcome if completed or outcome == "filtered" else None
+
+
 def answer_markers(
     payload: Mapping[str, Any], *, event_type: str = ""
 ) -> tuple[bool, bool]:

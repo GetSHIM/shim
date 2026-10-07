@@ -1226,6 +1226,23 @@ def test_shaped_or_cued_phones_and_real_addresses_still_match(
 
 
 @pytest.mark.parametrize(
+    "address",
+    [
+        "a" * 65 + "@example.com",
+        "x" * 63 + ".y@example.com",
+        "b" * 70 + "[at]example.com",
+    ],
+)
+def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
+    scrubber: PIIScrubberService, address: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"Bilgi: {address}")
+
+    assert list(mapping.values()) == [address]
+    assert scrubbed == f"Bilgi: {next(iter(mapping))}"
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "a." * 16000 + "@",

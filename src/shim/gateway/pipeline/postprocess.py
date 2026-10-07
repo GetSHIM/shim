@@ -27,6 +27,7 @@ from shim.gateway.streaming.meter import (
     answer_markers,
     completion_outcome,
     native_finish_reasons,
+    settled_outcome,
 )
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
@@ -176,10 +177,9 @@ class ResponsePostprocessor:
                 ),
                 estimated=not fully_actual,
                 provider_finish_reasons=finish_reasons,
-                # A provider block is an answer; any other failure has none to classify.
-                completion_outcome=outcome
-                if lifecycle_status == "completed" or outcome == "filtered"
-                else None,
+                completion_outcome=settled_outcome(
+                    outcome, completed=lifecycle_status == "completed"
+                ),
                 output_hash=(
                     content_ref(
                         self.output_hash_salt, bytes(gateway_response.body).decode()

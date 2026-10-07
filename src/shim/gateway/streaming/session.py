@@ -19,7 +19,7 @@ from shim.observability.metrics import STREAM_TERMINAL_STATE_TOTAL, bounded_labe
 from shim.observability.tracing import start_span
 
 from .finalization import StreamFinalization, StreamTerminalStatus
-from .meter import StreamMeter
+from .meter import StreamMeter, settled_outcome
 
 
 logger = logging.getLogger(__name__)
@@ -235,11 +235,13 @@ class StreamSession:
                 usage = self.meter.snapshot()
                 self._pending_terminal = StreamFinalization(
                     terminal_status=terminal_status,
-                    # A provider block is an answer; any other failure has none to classify.
-                    usage=usage
-                    if terminal_status == "completed"
-                    or usage.completion_outcome == "filtered"
-                    else replace(usage, completion_outcome=None),
+                    usage=replace(
+                        usage,
+                        completion_outcome=settled_outcome(
+                            usage.completion_outcome,
+                            completed=terminal_status == "completed",
+                        ),
+                    ),
                     completed_at=completed_at,
                     error_code=error_code,
                     error_message=(error_message or default_message),

@@ -32,13 +32,20 @@ _LANGUAGE = "tr"
 _SCORE_THRESHOLD = 0.4
 
 
+# A local part is read once per run of local-part characters, possessively; leading
+# punctuation is read but left out of the match (\K). Starting at every word boundary
+# inside a long dotted run, as Presidio's pattern does, rescans the run from each start:
+# quadratic in the prompt.
+_LOCAL_PART = (
+    r"(?<![\w.!#$%&'*+/=?^`{|}~-])[.!#$%&'*+/=?^`{|}~-]*+\K\w[\w.!#$%&'*+/=?^`{|}~-]*+"
+)
+
+
 class ShimEmailRecognizer(EmailRecognizer):
-    # Presidio's pattern with the local part bounded to 64 characters (RFC 5321). Unbounded,
-    # every start inside a long dotted run rescans the run: quadratic in the prompt.
     PATTERNS = [
         Pattern(
             "Email (Medium)",
-            EmailRecognizer.PATTERNS[0].regex.replace("{0,}", "{0,62}", 1),
+            _LOCAL_PART + r"@\w+(?:-+\w+)*(?:\.\w+(?:-+\w+)*)+\b",
             0.5,
         )
     ]
@@ -59,7 +66,7 @@ class ShimWrittenAtEmailRecognizer(ShimEmailRecognizer):
     PATTERNS = [
         Pattern(
             "Email with a written at",
-            rf"\b[\w.+-]{{1,64}}(?:{_AT.pattern})[\w-]+(?:\.[\w-]+)+\b",
+            _LOCAL_PART + rf"(?:{_AT.pattern})[\w-]+(?:\.[\w-]+)+\b",
             0.5,
         )
     ]

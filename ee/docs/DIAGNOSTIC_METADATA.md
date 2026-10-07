@@ -26,9 +26,10 @@ or candidates:
 | `empty` | none of the above, no answer text and no tool call |
 | `complete` | otherwise |
 
-Only the allowlisted native values above reach the classifier. Thinking and
-reasoning text is output but not answer text, so a reasoning-only answer is
-`empty` over JSON and over SSE alike. Both editions count the field in
+Only the allowlisted native values above reach the classifier. Anthropic
+thinking and OpenAI reasoning text is output but not answer text, so an answer
+holding only that is `empty` over JSON and over SSE alike; Gemini thought parts
+still count as answer text on both paths. Both editions count the field in
 `shim_completion_outcomes_total{provider, outcome}` (a failed request is not
 counted, except a provider block, which is `filtered`); community records it in its JSONL usage event, and enterprise carries
 it in lifecycle metadata, the analytics projection, the request list and its

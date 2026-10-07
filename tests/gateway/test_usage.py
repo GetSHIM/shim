@@ -271,3 +271,55 @@ async def test_nonstream_hash_is_optional_without_changing_response(monkeypatch,
         if salt is not None
         else None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "payload", "outcome"),
+    [
+        (
+            "openai",
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+            },
+            "complete",
+        ),
+        ("openai", {"status": "failed", "output": []}, None),
+        ("google", {"promptFeedback": {"blockReason": "SAFETY"}}, "filtered"),
+    ],
+)
+async def test_a_json_outcome_is_settled_only_for_an_answer(provider, payload, outcome):
+    from unittest.mock import AsyncMock
+    from prometheus_client import REGISTRY
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    def counted(label: str | None) -> float:
+        return (
+            REGISTRY.get_sample_value(
+                "shim_completion_outcomes_total",
+                {"provider": provider, "outcome": label or "other"},
+            )
+            or 0
+        )
+
+    prepared = _prepared()
+    prepared.provider = provider
+    prepared.protocol = "responses" if provider == "openai" else "gemini"
+    prepared.admission.maximum_output_tokens = 10
+    usage = SimpleNamespace(finalize=AsyncMock())
+    before = counted(outcome)
+
+    await module.ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    ).finalize(prepared, ProviderNonStream(payload, None), stream_session=None)
+
+    assert usage.finalize.await_args.args[1].usage.completion_outcome == outcome
+    # A failure is not counted, not even as "other".
+    assert counted(outcome) == before + (outcome is not None)
