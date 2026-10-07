@@ -169,6 +169,13 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
             "code": 503,
             "message": "The Google request failed.",
             "status": "UNAVAILABLE",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "PROVIDER_UNAVAILABLE",
+                    "domain": "getshim.tech",
+                }
+            ],
         }
     }
     usage.fail.assert_not_awaited()

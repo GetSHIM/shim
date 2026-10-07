@@ -14,7 +14,7 @@ from pydantic import BaseModel, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
-from shim.gateway.pipeline.provider_execution import ProviderCallError
+from shim.gateway.pipeline.provider_execution import ProviderCallError, google_error
 
 
 class OpenAIErrorDetail(BaseModel):
@@ -115,6 +115,8 @@ def native_gateway_error_response(
     if provider is None:
         return None
     message, code, param = _error_parts(detail, status_code)
+    if code is None and headers is not None:
+        code = headers.get("X-Shim-Error-Code")
     return _native_error_response(
         provider=provider,
         status_code=status_code,
@@ -145,13 +147,7 @@ def _native_error_response(
             }
         }
     elif provider == "google":
-        content = {
-            "error": {
-                "code": status_code,
-                "message": message,
-                "status": _google_error_status(status_code),
-            }
-        }
+        content = google_error(status_code, message, code)
     else:
         content = {
             "type": "error",
@@ -162,6 +158,8 @@ def _native_error_response(
         }
         if request_id:
             content["request_id"] = request_id
+    if code:
+        headers = {**(headers or {}), "X-Shim-Error-Code": code}
     return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
@@ -271,25 +269,6 @@ def _provider_message(exc: ProviderCallError) -> str:
         if exc.error_code == "PROVIDER_TIMEOUT"
         else f"The {provider} request failed."
     )
-
-
-def _google_error_status(status_code: int) -> str:
-    return {
-        400: "INVALID_ARGUMENT",
-        401: "UNAUTHENTICATED",
-        403: "PERMISSION_DENIED",
-        404: "NOT_FOUND",
-        408: "DEADLINE_EXCEEDED",
-        409: "ABORTED",
-        413: "INVALID_ARGUMENT",
-        422: "INVALID_ARGUMENT",
-        429: "RESOURCE_EXHAUSTED",
-        500: "INTERNAL",
-        502: "UNAVAILABLE",
-        503: "UNAVAILABLE",
-        504: "DEADLINE_EXCEEDED",
-        529: "UNAVAILABLE",
-    }.get(status_code, "INTERNAL" if status_code >= 500 else "INVALID_ARGUMENT")
 
 
 def _anthropic_error_type(status_code: int) -> str:

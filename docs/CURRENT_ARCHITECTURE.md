@@ -162,6 +162,22 @@ after headers is emitted as a sanitized terminal event. A provider 429 keeps its
 status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`; it is the
 caller's quota, so it neither opens nor closes the provider circuit.
 
+Every gateway error response whose code shim knows carries it in
+`X-Shim-Error-Code`, in all three shapes, and browsers may read that header.
+OpenAI bodies repeat the code in `error.code`; Gemini bodies, JSON and stream,
+carry it as a google.rpc `ErrorInfo` detail (`reason`, domain `getshim.tech`)
+beside a google.rpc `status`; Anthropic bodies keep exactly their native keys.
+The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
+`INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
+`MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `PROVIDER_NOT_ALLOWED`,
+`ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
+`PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
+`PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
+`MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
+`MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
+`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND` and `AUDIT_INTENT_FAILED`. A request
+that fails schema validation carries the validator's error type instead.
+
 `background=true` Responses requests remain unsupported because shim has no
 retrieval lifecycle with which to settle them safely. Community model IDs must exist in the checked-in model and price catalog.
 Enterprise can resolve tenant aliases through its approved deployment registry;

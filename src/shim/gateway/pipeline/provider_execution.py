@@ -96,6 +96,22 @@ class ProviderExecutionStage:
         }
 
 
+_GOOGLE_RPC_STATUSES = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    408: "DEADLINE_EXCEEDED",
+    409: "ABORTED",
+    413: "INVALID_ARGUMENT",
+    422: "INVALID_ARGUMENT",
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    502: "UNAVAILABLE",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+    529: "UNAVAILABLE",
+}
 _SDK_TRANSPORT_PARAMETERS = {
     "extra_body",
     "extra_headers",
@@ -130,6 +146,25 @@ def select_headers(
         for key, value in headers.items()
         if key.casefold() in allowed
     }
+
+
+def google_error(status_code: int, message: str, code: str | None) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": status_code,
+        "message": message,
+        "status": _GOOGLE_RPC_STATUSES.get(
+            status_code, "INTERNAL" if status_code >= 500 else "INVALID_ARGUMENT"
+        ),
+    }
+    if code:
+        error["details"] = [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": code,
+                "domain": "getshim.tech",
+            }
+        ]
+    return {"error": error}
 
 
 def status_error_code(status_code: int) -> str:

@@ -59,6 +59,7 @@ def install_http_middleware(
                 "Content-Disposition",
                 "X-Shim-Request-Id",
                 "X-Shim-Latency-Ms",
+                "X-Shim-Error-Code",
                 "request-id",
                 "retry-after",
                 "x-goog-request-id",
