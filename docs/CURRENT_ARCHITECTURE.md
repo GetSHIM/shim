@@ -248,7 +248,7 @@ customer wheels/images. See the [cloud runbook](../ee/cloud/README.md).
 | Provider HTTP boundaries | `src/shim/api/v1/` |
 | Kernel and public contracts | `src/shim/gateway/` |
 | Provider execution and streams | `src/shim/gateway/pipeline/`, `src/shim/gateway/streaming/` |
-| Privacy | `src/shim/privacy/`, enterprise continuation adapter under `ee/src/shim_enterprise/privacy/` |
+| Privacy | `src/shim/privacy/`, enterprise continuation adapter under `ee/src/shim_enterprise/privacy/`; the detection contract is `tests/gateway/privacy/corpus/detection-v1.json` |
 | Enterprise composition and authentication | `ee/src/shim_enterprise/application.py`, `ee/src/shim_enterprise/api/` |
 | Durable accounting | `ee/src/shim_enterprise/gateway/pipeline/quota_reservation.py` |
 | Tenancy and managed secrets | `ee/src/shim_enterprise/tenants/`, `ee/src/shim_enterprise/secrets/` |

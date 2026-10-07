@@ -1,0 +1,523 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 1,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "entities": [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "CREDIT_CARD",
+    "IBAN_CODE",
+    "TR_NATIONAL_ID",
+    "TR_VKN",
+    "SECRET",
+    "DB_URI",
+    "FILE_PATH",
+    "IP_ADDRESS",
+    "MAC_ADDRESS",
+    "US_SSN",
+    "TR_LICENSE_PLATE",
+    "PERSON",
+    "LOCATION"
+  ],
+  "cases": [
+    {
+      "id": "email-plain",
+      "text": "Contact alice@example.com today",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "alice@example.com"
+        }
+      ]
+    },
+    {
+      "id": "card-visa-spaced",
+      "text": "Card 4111 1111 1111 1111 on file",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111 1111 1111 1111"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-international",
+      "text": "Ara +90 532 123 45 67 lütfen",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "+90 532 123 45 67"
+        }
+      ]
+    },
+    {
+      "id": "tckn-plain",
+      "text": "TCKN 10000000146",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "10000000146"
+        }
+      ]
+    },
+    {
+      "id": "vkn-plain",
+      "text": "VKN 1234567890",
+      "expect": [
+        {
+          "entity": "TR_VKN",
+          "value": "1234567890"
+        }
+      ]
+    },
+    {
+      "id": "iban-tr-spaced",
+      "text": "IBAN TR33 0006 1005 1978 6457 8413 26",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR33 0006 1005 1978 6457 8413 26"
+        }
+      ]
+    },
+    {
+      "id": "password-json-value",
+      "text": "{\"password\": \"SuperSecret123!\"}",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "SuperSecret123!"
+        }
+      ]
+    },
+    {
+      "id": "aws-access-key",
+      "text": "key AKIA0000000000000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "AKIA0000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "github-token",
+      "text": "token ghp_000000000000000000000000000000000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "ghp_000000000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "openai-project-key",
+      "text": "OPENAI sk-proj-00000000000000000000000000000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "sk-proj-00000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "jwt-three-part",
+      "text": "Bearer eyJ00000000000000000000.eyJ00000000000000000000.00000000000000000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "eyJ00000000000000000000.eyJ00000000000000000000.00000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "slack-webhook-url",
+      "text": "hook https://hooks.slack.com/services/T0/B0/000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "https://hooks.slack.com/services/T0/B0/000000"
+        }
+      ]
+    },
+    {
+      "id": "pem-private-key",
+      "text": "key:\n-----BEGIN PRIVATE KEY-----\nMIIE000000000000000000000000000000000000000000000000000000000000\n-----END PRIVATE KEY-----",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "-----BEGIN PRIVATE KEY-----\nMIIE000000000000000000000000000000000000000000000000000000000000\n-----END PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "id": "postgres-uri",
+      "text": "db postgres://user:pw@db.internal/app",
+      "expect": [
+        {
+          "entity": "DB_URI",
+          "value": "postgres://user:pw@db.internal/app"
+        }
+      ]
+    },
+    {
+      "id": "file-path-home",
+      "text": "open /Users/alice/secrets.txt",
+      "expect": [
+        {
+          "entity": "FILE_PATH",
+          "value": "/Users/alice/secrets.txt"
+        }
+      ]
+    },
+    {
+      "id": "tckn-zero-width-space",
+      "text": "TCKN 100000​00146",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100000​00146"
+        }
+      ]
+    },
+    {
+      "id": "tckn-full-width-digits",
+      "text": "TCKN １０００００００１４６",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "１０００００００１４６"
+        }
+      ]
+    },
+    {
+      "id": "email-percent-encoded",
+      "text": "mail alice%40example.com",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "alice%40example.com"
+        }
+      ]
+    },
+    {
+      "id": "tckn-turkish-suffix",
+      "text": "10000000146'nın sahibi",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "10000000146"
+        }
+      ]
+    },
+    {
+      "id": "google-api-key-assignment",
+      "text": "GOOGLE_API_KEY=AIza00000000000000000000000000000000000",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "AIza00000000000000000000000000000000000"
+        }
+      ]
+    },
+    {
+      "id": "google-api-key-bare",
+      "text": "Maps için AIza00000000000000000000000000000000000 kullan",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "AIza00000000000000000000000000000000000"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "slack-bot-token-bare",
+      "text": "Slack xoxb-0000000000-0000000000000 ile bağlan",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "xoxb-0000000000-0000000000000"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "hugging-face-token-bare",
+      "text": "Hub hf_0000000000000000000000000000000000 ile indir",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "hf_0000000000000000000000000000000000"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "gitlab-token-bare",
+      "text": "GitLab glpat-00000000000000000000 ile push",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "glpat-00000000000000000000"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "sifre-colon",
+      "text": "şifre: Gizli.Parola2026",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli.Parola2026"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "parola-colon",
+      "text": "parola: Gizli.Parola2026",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli.Parola2026"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "sifre-upper-equals",
+      "text": "ŞİFRE=Gizli.Parola2026",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli.Parola2026"
+        }
+      ],
+      "known_gap": "LT-B11, PRD-S10"
+    },
+    {
+      "id": "card-troy",
+      "text": "Troy kartı 9792 0000 0000 0003",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "9792 0000 0000 0003"
+        }
+      ],
+      "known_gap": "LT-B30, PRD-S11"
+    },
+    {
+      "id": "card-mastercard-2-series",
+      "text": "Kart 2221 0000 0000 0009",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "2221 0000 0000 0009"
+        }
+      ],
+      "known_gap": "LT-B30, PRD-S11"
+    },
+    {
+      "id": "iban-whole-not-card",
+      "text": "Ödeme TR96 1569 9085 0078 9107 8735 82 hesabına",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR96 1569 9085 0078 9107 8735 82"
+        }
+      ],
+      "known_gap": "LT-B30, PRD-S11"
+    },
+    {
+      "id": "order-number",
+      "text": "Sipariş numarası 4829104455",
+      "expect": [],
+      "known_gap": "LT-B10, PRD-S12"
+    },
+    {
+      "id": "dated-model-id",
+      "text": "model claude-sonnet-4-5-20250929 kullan",
+      "expect": [],
+      "known_gap": "LT-B10, PRD-S12"
+    },
+    {
+      "id": "json-timestamp-and-amount",
+      "text": "{\"created\": 1757496600, \"amount\": 2000}",
+      "expect": [],
+      "known_gap": "LT-B10, PRD-S12"
+    },
+    {
+      "id": "order-id-date-like",
+      "text": "order_id 2026091012",
+      "expect": [],
+      "known_gap": "LT-B10, PRD-S12"
+    },
+    {
+      "id": "version-quad",
+      "text": "version 1.2.3.4",
+      "expect": [],
+      "known_gap": "LT-B10, PRD-S12"
+    },
+    {
+      "id": "phone-json-us",
+      "text": "{\"phone\": \"4155552671\"}",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-mobile-bare",
+      "text": "Telefon 5321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "5321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-mobile-csv",
+      "text": "ad,telefon\nAli,05321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "05321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-landline",
+      "text": "Tel: 0212 555 12 34",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "0212 555 12 34"
+        }
+      ]
+    },
+    {
+      "id": "phone-de-international",
+      "text": "Ruf +49 172 5955200 an",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "+49 172 5955200"
+        }
+      ]
+    },
+    {
+      "id": "tckn-spaced-groups",
+      "text": "TCKN 100 000 001 46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100 000 001 46"
+        }
+      ],
+      "known_gap": "LT-B31, PRD-S16"
+    },
+    {
+      "id": "tckn-dashed-groups",
+      "text": "TCKN 100-000-001-46",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "100-000-001-46"
+        }
+      ],
+      "known_gap": "LT-B31, PRD-S16"
+    },
+    {
+      "id": "iban-lowercase",
+      "text": "IBAN tr330006100519786457841326",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "tr330006100519786457841326"
+        }
+      ],
+      "known_gap": "LT-B31, PRD-S16"
+    },
+    {
+      "id": "email-at-in-brackets",
+      "text": "mail jane[at]example.com",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "jane[at]example.com"
+        }
+      ],
+      "known_gap": "LT-B31, PRD-S16"
+    },
+    {
+      "id": "iban-line-broken",
+      "text": "IBAN TR33 0006 1005 1978\n6457 8413 26",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR33 0006 1005 1978\n6457 8413 26"
+        }
+      ],
+      "known_gap": "LT-B31, PRD-S16"
+    },
+    {
+      "id": "plate-three-letters",
+      "text": "Plaka 34 ABC 123",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34 ABC 123"
+        }
+      ],
+      "known_gap": "LT-row Plaka, PRD-S17"
+    },
+    {
+      "id": "plate-two-letters",
+      "text": "Araç 06 AB 1234 ile geldi",
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "06 AB 1234"
+        }
+      ],
+      "known_gap": "LT-row Plaka, PRD-S17"
+    },
+    {
+      "id": "not-plate-storage",
+      "text": "16 GB 512 depolama",
+      "expect": []
+    },
+    {
+      "id": "not-plate-currency-year",
+      "text": "10 USD 2024 fiyatı",
+      "expect": []
+    },
+    {
+      "id": "person-name",
+      "text": "Ahmet Yılmaz aradı",
+      "expect": [
+        {
+          "entity": "PERSON",
+          "value": "Ahmet Yılmaz"
+        }
+      ],
+      "known_gap": "tier 4, no PRD"
+    },
+    {
+      "id": "street-address",
+      "text": "Atatürk Cad. No 5 Kadıköy adresinde",
+      "expect": [
+        {
+          "entity": "LOCATION",
+          "value": "Atatürk Cad. No 5 Kadıköy"
+        }
+      ],
+      "known_gap": "tier 4, no PRD"
+    }
+  ]
+}
