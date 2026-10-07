@@ -1589,6 +1589,7 @@
       "BudgetInput": {
         "properties": {
           "alert_thresholds": {
+            "description": "Fractions of the budget limit, greater than 0 and at most 5. 0.8 means 80 percent.",
             "items": {
               "type": "number"
             },
@@ -1679,6 +1680,7 @@
                 "type": "null"
               }
             ],
+            "description": "Fractions of the budget limit, greater than 0 and at most 5. 0.8 means 80 percent.",
             "title": "Alert Thresholds"
           },
           "enabled": {

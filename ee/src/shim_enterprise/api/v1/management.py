@@ -371,6 +371,10 @@ class BudgetInput(BaseModel):
     alert_thresholds: list[float] = Field(
         default_factory=lambda: [0.8, 1.0],
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
+        description=(
+            "Fractions of the budget limit, greater than 0 and at most 5. "
+            "0.8 means 80 percent."
+        ),
     )
     notify_targets: list[NotificationTargetInput] = Field(
         default_factory=list,
@@ -381,8 +385,14 @@ class BudgetInput(BaseModel):
     @field_validator("alert_thresholds")
     @classmethod
     def validate_alert_thresholds(cls, values: list[float] | None) -> list[float]:
-        if values is None or any(not 0 < value <= 5 for value in values):
+        if values is None:
             raise ValueError("alert thresholds must be within (0, 5]")
+        for value in values:
+            if not 0 < value <= 5:
+                raise ValueError(
+                    f"{value:g} is outside (0, 5]; thresholds are fractions, "
+                    "0.5 means 50 percent"
+                )
         if len(values) != len(set(values)):
             raise ValueError("alert thresholds must be unique")
         return values
@@ -412,6 +422,10 @@ class BudgetPatch(BaseModel):
     alert_thresholds: list[float] | None = Field(
         default=None,
         max_length=MAX_BUDGET_ALERT_THRESHOLDS,
+        description=(
+            "Fractions of the budget limit, greater than 0 and at most 5. "
+            "0.8 means 80 percent."
+        ),
     )
     notify_targets: list[NotificationTargetInput] | None = Field(
         default=None,
