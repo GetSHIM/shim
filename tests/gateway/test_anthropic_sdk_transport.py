@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -864,3 +864,66 @@ async def test_local_exceptions_release_the_probe_without_counting(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_circuit_for_is_asked_once_and_serves_the_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+    message = {**_message(""), "content": [], "stop_reason": None}
+    events = [
+        ("message_start", {"type": "message_start", "message": message}),
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": 1},
+            },
+        ),
+        ("message_stop", {"type": "message_stop"}),
+    ]
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="".join(
+                f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    circuit = _circuit()
+    circuit_for = Mock(return_value=circuit)
+    prepared = _prepared({**_large_request(16), "stream": True})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await AnthropicExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("anthropic", {}),
+            circuit_for=circuit_for,
+            settings=settings,
+            http_client=http,
+        ).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [event async for event in result.events]
+
+    circuit_for.assert_called_once_with(prepared)
+    circuit.acquire_call.assert_awaited_once()
+    circuit.record_success.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "circuits", [{}, {"circuit": InMemoryCircuitBreaker(), "circuit_for": Mock()}]
+)
+def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
+    with pytest.raises(ValueError, match="exactly one of circuit and circuit_for"):
+        AnthropicExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("anthropic", {}),
+            settings=settings,
+            http_client=SimpleNamespace(),  # type: ignore[arg-type]
+            **circuits,
+        )

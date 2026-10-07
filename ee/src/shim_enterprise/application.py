@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 import logging
 
@@ -29,6 +29,7 @@ from shim_enterprise.core.license import verify_license
 from shim.core.http import install_http_middleware
 from shim.gateway.api.errors import gateway_exception_handler
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
+from shim.gateway.kernel.result import PreparedInference
 from shim_enterprise.gateway.kernel.scan_pipeline import ScanExecutionPipeline
 from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
@@ -154,6 +155,18 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         shutdown_tracing()
 
 
+def tenant_target_circuit(
+    provider: str, cache: CacheService
+) -> Callable[[PreparedInference], RedisCircuitBreaker]:
+    def circuit_for(prepared: PreparedInference) -> RedisCircuitBreaker:
+        target = prepared.target.base_url if prepared.target is not None else "catalog"
+        # The tenant id stays out of Redis keys in clear.
+        digest = sha256(f"{prepared.tenant_id}|{target}".encode()).hexdigest()[:40]
+        return RedisCircuitBreaker(f"{provider}-{digest}", cache=cache)
+
+    return circuit_for
+
+
 def _create_gateway_kernel(
     cache: CacheService,
     http_client: httpx.AsyncClient,
@@ -167,43 +180,36 @@ def _create_gateway_kernel(
     secret_store = get_secret_store()
     chain_store = RedisPrivacyContinuationStore(cache)
     usage = DurableUsageLifecycle(DurableAccountingCoordinator(), AsyncSessionLocal)
-    dependencies = {
-        "http_client": http_client,
-        "pii_scrubber": pii_scrubber,
-    }
     return GatewayKernel(
         {
             "openai": OpenAIExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "openai", secret_store, AsyncSessionLocal
                 ),
-                circuit=RedisCircuitBreaker("openai", cache=cache),
-                circuit_for_target=lambda url: RedisCircuitBreaker(
-                    "openai-" + sha256(url.encode()).hexdigest()[:40], cache=cache
-                ),
+                circuit_for=tenant_target_circuit("openai", cache),
                 settings=settings,
                 chain_store=chain_store,
-                **dependencies,
+                http_client=http_client,
+                pii_scrubber=pii_scrubber,
             ),
             "anthropic": AnthropicExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "anthropic", secret_store, AsyncSessionLocal
                 ),
-                circuit=RedisCircuitBreaker("anthropic", cache=cache),
-                circuit_for_target=lambda url: RedisCircuitBreaker(
-                    "anthropic-" + sha256(url.encode()).hexdigest()[:40], cache=cache
-                ),
+                circuit_for=tenant_target_circuit("anthropic", cache),
                 settings=settings,
-                **dependencies,
+                http_client=http_client,
+                pii_scrubber=pii_scrubber,
             ),
             "google": GoogleExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
                     "google", secret_store, AsyncSessionLocal
                 ),
-                circuit=RedisCircuitBreaker("google", cache=cache),
+                circuit_for=tenant_target_circuit("google", cache),
                 settings=settings,
                 sync_http_client=google_sync_client,
-                **dependencies,
+                http_client=http_client,
+                pii_scrubber=pii_scrubber,
             ),
         },
         chain_store=chain_store,

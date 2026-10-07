@@ -48,8 +48,8 @@ class AnthropicExecution:
         self,
         *,
         credential_resolver: ProviderCredentialResolver,
-        circuit: CircuitBreaker,
-        circuit_for_target: Callable[[str], CircuitBreaker] | None = None,
+        circuit: CircuitBreaker | None = None,
+        circuit_for: Callable[[PreparedInference], CircuitBreaker] | None = None,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
         pii_scrubber: PIIScrubberService | None = None,
@@ -57,8 +57,10 @@ class AnthropicExecution:
         self.credential_resolver = credential_resolver
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
+        if (circuit is None) == (circuit_for is None):
+            raise ValueError("exactly one of circuit and circuit_for is required")
         self.circuit = circuit
-        self.circuit_for_target = circuit_for_target
+        self.circuit_for = circuit_for
         self.settings = settings
         self.timeout = httpx.Timeout(
             connect=settings.ANTHROPIC_CONNECT_TIMEOUT_SECONDS,
@@ -75,10 +77,9 @@ class AnthropicExecution:
         provider_start_callback: Callable[[], Awaitable[None]],
     ) -> ProviderNonStream | ProviderStream:
         circuit = (
-            self.circuit_for_target(prepared.target.base_url)
-            if prepared.target is not None and self.circuit_for_target is not None
-            else self.circuit
+            self.circuit_for(prepared) if self.circuit_for is not None else self.circuit
         )
+        assert circuit is not None
         if prepared.privacy is None:
             raise RuntimeError("privacy stage must run before Anthropic execution")
         try:
