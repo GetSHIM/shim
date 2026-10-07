@@ -47,10 +47,12 @@ request it:
   `16 GB 512`, though uppercase product and date strings such as `15 PRO 256`
   or `07 OCT 26` can still match), provider secrets such as AWS keys and GitHub,
   Google, Slack, Hugging Face and GitLab tokens, and password assignments,
-  Turkish (`şifre:`, `parolanız:`) included. A bare digit run counts as a phone
-  number only with a Turkish phone shape or a phone cue such as `Tel:` or
-  `no:`, so an order number without such a cue and ids glued to names
-  (`claude-sonnet-4-5-20250929`) stay intact. Each detected value becomes a
+  Turkish (`şifre:`, `parolanız:`) included. A digit run counts as a phone
+  number unless something marks it as another kind of number: an order,
+  invoice, timestamp or amount word in front of it, a JSON number value, a
+  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`). When in
+  doubt it is masked: a masked order number comes back in the answer, a missed
+  phone number would have reached the provider. Each detected value becomes a
   placeholder before the request leaves, and is restored in the answer before
   it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a

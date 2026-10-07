@@ -510,6 +510,26 @@
       ]
     },
     {
+      "id": "ip-single-digit-quad",
+      "text": "DNS server 8.8.8.8 is down",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "8.8.8.8"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-release-word",
+      "text": "release 10.20.30.40 failed",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.20.30.40"
+        }
+      ]
+    },
+    {
       "id": "vkn-shaped-order-number",
       "text": "Fatura numarası 1234567890",
       "expect": [],
@@ -596,9 +616,84 @@
       ]
     },
     {
-      "id": "casino-is-not-a-cue",
+      "id": "phone-after-an-unrelated-word",
       "text": "casino 4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-without-cue-us",
+      "text": "John Smith 2125551234 New York",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "2125551234"
+        }
+      ]
+    },
+    {
+      "id": "phone-without-cue-de-mobile",
+      "text": "Kunde Hans, 01725955200, wartet",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "01725955200"
+        }
+      ]
+    },
+    {
+      "id": "phone-number-phrase",
+      "text": "my number is 4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "not-phone-after-invoice-cue",
+      "text": "Invoice 4829104455 is paid",
       "expect": []
+    },
+    {
+      "id": "not-phone-duration-value",
+      "text": "{\"duration_ms\": 4155552671}",
+      "expect": []
+    },
+    {
+      "id": "phone-json-number-with-phone-key",
+      "text": "{\"customer_phone\": 4155552671}",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-word-beats-code-word",
+      "text": "contact code 4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-whatsapp-link-us",
+      "text": "https://wa.me/4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
     },
     {
       "id": "phone-cue-glued-with-dot",
@@ -651,10 +746,14 @@
       ]
     },
     {
-      "id": "order-number-with-no-cue",
+      "id": "number-after-no-cue-is-masked",
       "text": "Sipariş no: 4829104455",
-      "expect": [],
-      "known_gap": "tier 3, `no` is a phone cue"
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4829104455"
+        }
+      ]
     },
     {
       "id": "ip-after-turkish-ver",
