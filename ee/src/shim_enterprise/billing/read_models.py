@@ -43,7 +43,9 @@ class DailyUsage:
         }
 
 
-BillingBreakdownGroup = Literal["model", "tag", "cost_center", "provider", "team"]
+BillingBreakdownGroup = Literal[
+    "model", "tag", "cost_center", "provider", "team", "team_id"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +199,11 @@ class BillingReadModels:
             group_key = func.coalesce(
                 RequestLifecycle.lifecycle_metadata["team"].as_string(),
                 UNTAGGED,
+            )
+        elif group_by == "team_id":
+            group_key = func.coalesce(
+                RequestLifecycle.lifecycle_metadata["team_id"].as_string(),
+                "unassigned",
             )
         else:
             group_key = func.coalesce(

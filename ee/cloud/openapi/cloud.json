@@ -1399,7 +1399,8 @@
               "tag",
               "cost_center",
               "provider",
-              "team"
+              "team",
+              "team_id"
             ],
             "title": "Group By",
             "type": "string"
@@ -12198,7 +12199,8 @@
                 "tag",
                 "cost_center",
                 "provider",
-                "team"
+                "team",
+                "team_id"
               ],
               "title": "Group By",
               "type": "string"
@@ -12299,7 +12301,8 @@
                 "tag",
                 "cost_center",
                 "provider",
-                "team"
+                "team",
+                "team_id"
               ],
               "title": "Group By",
               "type": "string"

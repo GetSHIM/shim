@@ -2307,3 +2307,61 @@ async def test_parallel_admit_and_settle_cycles_for_one_tenant_do_not_deadlock(
         assert statuses == ["completed"] * 20
     finally:
         await _drop_tenant(factory, organization_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "team_id", [UUID("00000000-0000-0000-0000-00000000ee12"), None]
+)
+async def test_reservation_records_the_keys_team_id(db, test_api_key, team_id) -> None:
+    request_id = f"req_team_id_{uuid4().hex}"
+    now = datetime.now(timezone.utc)
+
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=now,
+            reconciliation_due_at=now + timedelta(minutes=2),
+            estimated_input_tokens=1,
+            maximum_output_tokens=1,
+            policy=QuotaPolicySnapshot("team-id", None, None, None, team_id=team_id),
+        ),
+    )
+
+    lifecycle = await db.scalar(
+        select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+    )
+    reservation = await db.scalar(
+        select(UsageLedger).where(
+            UsageLedger.request_id == request_id,
+            UsageLedger.event_type == "quota_reservation",
+        )
+    )
+    await DurableAccountingRepository().finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=test_api_key.organization_id,
+            request_id=request_id,
+            quota_action=TerminalAction.SETTLE,
+        ),
+    )
+    analytics = await db.scalar(
+        select(OutboxEvent).where(
+            OutboxEvent.aggregate_id == request_id,
+            OutboxEvent.event_type == "analytics.request_completed",
+        )
+    )
+    expected = str(team_id) if team_id is not None else None
+    assert lifecycle is not None and reservation is not None and analytics is not None
+    assert lifecycle.lifecycle_metadata["team_id"] == expected
+    assert reservation.event_metadata["team_id"] == expected
+    assert lifecycle.lifecycle_metadata["team"] is None
+    projected = analytics_projection._projection_values(
+        OutboxMessage.from_event(analytics)
+    )
+    assert projected["details"]["team_id"] == expected

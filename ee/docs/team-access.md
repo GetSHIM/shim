@@ -57,7 +57,10 @@ is an explicit access and quota reference. They are intentionally independent.
 The migration copies distinct existing labels into organization-owned team
 names, preserving the original spelling. It does not assign memberships or
 bind existing keys. Administrators explicitly assign access teams after
-migration; historical request and billing labels are unchanged.
+migration; historical request and billing labels are unchanged. Every request now
+records its key's `team_id`; `GET /api/v1/management/billing/breakdown?group_by=team_id`
+groups by it (`unassigned` for keys without a team and older requests), while
+`group_by=team` keeps grouping by the label.
 
 ## Rotation and model policies
 

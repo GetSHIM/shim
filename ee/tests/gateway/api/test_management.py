@@ -17,6 +17,13 @@ import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.ai_act.audit_writer import next_link
 from shim_enterprise.api.v1 import management
 from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.billing.ledger import (
+    DurableAccountingRepository,
+    FinalizationCommand,
+    QuotaPolicySnapshot,
+    QuotaReservationCommand,
+    TerminalAction,
+)
 from shim_enterprise.billing.models import CostBudget
 from shim_enterprise.compliance.models import (
     ComplianceConnector,
@@ -716,6 +723,7 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
     [
         ("provider", "request_lifecycle.provider"),
         ("team", "request_lifecycle.metadata"),
+        ("team_id", "request_lifecycle.metadata"),
     ],
 )
 async def test_billing_breakdown_supports_request_time_provider_and_team(
@@ -1213,3 +1221,55 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
     stored = json.dumps(_stored_extra(details))
     assert not any(secret[i : i + 8] in stored for i in range(len(secret) - 7))
     assert "reference" not in stored and row.masked_key not in stored
+
+
+@pytest.mark.asyncio
+async def test_team_attached_unlabelled_key_is_broken_down_by_team_id(
+    db, test_api_key
+) -> None:
+    team_id = uuid4()
+    repository = DurableAccountingRepository()
+    now = datetime.now(timezone.utc)
+    for policy_team in (team_id, None):
+        request_id = f"req_team_breakdown_{uuid4().hex}"
+        await repository.reserve_quota(
+            db,
+            QuotaReservationCommand(
+                tenant_id=test_api_key.organization_id,
+                api_key_id=test_api_key.id,
+                request_id=request_id,
+                requested_model="gpt-5.6-luna",
+                source_endpoint="chat.completions",
+                started_at=now,
+                reconciliation_due_at=now + timedelta(minutes=2),
+                estimated_input_tokens=1,
+                maximum_output_tokens=1,
+                policy=QuotaPolicySnapshot(
+                    "team-breakdown", None, None, None, team_id=policy_team
+                ),
+            ),
+        )
+        await repository.finalize(
+            db,
+            FinalizationCommand(
+                tenant_id=test_api_key.organization_id,
+                request_id=request_id,
+                quota_action=TerminalAction.SETTLE,
+                prompt_tokens=1,
+                completion_tokens=1,
+            ),
+        )
+
+    async def breakdown(group_by: str) -> dict[str, int]:
+        rows = await BillingReadModels().breakdown(
+            db,
+            tenant_id=TenantId(test_api_key.organization_id),
+            start_at=now - timedelta(minutes=1),
+            end_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+            group_by=group_by,
+            limit=10,
+        )
+        return {row.key: row.request_count for row in rows}
+
+    assert await breakdown("team_id") == {str(team_id): 1, "unassigned": 1}
+    assert await breakdown("team") == {"untagged": 2}

@@ -329,6 +329,7 @@ class DurableAccountingRepository:
         command: QuotaReservationCommand,
     ) -> ReservationResult:
         await self._lock_organization(session, command.tenant_id)
+        team_id = str(command.policy.team_id) if command.policy.team_id else None
         await RequestLifecycleRepository.create(
             session,
             organization_id=command.tenant_id,
@@ -350,6 +351,7 @@ class DurableAccountingRepository:
                     "cost_center": command.cost_center,
                     "tags": list(command.tags),
                     "team": command.team,
+                    "team_id": team_id,
                     "repeat_chain_length": command.repeat_chain_length,
                     "system_prompt_hash": command.system_prompt_hash,
                     "deployment_kind": command.deployment_kind,
@@ -383,6 +385,7 @@ class DurableAccountingRepository:
                     "cost_center": command.cost_center,
                     "tags": list(command.tags),
                     "team": command.team,
+                    "team_id": team_id,
                 },
             },
         )
