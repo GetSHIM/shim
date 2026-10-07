@@ -207,6 +207,24 @@ class DeploymentResolver:
                     "message": "The model is disabled or does not support this provider protocol.",
                 },
             )
+        if deployment.health == "unhealthy":
+            prepared.record_verdict(
+                "deployment.registry",
+                stage="admission",
+                outcome="deny",
+                reason_code="DEPLOYMENT_UNHEALTHY",
+                policy={
+                    "deployment_id": str(deployment.id),
+                    "health_checked_at": deployment.health_checked_at,
+                },
+            )
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "DEPLOYMENT_UNHEALTHY",
+                    "message": "The model deployment is marked unhealthy.",
+                },
+            )
         try:
             base_url = validate_deployment_url(deployment.base_url)
         except ValueError:
@@ -286,7 +304,7 @@ class DeploymentResolver:
         )
         for row in rows:
             records.pop(row.alias, None)
-            if not row.enabled or row.provider != provider:
+            if not row.enabled or row.health == "unhealthy" or row.provider != provider:
                 continue
             records[row.alias] = (
                 {

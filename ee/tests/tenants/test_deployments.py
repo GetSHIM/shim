@@ -32,6 +32,7 @@ from shim_enterprise.api.v1.management import (
     ModelDeploymentView,
     create_model_deployment,
     check_model_deployment_health,
+    update_model_deployment,
 )
 from shim_enterprise.billing.models import (
     UsageLedger,
@@ -807,3 +808,74 @@ async def test_health_probe_has_a_wall_clock_deadline(
         rows[0].id, SimpleNamespace(), test_user_with_org, db
     )
     assert result.health == "unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
+    db, test_api_key, test_user_with_org, origins, monkeypatch
+):
+    rows = await _deployments(db, test_api_key)
+    deployment = rows[1]
+    deployment.alias = "gpt-5.6-luna"
+    deployment.health, deployment.health_checked_at = (
+        "unhealthy",
+        datetime.now(timezone.utc),
+    )
+    await db.flush()
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_REQUIRED", False)
+    calls = []
+
+    def upstream(request):
+        calls.append(request.url.host)
+        return _success(request, False, "chat")
+
+    body = {"model": "gpt-5.6-luna", "messages": [{"role": "user", "content": "hello"}]}
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        refused = await client.post("/v1/chat/completions", json=body)
+        listed = {row["id"] for row in (await client.get("/v1/models")).json()["data"]}
+        deployment.health = "healthy"
+        await db.commit()
+        healthy = await client.post("/v1/chat/completions", json=body)
+        deployment.health = "unhealthy"
+        await db.commit()
+        test_user_with_org.role = "admin"
+        await update_model_deployment(
+            deployment.id,
+            ModelDeploymentInput(
+                alias=deployment.alias,
+                provider="openai",
+                upstream_model=deployment.upstream_model,
+                base_url=deployment.base_url,
+                provider_secret_id=deployment.provider_secret_id,
+                deployment_kind="internal",
+                declared_version="sha256:updated",
+                owner="Platform",
+            ),
+            test_user_with_org,
+            db,
+        )
+        updated = await client.post("/v1/chat/completions", json=body)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["error"]["code"] == "DEPLOYMENT_UNHEALTHY"
+    assert "gpt-5.6-luna" not in listed
+    assert (healthy.status_code, updated.status_code) == (200, 200)
+    assert deployment.health == "unknown"
+    assert calls == ["b.internal", "b.internal"]
+    verdicts = [
+        verdict
+        for event in (
+            await db.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.organization_id == test_api_key.organization_id
+                )
+            )
+        ).all()
+        for verdict in event.payload.get("policy_verdicts", [])
+    ]
+    assert any(
+        verdict["rule_id"] == "deployment.registry"
+        and verdict["outcome"] == "deny"
+        and verdict["reason_code"] == "DEPLOYMENT_UNHEALTHY"
+        for verdict in verdicts
+    )
