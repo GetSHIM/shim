@@ -43,7 +43,8 @@ request it:
 
 - **Detects and replaces personal data before the request leaves.** Email
   addresses, phone numbers, credit cards (Troy included), IBANs, Turkish
-  national ID and tax numbers, provider secrets such as AWS keys and GitHub,
+  national ID and tax numbers, Turkish licence plates (`34 ABC 123`; not
+  `16 GB 512`), provider secrets such as AWS keys and GitHub,
   Google, Slack, Hugging Face and GitLab tokens, and password assignments,
   Turkish (`şifre:`, `parola:`) included. A bare digit run counts as a phone
   number only with a Turkish phone shape or a phone cue such as `Tel:`, so

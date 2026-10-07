@@ -40,7 +40,9 @@ _PII_CONFIG_ENTITIES: Mapping[str, frozenset[str]] = MappingProxyType(
                 "FILE_PATH",
             }
         ),
-        "block_pii_tr": frozenset({"TR_NATIONAL_ID", "TR_VKN", "IBAN_CODE"}),
+        "block_pii_tr": frozenset(
+            {"TR_NATIONAL_ID", "TR_VKN", "IBAN_CODE", "TR_LICENSE_PLATE"}
+        ),
     }
 )
 

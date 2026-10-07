@@ -749,6 +749,20 @@ def test_a_lowercase_word_or_next_line_after_an_iban_does_not_hide_it(
     ] == [("IBAN_CODE", iban)]
 
 
+def test_a_plate_is_one_placeholder_under_the_turkish_identifier_switch(
+    scrubber: PIIScrubberService,
+) -> None:
+    text = "Araç 34 ABC 123, 16 GB 512 RAM"
+
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert list(mapping.values()) == ["34 ABC 123"]
+    assert next(iter(mapping)).startswith("<TR_LICENSE_PLATE_")
+    assert "16 GB 512" in scrubbed
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+    assert scrubber.scrub(text, {"block_pii_tr": False}) == (text, {})
+
+
 def test_native_payload_restores_content_not_metadata_or_ids(
     scrubber: PIIScrubberService,
 ) -> None:
