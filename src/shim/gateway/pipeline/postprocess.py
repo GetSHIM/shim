@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import JSONResponse, StreamingResponse
+from opentelemetry import trace
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
@@ -27,6 +28,7 @@ from shim.observability.metrics import (
     PROVIDER_REQUESTS_TOTAL,
     bounded_label,
 )
+from shim.observability.tracing import safe_attributes
 from shim.privacy.classification import content_ref
 
 if TYPE_CHECKING:
@@ -181,6 +183,7 @@ class ResponsePostprocessor:
             shim_latency_ms=prepared.timing.shim_latency_ms,
         )
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
+        record_usage_on_span(prepared, terminal.usage)
         await self.usage.finalize(prepared, terminal)
         return gateway_response
 
@@ -199,6 +202,7 @@ class ResponsePostprocessor:
             await self.usage.heartbeat_stream(prepared)
 
         async def finalize_stream(terminal: StreamFinalization) -> None:
+            record_usage_on_span(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
 
         def observe_terminal(terminal_status: str) -> None:
@@ -235,6 +239,33 @@ class ResponsePostprocessor:
             finalization_tasks=self._finalization_tasks,
             timing=prepared.timing,
         )
+
+
+def record_usage_on_span(
+    prepared: PreparedInference, usage: StreamUsageSnapshot
+) -> None:
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+    provider = str(prepared.provider)
+    priced = DEFAULT_PRICE_BOOK.supports(usage.provider_model, provider)
+    finish_reasons = sorted(set((usage.provider_finish_reasons or {}).values()))
+    span.set_attributes(
+        safe_attributes(
+            {
+                "gen_ai.request.model": usage.provider_model if priced else "unpriced",
+                "gen_ai.usage.input_tokens": usage.prompt_tokens,
+                "gen_ai.usage.output_tokens": usage.completion_tokens,
+                "gen_ai.response.finish_reasons": ",".join(finish_reasons) or None,
+                "shim.cost_usd": (
+                    str(usage.settlement_cost_usd)
+                    if priced and usage.settlement_cost_usd is not None
+                    else None
+                ),
+                "shim.usage_estimated": usage.estimated,
+            }
+        )
+    )
 
 
 class PostprocessStage:

@@ -496,3 +496,30 @@ def test_global_rate_limit_comes_from_the_setting() -> None:
         if item.cls is GlobalRateLimitMiddleware
     )
     assert limit == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", [None, "http://127.0.0.1:4318"])
+async def test_community_traces_only_when_an_endpoint_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str | None,
+) -> None:
+    configure_tracing = Mock()
+    shutdown_tracing = Mock()
+    monkeypatch.setattr("shim.application.configure_tracing", configure_tracing)
+    monkeypatch.setattr("shim.application.shutdown_tracing", shutdown_tracing)
+    configured = _settings(OTEL_EXPORTER_OTLP_ENDPOINT=endpoint)
+    application = create_community_app(configured, event_stream=StringIO())
+
+    async with application.router.lifespan_context(application):
+        pass
+
+    assert configured.OTEL_SERVICE_NAME == "shim"
+    if endpoint is None:
+        configure_tracing.assert_not_called()
+        shutdown_tracing.assert_not_called()
+    else:
+        configure_tracing.assert_called_once_with(
+            endpoint=endpoint, service_name="shim"
+        )
+        shutdown_tracing.assert_called_once_with()

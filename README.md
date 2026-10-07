@@ -134,6 +134,10 @@ default), so long generations should stream.
 Community exposes `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, the
 Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and
 `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
+OTLP traces, structured logs and Sentry error reports are enabled by
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` and `SENTRY_DSN`; each request's closing
+span carries its model, input and output tokens, finish reasons and cost, never
+prompt or response text.
 
 To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 For customer-operated enterprise installations, see [deployment and recovery](ee/deploy/README.md).
