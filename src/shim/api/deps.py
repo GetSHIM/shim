@@ -29,6 +29,11 @@ anthropic_api_key_header_scheme = APIKeyHeader(
     scheme_name="AnthropicAPIKey",
     auto_error=False,
 )
+google_api_key_header_scheme = APIKeyHeader(
+    name="x-goog-api-key",
+    scheme_name="GoogleAPIKey",
+    auto_error=False,
+)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -69,6 +74,20 @@ async def get_anthropic_authenticated_principal(
         select_gateway_credential(
             request.headers,
             accept_anthropic_key=True,
+        )
+    )
+
+
+async def get_google_authenticated_principal(
+    request: Request,
+    _api_key_header: str | None = Security(api_key_header_scheme),
+    _bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+    _google_api_key_header: str | None = Security(google_api_key_header_scheme),
+) -> AuthenticatedPrincipal:
+    return await _get_gateway_authenticator(request).resolve(
+        select_gateway_credential(
+            request.headers,
+            accept_google_key=True,
         )
     )
 

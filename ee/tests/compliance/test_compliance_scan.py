@@ -12,6 +12,7 @@ from shim.privacy.pii_scrubber import PIIScrubberService
 def test_presidio_entities_receive_the_intended_classification() -> None:
     assert classify("TR_NATIONAL_ID").severity == "critical"
     assert classify("IBAN_CODE").severity == "high"
+    assert classify("TR_LICENSE_PLATE") == classify("TR_VKN")
 
 
 @pytest.mark.asyncio

@@ -216,3 +216,52 @@ def test_local_auth_uses_strict_first_present_precedence(
                 accept_anthropic_key=accept_anthropic_key,
             )
         assert error.value.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("headers", "accept_google_key", "allowed"),
+    [
+        (
+            {"x-shim-key": LOCAL_KEY, "x-goog-api-key": "wrong-local-gateway-key"},
+            True,
+            True,
+        ),
+        (
+            {
+                "Authorization": f"Bearer {LOCAL_KEY}",
+                "x-goog-api-key": "wrong-local-gateway-key",
+            },
+            True,
+            True,
+        ),
+        (
+            {
+                "Authorization": "Bearer wrong-local-gateway-key",
+                "x-goog-api-key": LOCAL_KEY,
+            },
+            True,
+            False,
+        ),
+        ({"x-goog-api-key": LOCAL_KEY}, True, True),
+        ({"x-goog-api-key": LOCAL_KEY}, False, False),
+    ],
+)
+def test_local_auth_reads_the_google_key_last_and_only_when_allowed(
+    headers: dict[str, str],
+    accept_google_key: bool,
+    allowed: bool,
+) -> None:
+    authenticator = LocalAuthenticator(SecretStr(LOCAL_KEY))
+
+    if allowed:
+        assert (
+            authenticator.authenticate(
+                headers,
+                accept_google_key=accept_google_key,
+            ).api_key_id
+            == LOCAL_API_KEY_ID
+        )
+    else:
+        with pytest.raises(HTTPException) as error:
+            authenticator.authenticate(headers, accept_google_key=accept_google_key)
+        assert error.value.status_code == 401

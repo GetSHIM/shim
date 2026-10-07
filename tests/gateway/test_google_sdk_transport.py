@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import ssl
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
+import shim.gateway.pipeline.google_execution as google_execution
 from shim.api.v1.gemini import GenerateContentRequest
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -60,6 +62,7 @@ def _execution(http_client: httpx.AsyncClient) -> GoogleExecution:
         circuit=InMemoryCircuitBreaker(),
         settings=settings,
         http_client=http_client,
+        sync_http_client=httpx.Client(),
     )
 
 
@@ -309,7 +312,9 @@ async def test_stream_requires_every_requested_candidate_to_finish(
         )
         wire = b"".join([event async for event in result.events])
 
-    assert b'"status":"PROVIDER_UNAVAILABLE"' in wire
+    error = json.loads(wire.splitlines()[-2].removeprefix(b"data: "))["error"]
+    assert error["status"] == "UNAVAILABLE"
+    assert error["details"][0]["reason"] == "PROVIDER_UNAVAILABLE"
     execution.circuit.record_failure.assert_awaited_once()
     execution.circuit.record_success.assert_not_awaited()
 
@@ -387,4 +392,233 @@ def test_native_request_schema_forbids_translation_fields() -> None:
                 "model": "gemini-3.5-flash",
                 "stream": True,
             }
+        )
+
+
+def _circuit() -> SimpleNamespace:
+    return SimpleNamespace(
+        acquire_call=AsyncMock(return_value=True),
+        record_success=AsyncMock(),
+        record_failure=AsyncMock(),
+        release_probe=AsyncMock(),
+    )
+
+
+_HELLO = {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [429, 503])
+async def test_rate_limit_releases_the_probe_and_forwards_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={"error": {"code": status_code, "message": "x", "status": "X"}},
+            headers={"retry-after": "7"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert raised.value.status_code == status_code
+    assert raised.value.retry_after == "7"
+    circuit.record_success.assert_not_awaited()
+    if status_code == 429:
+        assert raised.value.error_code == "PROVIDER_RATE_LIMITED"
+        circuit.release_probe.assert_awaited_once()
+        circuit.record_failure.assert_not_awaited()
+    else:
+        assert raised.value.error_code == "PROVIDER_UNAVAILABLE"
+        circuit.record_failure.assert_awaited_once()
+        circuit.release_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [httpx.ConnectError("refused"), httpx.ReadTimeout("slow")]
+)
+async def test_connection_and_timeout_errors_count_as_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    error: httpx.TransportError,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        raise error
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError):
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    # google-genai does not wrap httpx errors, so only this arm opens the circuit.
+    circuit.record_failure.assert_awaited_once()
+    circuit.release_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["sdk_refusal", "unserializable_answer"])
+async def test_local_exceptions_release_the_probe_without_counting(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    async def generate_content(**_kwargs):
+        if failure == "sdk_refusal":
+            raise ValueError("refused before any request")
+        return SimpleNamespace(model_dump=lambda **_kwargs: [])
+
+    monkeypatch.setattr(
+        google_execution.genai,
+        "Client",
+        lambda **_kwargs: SimpleNamespace(
+            aio=SimpleNamespace(
+                models=SimpleNamespace(generate_content=generate_content),
+                aclose=AsyncMock(),
+            ),
+            close=lambda: None,
+        ),
+    )
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError):
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_requests_share_one_tls_context_but_never_a_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    upstream_keys: list[str | None] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        upstream_keys.append(request.headers.get("x-goog-api-key"))
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "ok"}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            },
+        )
+
+    real_client = google_execution.genai.Client
+    clients: list[tuple[google_execution.types.HttpOptions, object]] = []
+
+    def recording_client(**kwargs):
+        client = real_client(**kwargs)
+        client.close = Mock(wraps=client.close)
+        client.aio.aclose = AsyncMock(wraps=client.aio.aclose)
+        clients.append((kwargs["http_options"], client))
+        return client
+
+    monkeypatch.setattr(google_execution.genai, "Client", recording_client)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        for key in ("google-key-one", "google-key-two"):
+            await execution.execute(
+                invocation=_invocation(key),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert upstream_keys == ["google-key-one", "google-key-two"]
+    assert isinstance(execution.ssl_context, ssl.SSLContext)
+    for options, client in clients:
+        assert options.client_args == {"verify": execution.ssl_context}
+        assert options.async_client_args == {
+            "verify": execution.ssl_context,
+            "ssl": execution.ssl_context,
+        }
+        assert options.httpx_client is execution.sync_http_client
+        assert options.httpx_async_client is http
+        client.close.assert_called_once()
+        client.aio.aclose.assert_awaited_once()
+    assert clients[0][1] is not clients[1][1]
+
+
+@pytest.mark.asyncio
+async def test_circuit_for_is_asked_once_and_serves_the_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    chunk = {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    circuit = _circuit()
+    circuit_for = Mock(return_value=circuit)
+    prepared = _prepared(_HELLO, stream=True)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await GoogleExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("google", {}),
+            circuit_for=circuit_for,
+            settings=settings,
+            http_client=http,
+            sync_http_client=httpx.Client(),
+        ).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [event async for event in result.events]
+
+    circuit_for.assert_called_once_with(prepared)
+    circuit.acquire_call.assert_awaited_once()
+    circuit.record_success.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "circuits", [{}, {"circuit": InMemoryCircuitBreaker(), "circuit_for": Mock()}]
+)
+def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
+    with pytest.raises(ValueError, match="exactly one of circuit and circuit_for"):
+        GoogleExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("google", {}),
+            settings=settings,
+            http_client=SimpleNamespace(),  # type: ignore[arg-type]
+            sync_http_client=httpx.Client(),
+            **circuits,
         )
