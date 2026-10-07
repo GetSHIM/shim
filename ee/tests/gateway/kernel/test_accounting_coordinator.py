@@ -1863,6 +1863,22 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
 
 
 @pytest.mark.asyncio
+async def test_spend_policy_takes_a_key_share_lock_on_the_provider_secret():
+    from sqlalchemy.dialects import postgresql
+
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: None))
+    )
+
+    await AccountingPolicyLoader().spend(session, _prepared(), ephemeral_byok=False)
+
+    (call,) = session.execute.await_args_list
+    statement = str(call.args[0].compile(dialect=postgresql.dialect()))
+    # A deployment's foreign key into provider_secrets must not wait for spend.
+    assert statement.endswith("FOR NO KEY UPDATE")
+
+
+@pytest.mark.asyncio
 async def test_shared_tier_allows_independent_reservations_but_fences_edits(
     async_engine,
 ):

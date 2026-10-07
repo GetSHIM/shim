@@ -60,7 +60,7 @@ denial is surfaced instead of swallowed; best-effort failure retains recovery
 and a sanitized error log. Database unavailability cannot guarantee new durable
 evidence, and best-effort mode must not be described as lossless.
 
-After worker delivery, the tenant-scoped `GET /v1/compliance/audit/logs` response
+After worker delivery, the tenant-scoped `GET /api/v1/compliance/audit/logs` response
 exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
 status. Unknown historical fields remain null. The existing chain verifier
 continues to verify this evidence.
@@ -76,7 +76,7 @@ redelivery, and chain verification. The repository-wide gate is in `AGENTS.md`.
 
 Management actions append an `audit.chain_append_requested` event in the same
 transaction as the change. The audit API returns the stored `extra` object as
-written, so these details are readable through `GET /v1/compliance/audit/logs`.
+written, so these details are readable through `GET /api/v1/compliance/audit/logs`.
 
 | Event | `extra` details |
 | --- | --- |
@@ -110,9 +110,9 @@ the daily anchors of the days in the window. The genesis salt never leaves the
 deployment.
 
 Synchronous limits: at most 10,000 rows and 366 anchors (422 beyond), 404 for a
-window without rows, 422 when `start` is after `end`, and 422 naming the row when
-a stored row holds a float that would not survive the round trip (non-finite or
-`abs(value) >= 1e16`).
+window without rows, and 422 when `start` is after `end`. A float that jsonb
+would store in another form (non-finite, or `abs(value) >= 1e16`) is written to
+the chain as its string, so every stored row re-hashes as written.
 
 ## KVKK exposure report
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import math
 from typing import Any
 from uuid import UUID
 
@@ -136,6 +137,10 @@ def _metadata(value: Any, *, depth: int = 0) -> Any:
         return [_metadata(child, depth=depth + 1) for child in value[:64]]
     if isinstance(value, str):
         return value[:512]
+    if isinstance(value, float) and not (math.isfinite(value) and abs(value) < 1e16):
+        # jsonb stores these without an exponent (or refuses them), so the stored row
+        # would no longer serialise to the bytes that were hashed.
+        return repr(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return str(value)[:512]

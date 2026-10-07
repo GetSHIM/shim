@@ -19,6 +19,7 @@ from shim_enterprise.core.database import AsyncSessionLocal, get_db
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.tenants.oidc import current_oidc_user
+from shim_enterprise.tenants.teams import ORGANIZATION_READERS
 from shim.gateway.auth import authentication_error, select_gateway_credential
 from shim.gateway.contracts.ids import ApiKeyId, UserId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
@@ -35,7 +36,6 @@ from shim_enterprise.tenants.service import (
 
 logger = logging.getLogger(__name__)
 jwt_verifier = JwtIdentityVerifier()
-ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
 
 
 def get_enterprise_gateway_service(request: Request) -> EnterpriseGatewayService:

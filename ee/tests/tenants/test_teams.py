@@ -690,13 +690,22 @@ async def test_member_reads_requests_of_own_and_administered_team_keys(
     other_team = Team(id=uuid4(), organization_id=owner.organization_id, name="Other")
     db.add_all([member, administered_team, other_team])
     await db.flush()
-    db.add(
-        TeamMembership(
-            organization_id=owner.organization_id,
-            team_id=administered_team.id,
-            user_id=member.id,
-            role="team_admin",
-        )
+    db.add_all(
+        [
+            TeamMembership(
+                organization_id=owner.organization_id,
+                team_id=administered_team.id,
+                user_id=member.id,
+                role="team_admin",
+            ),
+            # Belonging to a team without administering it does not open its keys.
+            TeamMembership(
+                organization_id=owner.organization_id,
+                team_id=other_team.id,
+                user_id=member.id,
+                role="member",
+            ),
+        ]
     )
     await db.flush()
     keys = {

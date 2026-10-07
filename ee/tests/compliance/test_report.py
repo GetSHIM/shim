@@ -803,13 +803,21 @@ async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
     connector_scoped = await collect_exposure_evidence(
         db, tenant_id=tenant_id, start=start, end=end, connector_id=uuid4()
     )
+    for_csv = await collect_exposure_evidence(
+        db,
+        tenant_id=tenant_id,
+        start=start,
+        end=end,
+        connector_id=None,
+        with_gateway=False,
+    )
     strings = _pdf_strings(_render_pdf(tenant_wide))
 
     assert tenant_wide.gateway_detections == (
         ("EMAIL_ADDRESS", "İletişim", 1),
         ("TR_NATIONAL_ID", "Kimlik", 3),
     )
-    assert connector_scoped.gateway_detections == ()
+    assert connector_scoped.gateway_detections == for_csv.gateway_detections == ()
     assert "Gateway detections" in strings
     assert "Scope: all tenant connectors and the gateway" in strings
     assert f"Organization: {tenant_id}" in strings

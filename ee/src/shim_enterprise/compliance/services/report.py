@@ -93,6 +93,7 @@ async def collect_exposure_evidence(
     start: datetime,
     end: datetime,
     connector_id: UUID | None,
+    with_gateway: bool = True,
 ) -> ExposureEvidence:
     if start > end:
         raise ValueError("report start must not be after end")
@@ -136,7 +137,7 @@ async def collect_exposure_evidence(
         )
         for row in rows
     )
-    if connector_id is not None:
+    if connector_id is not None or not with_gateway:
         return ExposureEvidence(tenant_id, connector_id, start, end, findings)
     entities = (
         func.jsonb_each_text(RequestLifecycle.lifecycle_metadata["pii_entities"])
@@ -309,6 +310,8 @@ async def generate_report(
         start=start,
         end=end,
         connector_id=connector_id,
+        # The CSV stays connector findings only.
+        with_gateway=fmt != "csv",
     )
     date_suffix = end.strftime("%Y%m%d")
     if fmt == "csv":
