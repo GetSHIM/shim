@@ -323,8 +323,7 @@
           "entity": "CREDIT_CARD",
           "value": "9792 0000 0000 0003"
         }
-      ],
-      "known_gap": "LT-B30, PRD-S11"
+      ]
     },
     {
       "id": "card-mastercard-2-series",
@@ -334,8 +333,7 @@
           "entity": "CREDIT_CARD",
           "value": "2221 0000 0000 0009"
         }
-      ],
-      "known_gap": "LT-B30, PRD-S11"
+      ]
     },
     {
       "id": "iban-whole-not-card",
@@ -345,8 +343,40 @@
           "entity": "IBAN_CODE",
           "value": "TR96 1569 9085 0078 9107 8735 82"
         }
-      ],
-      "known_gap": "LT-B30, PRD-S11"
+      ]
+    },
+    {
+      "id": "card-troy-luhn-invalid",
+      "text": "Kart 9792 0000 0000 0004",
+      "expect": []
+    },
+    {
+      "id": "card-and-iban-same-sentence",
+      "text": "Kart 4111 1111 1111 1111, IBAN TR33 0006 1005 1978 6457 8413 26",
+      "expect": [
+        {
+          "entity": "CREDIT_CARD",
+          "value": "4111 1111 1111 1111"
+        },
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR33 0006 1005 1978 6457 8413 26"
+        }
+      ]
+    },
+    {
+      "id": "two-ibans-one-line",
+      "text": "TR33 0006 1005 1978 6457 8413 26 ve TR96 1569 9085 0078 9107 8735 82",
+      "expect": [
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR33 0006 1005 1978 6457 8413 26"
+        },
+        {
+          "entity": "IBAN_CODE",
+          "value": "TR96 1569 9085 0078 9107 8735 82"
+        }
+      ]
     },
     {
       "id": "order-number",
