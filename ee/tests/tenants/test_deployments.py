@@ -209,8 +209,8 @@ async def _gateway(db, key, handler):
                 execution.credential_resolver = ManagedProviderCredentialResolver(
                     provider, store, factory
                 )
-                execution.circuit_for_target = lambda url: circuits[
-                    urlsplit(url).hostname
+                execution.circuit_for = lambda prepared: circuits[
+                    urlsplit(prepared.target.base_url).hostname
                 ]
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app),

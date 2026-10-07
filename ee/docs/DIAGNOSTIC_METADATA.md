@@ -7,11 +7,33 @@ provider attempt rule are unchanged.
 | Field | Meaning | Unknown/unavailable value |
 | --- | --- | --- |
 | `provider_finish_reasons` | Map of native completion facts, preserving candidate indices and provider spelling. See the protocol table below. | `null` when no recognized native completion fact was observed; absent map entries remain unknown. |
+| `completion_outcome` | One classification per settled request: `complete`, `truncated`, `empty`, `refused` or `filtered`, derived from `provider_finish_reasons`, the emitted answer text and whether a refusal or tool call was seen. See the mapping below. | `null` for rejected and failed requests (a provider block stays `filtered`) and for historical rows. |
 | `repeat_chain_length` | Number of matching request-content observations in the configured tenant repeat window, including this request (`1` for the first observation). | `null` when the detector has no observation, including Redis unavailability. |
 | `shim_latency_ms` | Integer milliseconds spent processing inside shim, excluding provider waits and generation; measured with a monotonic clock up to the terminal accounting handoff. Includes invocation preprocessing and response transformation; excludes provider SDK awaits, raw stream awaits, client suspension and transport close. Terminal persistence after the snapshot is outside the measurement. Provider-free scans use the same snapshot boundary. | `null` when unmeasured, including historical rows and recovery after process loss; measured zero remains zero. |
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
+
+`completion_outcome` answers whether the caller received a whole answer. The
+first class that matches, in this order, wins, including across several choices
+or candidates:
+
+| Outcome | Native facts |
+| --- | --- |
+| `filtered` | OpenAI `content_filter`; Responses `incomplete_details.reason: content_filter`; Gemini `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, or any `promptFeedback.blockReason` |
+| `refused` | Anthropic `refusal`; an OpenAI chat `refusal` field; a Responses `refusal` content part |
+| `truncated` | OpenAI `length`; Responses `incomplete_details.reason: max_output_tokens`; Anthropic `max_tokens` or `model_context_window_exceeded`; Gemini `MAX_TOKENS` |
+| `empty` | none of the above, no answer text and no tool call |
+| `complete` | otherwise |
+
+Only the allowlisted native values above reach the classifier. Anthropic
+thinking and OpenAI reasoning text is output but not answer text, so an answer
+holding only that is `empty` over JSON and over SSE alike; Gemini thought parts
+still count as answer text on both paths. Both editions count the field in
+`shim_completion_outcomes_total{provider, outcome}` (a failed request is not
+counted, except a provider block, which is `filtered`); community records it in its JSONL usage event, and enterprise carries
+it in lifecycle metadata, the analytics projection, the request list and its
+CSV export.
 
 The repeat count is a content-match observation, **not evidence of a retry**.
 Its existing matching algorithm selects prompt fields plus provider/model,
@@ -58,6 +80,11 @@ disconnect. `completed` lifecycle status means the transport completed; a
 native truncation/refusal reason can still accompany it. `[DONE]` does not
 fabricate a finish reason. Missing provider usage does not erase completion
 facts or TTFT; the existing `usage_estimated` field describes accounting fallback.
+OpenAI chat streams on catalog routes are metered from provider usage: when the
+caller did not set `stream_options.include_usage`, shim asks for it upstream and
+keeps the extra usage chunk away from the caller, so those requests are no
+longer estimated. Registry targets are not asked, because an OpenAI-compatible
+server is not guaranteed to accept the option.
 
 ## System-instruction hashing
 
@@ -98,9 +125,12 @@ are empty cells, and finish-reason maps are JSON). Both expose only the shim
 latency measurement. Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills. The community
-JSONL v2 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
+JSONL v3 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
-has no configured installation hashing key.
+has no configured installation hashing key. It also carries `cost_center` (the
+first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
+tags); an event written before admission, such as a rejection, has
+`cost_center: null` and `tags: []`.
 
 ## Responses continuation markers
 

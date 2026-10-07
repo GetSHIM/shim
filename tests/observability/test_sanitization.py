@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from io import StringIO
 import json
 import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 import pytest
 
+from shim.application import create_community_app
+from shim.core.community_config import CommunitySettings
 import shim.observability.logging as logging_module
 import shim.observability.tracing as tracing_module
 from shim.gateway.kernel.runtime import _STAGE_SPANS
@@ -104,7 +114,12 @@ def test_every_gateway_stage_span_is_registered() -> None:
 def test_public_metrics_are_bounded_and_exclude_enterprise_families() -> None:
     assert bounded_label("model", "gpt-5.4") == "gpt-*"
     assert bounded_label("provider", "tenant-defined-provider") == "other"
+    assert bounded_label("outcome", "refused") == "refused"
+    assert bounded_label("outcome", "provider-defined-outcome") == "other"
+    assert bounded_label("entity_type", "TR_LICENSE_PLATE") == "TR_LICENSE_PLATE"
+    assert bounded_label("entity_type", "TR_PLATE_GUESS") == "other"
     public = {
+        "shim_completion_outcomes",
         "privacy_detection",
         "provider_latency_ms",
         "provider_requests",
@@ -150,3 +165,117 @@ def test_tracing_appends_signal_path_to_otlp_base_endpoint(monkeypatch) -> None:
     exporter_factory.assert_called_once_with(
         endpoint="https://collector.test/otel/v1/traces"
     )
+
+
+def test_usage_attribute_keys_are_allowlisted_and_unknown_keys_still_refused() -> None:
+    usage = {
+        "gen_ai.request.model": "gpt-5.6-luna",
+        "gen_ai.usage.input_tokens": 5,
+        "gen_ai.usage.output_tokens": 3,
+        "gen_ai.response.finish_reasons": "stop",
+        "shim.cost_usd": "0.0001",
+        "shim.usage_estimated": False,
+    }
+
+    assert safe_attributes(usage) == usage
+    with pytest.raises(ValueError, match="unsafe trace attribute keys"):
+        safe_attributes({"gen_ai.prompt": "hello"})
+
+
+@pytest.fixture
+def recorded_spans(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemorySpanExporter]:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", provider.get_tracer)
+    yield exporter
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_closing_spans_carry_model_tokens_and_cost(
+    recorded_spans: InMemorySpanExporter,
+) -> None:
+    prompt = "observability-probe-sentence"
+    completion = {
+        "id": "chatcmpl_spans",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+    }
+    chunk = {
+        **completion,
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+    }
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content).get("stream"):
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=completion)
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1",
+            OPENAI_API_KEY="sk-provider",
+            BACKEND_CORS_ORIGINS=[],
+            _env_file=None,
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        for stream in (False, True):
+            response = await client.post(
+                "/v1/chat/completions",
+                headers={"x-openai-api-key": "sk-provider"},
+                json={
+                    "model": "gpt-5.6-luna",
+                    "stream": stream,
+                    "messages": [{"role": "user", "content": f"{prompt} {stream}"}],
+                },
+            )
+            assert response.status_code == 200
+    await outbound.aclose()
+
+    finished = recorded_spans.get_finished_spans()
+    postprocess, stream_spans = (
+        [span for span in finished if span.name == name]
+        for name in ("gateway.postprocess", "gateway.stream")
+    )
+    # The JSON request ran first; the stream request's postprocess span closes before usage exists.
+    json_span = postprocess[0].attributes or {}
+    stream_span = stream_spans[0].attributes or {}
+    assert json_span["gen_ai.request.model"] == "gpt-5.6-luna"
+    assert json_span["gen_ai.usage.input_tokens"] == 5
+    assert json_span["gen_ai.usage.output_tokens"] == 3
+    assert json_span["gen_ai.response.finish_reasons"] == "stop"
+    assert json_span["shim.usage_estimated"] is False
+    assert float(str(json_span["shim.cost_usd"])) > 0
+    assert stream_span["gen_ai.request.model"] == "gpt-5.6-luna"
+    assert {"gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"} <= set(
+        stream_span
+    )
+    for span in recorded_spans.get_finished_spans():
+        assert all(
+            prompt not in str(value) for value in (span.attributes or {}).values()
+        )

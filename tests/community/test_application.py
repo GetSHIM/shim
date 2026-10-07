@@ -102,7 +102,10 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
             completion = await client.chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "user", "content": f"Contact {EMAIL}"}],
-                extra_headers={"x-provider-key": PROVIDER_KEY},
+                extra_headers={
+                    "x-provider-key": PROVIDER_KEY,
+                    "X-Shim-Tag": "risk,batch",
+                },
             )
 
     assert health.json() == {"status": "ok", "version": "0.1.3"}
@@ -123,6 +126,8 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
     assert event["provider_finish_reasons"] == {"choices.0.finish_reason": "stop"}
     assert event["ttft_ms"] is None
     assert event["repeat_chain_length"] == 1
+    assert event["cost_center"] == "risk"
+    assert event["tags"] == ["risk", "batch"]
     assert event["deployment_kind"] == "unknown"
     assert event["system_prompt_hash"] is None
     assert EMAIL not in lines[0]
@@ -448,3 +453,73 @@ def test_cli_allows_external_bind_with_a_validated_gateway_key(monkeypatch) -> N
     cli.main(["serve", "--host", "0.0.0.0"])
 
     assert run.call_args.kwargs["host"] == "0.0.0.0"
+
+
+@pytest.mark.asyncio
+async def test_browsers_can_read_the_gateway_error_code() -> None:
+    origin = "https://dashboard.example.test"
+    application = create_community_app(
+        CommunitySettings(
+            SHIM_API_KEY=GATEWAY_KEY, BACKEND_CORS_ORIGINS=[origin], _env_file=None
+        ),
+        event_stream=StringIO(),
+    )
+
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"origin": origin},
+            json={"model": MODEL, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 401
+    assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
+    exposed = response.headers["access-control-expose-headers"].lower().split(",")
+    assert "x-shim-error-code" in [name.strip() for name in exposed]
+
+
+def test_global_rate_limit_comes_from_the_setting() -> None:
+    application = create_community_app(
+        _settings(GLOBAL_RATE_LIMIT_PER_MINUTE=7),
+        event_stream=StringIO(),
+    )
+
+    limit = next(
+        item.kwargs["limit"]
+        for item in application.user_middleware
+        if item.cls is GlobalRateLimitMiddleware
+    )
+    assert limit == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", [None, "http://127.0.0.1:4318"])
+async def test_community_traces_only_when_an_endpoint_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str | None,
+) -> None:
+    configure_tracing = Mock()
+    shutdown_tracing = Mock()
+    monkeypatch.setattr("shim.application.configure_tracing", configure_tracing)
+    monkeypatch.setattr("shim.application.shutdown_tracing", shutdown_tracing)
+    configured = _settings(OTEL_EXPORTER_OTLP_ENDPOINT=endpoint)
+    application = create_community_app(configured, event_stream=StringIO())
+
+    async with application.router.lifespan_context(application):
+        pass
+
+    assert configured.OTEL_SERVICE_NAME == "shim"
+    if endpoint is None:
+        configure_tracing.assert_not_called()
+        shutdown_tracing.assert_not_called()
+    else:
+        configure_tracing.assert_called_once_with(
+            endpoint=endpoint, service_name="shim"
+        )
+        shutdown_tracing.assert_called_once_with()
