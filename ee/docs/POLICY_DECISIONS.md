@@ -43,6 +43,9 @@ usage charges or provider execution. The identity remains
 `request:<request_id>:outbox:audit.completion`. Outbox redelivery uses the existing
 tenant/request/event deduplication and hash-chain writer.
 
+Admission fences the organization and API-key rows with `FOR NO KEY UPDATE`, so
+foreign-key checks from settlement and analytics projection never wait on an admission.
+
 For pre-admission denials, audit mode `off` writes no audit intent. `best_effort`
 attempts the transaction and emits a content-free error log if it cannot commit,
 preserving the original rejection. `strict` returns `AUDIT_INTENT_FAILED` (503)

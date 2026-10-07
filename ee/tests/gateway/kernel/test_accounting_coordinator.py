@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,7 @@ from shim.gateway.kernel.result import (
 )
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPersistenceError,
+    AccountingPolicyLoader,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
     _system_prompt_hash,
@@ -55,6 +57,7 @@ from shim_enterprise.billing.ledger import (
     TerminalAction,
 )
 from shim_enterprise.billing.models import (
+    AuditIntent,
     QuotaPeriodUsage,
     RequestLifecycle,
     SpendPeriodUsage,
@@ -65,7 +68,8 @@ from shim_enterprise.observability import analytics_projection, overview
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim.privacy.classification import content_ref
-from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.tenants.models import ApiKey, Organization, ProviderSecret, User
+from shim_enterprise.tenants.plans import configure_organization_quota
 
 
 def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
@@ -1813,9 +1817,6 @@ async def test_audit_intent_outbox_reference_is_tenant_scoped(db) -> None:
 @pytest.mark.asyncio
 async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
     from sqlalchemy.dialects import postgresql
-    from shim_enterprise.gateway.pipeline.quota_reservation import (
-        AccountingPolicyLoader,
-    )
 
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=SimpleNamespace(role="member")),
@@ -1857,8 +1858,8 @@ async def test_quota_policy_uses_shared_tier_lock_and_exclusive_key_lock():
         str(call.args[0].compile(dialect=postgresql.dialect()))
         for call in session.execute.await_args_list
     ]
-    assert statements[0].endswith("FOR UPDATE OF organizations")
-    assert statements[1].endswith("FOR UPDATE")
+    assert statements[0].endswith("FOR NO KEY UPDATE OF organizations")
+    assert statements[1].endswith("FOR NO KEY UPDATE")
     assert statements[2].endswith("FOR SHARE")
     assert policy.daily_request_limit == 10
 
@@ -1869,9 +1870,6 @@ async def test_shared_tier_allows_independent_reservations_but_fences_edits(
 ):
     from sqlalchemy import update
     from shim_enterprise.billing.ledger import QuotaLimitExceeded
-    from shim_enterprise.gateway.pipeline.quota_reservation import (
-        AccountingPolicyLoader,
-    )
     from shim_enterprise.tenants.models import TierDefinition
 
     factory = async_sessionmaker(async_engine, expire_on_commit=False)
@@ -2085,3 +2083,225 @@ async def test_key_cost_center_and_header_tags_reach_the_quota_reservation() -> 
     command = repository.reserve_quota.await_args.args[1]
     assert command.cost_center == "bireysel"
     assert command.tags == ("kampanya-ekim",)
+
+
+async def _drop_tenant(factory, organization_id: UUID) -> None:
+    async with factory.begin() as cleanup:
+        for model in (
+            AuditIntent,
+            OutboxEvent,
+            UsageLedger,
+            RequestLifecycle,
+            QuotaPeriodUsage,
+            SpendPeriodUsage,
+            ProviderSecret,
+            ApiKey,
+            User,
+        ):
+            await cleanup.execute(
+                delete(model).where(model.organization_id == organization_id)
+            )
+        await cleanup.execute(
+            delete(Organization).where(Organization.id == organization_id)
+        )
+
+
+async def _cap_organization(session: AsyncSession, organization_id: UUID) -> None:
+    organization = await session.get(Organization, organization_id)
+    assert organization is not None
+    organization.quota_monthly_request_limit = 1000
+    organization.quota_monthly_token_limit = 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_settlement_foreign_keys_do_not_wait_for_an_admission(async_engine):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(setup, "fence")
+        await _cap_organization(setup, organization_id)
+
+    async def reserve(session: AsyncSession, started_at: datetime) -> str:
+        prepared = _prepared()
+        prepared.tenant_id, prepared.api_key_id = organization_id, api_key_id
+        await DurableAccountingRepository().reserve_quota(
+            session,
+            QuotaReservationCommand(
+                tenant_id=organization_id,
+                api_key_id=api_key_id,
+                request_id=prepared.request_id,
+                requested_model=prepared.model,
+                source_endpoint="chat.completions",
+                started_at=started_at,
+                reconciliation_due_at=started_at + timedelta(minutes=2),
+                estimated_input_tokens=20,
+                maximum_output_tokens=30,
+                policy=await AccountingPolicyLoader().quota(session, prepared),
+                audit_policy_mode="best_effort",
+            ),
+        )
+        return prepared.request_id
+
+    now = datetime.now(timezone.utc)
+    try:
+        async with factory() as earlier:
+            # Last month's counters: settlement then shares only the fenced rows.
+            earlier_request = await reserve(
+                earlier, now.replace(day=1) - timedelta(days=1)
+            )
+            await earlier.commit()
+        async with factory() as admission, factory() as settlement:
+            admitted_request = await reserve(admission, now)
+            await settlement.execute(text("SET LOCAL lock_timeout = '2s'"))
+            await DurableAccountingRepository().finalize(
+                settlement,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=earlier_request,
+                    quota_action=TerminalAction.SETTLE,
+                    prompt_tokens=20,
+                    completion_tokens=2,
+                    lifecycle_status="completed",
+                ),
+            )
+            await settlement.commit()
+            await admission.commit()
+        async with factory() as verification:
+            statuses = dict(
+                (
+                    await verification.execute(
+                        select(
+                            RequestLifecycle.request_id, RequestLifecycle.status
+                        ).where(RequestLifecycle.organization_id == organization_id)
+                    )
+                ).all()
+            )
+        assert statuses == {earlier_request: "completed", admitted_request: "accepted"}
+    finally:
+        await _drop_tenant(factory, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_admission_fence_still_serializes_admissions_and_cap_activation(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    second_key_id = uuid4()
+    async with factory.begin() as setup:
+        organization_id, user_id, api_key_id = await _create_tenant(setup, "serial")
+        setup.add(
+            ApiKey(
+                id=second_key_id,
+                organization_id=organization_id,
+                user_id=user_id,
+                key_hash=f"serial-{uuid4().hex}",
+                prefix="sk-serial",
+                tier="free",
+                is_active=True,
+            )
+        )
+
+    def prepared(key_id: UUID) -> SimpleNamespace:
+        value = _prepared()
+        value.tenant_id, value.api_key_id = organization_id, key_id
+        return value
+
+    async def lock_wait(session: AsyncSession, operation) -> str:
+        await session.execute(text("SET LOCAL lock_timeout = '100ms'"))
+        with pytest.raises(DBAPIError) as waited:
+            await operation
+        await session.rollback()
+        return waited.value.orig.sqlstate
+
+    try:
+        async with factory() as admission, factory() as contender:
+            await AccountingPolicyLoader().quota(admission, prepared(api_key_id))
+            other_key = AccountingPolicyLoader().quota(
+                contender, prepared(second_key_id)
+            )
+            assert await lock_wait(contender, other_key) == "55P03"
+            activation = configure_organization_quota(contender, organization_id)
+            assert await lock_wait(contender, activation) == "55P03"
+            await admission.rollback()
+
+            await configure_organization_quota(contender, organization_id)
+            admitting = AccountingPolicyLoader().quota(admission, prepared(api_key_id))
+            assert await lock_wait(admission, admitting) == "55P03"
+            await contender.rollback()
+    finally:
+        await _drop_tenant(factory, organization_id)
+
+
+@pytest.mark.asyncio
+async def test_parallel_admit_and_settle_cycles_for_one_tenant_do_not_deadlock(
+    async_engine,
+):
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    async with factory.begin() as setup:
+        organization_id, _, api_key_id = await _create_tenant(setup, "parallel")
+        await _cap_organization(setup, organization_id)
+        setup.add(
+            ProviderSecret(
+                organization_id=organization_id,
+                provider="openai",
+                secret_ref="reference-parallel",
+                secret_backend="fernet",
+                secret_version="v2",
+                masked_key="masked",
+                monthly_limit_usd=Decimal("100"),
+            )
+        )
+    coordinator = DurableAccountingCoordinator()
+
+    async def cycle() -> None:
+        prepared = _prepared()
+        prepared.tenant_id, prepared.api_key_id = organization_id, api_key_id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = datetime.now(timezone.utc)
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        async with factory() as session:
+            await coordinator.reserve_quota(prepared, prepared.admission, session)
+        async with factory() as session:
+            await coordinator.reserve_spend(prepared, False, session)
+        async with factory() as session:
+            await coordinator.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=organization_id,
+                    request_id=prepared.request_id,
+                    quota_action=TerminalAction.SETTLE,
+                    spend_action=TerminalAction.SETTLE,
+                    prompt_tokens=20,
+                    completion_tokens=2,
+                    actual_cost_usd=Decimal("0.00001"),
+                    provider_model=prepared.pricing_model,
+                    lifecycle_status="completed",
+                ),
+            )
+
+    try:
+        results = await asyncio.gather(
+            *(cycle() for _ in range(20)), return_exceptions=True
+        )
+        failures = [
+            (
+                type(result).__name__,
+                getattr(getattr(result.__cause__, "orig", None), "sqlstate", None),
+            )
+            for result in results
+            if isinstance(result, BaseException)
+        ]
+        assert failures == []
+        async with factory() as verification:
+            statuses = (
+                await verification.scalars(
+                    select(RequestLifecycle.status).where(
+                        RequestLifecycle.organization_id == organization_id
+                    )
+                )
+            ).all()
+        assert statuses == ["completed"] * 20
+    finally:
+        await _drop_tenant(factory, organization_id)
