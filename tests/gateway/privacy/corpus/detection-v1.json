@@ -381,32 +381,109 @@
     {
       "id": "order-number",
       "text": "Sipariş numarası 4829104455",
-      "expect": [],
-      "known_gap": "LT-B10, PRD-S12"
+      "expect": []
     },
     {
       "id": "dated-model-id",
       "text": "model claude-sonnet-4-5-20250929 kullan",
-      "expect": [],
-      "known_gap": "LT-B10, PRD-S12"
+      "expect": []
     },
     {
       "id": "json-timestamp-and-amount",
       "text": "{\"created\": 1757496600, \"amount\": 2000}",
-      "expect": [],
-      "known_gap": "LT-B10, PRD-S12"
+      "expect": []
     },
     {
       "id": "order-id-date-like",
       "text": "order_id 2026091012",
-      "expect": [],
-      "known_gap": "LT-B10, PRD-S12"
+      "expect": []
     },
     {
       "id": "version-quad",
       "text": "version 1.2.3.4",
+      "expect": []
+    },
+    {
+      "id": "epoch-seconds-json",
+      "text": "{\"ts\": 1757496600}",
+      "expect": []
+    },
+    {
+      "id": "epoch-milliseconds",
+      "text": "created_at_ms 1757496600123",
+      "expect": []
+    },
+    {
+      "id": "elapsed-decimal",
+      "text": "Elapsed: 0.0376118499 s",
+      "expect": []
+    },
+    {
+      "id": "mean-decimal",
+      "text": "mean=0.1234567890",
       "expect": [],
-      "known_gap": "LT-B10, PRD-S12"
+      "known_gap": "tier 3, VKN cue rule"
+    },
+    {
+      "id": "int32-overflow",
+      "text": "value 2147483648 overflowed",
+      "expect": []
+    },
+    {
+      "id": "cost-decimal-json",
+      "text": "{\"total_cost_usd\": 0.03761184999}",
+      "expect": []
+    },
+    {
+      "id": "sku-glued-to-name",
+      "text": "stok SKU-ABC-4829104455 tükendi",
+      "expect": []
+    },
+    {
+      "id": "build-id-glued",
+      "text": "artifact build_7.20250929 hazır",
+      "expect": []
+    },
+    {
+      "id": "version-prefixed-v",
+      "text": "release v1.2.3.4 yayında",
+      "expect": []
+    },
+    {
+      "id": "ip-with-cue",
+      "text": "IP 1.2.3.4 engellendi",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "1.2.3.4"
+        }
+      ]
+    },
+    {
+      "id": "ip-private-range",
+      "text": "sunucu 192.168.1.10 cevap vermiyor",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "192.168.1.10"
+        }
+      ]
+    },
+    {
+      "id": "ip-ten-network",
+      "text": "gateway 10.0.0.1 down",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.0.0.1"
+        }
+      ]
+    },
+    {
+      "id": "vkn-shaped-order-number",
+      "text": "Fatura numarası 1234567890",
+      "expect": [],
+      "known_gap": "tier 3, VKN cue rule"
     },
     {
       "id": "phone-json-us",
@@ -457,6 +534,41 @@
           "value": "+49 172 5955200"
         }
       ]
+    },
+    {
+      "id": "phone-tr-mobile-prose",
+      "text": "Bana 5321234567 numarasından ulaşın",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "5321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-fr-dotted",
+      "text": "Appelez le 01.23.45.67.89",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "01.23.45.67.89"
+        }
+      ]
+    },
+    {
+      "id": "phone-us-dashed",
+      "text": "Call 415-555-2671 today",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "415-555-2671"
+        }
+      ]
+    },
+    {
+      "id": "casino-is-not-a-cue",
+      "text": "casino 4155552671",
+      "expect": []
     },
     {
       "id": "tckn-spaced-groups",

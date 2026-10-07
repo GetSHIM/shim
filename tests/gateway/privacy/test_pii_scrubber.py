@@ -575,7 +575,7 @@ def test_validated_request_model_bypasses_identifier_pii_detection() -> None:
 def test_model_pii_still_rejected_when_not_the_validated_request_model() -> None:
     with pytest.raises(HTTPException, match="protocol identifier") as error:
         scrub_payload(
-            {"model": "claude-sonnet-4-5-20250929"},
+            {"model": "private@example.com"},
             None,
             PIIScrubberService(),
             request_model="claude-sonnet-4-5",
@@ -1102,3 +1102,74 @@ def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubbe
             assert len(buffers.get((0,), "")) <= 256
     for literal in ("1 < 2", "<UNKNOWN>", "<EM AIL", "plain text"):
         assert restore_fragment({}, (0,), literal, mapping, scrubber) == literal
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Sipariş numarası 4829104455",
+        "model claude-sonnet-4-5-20250929 kullan",
+        "stok SKU-ABC-4829104455 tükendi",
+        "artifact build_7.20250929 hazır",
+        '{"created": 1757496600, "amount": 2000}',
+        "Elapsed: 0.0376118499 s",
+        '{"total_cost_usd": 0.03761184999}',
+        "casino 4155552671",
+        "version 1.2.3.4",
+        "release v1.2.3.4",
+    ],
+)
+def test_ids_numbers_and_versions_are_not_phones_or_addresses(
+    scrubber: PIIScrubberService,
+    text: str,
+) -> None:
+    assert scrubber.analyze(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "entity", "value"),
+    [
+        ('"phone": "4155552671"', "PHONE_NUMBER", "4155552671"),
+        ("Telefon 5321234567", "PHONE_NUMBER", "5321234567"),
+        ("Bana 05321234567 yaz", "PHONE_NUMBER", "05321234567"),
+        ("Tel: 0212 555 12 34", "PHONE_NUMBER", "0212 555 12 34"),
+        ("Call (555) 123-4567", "PHONE_NUMBER", "(555) 123-4567"),
+        ("Ruf +49 172 5955200", "PHONE_NUMBER", "+49 172 5955200"),
+        ("IP 1.2.3.4 engellendi", "IP_ADDRESS", "1.2.3.4"),
+        ("gateway 10.0.0.1 down", "IP_ADDRESS", "10.0.0.1"),
+    ],
+)
+def test_shaped_or_cued_phones_and_real_addresses_still_match(
+    scrubber: PIIScrubberService,
+    text: str,
+    entity: str,
+    value: str,
+) -> None:
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text)
+    ] == [(entity, value)]
+
+
+def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
+    scrubber: PIIScrubberService,
+) -> None:
+    document = json.dumps(
+        {
+            "created": 1757496600,
+            "created_ms": 1757496600123,
+            "elapsed": 0.0376118499,
+            "mean": 0.9876543210,
+            "contact": "Tel: 0212 555 12 34",
+        }
+    )
+
+    scrubbed, mapping = scrubber.scrub(document)
+    parsed = json.loads(scrubbed)
+
+    assert list(mapping.values()) == ["0212 555 12 34"]
+    assert parsed["created"] == 1757496600
+    assert parsed["created_ms"] == 1757496600123
+    assert parsed["elapsed"] == 0.0376118499
+    assert parsed["contact"].startswith("Tel: <PHONE_NUMBER_")
+    assert json.loads(scrubber.deanonymize(scrubbed, mapping)) == json.loads(document)

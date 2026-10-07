@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from functools import lru_cache
+from typing import cast
 
 from presidio_analyzer import (
     AnalyzerEngine,
@@ -39,6 +40,89 @@ class ShimEmailRecognizer(EmailRecognizer):
     def validate_result(self, pattern_text: str) -> bool:
         _, separator, domain = pattern_text.rpartition("@")
         return bool(separator) and self._validate_domain(domain.casefold())
+
+
+class ShimPhoneRecognizer(PhoneRecognizer):
+    """A bare digit run is a phone only with a Turkish phone shape or a phone cue."""
+
+    _BARE = re.compile(r"\d+")
+    _DECIMAL = re.compile(r"\d+\.\d+")
+    _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
+    _CUE = re.compile(
+        r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|fax|whatsapp|call|numara|num|no)\b"
+        r"[\"':=. ]{0,4}$",
+        re.IGNORECASE,
+    )
+    _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
+    _LETTER = re.compile(r"[A-Za-z]")
+
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+    ) -> list[RecognizerResult]:
+        # Presidio annotates the argument as NlpArtifacts but defaults it to None.
+        artifacts = cast(NlpArtifacts, nlp_artifacts)
+        return [
+            result
+            for result in super().analyze(text, entities, artifacts)
+            if self._is_phone(text, result.start, result.end)
+        ]
+
+    def _is_phone(self, text: str, start: int, end: int) -> bool:
+        raw = text[start:end]
+        if start and text[start - 1] in "-_./":
+            tail = self._IDENTIFIER_TAIL.search(text, 0, start - 1)
+            if tail is not None and self._LETTER.search(tail.group()):
+                return False
+        if self._DECIMAL.fullmatch(raw) or self._in_decimal(text, start, end):
+            return False
+        if self._BARE.fullmatch(raw):
+            return bool(
+                self._TURKISH.fullmatch(raw)
+                or self._CUE.search(text, max(0, start - 16), start)
+            )
+        return True
+
+    @staticmethod
+    def _in_decimal(text: str, start: int, end: int) -> bool:
+        # The matcher can start after "0.", leaving the fraction of a decimal literal.
+        return (
+            start >= 2 and text[start - 1] == "." and text[start - 2].isdigit()
+        ) or (text[end : end + 1] == "." and text[end + 1 : end + 2].isdigit())
+
+
+class ShimIpRecognizer(IpRecognizer):
+    """A version string is not an IP address."""
+
+    _VERSION_CUE = re.compile(
+        r"\b(?:v|ver|version|sürüm|release)\W{0,2}$", re.IGNORECASE
+    )
+    _IP_CUE = re.compile(r"\b(?:ip|addr|address|adres|host)\b", re.IGNORECASE)
+    _SINGLE_DIGIT_QUAD = re.compile(r"\d\.\d\.\d\.\d")
+
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+        regex_flags: int | None = None,
+    ) -> list[RecognizerResult]:
+        return [
+            result
+            for result in super().analyze(text, entities, nlp_artifacts, regex_flags)
+            if self._is_address(text, result.start, result.end)
+        ]
+
+    def _is_address(self, text: str, start: int, end: int) -> bool:
+        window = max(0, start - 16)
+        if self._VERSION_CUE.search(text, window, start):
+            return False
+        return not (
+            self._SINGLE_DIGIT_QUAD.fullmatch(text[start:end])
+            and not self._IP_CUE.search(text, window, start)
+        )
 
 
 class ShimSecretRecognizer(EntityRecognizer):
@@ -233,7 +317,7 @@ def _build_registry() -> RecognizerRegistry:
             supported_language=_LANGUAGE,
             context=["email", "e-posta", "mail"],
         ),
-        PhoneRecognizer(
+        ShimPhoneRecognizer(
             supported_language=_LANGUAGE,
             supported_regions=(*PhoneRecognizer.DEFAULT_SUPPORTED_REGIONS, "TR"),
             context=[*PhoneRecognizer.CONTEXT, "telefon", "cep", "gsm"],
@@ -256,7 +340,7 @@ def _build_registry() -> RecognizerRegistry:
             ],
         ),
         IbanRecognizer(supported_language=_LANGUAGE),
-        IpRecognizer(supported_language=_LANGUAGE),
+        ShimIpRecognizer(supported_language=_LANGUAGE),
         MacAddressRecognizer(supported_language=_LANGUAGE),
         UsSsnRecognizer(supported_language=_LANGUAGE),
         TrNationalIdRecognizer(supported_language=_LANGUAGE),
