@@ -8,8 +8,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 README = (ROOT / "README.md").read_text()
-CONSOLE_BLOCKS = re.findall(r"```console\n(.*?)```", README, re.DOTALL)
-CODE_BLOCKS = re.findall(r"```[a-z]*\n(.*?)```", README, re.DOTALL)
+# The community cookbook copies the quickstart; the enterprise one uses its own keys.
+DOCUMENTS = (README, (ROOT / "docs" / "COOKBOOK.md").read_text())
+CONSOLE_BLOCKS = [
+    block
+    for text in DOCUMENTS
+    for block in re.findall(r"```console\n(.*?)```", text, re.DOTALL)
+]
+CODE_BLOCKS = [
+    block
+    for text in DOCUMENTS
+    for block in re.findall(r"```[a-z]*\n(.*?)```", text, re.DOTALL)
+]
 SHIM_KEY_LITERALS = re.compile(
     r"SHIM_API_KEY=([^\s\\]+)|Bearer ([^\s']+)|api_key=\"([^\"]+)\"|"
     r"x-shim-key: ([^\s']+)|x-api-key: ([^\s']+)"

@@ -57,9 +57,11 @@ request it:
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request
   bytes divided by four), a refused request does not use up its own window, and
-  every limit refusal says when to retry in `Retry-After`, except a request
+  every rate-limit refusal says when to retry in `Retry-After`, except a request
   larger than the whole tokens-per-minute limit, which can never be admitted and
   answers `x-should-retry: false` so the OpenAI and Anthropic SDKs do not wait.
+  Enterprise monthly quota and spend-limit refusals carry no `Retry-After`; they
+  clear when the period or the limit changes.
 - **Accounts usage and cost per request**, from that same catalog, attributed
   by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
   takes precedence, and header tags remain breakdown dimensions.
@@ -143,9 +145,9 @@ anywhere else. A non-streaming request is bounded by the provider read timeout
 (`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
 default), so long generations should stream.
 
-Community exposes `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, the
-Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and
-`/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
+Community exposes `/v1/chat/completions`, `/v1/messages`,
+`/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent` routes,
+`/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
 OTLP traces, structured logs and Sentry error reports are enabled by
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` and `SENTRY_DSN`; each request's closing
 span carries its model, input and output tokens, finish reasons and cost, never
@@ -166,13 +168,17 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
 - `background=true` Responses requests are not supported.
 - Stored audit evidence, retained records, roles and budgets are enterprise
   features. Community keeps no request history.
-- SDK compatibility is pinned to `openai==2.53.0` and `anthropic==0.121.0`. A
-  new provider SDK does not arrive automatically.
+- SDK compatibility is pinned to `openai==2.53.0`, `anthropic==0.121.0` and
+  `google-genai==2.16.0`. A new provider SDK does not arrive automatically.
 - Community mode needs no PostgreSQL, Redis or Supabase, and runs no workers.
   Anything that depends on those is enterprise.
 
 ## Documentation
 
+- [Cookbook](docs/COOKBOOK.md): SDK setup, tags and cost, scan, errors and
+  retries, streaming, observability
+- [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings,
+  audit export, KVKK report, model deployments
 - [Developer guide](DEVELOPER_GUIDE.md)
 - [Current architecture](docs/CURRENT_ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)

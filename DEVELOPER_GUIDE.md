@@ -150,7 +150,8 @@ abstraction.
 
 Apache-2.0 applies outside `ee/`; Elastic-2.0 applies under `ee/`. Preserve both
 regions' `LICENSE`, `NOTICE`, and matching package metadata. Do not add a CLA,
-runtime licence check, or commercial-validation policy without owner approval.
+another runtime licence check (the approved one is described in `AGENTS.md`), or
+a commercial-validation policy without owner approval.
 Never move enterprise source or assets outside `ee/` merely to simplify
 packaging.
 
