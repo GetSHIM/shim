@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from hashlib import sha256
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -7,7 +8,7 @@ from uuid import UUID
 import pytest
 from fastapi import HTTPException
 
-from shim.gateway.admission import LoopDetectionResult
+from shim.gateway.admission import InMemoryRateLimiter, LoopDetectionResult
 from shim.gateway.contracts.context import (
     AuditPolicy,
     GatewayContext,
@@ -29,6 +30,8 @@ def _prepared(
     model: str = "gpt-5.6-luna",
     provider: str = "openai",
     protocol: str = "chat",
+    rate_limit_rpm: int = 60,
+    rate_limit_tpm: int | None = None,
 ) -> PreparedInference:
     context = GatewayContext(
         request_id=RequestId("req_admission"),
@@ -38,7 +41,11 @@ def _prepared(
         user_id=None,
         endpoint="/v1/chat/completions",
         started_at=datetime(2026, 7, 22, tzinfo=UTC),
-        tier_policy=TierPolicy(rate_limit_rpm=60, monthly_token_limit=1_000),
+        tier_policy=TierPolicy(
+            rate_limit_rpm=rate_limit_rpm,
+            rate_limit_tpm=rate_limit_tpm,
+            monthly_token_limit=1_000,
+        ),
         privacy_policy=PrivacyPolicy(pii_mode="scrub"),
         audit_policy=AuditPolicy(mode="best_effort"),
     )
@@ -281,3 +288,100 @@ def test_native_candidate_count_rejects_out_of_bounds(count):
             SimpleNamespace(provider="openai", protocol="chat", payload={"n": count})
         )
     assert error.value.status_code == 400
+
+
+TWELVE_KB = "x" * 12_000
+
+
+def _stage(rate_limiter, *, loop_status: str = "SAFE") -> AdmissionStage:
+    return AdmissionStage(
+        SimpleNamespace(headers={}),
+        SimpleNamespace(admit=AsyncMock()),
+        rate_limiter=rate_limiter,
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(
+                return_value=LoopDetectionResult(loop_status, 1)  # type: ignore[arg-type]
+            )
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("limit", "admitted"), [(10_000, True), (2_000, False)])
+async def test_tpm_counts_approximate_tokens_and_reserves_bytes(
+    limit: int,
+    admitted: bool,
+) -> None:
+    prepared = _prepared(TWELVE_KB, rate_limit_tpm=limit)
+    payload_bytes = len(
+        json.dumps(prepared.payload, ensure_ascii=False, separators=(",", ":")).encode()
+    )
+
+    if admitted:
+        result = await _stage(InMemoryRateLimiter()).run(prepared)
+        assert result.admission is not None
+        assert result.admission.estimated_input_tokens == payload_bytes
+    else:
+        with pytest.raises(HTTPException) as error:
+            await _stage(InMemoryRateLimiter()).run(prepared)
+        assert error.value.status_code == 429
+        assert error.value.detail["dimension"] == "tokens"
+
+    tokens = next(v for v in prepared.policy_verdicts if v.rule_id == "rate.tokens")
+    policy = {"limit": limit, "window_seconds": 60, "unit": "approximate_tokens"}
+    assert (
+        tokens.policy_version
+        == sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+    )
+
+
+@pytest.mark.asyncio
+async def test_tpm_refusal_leaves_its_window_free_but_spends_its_rpm_unit() -> None:
+    limiter = InMemoryRateLimiter()
+
+    with pytest.raises(HTTPException) as refused:
+        await _stage(limiter).run(
+            _prepared(TWELVE_KB, rate_limit_rpm=2, rate_limit_tpm=2_000)
+        )
+    small = await _stage(limiter).run(
+        _prepared("small", rate_limit_rpm=2, rate_limit_tpm=2_000)
+    )
+    with pytest.raises(HTTPException) as spent:
+        await _stage(limiter).run(
+            _prepared("small again", rate_limit_rpm=2, rate_limit_tpm=2_000)
+        )
+
+    assert refused.value.detail["dimension"] == "tokens"
+    assert small.admission is not None
+    assert spent.value.detail["dimension"] == "requests"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("allowed", "loop_status", "dimension", "retry_after"),
+    [
+        ([False], "SAFE", "requests", "60"),
+        ([True, False], "SAFE", "tokens", "60"),
+        ([True, True], "BLOCKED", "repeated_requests", "300"),
+    ],
+)
+async def test_every_admission_refusal_says_when_to_retry(
+    allowed: list[bool],
+    loop_status: str,
+    dimension: str,
+    retry_after: str,
+) -> None:
+    stage = _stage(
+        SimpleNamespace(allow=AsyncMock(side_effect=allowed)),
+        loop_status=loop_status,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await stage.run(_prepared("hello", rate_limit_tpm=1_000))
+
+    assert error.value.status_code == 429
+    assert error.value.detail["dimension"] == dimension
+    assert error.value.headers == {"Retry-After": retry_after}

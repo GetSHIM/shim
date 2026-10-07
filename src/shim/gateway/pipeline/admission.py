@@ -153,9 +153,17 @@ class AdmissionStage:
         output_tokens = per_candidate_output_tokens * candidate_count(value)
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
-        for dimension, limit, key, amount in (
-            ("requests", tier.rate_limit_rpm, key_hash, 1),
-            ("tokens", tier.rate_limit_tpm, f"tpm:{key_hash}", input_tokens),
+        # The byte count stays the reservation bound; the rate unit is four bytes a token.
+        approximate_tokens = -(-input_tokens // 4)
+        for dimension, limit, key, amount, unit in (
+            ("requests", tier.rate_limit_rpm, key_hash, 1, {}),
+            (
+                "tokens",
+                tier.rate_limit_tpm,
+                f"tpm:{key_hash}",
+                approximate_tokens,
+                {"unit": "approximate_tokens"},
+            ),
         ):
             denied = limit is not None and not await self.rate_limiter.allow(
                 key,
@@ -172,12 +180,13 @@ class AdmissionStage:
                 else "RATE_LIMIT_PASSED"
                 if limit is not None
                 else "RATE_LIMIT_UNLIMITED",
-                policy={"limit": limit, "window_seconds": 60},
+                policy={"limit": limit, "window_seconds": 60, **unit},
             )
             if denied:
                 raise HTTPException(
                     status_code=429,
                     detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": dimension},
+                    headers={"Retry-After": "60"},
                 )
         repeat_material = _repeat_material(
             {
@@ -213,6 +222,7 @@ class AdmissionStage:
                     "code": "RATE_LIMIT_EXCEEDED",
                     "dimension": "repeated_requests",
                 },
+                headers={"Retry-After": str(self.loop_window_seconds)},
             )
         attribution = CostAttribution.resolve(
             self.invocation.headers.get("x-shim-tag"),
