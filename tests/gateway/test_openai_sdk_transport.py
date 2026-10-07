@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import httpx
@@ -13,10 +14,11 @@ from openai.types.responses import ResponseErrorEvent
 import shim.gateway.pipeline.anthropic_execution as anthropic_execution
 import shim.gateway.pipeline.google_execution as google_execution
 import shim.gateway.pipeline.openai_execution as openai_execution
+from shim.application import create_community_app
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
-from shim.gateway.kernel.result import InferenceTiming
+from shim.gateway.kernel.result import InferenceTiming, ProviderTarget
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
@@ -327,26 +329,26 @@ async def test_sdk_retries_are_disabled_and_error_is_sanitized(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status_code", "records_failure"),
+    ("status_code", "outcome"),
     [
-        (400, False),
-        (401, False),
-        (403, False),
-        (404, False),
-        (408, True),
-        (409, True),
-        (413, False),
-        (422, False),
-        (429, True),
-        (500, True),
-        (504, True),
-        (529, True),
+        (400, "success"),
+        (401, "success"),
+        (403, "success"),
+        (404, "success"),
+        (408, "failure"),
+        (409, "failure"),
+        (413, "success"),
+        (422, "success"),
+        (429, "release"),
+        (500, "failure"),
+        (504, "failure"),
+        (529, "failure"),
     ],
 )
 async def test_http_statuses_update_circuit_without_exposing_bodies(
     monkeypatch: pytest.MonkeyPatch,
     status_code: int,
-    records_failure: bool,
+    outcome: str,
 ) -> None:
     monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
     attempts = 0
@@ -382,13 +384,17 @@ async def test_http_statuses_update_circuit_without_exposing_bodies(
 
     assert attempts == 1
     assert error.value.status_code == status_code
+    assert str(error.value) == {
+        408: "PROVIDER_TIMEOUT",
+        429: "PROVIDER_RATE_LIMITED",
+    }.get(status_code, "PROVIDER_UNAVAILABLE")
     assert "alice@example.com" not in repr(error.value)
-    if records_failure:
-        execution.circuit.record_failure.assert_awaited_once()
-        execution.circuit.record_success.assert_not_awaited()
-    else:
-        execution.circuit.record_success.assert_awaited_once()
-        execution.circuit.record_failure.assert_not_awaited()
+    calls = {
+        "success": execution.circuit.record_success.await_count,
+        "failure": execution.circuit.record_failure.await_count,
+        "release": execution.circuit.release_probe.await_count,
+    }
+    assert calls == {name: int(name == outcome) for name in calls}
 
 
 @pytest.mark.asyncio
@@ -609,7 +615,8 @@ async def test_stream_failure_emits_sanitized_error_and_closes_sdk_resource(
     error_event = ResponseErrorEvent.model_validate(error_payload)
     assert error_event.sequence_number == 1
     assert error_event.code == "PROVIDER_UNAVAILABLE"
-    execution.circuit.record_failure.assert_awaited_once()
+    execution.circuit.release_probe.assert_awaited_once()
+    execution.circuit.record_failure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1023,6 +1030,7 @@ async def test_chat_stream_rejects_eof_before_every_choice_finishes() -> None:
                     state,
                     close_stream,
                     execution.circuit,
+                    False,
                 )
             ]
         )
@@ -1090,6 +1098,7 @@ async def test_chat_placeholder_overflow_on_finished_choice_is_a_terminal_error(
                     {"closed": False, "recorded": False},
                     AsyncMock(),
                     execution.circuit,
+                    False,
                 )
             ]
         )
@@ -1293,11 +1302,10 @@ async def test_provider_wait_is_excluded_but_restoration_is_counted(
             ),
             settings=settings,
             http_client=http,
-            **(
-                {"chain_store": SimpleNamespace(save=saved)}
-                if provider == "openai"
-                else {}
-            ),
+            **{
+                "openai": {"chain_store": SimpleNamespace(save=saved)},
+                "google": {"sync_http_client": httpx.Client()},
+            }.get(provider, {}),
         )
         original_resolve = execution.credential_resolver.resolve
 
@@ -1337,3 +1345,263 @@ async def test_provider_wait_is_excluded_but_restoration_is_counted(
         == (10 + 7 * len(restore_calls) + continuation_seconds) * 1_000
     )
     assert timing.excluded_seconds >= 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "raised_type"),
+    [("sdk_refusal", ProviderCallError), ("unserializable_answer", TypeError)],
+)
+async def test_local_exceptions_release_the_probe_without_counting(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    raised_type: type[Exception],
+) -> None:
+    async def create(**_kwargs):
+        if failure == "sdk_refusal":
+            raise ValueError("refused before any request")
+        return SimpleNamespace(_request_id=None, model_dump=lambda **_kwargs: [])
+
+    monkeypatch.setattr(
+        openai_execution,
+        "AsyncOpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=SimpleNamespace(create=create)),
+    )
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http, SimpleNamespace(save=AsyncMock()))
+        execution.circuit = circuit = SimpleNamespace(
+            acquire_call=AsyncMock(return_value=True),
+            record_success=AsyncMock(),
+            record_failure=AsyncMock(),
+            release_probe=AsyncMock(),
+        )
+        with pytest.raises(raised_type):
+            await execution.execute(
+                invocation=SimpleNamespace(
+                    db=object(),
+                    provider_credential=EphemeralProviderCredential("openai", "sk-key"),
+                ),
+                prepared=_prepared(
+                    {"model": "gpt-5.6-luna", "input": "hello"},
+                    tenant="11111111-1111-1111-1111-111111111111",
+                ),
+                provider_start_callback=AsyncMock(),
+            )
+
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()
+
+
+def _usage_aware_upstream(seen: list[dict]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        base = {
+            "id": "chat_usage",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-5.6-luna",
+        }
+        events = [
+            {
+                **base,
+                "choices": [
+                    {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+            },
+        ]
+        if (body.get("stream_options") or {}).get("include_usage") is True:
+            events.append(
+                {
+                    **base,
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 61,
+                        "completion_tokens": 9,
+                        "total_tokens": 70,
+                    },
+                }
+            )
+        content = (
+            "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+            + "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, text=content, headers={"content-type": "text/event-stream"}
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_options", "upstream_options", "client_asked"),
+    [
+        (None, {"include_usage": True}, False),
+        ({"include_usage": True}, {"include_usage": True}, True),
+        ({"include_usage": False}, {"include_usage": True}, False),
+        (
+            {"include_obfuscation": False},
+            {"include_obfuscation": False, "include_usage": True},
+            False,
+        ),
+    ],
+)
+async def test_chat_streams_are_metered_from_provider_usage(
+    client_options: dict | None, upstream_options: dict, client_asked: bool
+) -> None:
+    seen: list[dict] = []
+    events = StringIO()
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(_usage_aware_upstream(seen))
+    )
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1",
+            BACKEND_CORS_ORIGINS=[],
+            _env_file=None,
+        ),
+        http_client=upstream,
+        event_stream=events,
+    )
+    body = {
+        "model": "gpt-5.6-luna",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hello"}],
+        **({"stream_options": client_options} if client_options is not None else {}),
+    }
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"x-openai-api-key": "sk-provider"},
+            json=body,
+        )
+    await upstream.aclose()
+
+    usage_chunks = [
+        line for line in response.text.splitlines() if '"choices":[]' in line
+    ]
+    event = json.loads(events.getvalue().splitlines()[-1])
+    assert seen[0]["stream_options"] == upstream_options
+    assert len(usage_chunks) == (1 if client_asked else 0)
+    assert (event["prompt_tokens"], event["completion_tokens"]) == (61, 9)
+    assert event["estimated"] is False
+
+
+@pytest.mark.asyncio
+async def test_registry_targets_are_not_asked_for_stream_usage() -> None:
+    seen: list[dict] = []
+    prepared = _prepared(
+        {"model": "gpt-5.6-luna", "messages": [], "stream": True},
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol="chat",
+    )
+    prepared.target = ProviderTarget(
+        deployment_id="deployment",
+        base_url="https://registry.test/v1",
+        upstream_model="gpt-5.6-luna",
+        credential_reference="managed-reference",
+        timeout_seconds=30.0,
+        declared_version="1",
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_usage_aware_upstream(seen))
+    ) as http:
+        execution = OpenAIExecution(
+            credential_resolver=SimpleNamespace(
+                resolve=AsyncMock(return_value="sk-registry")
+            ),
+            circuit=InMemoryCircuitBreaker(),
+            settings=settings,
+            http_client=http,
+            chain_store=SimpleNamespace(save=AsyncMock()),
+        )
+        result = await execution.execute(
+            invocation=SimpleNamespace(db=object(), provider_credential=None),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [chunk async for chunk in result.events]
+
+    assert "stream_options" not in seen[0]
+
+
+def _recording_circuit() -> SimpleNamespace:
+    return SimpleNamespace(
+        acquire_call=AsyncMock(return_value=True),
+        record_success=AsyncMock(),
+        record_failure=AsyncMock(),
+        release_probe=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_circuit_for_is_asked_once_and_serves_the_whole_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    chunk = {
+        "id": "chat_circuit",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    circuit = _recording_circuit()
+    circuit_for = Mock(return_value=circuit)
+    prepared = _prepared(
+        {"model": "gpt-5.6-luna", "messages": [], "stream": True},
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol="chat",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await OpenAIExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("openai", {}),
+            circuit_for=circuit_for,
+            settings=settings,
+            http_client=http,
+            chain_store=SimpleNamespace(save=AsyncMock()),
+        ).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-key"),
+            ),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        assert isinstance(result, ProviderStream)
+        [event async for event in result.events]
+
+    circuit_for.assert_called_once_with(prepared)
+    circuit.acquire_call.assert_awaited_once()
+    circuit.record_success.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "circuits", [{}, {"circuit": InMemoryCircuitBreaker(), "circuit_for": Mock()}]
+)
+def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
+    with pytest.raises(ValueError, match="exactly one of circuit and circuit_for"):
+        OpenAIExecution(
+            credential_resolver=EnvironmentProviderCredentialResolver("openai", {}),
+            settings=settings,
+            http_client=SimpleNamespace(),  # type: ignore[arg-type]
+            chain_store=SimpleNamespace(save=AsyncMock()),
+            **circuits,
+        )

@@ -30,7 +30,12 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         api_key_id="key-private",
         headers={"authorization": "credential-private"},
         context=SimpleNamespace(started_at=started_at),
-        admission=SimpleNamespace(estimated_input_tokens=11, repeat_chain_length=1),
+        admission=SimpleNamespace(
+            estimated_input_tokens=11,
+            repeat_chain_length=1,
+            cost_center="risk",
+            tags=("risk", "batch"),
+        ),
         deployment_kind="unknown",
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
@@ -52,6 +57,7 @@ def _terminal(*, model: str = "gpt-5.6-luna") -> StreamFinalization:
             pricing_metadata={},
             estimated=False,
             output_hash=None,
+            completion_outcome="complete",
         ),
         completed_at=datetime.now(timezone.utc),
         error_code=None,
@@ -96,15 +102,18 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated",
         "privacy_counts",
         "provider_finish_reasons",
+        "completion_outcome",
         "ttft_ms",
         "repeat_chain_length",
+        "cost_center",
+        "tags",
         "system_prompt_hash",
         "deployment_kind",
         "policy_verdicts",
     }
     latency_ms = event.pop("shim_latency_ms")
     assert event == {
-        "version": 2,
+        "version": 3,
         "request_id": "req_local",
         "provider": "openai",
         "model": "gpt-5.6-luna",
@@ -115,13 +124,33 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated": False,
         "privacy_counts": {"EMAIL_ADDRESS": 1},
         "provider_finish_reasons": None,
+        "completion_outcome": "complete",
         "ttft_ms": None,
         "repeat_chain_length": 1,
+        "cost_center": "risk",
+        "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
         "policy_verdicts": [],
     }
     assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_before_admission_has_no_attribution() -> None:
+    stream = StringIO()
+    prepared = _prepared()
+    prepared.admission = None
+    lifecycle = LocalUsageLifecycle(stream)
+
+    await lifecycle.reject(prepared)
+
+    await lifecycle.aclose()
+    event = json.loads(stream.getvalue())
+    assert event["version"] == 3
+    assert event["outcome"] == "rejected"
+    assert (event["cost_center"], event["tags"]) == (None, [])
+    assert event["completion_outcome"] is None
 
 
 @pytest.mark.asyncio
@@ -242,3 +271,55 @@ async def test_nonstream_hash_is_optional_without_changing_response(monkeypatch,
         if salt is not None
         else None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "payload", "outcome"),
+    [
+        (
+            "openai",
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+            },
+            "complete",
+        ),
+        ("openai", {"status": "failed", "output": []}, None),
+        ("google", {"promptFeedback": {"blockReason": "SAFETY"}}, "filtered"),
+    ],
+)
+async def test_a_json_outcome_is_settled_only_for_an_answer(provider, payload, outcome):
+    from unittest.mock import AsyncMock
+    from prometheus_client import REGISTRY
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    def counted(label: str | None) -> float:
+        return (
+            REGISTRY.get_sample_value(
+                "shim_completion_outcomes_total",
+                {"provider": provider, "outcome": label or "other"},
+            )
+            or 0
+        )
+
+    prepared = _prepared()
+    prepared.provider = provider
+    prepared.protocol = "responses" if provider == "openai" else "gemini"
+    prepared.admission.maximum_output_tokens = 10
+    usage = SimpleNamespace(finalize=AsyncMock())
+    before = counted(outcome)
+
+    await module.ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    ).finalize(prepared, ProviderNonStream(payload, None), stream_session=None)
+
+    assert usage.finalize.await_args.args[1].usage.completion_outcome == outcome
+    # A failure is not counted, not even as "other".
+    assert counted(outcome) == before + (outcome is not None)

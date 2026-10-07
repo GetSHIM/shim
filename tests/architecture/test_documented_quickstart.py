@@ -9,6 +9,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 README = (ROOT / "README.md").read_text()
 CONSOLE_BLOCKS = re.findall(r"```console\n(.*?)```", README, re.DOTALL)
+CODE_BLOCKS = re.findall(r"```[a-z]*\n(.*?)```", README, re.DOTALL)
+SHIM_KEY_LITERALS = re.compile(
+    r"SHIM_API_KEY=([^\s\\]+)|Bearer ([^\s']+)|api_key=\"([^\"]+)\"|"
+    r"x-shim-key: ([^\s']+)|x-api-key: ([^\s']+)"
+)
 QUICKSTART = README.split("## Quickstart", 1)[1].split("\n## ", 1)[0]
 
 
@@ -42,3 +47,15 @@ def test_the_quickstart_shows_a_real_response() -> None:
     assert '"verdict"' in QUICKSTART, "show what the gateway actually answers"
     assert "EMAIL_ADDRESS" in QUICKSTART, "placeholders carry the entity name"
     assert not re.search(r"<[A-Z_]+_\d>", QUICKSTART), "invented placeholder shape"
+
+
+def test_every_documented_example_uses_the_quickstart_key() -> None:
+    keys = {
+        value
+        for block in CODE_BLOCKS
+        for match in SHIM_KEY_LITERALS.finditer(block)
+        for value in match.groups()
+        if value
+    }
+
+    assert len(keys) == 1, f"the README's examples use different shim keys: {keys}"

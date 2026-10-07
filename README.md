@@ -42,15 +42,27 @@ One HTTP boundary between your application and the model provider. On every
 request it:
 
 - **Detects and replaces personal data before the request leaves.** Email
-  addresses, phone numbers, credit cards, IBANs, Turkish national ID and tax
-  numbers, and provider secrets such as AWS keys and GitHub tokens. Each value
-  becomes a placeholder, and policy decides whether the request is masked,
-  blocked, or recorded.
+  addresses, phone numbers, credit cards (Troy included), IBANs, Turkish
+  national ID and tax numbers, Turkish licence plates (`34 ABC 123`; not
+  `16 GB 512`, though uppercase product and date strings such as `15 PRO 256`
+  or `07 OCT 26` can still match), provider secrets such as AWS keys and GitHub,
+  Google, Slack, Hugging Face and GitLab tokens, and password assignments,
+  Turkish (`şifre:`, `parolanız:`) included. A bare digit run counts as a phone
+  number only with a Turkish phone shape or a phone cue such as `Tel:` or
+  `no:`, so an order number without such a cue and ids glued to names
+  (`claude-sonnet-4-5-20250929`) stay intact. Each detected value becomes a
+  placeholder before the request leaves, and is restored in the answer before
+  it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
-  detection.
+  detection. Tokens per minute are counted as approximate tokens (request
+  bytes divided by four), a refused request does not use up its own window, and
+  every limit refusal says when to retry in `Retry-After`, except a request
+  larger than the whole tokens-per-minute limit, which can never be admitted and
+  answers `x-should-retry: false` so the OpenAI and Anthropic SDKs do not wait.
 - **Accounts usage and cost per request**, from that same catalog, attributed
-  by the `X-Shim-Tag` header.
+  by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
+  takes precedence, and header tags remain breakdown dimensions.
 - **Sanitizes provider errors**, so a provider error body does not reach your
   caller unchanged.
 - **Makes at most one billable provider attempt per admitted request**, because
@@ -82,13 +94,13 @@ curl http://localhost:8000/v1/scan \
 ```json
 {
   "request_id": "scan_73ac33b589af4b82a1430b777a82d493",
-  "verdict": "block",
+  "verdict": "warn",
   "entities": [
     {"type": "EMAIL_ADDRESS", "score": 1.0, "start": 9, "end": 29},
     {"type": "IBAN_CODE", "score": 1.0, "start": 36, "end": 68}
   ],
   "entity_types": ["EMAIL_ADDRESS", "IBAN_CODE"],
-  "policy": "block"
+  "policy": "warn"
 }
 ```
 
@@ -97,27 +109,47 @@ Then point an existing client at it. No SDK change, only a base URL:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-shim-key")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="a-key-of-at-least-16-chars")
 client.chat.completions.create(
     model="gpt-5-nano",
     messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
 )
 ```
 
-Under a masking policy the provider receives placeholders in place of the
-detected values, in the form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
+Gemini works the same way; the shim key goes where the SDK puts its API key:
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="a-key-of-at-least-16-chars",
+    http_options=HttpOptions(base_url="http://localhost:8000"),
+)
+```
+
+The provider receives placeholders in place of the detected values, in the
+form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
 They are generated per request, so the same value gets a different placeholder
 next time, and the reply is restored before it reaches your caller.
 
 Provider credentials come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
 `GOOGLE_API_KEY`, or per request through `x-provider-key`. The shim key
-authenticates your caller and is never forwarded to a provider. The default bind
+authenticates your caller and is never forwarded to a provider. On a keyless
+loopback gateway, a Google key also goes in `x-provider-key` or `GOOGLE_API_KEY`,
+never in `x-goog-api-key`, which shim reads only as the shim key. The default bind
 is loopback; set a `SHIM_API_KEY` of at least 16 characters before binding
-anywhere else.
+anywhere else. A non-streaming request is bounded by the provider read timeout
+(`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
+default), so long generations should stream.
 
 Community exposes `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, the
 Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and
 `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
+OTLP traces, structured logs and Sentry error reports are enabled by
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` and `SENTRY_DSN`; each request's closing
+span carries its model, input and output tokens, finish reasons and cost, never
+prompt or response text.
 
 To run from source instead, see [the developer guide](DEVELOPER_GUIDE.md).
 For customer-operated enterprise installations, see [deployment and recovery](ee/deploy/README.md).

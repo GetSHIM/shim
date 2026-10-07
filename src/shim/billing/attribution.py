@@ -54,14 +54,14 @@ class CostAttribution:
                 continue
             if tag not in tags:
                 tags.append(tag)
-        if tags:
-            return cls(cost_center=tags[0], tags=tuple(tags))
         if api_key_cost_center:
             return cls(
                 cost_center=normalize_attribution(
                     api_key_cost_center,
                     maximum_length=maximum_length,
                 ),
-                tags=(),
+                tags=tuple(tags),
             )
+        if tags:
+            return cls(cost_center=tags[0], tags=tuple(tags))
         return cls(cost_center=UNTAGGED, tags=())

@@ -17,6 +17,10 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    google_error,
+    record_provider_error,
+    retry_after_header,
+    status_error_code,
 )
 from shim.gateway.streaming.sse import encode_data
 from shim.privacy.deanonymizer import restore_fragment
@@ -36,16 +40,25 @@ class GoogleExecution:
         self,
         *,
         credential_resolver: ProviderCredentialResolver,
-        circuit: CircuitBreaker,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
+        sync_http_client: httpx.Client,
+        circuit: CircuitBreaker | None = None,
+        circuit_for: Callable[[PreparedInference], CircuitBreaker] | None = None,
         pii_scrubber: PIIScrubberService | None = None,
     ) -> None:
+        if (circuit is None) == (circuit_for is None):
+            raise ValueError("exactly one of circuit and circuit_for is required")
         self.credential_resolver = credential_resolver
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
+        # The SDK builds a synchronous client unless given one; the async path never uses it.
+        self.sync_http_client = sync_http_client
         self.circuit = circuit
+        self.circuit_for = circuit_for
         self.settings = settings
+        # Shared and only read: the SDK would otherwise build two per client.
+        self.ssl_context = httpx.create_ssl_context()
 
     async def execute(
         self,
@@ -56,6 +69,10 @@ class GoogleExecution:
     ) -> ProviderNonStream | ProviderStream:
         if prepared.privacy is None:
             raise RuntimeError("privacy stage must run before Google execution")
+        circuit = (
+            self.circuit_for(prepared) if self.circuit_for is not None else self.circuit
+        )
+        assert circuit is not None
         try:
             api_key = await self.credential_resolver.resolve(
                 prepared.tenant_id,
@@ -65,7 +82,7 @@ class GoogleExecution:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
             raise _error(503, "PROVIDER_NOT_CONFIGURED", False)
-        if not await self.circuit.acquire_call():
+        if not await circuit.acquire_call():
             raise _error(503, "PROVIDER_UNAVAILABLE", True)
 
         client: genai.Client | None = None
@@ -78,6 +95,12 @@ class GoogleExecution:
                     timeout=int(self.settings.GOOGLE_TIMEOUT_SECONDS * 1_000),
                     retry_options=types.HttpRetryOptions(attempts=1),
                     httpx_async_client=self.http_client,
+                    httpx_client=self.sync_http_client,
+                    client_args={"verify": self.ssl_context},
+                    async_client_args={
+                        "verify": self.ssl_context,
+                        "ssl": self.ssl_context,
+                    },
                     extra_body={
                         key: value
                         for key, value in prepared.payload.items()
@@ -91,7 +114,7 @@ class GoogleExecution:
             if client is not None:
                 with prepared.timing.exclude():
                     await _close_client(client)
-            await self.circuit.release_probe()
+            await circuit.release_probe()
             raise
 
         handed_to_stream = False
@@ -114,7 +137,7 @@ class GoogleExecution:
                 finished_candidates = _finished_candidates(first_payload)
                 blocked = _has_block_reason(first_payload)
                 if blocked or len(finished_candidates) >= expected_candidates:
-                    await self.circuit.record_success()
+                    await circuit.record_success()
                     state["recorded"] = True
                 first_event = encode_data(restorer.restore_chunk(first_payload))
 
@@ -131,7 +154,7 @@ class GoogleExecution:
                                 await _close_client(client)
                         finally:
                             if not state["recorded"]:
-                                await self.circuit.release_probe()
+                                await circuit.release_probe()
 
                 handed_to_stream = True
                 return ProviderStream(
@@ -145,6 +168,7 @@ class GoogleExecution:
                         blocked,
                         state,
                         close_stream,
+                        circuit,
                     ),
                     request_id=_request_id(first_chunk),
                     close=close_stream,
@@ -165,16 +189,16 @@ class GoogleExecution:
                 _finished_candidates(payload)
             ) < _expected_candidates(prepared.payload):
                 raise _error(502, "PROVIDER_UNAVAILABLE", False)
-            await self.circuit.record_success()
+            await circuit.record_success()
             return ProviderNonStream(
                 payload=payload,
                 request_id=_request_id(result),
             )
         except asyncio.CancelledError:
-            await self.circuit.release_probe()
+            await circuit.release_probe()
             raise
         except Exception as exc:
-            await self._record_error(exc)
+            await self._record_error(exc, circuit)
             raise _public_error(exc) from None
         finally:
             if not handed_to_stream:
@@ -194,6 +218,7 @@ class GoogleExecution:
         blocked: bool,
         state: dict[str, bool],
         close_stream: Callable[[], Awaitable[None]],
+        circuit: CircuitBreaker,
     ) -> AsyncIterator[bytes]:
         try:
             yield first_event
@@ -204,11 +229,11 @@ class GoogleExecution:
                 if (
                     blocked or len(finished_candidates) >= expected_candidates
                 ) and not state["recorded"]:
-                    await self.circuit.record_success()
+                    await circuit.record_success()
                     state["recorded"] = True
                 yield encode_data(restorer.restore_chunk(payload))
             if not state["recorded"]:
-                await self.circuit.record_failure()
+                await circuit.record_failure()
                 state["recorded"] = True
                 yield _stream_error(_error(502, "PROVIDER_UNAVAILABLE", False))
         except (asyncio.CancelledError, GeneratorExit):
@@ -216,21 +241,15 @@ class GoogleExecution:
         except Exception as exc:
             if state["recorded"] and not isinstance(exc, ValueError):
                 return
-            await self._record_error(exc)
+            await self._record_error(exc, circuit)
             state["recorded"] = True
             yield _stream_error(_public_error(exc))
         finally:
             await close_stream()
 
-    async def _record_error(self, exc: Exception) -> None:
-        if (
-            isinstance(exc, errors.APIError)
-            and 400 <= exc.code < 500
-            and exc.code not in {408, 409, 429}
-        ):
-            await self.circuit.record_success()
-        else:
-            await self.circuit.record_failure()
+    async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
+        status_code = exc.code if isinstance(exc, errors.APIError) else None
+        await record_provider_error(circuit, exc, status_code, errors.APIError)
 
 
 class GoogleStreamRestorer:
@@ -407,6 +426,7 @@ def _error(
     error_code: str,
     retryable: bool,
     request_id: str | None = None,
+    retry_after: str | None = None,
 ) -> ProviderCallError:
     return ProviderCallError(
         status_code,
@@ -414,6 +434,7 @@ def _error(
         retryable,
         provider="google",
         request_id=request_id,
+        retry_after=retry_after,
     )
 
 
@@ -424,13 +445,17 @@ def _public_error(exc: Exception) -> ProviderCallError:
         return _error(504, "PROVIDER_TIMEOUT", True)
     if isinstance(exc, errors.APIError):
         status_code = exc.code if exc.code >= 400 else 502
+        retry_after = retry_after_header(exc)
         if status_code in {408, 504}:
-            return _error(504, "PROVIDER_TIMEOUT", True, _error_request_id(exc))
+            return _error(
+                504, "PROVIDER_TIMEOUT", True, _error_request_id(exc), retry_after
+            )
         return _error(
             status_code,
-            "PROVIDER_UNAVAILABLE",
+            status_error_code(status_code),
             status_code in {409, 429} or status_code >= 500,
             _error_request_id(exc),
+            retry_after,
         )
     if isinstance(exc, httpx.TransportError):
         return _error(503, "PROVIDER_UNAVAILABLE", True)
@@ -475,13 +500,11 @@ def _has_block_reason(payload: Mapping[str, Any]) -> bool:
 
 def _stream_error(error: ProviderCallError) -> bytes:
     return encode_data(
-        {
-            "error": {
-                "code": error.status_code,
-                "message": "The Google stream ended with an error.",
-                "status": error.error_code,
-            }
-        }
+        google_error(
+            error.status_code,
+            "The Google stream ended with an error.",
+            error.error_code,
+        )
     )
 
 
