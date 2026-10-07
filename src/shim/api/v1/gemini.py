@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from shim.api.deps import (
     dispatch_gateway_inference,
-    get_authenticated_principal,
     get_gateway_service,
+    get_google_authenticated_principal,
 )
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.services.gateway.service import GatewayService
@@ -66,7 +66,7 @@ async def generate_content(
     request: Request,
     payload: GenerateContentRequest,
     gateway_service: GatewayService = Depends(get_gateway_service),
-    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
 ):
     return await _dispatch(
         model=model,
@@ -93,7 +93,7 @@ async def stream_generate_content(
     payload: GenerateContentRequest,
     _alt: Literal["sse"] = Query(alias="alt"),
     gateway_service: GatewayService = Depends(get_gateway_service),
-    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
 ):
     return await _dispatch(
         model=model,

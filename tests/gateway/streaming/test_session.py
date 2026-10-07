@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from shim.gateway.streaming import StreamMeter, StreamSession
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.pipeline.postprocess import _ManagedStreamingResponse
 from shim.gateway.kernel.result import InferenceTiming
 
@@ -40,6 +41,40 @@ async def test_native_bytes_finalize_completed_exactly_once() -> None:
     assert b"response.output_text.delta" in wire
     assert session.terminal_status == "completed"
     finalizer.assert_awaited_once()
+    assert finalizer.await_args.args[0].usage.completion_outcome == "complete"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_fails_after_text_has_no_completion_outcome() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer)
+
+    async def events():
+        yield b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        yield b'event: error\ndata: {"type":"error","error":{"code":"PROVIDER_UNAVAILABLE"}}\n\n'
+
+    session.bind(events())
+    _ = [chunk async for chunk in session]
+
+    terminal = finalizer.await_args.args[0]
+    assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.completion_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_gemini_prompt_stays_filtered() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer, provider="google")
+
+    async def events():
+        yield b'data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n'
+
+    session.bind(events())
+    _ = [chunk async for chunk in session]
+
+    terminal = finalizer.await_args.args[0]
+    assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.completion_outcome == "filtered"
 
 
 @pytest.mark.asyncio
@@ -350,3 +385,26 @@ async def test_shim_latency_excludes_provider_and_client_waits(monkeypatch, disc
     assert terminal.terminal_status == (
         "client_disconnected" if disconnect else "completed"
     )
+
+
+@pytest.mark.asyncio
+async def test_meter_only_usage_is_metered_and_never_sent() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer)
+    usage_chunk = (
+        b'data: {"choices":[],"usage":{"prompt_tokens":61,"completion_tokens":9}}\n\n'
+    )
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+        yield MeterOnly(usage_chunk)
+        yield b"data: [DONE]\n\n"
+
+    session.bind(events())
+    wire = b"".join([chunk async for chunk in session])
+    terminal, _ = await session.finalize("completed")
+
+    assert usage_chunk not in wire
+    assert b"[DONE]" in wire
+    assert (terminal.usage.prompt_tokens, terminal.usage.completion_tokens) == (61, 9)
+    assert terminal.usage.estimated is False

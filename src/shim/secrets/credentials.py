@@ -117,7 +117,7 @@ def extract_provider_credential(
     folded_headers = {key.casefold(): value for key, value in headers.items()}
     if "x-provider-key" in folded_headers:
         credential = folded_headers["x-provider-key"]
-    elif provider != "anthropic" and provider_header in folded_headers:
+    elif provider == "openai" and provider_header in folded_headers:
         credential = folded_headers[provider_header]
     else:
         credential = None

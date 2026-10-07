@@ -61,7 +61,7 @@ async def test_local_scan_returns_only_the_public_privacy_result() -> None:
     }
     assert body["request_id"].startswith("scan_")
     assert response.headers["x-shim-request-id"] == body["request_id"]
-    assert body["verdict"] == body["policy"] == "block"
+    assert body["verdict"] == body["policy"] == "warn"
     assert body["entity_types"] == ["EMAIL_ADDRESS"]
     assert body["entities"][0]["type"] == "EMAIL_ADDRESS"
     assert set(body["entities"][0]) == {"type", "score", "start", "end"}
@@ -90,7 +90,7 @@ async def test_local_scan_accepts_empty_text_without_a_usage_route() -> None:
         "verdict": "clean",
         "entities": [],
         "entity_types": [],
-        "policy": "block",
+        "policy": "warn",
     }
     assert usage.status_code == 404
 

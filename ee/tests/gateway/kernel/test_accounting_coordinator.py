@@ -17,11 +17,13 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shim.billing.attribution import CostAttribution
 from shim_enterprise.billing.spend import BudgetEvaluator
 from shim_enterprise.core.config import settings
 from shim_enterprise.api.v1 import management
 import shim.gateway.pipeline.postprocess as postprocess_module
 from shim.gateway.kernel.result import (
+    AdmissionState,
     PreparedInference,
     InferenceTiming,
     ProviderTarget,
@@ -250,6 +252,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         estimated=True,
         lifecycle_status="client_disconnected",
         provider_finish_reasons={"choices.1.finish_reason": "length"},
+        completion_outcome="truncated",
         ttft_ms=125.5,
         shim_latency_ms=0,
     )
@@ -268,6 +271,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         "system_prompt_hash": "hmac-sha256:v1:" + "a" * 64,
         "deployment_kind": "internal",
         "provider_finish_reasons": {"choices.1.finish_reason": "length"},
+        "completion_outcome": "truncated",
         "ttft_ms": 125.5,
         "shim_latency_ms": 0,
     }
@@ -2059,6 +2063,44 @@ async def test_shim_latency_percentiles_exclude_historical_durations(db, test_ap
     assert overview_row.requests == request_row.requests == 2
     assert overview_row.p95_completed_shim_latency_ms == 0
     assert request_row.p95_completed_shim_latency_ms == 0
+
+
+@pytest.mark.asyncio
+async def test_key_cost_center_and_header_tags_reach_the_quota_reservation() -> None:
+    attribution = CostAttribution.resolve(
+        "kampanya-ekim",
+        api_key_cost_center="bireysel",
+        maximum_length=64,
+    )
+    repository = SimpleNamespace(
+        reserve_quota=AsyncMock(return_value=SimpleNamespace(replayed=False))
+    )
+    policy_loader = SimpleNamespace(
+        quota=AsyncMock(return_value=QuotaPolicySnapshot("quota-v1", None, None, None))
+    )
+    prepared = _prepared()
+    prepared.source_endpoint = "/v1/chat/completions"
+    prepared.context.started_at = datetime.now(timezone.utc)
+    prepared.policy = SimpleNamespace(team=None)
+    session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    await DurableAccountingCoordinator(
+        repository=repository,
+        policy_loader=policy_loader,
+    ).reserve_quota(
+        prepared,
+        AdmissionState(
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            cost_center=attribution.cost_center,
+            tags=attribution.tags,
+        ),
+        session,
+    )
+
+    command = repository.reserve_quota.await_args.args[1]
+    assert command.cost_center == "bireysel"
+    assert command.tags == ("kampanya-ekim",)
 
 
 async def _drop_tenant(factory, organization_id: UUID) -> None:
