@@ -15,6 +15,15 @@ from shim.gateway.api.errors import (
 )
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 
+
+def _error_info(code: str) -> dict[str, str]:
+    return {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": code,
+        "domain": "getshim.tech",
+    }
+
+
 _OPENAI_ERROR_TYPES = {
     401: "authentication_error",
     403: "permission_error",
@@ -107,6 +116,7 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
     assert attempts == 1
     assert type(raised.value).__name__ == expected_error
     assert raised.value.status_code == status_code
+    assert raised.value.response.headers["x-shim-error-code"] == "PROVIDER_UNAVAILABLE"
     assert raised.value.request_id == "upstream_req_safe"
     assert raised.value.response.headers["retry-after"] == "7"
     payload = raised.value.response.json()
@@ -150,10 +160,10 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
             "UNAVAILABLE",
         ),
         (
-            "PROVIDER_UNAVAILABLE",
+            "PROVIDER_RATE_LIMITED",
             True,
             429,
-            "The Google request failed.",
+            "The Google request was rate limited.",
             "RESOURCE_EXHAUSTED",
         ),
         (
@@ -187,10 +197,45 @@ def test_google_errors_use_native_gemini_envelope(
     assert response.status_code == status_code
     payload = json.loads(response.body)
     assert payload == {
-        "error": {"code": status_code, "message": message, "status": status}
+        "error": {
+            "code": status_code,
+            "message": message,
+            "status": status,
+            "details": [_error_info(error_code)],
+        }
     }
+    assert response.headers["x-shim-error-code"] == error_code
     assert response.headers["x-goog-request-id"] == "google_req_safe"
     assert response.headers["retry-after"] == "7"
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_label"),
+    [("openai", "OpenAI"), ("anthropic", "Anthropic"), ("google", "Google")],
+)
+def test_rate_limit_keeps_status_retry_after_and_its_own_code(
+    provider: str,
+    provider_label: str,
+) -> None:
+    response = provider_error_response(
+        ProviderCallError(
+            status_code=429,
+            error_code="PROVIDER_RATE_LIMITED",
+            retryable=True,
+            provider=provider,
+            retry_after="7",
+        )
+    )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "7"
+    assert response.headers["x-shim-error-code"] == "PROVIDER_RATE_LIMITED"
+    assert (
+        payload["error"]["message"] == f"The {provider_label} request was rate limited."
+    )
+    if provider == "openai":
+        assert payload["error"]["code"] == "PROVIDER_RATE_LIMITED"
 
 
 @pytest.mark.parametrize(
@@ -238,5 +283,7 @@ def test_gemini_route_errors_use_native_envelope_not_detail() -> None:
             "code": 400,
             "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
             "status": "INVALID_ARGUMENT",
+            "details": [_error_info("MODEL_NOT_PRICED")],
         }
     }
+    assert response.headers["x-shim-error-code"] == "MODEL_NOT_PRICED"

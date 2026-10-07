@@ -200,6 +200,7 @@ def analytics_terminal_intent(
 
 _DIAGNOSTIC_FIELDS = (
     "provider_finish_reasons",
+    "completion_outcome",
     "repeat_chain_length",
     "ttft_ms",
     "shim_latency_ms",

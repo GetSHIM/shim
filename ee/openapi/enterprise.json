@@ -7158,6 +7158,24 @@
       },
       "RequestActivityView": {
         "properties": {
+          "completion_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "truncated",
+                  "empty",
+                  "refused",
+                  "filtered"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Outcome"
+          },
           "completion_tokens": {
             "minimum": 0.0,
             "title": "Completion Tokens",
@@ -9977,6 +9995,11 @@
       "AnthropicAPIKey": {
         "in": "header",
         "name": "x-api-key",
+        "type": "apiKey"
+      },
+      "GoogleAPIKey": {
+        "in": "header",
+        "name": "x-goog-api-key",
         "type": "apiKey"
       },
       "HTTPBearer": {
@@ -15508,6 +15531,9 @@
           },
           {
             "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
           }
         ],
         "summary": "Generate Content"
@@ -15581,6 +15607,9 @@
           },
           {
             "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
           }
         ],
         "summary": "Stream Generate Content"

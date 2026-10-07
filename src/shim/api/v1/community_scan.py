@@ -37,7 +37,7 @@ async def scan_text(
     response: Response,
     _principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ) -> CommunityScanResponse:
-    policy: ScanPolicy = "block"
+    policy: ScanPolicy = "warn"
     try:
         result = await asyncio.to_thread(
             request.app.state.scan_privacy.analyze,

@@ -51,7 +51,8 @@ uses the actual provider SDK over a mock HTTP transport, two distinct endpoint
 origins and PostgreSQL accounting. It verifies OpenAI Chat Completions and
 Responses JSON/SSE, upstream model selection, tenant-scoped credentials,
 privacy, one-attempt errors, isolated endpoint circuits, model restrictions and
-unpriced spending limits. Health tests exercise the bounded model-list probe.
+unpriced spending limits. A deployment's circuit is per tenant: two tenants that
+register the same base URL do not share failures. Health tests exercise the bounded model-list probe.
 
 These checks establish shim's wire behavior. They do not certify every vLLM,
 NIM, TGI or Ollama version. Run the same request families against each selected

@@ -135,6 +135,7 @@ def _projection_values(message: OutboxMessage) -> dict:
                 field: payload.get(field)
                 for field in (
                     "provider_finish_reasons",
+                    "completion_outcome",
                     "repeat_chain_length",
                     "ttft_ms",
                     "shim_latency_ms",
