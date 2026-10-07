@@ -119,6 +119,7 @@ def test_public_metrics_are_bounded_and_exclude_enterprise_families() -> None:
     assert bounded_label("entity_type", "TR_LICENSE_PLATE") == "TR_LICENSE_PLATE"
     assert bounded_label("entity_type", "TR_PLATE_GUESS") == "other"
     public = {
+        "shim_completion_outcomes",
         "privacy_detection",
         "provider_latency_ms",
         "provider_requests",

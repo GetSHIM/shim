@@ -23,10 +23,7 @@ from shim.api.v1.messages import messages
 from shim.api.v1.responses import responses
 from shim.gateway.api.errors import gateway_exception_handler
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
-from shim.secrets.credentials import (
-    EphemeralProviderCredential,
-    extract_provider_credential,
-)
+from shim.secrets.credentials import EphemeralProviderCredential
 from shim.services.gateway.service import GatewayService
 from shim_enterprise.shared_results.api import authenticated_router
 from shim_enterprise.tenants.models import Organization, User
@@ -531,41 +528,3 @@ async def test_shared_results_401_keeps_its_detail_body_and_gains_the_code() -> 
     assert response.status_code == 401
     assert response.json() == {"detail": "Missing API Key"}
     assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
-
-
-@pytest.mark.asyncio
-async def test_gemini_x_goog_api_key_is_a_gateway_key_never_a_provider_key() -> None:
-    principal = SimpleNamespace()
-    authenticator = SimpleNamespace(resolve=AsyncMock(return_value=principal))
-
-    def gemini_request(*headers: tuple[bytes, bytes]) -> Request:
-        return Request(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/v1beta/models/gemini-3.5-flash:generateContent",
-                "headers": list(headers),
-                "app": SimpleNamespace(
-                    state=SimpleNamespace(gateway_authenticator=authenticator)
-                ),
-            }
-        )
-
-    only_google = gemini_request((b"x-goog-api-key", b"sk-shim-tenant-key"))
-    mixed = gemini_request(
-        (b"x-shim-key", b"sk-shim-tenant-key"),
-        (b"x-goog-api-key", b"another-value"),
-    )
-    for request in (only_google, mixed):
-        assert (
-            await deps.get_google_authenticated_principal(request, None, None, None)
-            is principal
-        )
-    forwarded, credential = extract_provider_credential(mixed.headers, "google")
-
-    assert [call.args for call in authenticator.resolve.await_args_list] == [
-        ("sk-shim-tenant-key",),
-        ("sk-shim-tenant-key",),
-    ]
-    assert credential is None
-    assert "another-value" not in forwarded.values()

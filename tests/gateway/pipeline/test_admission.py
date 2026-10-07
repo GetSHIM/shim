@@ -100,6 +100,27 @@ async def test_admission_blocks_repeat_before_durable_reservation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_keys_cost_center_wins_and_header_tags_are_kept() -> None:
+    stage = AdmissionStage(
+        SimpleNamespace(headers={"x-shim-tag": "Kampanya-Ekim,batch"}),
+        SimpleNamespace(admit=AsyncMock()),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+
+    admitted = await stage.run(_prepared("tagged request"))
+
+    assert admitted.admission is not None
+    assert admitted.admission.cost_center == "engineering"
+    assert admitted.admission.tags == ("kampanya-ekim", "batch")
+
+
+@pytest.mark.asyncio
 async def test_admission_bounds_provider_payloads_and_output_limits() -> None:
     usage = SimpleNamespace(admit=AsyncMock())
     rate_limiter = SimpleNamespace(allow=AsyncMock(return_value=True))
@@ -357,6 +378,17 @@ async def test_tpm_refusal_leaves_its_window_free_but_spends_its_rpm_unit() -> N
     assert refused.value.detail["dimension"] == "tokens"
     assert small.admission is not None
     assert spent.value.detail["dimension"] == "requests"
+
+
+@pytest.mark.asyncio
+async def test_a_request_larger_than_the_tpm_window_tells_sdks_not_to_retry() -> None:
+    with pytest.raises(HTTPException) as refused:
+        await _stage(InMemoryRateLimiter()).run(
+            _prepared(TWELVE_KB, rate_limit_tpm=2_000)
+        )
+
+    assert refused.value.detail["dimension"] == "tokens"
+    assert refused.value.headers == {"x-should-retry": "false"}
 
 
 @pytest.mark.asyncio

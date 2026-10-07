@@ -41,6 +41,40 @@ async def test_native_bytes_finalize_completed_exactly_once() -> None:
     assert b"response.output_text.delta" in wire
     assert session.terminal_status == "completed"
     finalizer.assert_awaited_once()
+    assert finalizer.await_args.args[0].usage.completion_outcome == "complete"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_fails_after_text_has_no_completion_outcome() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer)
+
+    async def events():
+        yield b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        yield b'event: error\ndata: {"type":"error","error":{"code":"PROVIDER_UNAVAILABLE"}}\n\n'
+
+    session.bind(events())
+    _ = [chunk async for chunk in session]
+
+    terminal = finalizer.await_args.args[0]
+    assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.completion_outcome is None
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_gemini_prompt_stays_filtered() -> None:
+    finalizer = AsyncMock(return_value=SimpleNamespace())
+    session = _session(finalizer, provider="google")
+
+    async def events():
+        yield b'data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n'
+
+    session.bind(events())
+    _ = [chunk async for chunk in session]
+
+    terminal = finalizer.await_args.args[0]
+    assert terminal.terminal_status == "provider_error"
+    assert terminal.usage.completion_outcome == "filtered"
 
 
 @pytest.mark.asyncio

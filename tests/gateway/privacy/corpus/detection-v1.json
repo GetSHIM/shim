@@ -31,6 +31,16 @@
       ]
     },
     {
+      "id": "email-long-local-part",
+      "text": "mail aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
+        }
+      ]
+    },
+    {
       "id": "card-visa-spaced",
       "text": "Card 4111 1111 1111 1111 on file",
       "expect": [
@@ -316,6 +326,26 @@
       "expect": []
     },
     {
+      "id": "sifreniz-colon",
+      "text": "Geçici şifreniz: Gizli.Parola2026",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli.Parola2026"
+        }
+      ]
+    },
+    {
+      "id": "sifresi-ascii-colon",
+      "text": "sifresi: Gizli.Parola2026",
+      "expect": [
+        {
+          "entity": "SECRET",
+          "value": "Gizli.Parola2026"
+        }
+      ]
+    },
+    {
       "id": "card-troy",
       "text": "Troy kartı 9792 0000 0000 0003",
       "expect": [
@@ -571,6 +601,82 @@
       "expect": []
     },
     {
+      "id": "phone-cue-glued-with-dot",
+      "text": "Tel.05321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "05321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-tr-mobile-after-hyphen",
+      "text": "GSM-05321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "05321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-whatsapp-link",
+      "text": "https://wa.me/905321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "905321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-json-key-name",
+      "text": "{\"phone_number\": \"4155552671\"}",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-two-word-cue-tr",
+      "text": "Telefon numarası: 2125551234",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "2125551234"
+        }
+      ]
+    },
+    {
+      "id": "order-number-with-no-cue",
+      "text": "Sipariş no: 4829104455",
+      "expect": [],
+      "known_gap": "tier 3, `no` is a phone cue"
+    },
+    {
+      "id": "ip-after-turkish-ver",
+      "text": "izin ver 10.0.0.5",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.0.0.5"
+        }
+      ]
+    },
+    {
+      "id": "phone-shape-beats-glued-id",
+      "text": "ORD-5321234567 iptal",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "5321234567"
+        }
+      ]
+    },
+    {
       "id": "tckn-spaced-groups",
       "text": "TCKN 100 000 001 46",
       "expect": [
@@ -724,7 +830,31 @@
       "id": "not-plate-uppercase-date",
       "text": "Uçuş tarihi 07 OCT 26",
       "expect": [],
-      "known_gap": "finding S17: uppercase month abbreviation fits the plate rule"
+      "known_gap": "tier 3, plate precision: month abbreviation"
+    },
+    {
+      "id": "not-plate-voltage",
+      "text": "Adaptör 12 V 2000 mA",
+      "expect": [],
+      "known_gap": "tier 3, plate precision: unit letter"
+    },
+    {
+      "id": "not-plate-amperage",
+      "text": "Sigorta 16 A 3500 W",
+      "expect": [],
+      "known_gap": "tier 3, plate precision: unit letter"
+    },
+    {
+      "id": "not-plate-clock-time",
+      "text": "Saat 10 PM 2024-10-07",
+      "expect": [],
+      "known_gap": "tier 3, plate precision: PM"
+    },
+    {
+      "id": "not-plate-product-name",
+      "text": "APPLE IPHONE 15 PRO 256 GB",
+      "expect": [],
+      "known_gap": "tier 3, plate precision: product name"
     },
     {
       "id": "person-name",

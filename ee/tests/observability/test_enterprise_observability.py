@@ -228,7 +228,7 @@ def test_analytics_projection_preserves_nullable_shim_measurement(shim_latency_m
 
 
 @pytest.mark.asyncio
-async def test_enterprise_closing_span_carries_model_tokens_and_cost(
+async def test_enterprise_postprocessor_puts_model_tokens_and_cost_on_the_span(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exporter = InMemorySpanExporter()

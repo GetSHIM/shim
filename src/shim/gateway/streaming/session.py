@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from inspect import isawaitable
 from time import monotonic
@@ -19,7 +19,7 @@ from shim.observability.metrics import STREAM_TERMINAL_STATE_TOTAL, bounded_labe
 from shim.observability.tracing import start_span
 
 from .finalization import StreamFinalization, StreamTerminalStatus
-from .meter import StreamMeter
+from .meter import StreamMeter, settled_outcome
 
 
 logger = logging.getLogger(__name__)
@@ -232,9 +232,16 @@ class StreamSession:
             if self._pending_terminal is None:
                 completed_at = self._now()
                 error_code, default_message = self._terminal_error(terminal_status)
+                usage = self.meter.snapshot()
                 self._pending_terminal = StreamFinalization(
                     terminal_status=terminal_status,
-                    usage=self.meter.snapshot(),
+                    usage=replace(
+                        usage,
+                        completion_outcome=settled_outcome(
+                            usage.completion_outcome,
+                            completed=terminal_status == "completed",
+                        ),
+                    ),
                     completed_at=completed_at,
                     error_code=error_code,
                     error_message=(error_message or default_message),

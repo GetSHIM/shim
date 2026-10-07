@@ -3,14 +3,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from io import StringIO
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from google import genai
 from google.genai import types
 import httpx
 import pytest
+from starlette.requests import Request
 
+import shim.api.deps as deps
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
+from shim.secrets.credentials import extract_provider_credential
 
 
 MODEL = "gemini-3.5-flash"
@@ -343,3 +348,41 @@ async def test_a_google_key_in_the_sdk_header_is_never_a_provider_key(
         "PROVIDER_NOT_CONFIGURED"
     )
     assert attempts == []
+
+
+@pytest.mark.asyncio
+async def test_gemini_x_goog_api_key_is_a_gateway_key_never_a_provider_key() -> None:
+    principal = SimpleNamespace()
+    authenticator = SimpleNamespace(resolve=AsyncMock(return_value=principal))
+
+    def gemini_request(*headers: tuple[bytes, bytes]) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1beta/models/gemini-3.5-flash:generateContent",
+                "headers": list(headers),
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(gateway_authenticator=authenticator)
+                ),
+            }
+        )
+
+    only_google = gemini_request((b"x-goog-api-key", b"sk-shim-tenant-key"))
+    mixed = gemini_request(
+        (b"x-shim-key", b"sk-shim-tenant-key"),
+        (b"x-goog-api-key", b"another-value"),
+    )
+    for request in (only_google, mixed):
+        assert (
+            await deps.get_google_authenticated_principal(request, None, None, None)
+            is principal
+        )
+    forwarded, credential = extract_provider_credential(mixed.headers, "google")
+
+    assert [call.args for call in authenticator.resolve.await_args_list] == [
+        ("sk-shim-tenant-key",),
+        ("sk-shim-tenant-key",),
+    ]
+    assert credential is None
+    assert "another-value" not in forwarded.values()
