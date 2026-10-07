@@ -175,22 +175,24 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
 
 
 @pytest.mark.parametrize(
-    ("status_code", "expected_reason"),
+    ("status_code", "error_code", "expected_reason"),
     [
-        (404, "provider_rejected_without_usage"),
-        (503, "request_aborted"),
+        (404, "PROVIDER_UNAVAILABLE", "provider_rejected_without_usage"),
+        (429, "PROVIDER_RATE_LIMITED", "provider_rejected_without_usage"),
+        (503, "PROVIDER_UNAVAILABLE", "request_aborted"),
     ],
 )
 @pytest.mark.asyncio
 async def test_kernel_maps_provider_failures_to_usage_reason(
     monkeypatch: pytest.MonkeyPatch,
     status_code: int,
+    error_code: str,
     expected_reason: str,
 ) -> None:
     prepared = SimpleNamespace(stream=False, protocol="chat")
     failure = ProviderCallError(
         status_code=status_code,
-        error_code="PROVIDER_UNAVAILABLE",
+        error_code=error_code,
         retryable=status_code >= 500,
         provider="openai",
     )

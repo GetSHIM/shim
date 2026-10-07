@@ -17,6 +17,9 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    record_provider_error,
+    retry_after_header,
+    status_error_code,
 )
 from shim.gateway.streaming.sse import encode_data
 from shim.privacy.deanonymizer import restore_fragment
@@ -223,14 +226,8 @@ class GoogleExecution:
             await close_stream()
 
     async def _record_error(self, exc: Exception) -> None:
-        if (
-            isinstance(exc, errors.APIError)
-            and 400 <= exc.code < 500
-            and exc.code not in {408, 409, 429}
-        ):
-            await self.circuit.record_success()
-        else:
-            await self.circuit.record_failure()
+        status_code = exc.code if isinstance(exc, errors.APIError) else None
+        await record_provider_error(self.circuit, exc, status_code, errors.APIError)
 
 
 class GoogleStreamRestorer:
@@ -407,6 +404,7 @@ def _error(
     error_code: str,
     retryable: bool,
     request_id: str | None = None,
+    retry_after: str | None = None,
 ) -> ProviderCallError:
     return ProviderCallError(
         status_code,
@@ -414,6 +412,7 @@ def _error(
         retryable,
         provider="google",
         request_id=request_id,
+        retry_after=retry_after,
     )
 
 
@@ -424,13 +423,17 @@ def _public_error(exc: Exception) -> ProviderCallError:
         return _error(504, "PROVIDER_TIMEOUT", True)
     if isinstance(exc, errors.APIError):
         status_code = exc.code if exc.code >= 400 else 502
+        retry_after = retry_after_header(exc)
         if status_code in {408, 504}:
-            return _error(504, "PROVIDER_TIMEOUT", True, _error_request_id(exc))
+            return _error(
+                504, "PROVIDER_TIMEOUT", True, _error_request_id(exc), retry_after
+            )
         return _error(
             status_code,
-            "PROVIDER_UNAVAILABLE",
+            status_error_code(status_code),
             status_code in {409, 429} or status_code >= 500,
             _error_request_id(exc),
+            retry_after,
         )
     if isinstance(exc, httpx.TransportError):
         return _error(503, "PROVIDER_UNAVAILABLE", True)

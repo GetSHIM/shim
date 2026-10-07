@@ -158,7 +158,9 @@ OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
 Anthropic errors retain `{type: "error", error: {type, message}}`. Gemini errors
 retain the google.rpc.Status `{error: {code, message, status}}` shape. Upstream
 details that could contain credentials or PII are discarded. A stream failure
-after headers is emitted as a sanitized terminal event.
+after headers is emitted as a sanitized terminal event. A provider 429 keeps its
+status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`; it is the
+caller's quota, so it neither opens nor closes the provider circuit.
 
 `background=true` Responses requests remain unsupported because shim has no
 retrieval lifecycle with which to settle them safely. Community model IDs must exist in the checked-in model and price catalog.

@@ -327,26 +327,26 @@ async def test_sdk_retries_are_disabled_and_error_is_sanitized(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("status_code", "records_failure"),
+    ("status_code", "outcome"),
     [
-        (400, False),
-        (401, False),
-        (403, False),
-        (404, False),
-        (408, True),
-        (409, True),
-        (413, False),
-        (422, False),
-        (429, True),
-        (500, True),
-        (504, True),
-        (529, True),
+        (400, "success"),
+        (401, "success"),
+        (403, "success"),
+        (404, "success"),
+        (408, "failure"),
+        (409, "failure"),
+        (413, "success"),
+        (422, "success"),
+        (429, "release"),
+        (500, "failure"),
+        (504, "failure"),
+        (529, "failure"),
     ],
 )
 async def test_http_statuses_update_circuit_without_exposing_bodies(
     monkeypatch: pytest.MonkeyPatch,
     status_code: int,
-    records_failure: bool,
+    outcome: str,
 ) -> None:
     monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
     attempts = 0
@@ -382,13 +382,17 @@ async def test_http_statuses_update_circuit_without_exposing_bodies(
 
     assert attempts == 1
     assert error.value.status_code == status_code
+    assert str(error.value) == {
+        408: "PROVIDER_TIMEOUT",
+        429: "PROVIDER_RATE_LIMITED",
+    }.get(status_code, "PROVIDER_UNAVAILABLE")
     assert "alice@example.com" not in repr(error.value)
-    if records_failure:
-        execution.circuit.record_failure.assert_awaited_once()
-        execution.circuit.record_success.assert_not_awaited()
-    else:
-        execution.circuit.record_success.assert_awaited_once()
-        execution.circuit.record_failure.assert_not_awaited()
+    calls = {
+        "success": execution.circuit.record_success.await_count,
+        "failure": execution.circuit.record_failure.await_count,
+        "release": execution.circuit.release_probe.await_count,
+    }
+    assert calls == {name: int(name == outcome) for name in calls}
 
 
 @pytest.mark.asyncio
@@ -609,7 +613,8 @@ async def test_stream_failure_emits_sanitized_error_and_closes_sdk_resource(
     error_event = ResponseErrorEvent.model_validate(error_payload)
     assert error_event.sequence_number == 1
     assert error_event.code == "PROVIDER_UNAVAILABLE"
-    execution.circuit.record_failure.assert_awaited_once()
+    execution.circuit.release_probe.assert_awaited_once()
+    execution.circuit.record_failure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1337,3 +1342,49 @@ async def test_provider_wait_is_excluded_but_restoration_is_counted(
         == (10 + 7 * len(restore_calls) + continuation_seconds) * 1_000
     )
     assert timing.excluded_seconds >= 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "raised_type"),
+    [("sdk_refusal", ProviderCallError), ("unserializable_answer", TypeError)],
+)
+async def test_local_exceptions_release_the_probe_without_counting(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    raised_type: type[Exception],
+) -> None:
+    async def create(**_kwargs):
+        if failure == "sdk_refusal":
+            raise ValueError("refused before any request")
+        return SimpleNamespace(_request_id=None, model_dump=lambda **_kwargs: [])
+
+    monkeypatch.setattr(
+        openai_execution,
+        "AsyncOpenAI",
+        lambda **_kwargs: SimpleNamespace(responses=SimpleNamespace(create=create)),
+    )
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http, SimpleNamespace(save=AsyncMock()))
+        execution.circuit = circuit = SimpleNamespace(
+            acquire_call=AsyncMock(return_value=True),
+            record_success=AsyncMock(),
+            record_failure=AsyncMock(),
+            release_probe=AsyncMock(),
+        )
+        with pytest.raises(raised_type):
+            await execution.execute(
+                invocation=SimpleNamespace(
+                    db=object(),
+                    provider_credential=EphemeralProviderCredential("openai", "sk-key"),
+                ),
+                prepared=_prepared(
+                    {"model": "gpt-5.6-luna", "input": "hello"},
+                    tenant="11111111-1111-1111-1111-111111111111",
+                ),
+                provider_start_callback=AsyncMock(),
+            )
+
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()

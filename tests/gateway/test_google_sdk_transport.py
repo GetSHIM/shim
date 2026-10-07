@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import shim.gateway.pipeline.google_execution as google_execution
 from shim.api.v1.gemini import GenerateContentRequest
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -388,3 +389,90 @@ def test_native_request_schema_forbids_translation_fields() -> None:
                 "stream": True,
             }
         )
+
+
+def _circuit() -> SimpleNamespace:
+    return SimpleNamespace(
+        acquire_call=AsyncMock(return_value=True),
+        record_success=AsyncMock(),
+        record_failure=AsyncMock(),
+        release_probe=AsyncMock(),
+    )
+
+
+_HELLO = {"contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [429, 503])
+async def test_rate_limit_releases_the_probe_and_forwards_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={"error": {"code": status_code, "message": "x", "status": "X"}},
+            headers={"retry-after": "7"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert raised.value.status_code == status_code
+    assert raised.value.retry_after == "7"
+    circuit.record_success.assert_not_awaited()
+    if status_code == 429:
+        assert raised.value.error_code == "PROVIDER_RATE_LIMITED"
+        circuit.release_probe.assert_awaited_once()
+        circuit.record_failure.assert_not_awaited()
+    else:
+        assert raised.value.error_code == "PROVIDER_UNAVAILABLE"
+        circuit.record_failure.assert_awaited_once()
+        circuit.release_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["sdk_refusal", "unserializable_answer"])
+async def test_local_exceptions_release_the_probe_without_counting(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    async def generate_content(**_kwargs):
+        if failure == "sdk_refusal":
+            raise ValueError("refused before any request")
+        return SimpleNamespace(model_dump=lambda **_kwargs: [])
+
+    monkeypatch.setattr(
+        google_execution.genai,
+        "Client",
+        lambda **_kwargs: SimpleNamespace(
+            aio=SimpleNamespace(
+                models=SimpleNamespace(generate_content=generate_content),
+                aclose=AsyncMock(),
+            ),
+            close=lambda: None,
+        ),
+    )
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError):
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()
