@@ -43,16 +43,23 @@ request it:
 
 - **Detects and replaces personal data before the request leaves.** Email
   addresses, phone numbers, credit cards (Troy included), IBANs, Turkish
-  national ID and tax numbers, Turkish licence plates (`34 ABC 123`; not
-  `16 GB 512`, though uppercase product and date strings such as `15 PRO 256`
-  or `07 OCT 26` can still match), provider secrets such as AWS keys and GitHub,
-  Google, Slack, Hugging Face and GitLab tokens, and password assignments,
-  Turkish (`şifre:`, `parolanız:`) included. A digit run counts as a phone
-  number unless something marks it as another kind of number: an order,
-  invoice, timestamp or amount word in front of it, a JSON number value, a
-  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`). When in
-  doubt it is masked: a masked order number comes back in the answer, a missed
-  phone number would have reached the provider. Each detected value becomes a
+  national ID and tax numbers, Turkish licence plates (`34 ABC 123`,
+  `34-ABC-123`, `34 A 12345`, lowercase only after a plate word such as
+  `plaka:`; not `16 GB 512`, `07 OCT 26`, `12 V 2000 mA` or `15 PRO 256 GB`),
+  provider secrets such as AWS keys and GitHub, Google, Slack, Hugging Face and
+  GitLab tokens, and password assignments (`password: x`, or
+  `password hunter2` when the value carries a digit or a symbol, so
+  `token budget` stays prose), Turkish (`şifre:`, `parolanız:`) included. A
+  digit run counts as a phone number unless something marks it as another kind
+  of number: an order, invoice, timestamp or amount word in front of it, a
+  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`). A ten-digit
+  number that passes the Turkish tax-number checksum, about one in ten does,
+  counts as a tax number under the same rule, unless a tax word (`vergi`,
+  `VKN`, `tax`) is in front of it. A number that passes the Luhn check is
+  masked as a card, so about one numeric id in ten that starts like a Visa or
+  Mastercard number is masked too. When in doubt it is masked: a masked order
+  number comes back in the answer, a missed phone number would have reached the
+  provider. Each detected value becomes a
   placeholder before the request leaves, and is restored in the answer before
   it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a

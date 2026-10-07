@@ -6,6 +6,7 @@ from collections import Counter
 from importlib.metadata import version
 import json
 from pathlib import Path
+import tomllib
 from typing import Any
 
 import pytest
@@ -19,8 +20,8 @@ CORPUS = json.loads(
 CASES: list[dict[str, Any]] = CORPUS["cases"]
 
 
-def _expected(case: dict[str, Any]) -> set[tuple[str, str]]:
-    return {(item["entity"], item["value"]) for item in case["expect"]}
+def _expected(case: dict[str, Any], key: str = "expect") -> set[tuple[str, str]]:
+    return {(item["entity"], item["value"]) for item in case[key]}
 
 
 def _actual(case: dict[str, Any]) -> set[tuple[str, str]]:
@@ -39,7 +40,8 @@ def test_corpus_is_well_formed() -> None:
     assert CORPUS["version"] == 1
     assert len(ids) == len(set(ids))
     for case in CASES:
-        for item in case["expect"]:
+        assert ("known_gap" in case) == ("known_actual" in case), case["id"]
+        for item in case["expect"] + case.get("known_actual", []):
             assert item["entity"] in entities, case["id"]
             assert item["value"] in case["text"], case["id"]
 
@@ -51,6 +53,10 @@ def test_corpus_case(case: dict[str, Any]) -> None:
     if "known_gap" in case:
         assert actual != expected, (
             f"{case['id']} now passes: remove its known_gap ({case['known_gap']})"
+        )
+        # A gap that turns into a different wrong result is a change to review.
+        assert actual == _expected(case, "known_actual"), (
+            f"{case['id']}: known gap output changed to {sorted(actual)}"
         )
     else:
         assert actual == expected, (
@@ -87,5 +93,16 @@ def test_corpus_precision_and_recall_per_entity() -> None:
 
 
 def test_detector_inputs_are_the_reviewed_pins() -> None:
-    assert version("presidio-analyzer") == "2.2.364"
-    assert version("phonenumbers") == "9.0.34"
+    # The corpus was measured against these releases; a bump is reviewed against it.
+    project = tomllib.loads(
+        (Path(__file__).parents[3] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    pins = dict(
+        requirement.split("==")
+        for requirement in project["dependencies"]
+        if requirement.startswith(("presidio-analyzer==", "phonenumbers=="))
+    )
+
+    assert pins.keys() == {"presidio-analyzer", "phonenumbers"}
+    for name, pinned in pins.items():
+        assert version(name) == pinned, name
