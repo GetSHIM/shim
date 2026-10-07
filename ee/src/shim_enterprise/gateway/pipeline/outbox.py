@@ -185,6 +185,7 @@ def analytics_terminal_intent(
         or (spend_event is not None and spend_event.estimated),
         "cost_center": lifecycle_metadata.get("cost_center", "untagged"),
         "team": lifecycle_metadata.get("team"),
+        "team_id": lifecycle_metadata.get("team_id"),
         "tags": list(lifecycle_metadata.get("tags") or []),
         **{field: lifecycle_metadata.get(field) for field in _DIAGNOSTIC_FIELDS},
     }
