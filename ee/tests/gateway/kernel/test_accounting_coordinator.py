@@ -248,6 +248,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         estimated=True,
         lifecycle_status="client_disconnected",
         provider_finish_reasons={"choices.1.finish_reason": "length"},
+        completion_outcome="truncated",
         ttft_ms=125.5,
         shim_latency_ms=0,
     )
@@ -266,6 +267,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         "system_prompt_hash": "hmac-sha256:v1:" + "a" * 64,
         "deployment_kind": "internal",
         "provider_finish_reasons": {"choices.1.finish_reason": "length"},
+        "completion_outcome": "truncated",
         "ttft_ms": 125.5,
         "shim_latency_ms": 0,
     }

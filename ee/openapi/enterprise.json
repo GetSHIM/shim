@@ -7150,6 +7150,24 @@
       },
       "RequestActivityView": {
         "properties": {
+          "completion_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "truncated",
+                  "empty",
+                  "refused",
+                  "filtered"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Outcome"
+          },
           "completion_tokens": {
             "minimum": 0.0,
             "title": "Completion Tokens",

@@ -101,6 +101,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated",
         "privacy_counts",
         "provider_finish_reasons",
+        "completion_outcome",
         "ttft_ms",
         "repeat_chain_length",
         "cost_center",
@@ -122,6 +123,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "estimated": False,
         "privacy_counts": {"EMAIL_ADDRESS": 1},
         "provider_finish_reasons": None,
+        "completion_outcome": "complete",
         "ttft_ms": None,
         "repeat_chain_length": 1,
         "cost_center": "risk",
@@ -147,6 +149,7 @@ async def test_a_rejection_before_admission_has_no_attribution() -> None:
     assert event["version"] == 3
     assert event["outcome"] == "rejected"
     assert (event["cost_center"], event["tags"]) == (None, [])
+    assert event["completion_outcome"] is None
 
 
 @pytest.mark.asyncio

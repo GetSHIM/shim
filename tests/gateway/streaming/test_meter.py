@@ -7,7 +7,12 @@ import pytest
 
 from shim.billing.pricing import UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.streaming import StreamMeter
-from shim.gateway.streaming.meter import native_finish_reasons
+from shim.gateway.streaming.meter import (
+    answer_characters,
+    answer_markers,
+    completion_outcome,
+    native_finish_reasons,
+)
 
 
 def meter(
@@ -277,7 +282,7 @@ def test_timeout_codes_are_independent_of_error_prose(event):
 
 
 @pytest.mark.parametrize(
-    ("provider", "payload", "expected"),
+    ("provider", "payload", "expected", "outcome"),
     [
         (
             "openai",
@@ -288,6 +293,7 @@ def test_timeout_codes_are_independent_of_error_prose(event):
                 ]
             },
             {"choices.2.finish_reason": "length", "choices.0.finish_reason": "stop"},
+            "truncated",
         ),
         (
             "openai",
@@ -296,35 +302,174 @@ def test_timeout_codes_are_independent_of_error_prose(event):
                 "incomplete_details": {"reason": "max_output_tokens"},
             },
             {"status": "incomplete", "incomplete_details.reason": "max_output_tokens"},
+            "truncated",
         ),
-        ("anthropic", {"stop_reason": "refusal"}, {"stop_reason": "refusal"}),
+        (
+            "anthropic",
+            {"stop_reason": "refusal"},
+            {"stop_reason": "refusal"},
+            "refused",
+        ),
         (
             "google",
             {"candidates": [{"index": 1, "finishReason": "SAFETY"}]},
             {"candidates.1.finishReason": "SAFETY"},
+            "filtered",
         ),
         (
             "google",
             {"promptFeedback": {"blockReason": "SAFETY"}},
             {"promptFeedback.blockReason": "SAFETY"},
+            "filtered",
         ),
-        ("openai", {"choices": [{"finish_reason": "private-provider-text"}]}, None),
-        ("openai", {"error": {"message": "private-provider-text"}}, None),
+        (
+            "openai",
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"content": None, "refusal": "I can't help."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+            {"choices.0.finish_reason": "stop"},
+            "refused",
+        ),
+        (
+            "openai",
+            {"choices": [{"finish_reason": "private-provider-text"}]},
+            None,
+            "empty",
+        ),
+        ("openai", {"error": {"message": "private-provider-text"}}, None, "empty"),
         (
             "google",
             {"candidates": [{"finishReason": "FINISH_REASON_UNSPECIFIED"}]},
             None,
+            "empty",
         ),
-        ("openai", {}, None),
+        ("openai", {}, None, "empty"),
     ],
 )
-def test_native_finish_facts_match_json_and_sse(provider, payload, expected) -> None:
+def test_native_finish_facts_match_json_and_sse(
+    provider, payload, expected, outcome
+) -> None:
     stream_meter = meter(provider)
     stream_meter.observe_sse(f"data: {json.dumps(payload)}\n\n".encode())
+    refusal, tool_call = answer_markers(payload)
 
     assert native_finish_reasons(payload, provider=provider) == expected
     assert stream_meter.snapshot().provider_finish_reasons == expected
     assert stream_meter.snapshot().ttft_ms is None
+    assert stream_meter.snapshot().completion_outcome == outcome
+    assert (
+        completion_outcome(
+            expected,
+            output_characters=answer_characters(payload),
+            refusal=refusal,
+            tool_call=tool_call,
+        )
+        == outcome
+    )
+
+
+@pytest.mark.parametrize(
+    ("reasons", "characters", "refusal", "tool_call", "expected"),
+    [
+        ({"choices.0.finish_reason": "content_filter"}, 4, False, False, "filtered"),
+        ({"incomplete_details.reason": "content_filter"}, 4, False, False, "filtered"),
+        ({"candidates.0.finishReason": "SAFETY"}, 0, False, False, "filtered"),
+        ({"candidates.0.finishReason": "RECITATION"}, 4, False, False, "filtered"),
+        ({"candidates.0.finishReason": "BLOCKLIST"}, 4, False, False, "filtered"),
+        (
+            {"candidates.0.finishReason": "PROHIBITED_CONTENT"},
+            4,
+            False,
+            False,
+            "filtered",
+        ),
+        ({"candidates.0.finishReason": "SPII"}, 4, False, False, "filtered"),
+        ({"promptFeedback.blockReason": "OTHER"}, 0, False, False, "filtered"),
+        ({"stop_reason": "refusal"}, 4, False, False, "refused"),
+        ({"choices.0.finish_reason": "stop"}, 4, True, False, "refused"),
+        ({"choices.0.finish_reason": "length"}, 4, False, False, "truncated"),
+        (
+            {"incomplete_details.reason": "max_output_tokens"},
+            4,
+            False,
+            False,
+            "truncated",
+        ),
+        ({"stop_reason": "max_tokens"}, 4, False, False, "truncated"),
+        (
+            {"stop_reason": "model_context_window_exceeded"},
+            4,
+            False,
+            False,
+            "truncated",
+        ),
+        ({"candidates.0.finishReason": "MAX_TOKENS"}, 4, False, False, "truncated"),
+        ({"choices.0.finish_reason": "stop"}, 0, False, False, "empty"),
+        ({"choices.0.finish_reason": "tool_calls"}, 0, False, False, "complete"),
+        ({"stop_reason": "tool_use"}, 0, False, False, "complete"),
+        (None, 0, False, True, "complete"),
+        ({"choices.0.finish_reason": "stop"}, 4, False, False, "complete"),
+        (
+            {
+                "choices.0.finish_reason": "length",
+                "choices.1.finish_reason": "content_filter",
+            },
+            4,
+            False,
+            False,
+            "filtered",
+        ),
+        ({"choices.0.finish_reason": "length"}, 4, True, False, "refused"),
+    ],
+)
+def test_completion_outcome_classifies_in_precedence_order(
+    reasons, characters, refusal, tool_call, expected
+) -> None:
+    assert (
+        completion_outcome(
+            reasons,
+            output_characters=characters,
+            refusal=refusal,
+            tool_call=tool_call,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "refusal", "tool_call"),
+    [
+        ({"choices": [{"delta": {"refusal": "No."}}]}, True, False),
+        ({"type": "response.refusal.delta", "delta": "No."}, True, False),
+        (
+            {"output": [{"type": "message", "content": [{"type": "refusal"}]}]},
+            True,
+            False,
+        ),
+        ({"choices": [{"delta": {"tool_calls": [{"index": 0}]}}]}, False, True),
+        ({"content_block": {"type": "tool_use", "name": "lookup"}}, False, True),
+        ({"item": {"type": "function_call"}}, False, True),
+        (
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "f"}}]}}]},
+            False,
+            True,
+        ),
+        ({"choices": [{"delta": {"content": "hello", "refusal": None}}]}, False, False),
+    ],
+)
+def test_answer_markers_read_json_and_stream_shapes(
+    payload, refusal, tool_call
+) -> None:
+    assert answer_markers(payload, event_type=str(payload.get("type", ""))) == (
+        refusal,
+        tool_call,
+    )
 
 
 def test_ttft_ignores_heartbeats_metadata_empty_deltas_and_usage() -> None:
