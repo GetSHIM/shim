@@ -3,18 +3,25 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from importlib.metadata import version
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
 import pytest
+from anthropic import APIStatusError as AnthropicStatusError
 from anthropic import AsyncAnthropic
 from anthropic import AuthenticationError as AnthropicAuthenticationError
+from anthropic import Omit as AnthropicOmit
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from openai import AsyncOpenAI
 from openai import AuthenticationError as OpenAIAuthenticationError
+from openai import Omit as OpenAIOmit
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, StreamingResponse
 
@@ -26,6 +33,8 @@ from shim.api.deps import (
 from shim.api.v1.chat import router as chat_router
 from shim.api.v1.messages import router as messages_router
 from shim.api.v1.responses import router as responses_router
+from shim.application import create_community_app
+from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.api.errors import gateway_exception_handler
 
@@ -391,3 +400,106 @@ async def test_latest_clients_parse_all_gateway_stream_protocols() -> None:
     assert chat_chunks[0].choices[0].delta.content == "ok"
     assert chat_chunks[-1].choices[0].finish_reason == "stop"
     assert message_types == ["message_start", "message_stop"]
+
+
+@pytest.mark.asyncio
+async def test_every_sdk_sees_the_gateway_error_code() -> None:
+    gateway_key = "shim-gateway-key-123"
+    application = create_community_app(
+        CommunitySettings(
+            SHIM_API_KEY=gateway_key, BACKEND_CORS_ORIGINS=[], _env_file=None
+        ),
+        event_stream=StringIO(),
+    )
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as http,
+    ):
+
+        def gemini(api_key: str) -> genai.Client:
+            return genai.Client(
+                api_key=api_key,
+                http_options=genai_types.HttpOptions(
+                    base_url="http://127.0.0.1",
+                    api_version="v1beta",
+                    retry_options=genai_types.HttpRetryOptions(attempts=1),
+                    httpx_async_client=http,
+                ),
+            )
+
+        anthropic = AsyncAnthropic(
+            api_key=gateway_key,
+            base_url="http://127.0.0.1",
+            http_client=http,
+            max_retries=0,
+        )
+        with pytest.raises(AnthropicStatusError) as unpriced:
+            await anthropic.messages.create(
+                model="claude-not-in-the-catalog",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hello"}],
+            )
+        with pytest.raises(genai_errors.ClientError) as gemini_unpriced:
+            await gemini(gateway_key).aio.models.generate_content(
+                model="gemini-not-in-the-catalog", contents="hello"
+            )
+
+        anonymous = (
+            AsyncOpenAI(
+                api_key="unused",
+                base_url="http://127.0.0.1/v1",
+                http_client=http,
+                max_retries=0,
+            ).chat.completions.create(
+                model="gpt-5.6-luna",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_headers={"Authorization": OpenAIOmit()},
+            ),
+            AsyncAnthropic(
+                api_key="unused",
+                base_url="http://127.0.0.1",
+                http_client=http,
+                max_retries=0,
+            ).messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+                extra_headers={"X-Api-Key": AnthropicOmit()},
+            ),
+            gemini("not-the-gateway-key").aio.models.generate_content(
+                model="gemini-3.5-flash", contents="hi"
+            ),
+        )
+        rejected = []
+        for call in anonymous:
+            with pytest.raises(
+                (
+                    OpenAIAuthenticationError,
+                    AnthropicAuthenticationError,
+                    genai_errors.ClientError,
+                )
+            ) as raised:
+                await call
+            rejected.append(raised.value)
+
+    assert unpriced.value.status_code == 400
+    assert unpriced.value.response.headers["x-shim-error-code"] == "MODEL_NOT_PRICED"
+    assert set(unpriced.value.response.json()) == {"type", "error"}
+    assert set(unpriced.value.response.json()["error"]) == {"type", "message"}
+    assert gemini_unpriced.value.details["error"]["details"] == [
+        {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "MODEL_NOT_PRICED",
+            "domain": "getshim.tech",
+        }
+    ]
+    assert [error.response.status_code for error in rejected] == [401, 401, 401]
+    assert [error.response.headers["x-shim-error-code"] for error in rejected] == [
+        "MISSING_API_KEY",
+        "MISSING_API_KEY",
+        "INVALID_API_KEY",
+    ]
+    assert rejected[0].response.json()["error"]["code"] == "MISSING_API_KEY"

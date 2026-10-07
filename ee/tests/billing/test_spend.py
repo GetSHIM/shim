@@ -23,10 +23,21 @@ from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.outbox.handlers import _budget_text
 
 
-def test_header_tags_define_primary_and_complete_attribution() -> None:
+def test_api_key_cost_center_wins_and_header_tags_stay_dimensions() -> None:
     attribution = CostAttribution.resolve(
         " Research ,experiment,research,not valid! ",
         api_key_cost_center="fallback",
+        maximum_length=32,
+    )
+
+    assert attribution.cost_center == "fallback"
+    assert attribution.tags == ("research", "experiment")
+
+
+def test_first_header_tag_is_the_cost_center_without_a_key_center() -> None:
+    attribution = CostAttribution.resolve(
+        " Research ,experiment,research,not valid! ",
+        api_key_cost_center=None,
         maximum_length=32,
     )
 

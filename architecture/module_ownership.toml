@@ -213,6 +213,7 @@ public = [
   "tests/gateway/pipeline/test_authenticate.py",
   "tests/gateway/privacy/test_boundary_types.py",
   "tests/gateway/privacy/test_continuation.py",
+  "tests/gateway/privacy/test_detection_corpus.py",
   "tests/gateway/privacy/test_pii_scrubber.py",
   "tests/gateway/providers/test_circuit_breaker.py",
   "tests/gateway/streaming/__init__.py",

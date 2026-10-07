@@ -9,8 +9,12 @@ from inspect import signature
 from time import perf_counter
 from typing import Any
 
+import httpx
+
+from shim.core.circuit_breaker import CircuitBreaker
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
     PROVIDER_LATENCY_MS,
@@ -41,7 +45,7 @@ class ProviderNonStream:
 
 @dataclass(frozen=True, slots=True)
 class ProviderStream:
-    events: AsyncIterator[bytes]
+    events: AsyncIterator[bytes | MeterOnly]
     request_id: str | None
     close: Callable[[], Awaitable[None]]
     prefetched_events: tuple[bytes, ...] = ()
@@ -93,6 +97,22 @@ class ProviderExecutionStage:
         }
 
 
+_GOOGLE_RPC_STATUSES = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHENTICATED",
+    403: "PERMISSION_DENIED",
+    404: "NOT_FOUND",
+    408: "DEADLINE_EXCEEDED",
+    409: "ABORTED",
+    413: "INVALID_ARGUMENT",
+    422: "INVALID_ARGUMENT",
+    429: "RESOURCE_EXHAUSTED",
+    500: "INTERNAL",
+    502: "UNAVAILABLE",
+    503: "UNAVAILABLE",
+    504: "DEADLINE_EXCEEDED",
+    529: "UNAVAILABLE",
+}
 _SDK_TRANSPORT_PARAMETERS = {
     "extra_body",
     "extra_headers",
@@ -127,6 +147,55 @@ def select_headers(
         for key, value in headers.items()
         if key.casefold() in allowed
     }
+
+
+def google_error(status_code: int, message: str, code: str | None) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "code": status_code,
+        "message": message,
+        "status": _GOOGLE_RPC_STATUSES.get(
+            status_code, "INTERNAL" if status_code >= 500 else "INVALID_ARGUMENT"
+        ),
+    }
+    if code:
+        error["details"] = [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": code,
+                "domain": "getshim.tech",
+            }
+        ]
+    return {"error": error}
+
+
+def status_error_code(status_code: int) -> str:
+    return {408: "PROVIDER_TIMEOUT", 429: "PROVIDER_RATE_LIMITED"}.get(
+        status_code, "PROVIDER_UNAVAILABLE"
+    )
+
+
+async def record_provider_error(
+    circuit: CircuitBreaker,
+    exc: Exception,
+    status_code: int | None,
+    sdk_error: type[Exception],
+) -> None:
+    """Count endpoint failures only; a rate limit belongs to the caller's quota."""
+
+    if status_code == 429:
+        await circuit.release_probe()
+    elif (
+        status_code is not None
+        and 400 <= status_code < 500
+        and status_code not in {408, 409}
+    ):
+        await circuit.record_success()
+    elif isinstance(
+        exc, (sdk_error, httpx.TransportError, TimeoutError, ProviderCallError)
+    ):
+        await circuit.record_failure()
+    else:
+        await circuit.release_probe()
 
 
 def retry_after_header(exc: Exception) -> str | None:

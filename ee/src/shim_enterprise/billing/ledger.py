@@ -269,6 +269,7 @@ class FinalizationCommand:
     completed_at: datetime | None = None
     reconciliation_urgent: bool = False
     provider_finish_reasons: dict[str, str] | None = None
+    completion_outcome: str | None = None
     ttft_ms: float | None = None
     shim_latency_ms: int | None = None
     policy_verdicts: tuple[dict[str, Any], ...] | None = None
@@ -607,6 +608,7 @@ class DurableAccountingRepository:
             lifecycle.lifecycle_metadata = {
                 **(lifecycle.lifecycle_metadata or {}),
                 "provider_finish_reasons": command.provider_finish_reasons,
+                "completion_outcome": command.completion_outcome,
                 "ttft_ms": command.ttft_ms,
                 "shim_latency_ms": command.shim_latency_ms,
             }

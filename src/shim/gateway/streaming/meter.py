@@ -52,6 +52,7 @@ class StreamUsageSnapshot:
     output_hash: str | None
     provider_finish_reasons: dict[str, str] | None = None
     ttft_ms: float | None = None
+    completion_outcome: CompletionOutcome | None = None
 
 
 class StreamMeter:
@@ -87,8 +88,11 @@ class StreamMeter:
         self.completion_tokens_actual: int | None = None
         self.response_model: str | None = None
         self.emitted_output_characters = 0
+        self.emitted_answer_characters = 0
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
+        self.refusal_seen = False
+        self.tool_call_seen = False
         self.started_at_monotonic = started_at_monotonic
         self._monotonic_clock = monotonic_clock
         self.ttft_ms: float | None = None
@@ -181,6 +185,12 @@ class StreamMeter:
             ),
             provider_finish_reasons=dict(self.provider_finish_reasons) or None,
             ttft_ms=self.ttft_ms,
+            completion_outcome=completion_outcome(
+                self.provider_finish_reasons,
+                output_characters=self.emitted_answer_characters,
+                refusal=self.refusal_seen,
+                tool_call=self.tool_call_seen,
+            ),
         )
 
     def _observe_sse_event(self, event_text: str) -> None:
@@ -214,11 +224,17 @@ class StreamMeter:
         self.provider_finish_reasons.update(
             native_finish_reasons(payload, provider=self.provider) or {}
         )
+        refusal, tool_call = answer_markers(payload, event_type=payload_type)
+        self.refusal_seen |= refusal
+        self.tool_call_seen |= tool_call
         output_characters = self._output_delta_characters(
             payload_type,
             payload,
         )
         self.emitted_output_characters += output_characters
+        self.emitted_answer_characters += output_characters - _reasoning_characters(
+            payload_type, payload
+        )
         if (
             self.ttft_ms is None
             and self.started_at_monotonic is not None
@@ -472,6 +488,17 @@ def _sum_optional_counts(*values: int | None) -> int | None:
     return sum(present) if present else None
 
 
+def _reasoning_characters(event_type: str, payload: Mapping[str, Any]) -> int:
+    """Thinking and reasoning deltas: billed output, but not answer text."""
+
+    delta = payload.get("delta")
+    if isinstance(delta, str) and "reasoning" in event_type:
+        return len(delta)
+    if isinstance(delta, Mapping) and isinstance(delta.get("thinking"), str):
+        return len(delta["thinking"])
+    return 0
+
+
 def _initial_or_media_content(event_type: str, payload: Mapping[str, Any]) -> bool:
     """Recognize content readiness without treating opaque media as text tokens."""
 
@@ -625,6 +652,144 @@ def native_finish_reasons(
         if isinstance(reason, str) and reason in _GOOGLE_BLOCK_REASONS:
             reasons["promptFeedback.blockReason"] = reason
     return reasons or None
+
+
+CompletionOutcome = Literal["complete", "truncated", "empty", "refused", "filtered"]
+_FILTERED_REASONS = frozenset(
+    {
+        "content_filter",
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+    }
+)
+_TRUNCATED_REASONS = frozenset(
+    {
+        "length",
+        "max_output_tokens",
+        "max_tokens",
+        "model_context_window_exceeded",
+        "MAX_TOKENS",
+    }
+)
+_TOOL_REASONS = frozenset({"tool_calls", "function_call", "tool_use"})
+
+
+def completion_outcome(
+    reasons: Mapping[str, str] | None,
+    *,
+    output_characters: int,
+    refusal: bool,
+    tool_call: bool,
+) -> CompletionOutcome:
+    """Classify allowlisted finish facts; the first matching class wins."""
+
+    values = set((reasons or {}).values())
+    if values & _FILTERED_REASONS or "promptFeedback.blockReason" in (reasons or {}):
+        return "filtered"
+    if refusal or "refusal" in values:
+        return "refused"
+    if values & _TRUNCATED_REASONS:
+        return "truncated"
+    if output_characters == 0 and not tool_call and not values & _TOOL_REASONS:
+        return "empty"
+    return "complete"
+
+
+def settled_outcome(
+    outcome: CompletionOutcome | None, *, completed: bool
+) -> CompletionOutcome | None:
+    """A provider block is an answer; any other failure has none to classify."""
+
+    return outcome if completed or outcome == "filtered" else None
+
+
+def answer_markers(
+    payload: Mapping[str, Any], *, event_type: str = ""
+) -> tuple[bool, bool]:
+    """Whether a JSON answer or one SSE event carries a refusal or a tool call."""
+
+    refusal = event_type.startswith("response.refusal")
+    tool_call = False
+    containers = [payload]
+    for key in ("response", "message", "item", "part", "content_block"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            containers.append(value)
+    for container in containers:
+        items = [container]
+        for key in ("output", "content"):
+            value = container.get(key)
+            if isinstance(value, list):
+                items.extend(item for item in value if isinstance(item, Mapping))
+        for item in items:
+            kind = item.get("type")
+            refusal |= kind == "refusal"
+            tool_call |= isinstance(kind, str) and kind.endswith(("_call", "tool_use"))
+            parts = item.get("content")
+            if item is not container and isinstance(parts, list):
+                refusal |= any(
+                    isinstance(part, Mapping) and part.get("type") == "refusal"
+                    for part in parts
+                )
+        for choice in _mappings(container.get("choices")):
+            for field in ("delta", "message"):
+                value = choice.get(field)
+                if isinstance(value, Mapping):
+                    refusal |= bool(value.get("refusal"))
+                    tool_call |= bool(
+                        value.get("tool_calls") or value.get("function_call")
+                    )
+        for candidate in _mappings(container.get("candidates")):
+            content = candidate.get("content")
+            parts = content.get("parts") if isinstance(content, Mapping) else None
+            tool_call |= any(
+                isinstance(part, Mapping) and "functionCall" in part
+                for part in parts or ()
+            )
+    return refusal, tool_call
+
+
+def answer_characters(payload: Mapping[str, Any]) -> int:
+    """Count the answer text of one native JSON response."""
+
+    texts: list[str] = []
+    for choice in _mappings(payload.get("choices")):
+        message = choice.get("message")
+        if isinstance(message, Mapping):
+            texts += [
+                value
+                for value in (message.get("content"), message.get("refusal"))
+                if isinstance(value, str)
+            ]
+    for item in _mappings(payload.get("output")):
+        if item.get("type") == "reasoning":
+            continue
+        for part in _mappings(item.get("content")):
+            texts += [
+                value
+                for value in (part.get("text"), part.get("refusal"))
+                if isinstance(value, str)
+            ]
+    for block in _mappings(payload.get("content")):
+        if isinstance(block.get("text"), str):
+            texts.append(block["text"])
+    for candidate in _mappings(payload.get("candidates")):
+        content = candidate.get("content")
+        if isinstance(content, Mapping):
+            for part in content.get("parts") or ():
+                texts += _google_content_strings(part)
+    return sum(len(text) for text in texts)
+
+
+def _mappings(value: object) -> list[Mapping[str, Any]]:
+    return (
+        [item for item in value if isinstance(item, Mapping)]
+        if isinstance(value, list)
+        else []
+    )
 
 
 def _google_content_strings(value: Any, *, content: bool = False) -> list[str]:

@@ -5,11 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 from supabase import AuthApiError
 
@@ -19,9 +21,11 @@ from shim.api.v1.chat import chat_completions
 from shim.api.v1.gemini import generate_content, stream_generate_content
 from shim.api.v1.messages import messages
 from shim.api.v1.responses import responses
+from shim.gateway.api.errors import gateway_exception_handler
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.secrets.credentials import EphemeralProviderCredential
 from shim.services.gateway.service import GatewayService
+from shim_enterprise.shared_results.api import authenticated_router
 from shim_enterprise.tenants.models import Organization, User
 from shim_enterprise.tenants.service import JwtIdentityVerifier, ensure_privacy_defaults
 
@@ -470,3 +474,57 @@ async def test_auditor_only_allows_read_only_posts(monkeypatch, path, allowed):
         with pytest.raises(HTTPException) as error:
             await enterprise_deps.get_current_user(request, None, None)
         assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidate", "code"),
+    [
+        (None, "MISSING_API_KEY"),
+        ("", "INVALID_API_KEY"),
+        ("sk-shim-unknown", "INVALID_API_KEY"),
+    ],
+)
+async def test_gateway_key_failures_carry_their_code(
+    monkeypatch: pytest.MonkeyPatch,
+    candidate: str | None,
+    code: str,
+) -> None:
+    monkeypatch.setattr(
+        enterprise_deps, "authenticate_api_key", AsyncMock(return_value=None)
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await enterprise_deps._authenticate_gateway_key(
+            SimpleNamespace(),  # type: ignore[arg-type]
+            candidate,
+        )
+
+    assert error.value.status_code == 401
+    assert error.value.headers == {
+        "WWW-Authenticate": "Bearer",
+        "X-Shim-Error-Code": code,
+    }
+
+
+@pytest.mark.asyncio
+async def test_shared_results_401_keeps_its_detail_body_and_gains_the_code() -> None:
+    application = FastAPI()
+    application.add_exception_handler(
+        StarletteHTTPException,
+        gateway_exception_handler,
+    )
+    application.include_router(authenticated_router, prefix="/api/v1")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://shim.test",
+    ) as client:
+        response = await client.post(
+            "/api/v1/shared-results",
+            json={"prompt": "hello", "response": "world"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Missing API Key"}
+    assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
