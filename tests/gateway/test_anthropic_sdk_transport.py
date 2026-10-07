@@ -14,7 +14,7 @@ from shim.api.v1.messages import MessagesRequest
 from shim.core.circuit_breaker import InMemoryCircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.ids import TenantId
-from shim.gateway.kernel.result import InferenceTiming
+from shim.gateway.kernel.result import InferenceTiming, ProviderTarget
 from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.privacy import scrub_payload
 from shim.gateway.pipeline.provider_execution import (
@@ -315,6 +315,7 @@ async def test_beta_header_selects_beta_sdk_and_parses_betas(
         betas=None,
         extra_headers=None,
         extra_body=None,
+        timeout=None,
     ):
         seen.update(
             model=model,
@@ -323,6 +324,7 @@ async def test_beta_header_selects_beta_sdk_and_parses_betas(
             betas=betas,
             extra_headers=extra_headers,
             extra_body=extra_body,
+            timeout=timeout,
         )
         return SimpleNamespace(
             _request_id="req_beta",
@@ -374,6 +376,7 @@ async def test_beta_header_selects_beta_sdk_and_parses_betas(
         "betas": ["body-only"],
         "future_beta_field": True,
     }
+    assert seen["timeout"] == httpx.Timeout(5, read=600, write=600, pool=600)
     regular_create.assert_not_awaited()
 
 
@@ -701,3 +704,163 @@ async def test_upstream_status_request_id_and_retry_after_are_preserved(
     assert raised.value.request_id == "req_matrix"
     assert raised.value.retry_after == "11"
     assert "private detail" not in repr(raised.value)
+
+
+def _circuit() -> SimpleNamespace:
+    return SimpleNamespace(
+        acquire_call=AsyncMock(return_value=True),
+        record_success=AsyncMock(),
+        record_failure=AsyncMock(),
+        release_probe=AsyncMock(),
+    )
+
+
+def _large_request(max_tokens: int) -> dict:
+    return {
+        "model": "claude-sonnet-4-5",
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_tokens", [64_000, 21_334])
+async def test_large_nonstream_max_tokens_reaches_anthropic_once(
+    monkeypatch: pytest.MonkeyPatch,
+    max_tokens: int,
+) -> None:
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_message("ok"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http).execute(
+            invocation=_invocation(),
+            prepared=_prepared(_large_request(max_tokens)),
+            provider_start_callback=AsyncMock(),
+        )
+
+    assert isinstance(result, ProviderNonStream)
+    assert len(requests) == 1
+    assert json.loads(requests[0].content) == _large_request(max_tokens)
+    assert requests[0].extensions["timeout"] == {
+        "connect": 5,
+        "read": 600,
+        "write": 600,
+        "pool": 600,
+    }
+
+
+@pytest.mark.asyncio
+async def test_registry_target_keeps_its_float_timeout() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_message("ok"))
+
+    prepared = _prepared(_large_request(64_000))
+    prepared.target = ProviderTarget(
+        deployment_id="deployment",
+        base_url="https://registry.test",
+        upstream_model="claude-sonnet-4-5",
+        credential_reference="managed-reference",
+        timeout_seconds=12.5,
+        declared_version="1",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await AnthropicExecution(
+            credential_resolver=SimpleNamespace(
+                resolve=AsyncMock(return_value="sk-ant-registry")
+            ),
+            circuit=InMemoryCircuitBreaker(),
+            settings=settings,
+            http_client=http,
+        ).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+
+    assert isinstance(result, ProviderNonStream)
+    assert len(requests) == 1
+    assert requests[0].url.host == "registry.test"
+    assert requests[0].extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), 12.5
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [429, 503])
+async def test_rate_limit_releases_the_probe_and_an_outage_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={"type": "error", "error": {"type": "api_error", "message": "x"}},
+            headers={"retry-after": "7"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_large_request(32)),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert raised.value.retry_after == "7"
+    circuit.record_success.assert_not_awaited()
+    if status_code == 429:
+        assert raised.value.error_code == "PROVIDER_RATE_LIMITED"
+        assert raised.value.retryable is True
+        circuit.release_probe.assert_awaited_once()
+        circuit.record_failure.assert_not_awaited()
+    else:
+        assert raised.value.error_code == "PROVIDER_UNAVAILABLE"
+        circuit.record_failure.assert_awaited_once()
+        circuit.release_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "raised_type"),
+    [("sdk_refusal", ProviderCallError), ("unserializable_answer", TypeError)],
+)
+async def test_local_exceptions_release_the_probe_without_counting(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    raised_type: type[Exception],
+) -> None:
+    async def create(**_kwargs):
+        if failure == "sdk_refusal":
+            raise ValueError("Streaming is required for long operations")
+        return SimpleNamespace(_request_id=None, model_dump=lambda **_kwargs: [])
+
+    monkeypatch.setattr(
+        anthropic_execution,
+        "AsyncAnthropic",
+        lambda **_kwargs: SimpleNamespace(messages=SimpleNamespace(create=create)),
+    )
+    async with httpx.AsyncClient() as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(raised_type):
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_large_request(32)),
+                provider_start_callback=AsyncMock(),
+            )
+
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()

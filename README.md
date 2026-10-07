@@ -113,7 +113,9 @@ Provider credentials come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
 `GOOGLE_API_KEY`, or per request through `x-provider-key`. The shim key
 authenticates your caller and is never forwarded to a provider. The default bind
 is loopback; set a `SHIM_API_KEY` of at least 16 characters before binding
-anywhere else.
+anywhere else. A non-streaming request is bounded by the provider read timeout
+(`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
+default), so long generations should stream.
 
 Community exposes `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, the
 Gemini `generateContent` routes, `/v1/models`, `/v1/scan`, `/health` and

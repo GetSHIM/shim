@@ -264,6 +264,8 @@ def _provider_message(exc: ProviderCallError) -> str:
             f"No {provider} credential is configured for this gateway. "
             "Add a provider credential before sending requests."
         )
+    if exc.error_code == "PROVIDER_RATE_LIMITED":
+        return f"The {provider} request was rate limited."
     return (
         f"The {provider} request timed out."
         if exc.error_code == "PROVIDER_TIMEOUT"

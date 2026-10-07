@@ -150,10 +150,10 @@ async def test_provider_errors_preserve_status_and_real_sdk_exception_types(
             "UNAVAILABLE",
         ),
         (
-            "PROVIDER_UNAVAILABLE",
+            "PROVIDER_RATE_LIMITED",
             True,
             429,
-            "The Google request failed.",
+            "The Google request was rate limited.",
             "RESOURCE_EXHAUSTED",
         ),
         (
@@ -191,6 +191,34 @@ def test_google_errors_use_native_gemini_envelope(
     }
     assert response.headers["x-goog-request-id"] == "google_req_safe"
     assert response.headers["retry-after"] == "7"
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_label"),
+    [("openai", "OpenAI"), ("anthropic", "Anthropic"), ("google", "Google")],
+)
+def test_rate_limit_keeps_status_retry_after_and_its_own_code(
+    provider: str,
+    provider_label: str,
+) -> None:
+    response = provider_error_response(
+        ProviderCallError(
+            status_code=429,
+            error_code="PROVIDER_RATE_LIMITED",
+            retryable=True,
+            provider=provider,
+            retry_after="7",
+        )
+    )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "7"
+    assert (
+        payload["error"]["message"] == f"The {provider_label} request was rate limited."
+    )
+    if provider == "openai":
+        assert payload["error"]["code"] == "PROVIDER_RATE_LIMITED"
 
 
 @pytest.mark.parametrize(

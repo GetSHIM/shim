@@ -22,9 +22,11 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    record_provider_error,
     retry_after_header,
     sdk_create_kwargs,
     select_headers,
+    status_error_code,
 )
 from shim.gateway.streaming.sse import encode_data, encode_responses_event
 from shim.privacy.continuation import (
@@ -168,7 +170,11 @@ class OpenAIExecution:
                 close=close_stream,
             )
 
-        payload = _dump_sdk(result)
+        try:
+            payload = _dump_sdk(result)
+        except BaseException:
+            await circuit.release_probe()
+            raise
         if _is_openai_failure(payload) and not (
             prepared.protocol == "responses" and payload.get("status") == "failed"
         ):
@@ -357,14 +363,8 @@ class OpenAIExecution:
             await close_stream()
 
     async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
-        if (
-            isinstance(exc, APIStatusError)
-            and exc.status_code < 500
-            and exc.status_code not in {408, 409, 429}
-        ):
-            await circuit.record_success()
-        else:
-            await circuit.record_failure()
+        status_code = exc.status_code if isinstance(exc, APIStatusError) else None
+        await record_provider_error(circuit, exc, status_code, APIError)
 
 
 def _dump_sdk(value: Any) -> dict[str, Any]:
@@ -417,7 +417,7 @@ def _public_error(exc: Exception) -> ProviderCallError:
         retryable = exc.status_code in {408, 409, 429} or exc.status_code >= 500
         return _error(
             exc.status_code,
-            "PROVIDER_TIMEOUT" if exc.status_code == 408 else "PROVIDER_UNAVAILABLE",
+            status_error_code(exc.status_code),
             retryable,
             request_id=getattr(exc, "request_id", None),
             retry_after=retry_after_header(exc),

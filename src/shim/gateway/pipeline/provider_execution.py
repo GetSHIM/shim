@@ -9,6 +9,9 @@ from inspect import signature
 from time import perf_counter
 from typing import Any
 
+import httpx
+
+from shim.core.circuit_breaker import CircuitBreaker
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.usage import UsageLifecycle
@@ -127,6 +130,36 @@ def select_headers(
         for key, value in headers.items()
         if key.casefold() in allowed
     }
+
+
+def status_error_code(status_code: int) -> str:
+    return {408: "PROVIDER_TIMEOUT", 429: "PROVIDER_RATE_LIMITED"}.get(
+        status_code, "PROVIDER_UNAVAILABLE"
+    )
+
+
+async def record_provider_error(
+    circuit: CircuitBreaker,
+    exc: Exception,
+    status_code: int | None,
+    sdk_error: type[Exception],
+) -> None:
+    """Count endpoint failures only; a rate limit belongs to the caller's quota."""
+
+    if status_code == 429:
+        await circuit.release_probe()
+    elif (
+        status_code is not None
+        and 400 <= status_code < 500
+        and status_code not in {408, 409}
+    ):
+        await circuit.record_success()
+    elif isinstance(
+        exc, (sdk_error, httpx.TransportError, TimeoutError, ProviderCallError)
+    ):
+        await circuit.record_failure()
+    else:
+        await circuit.release_probe()
 
 
 def retry_after_header(exc: Exception) -> str | None:
