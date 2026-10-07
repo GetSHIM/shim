@@ -2300,8 +2300,26 @@ async def test_reservation_records_the_keys_team_id(db, test_api_key, team_id) -
             UsageLedger.event_type == "quota_reservation",
         )
     )
+    await DurableAccountingRepository().finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=test_api_key.organization_id,
+            request_id=request_id,
+            quota_action=TerminalAction.SETTLE,
+        ),
+    )
+    analytics = await db.scalar(
+        select(OutboxEvent).where(
+            OutboxEvent.aggregate_id == request_id,
+            OutboxEvent.event_type == "analytics.request_completed",
+        )
+    )
     expected = str(team_id) if team_id is not None else None
-    assert lifecycle is not None and reservation is not None
+    assert lifecycle is not None and reservation is not None and analytics is not None
     assert lifecycle.lifecycle_metadata["team_id"] == expected
     assert reservation.event_metadata["team_id"] == expected
     assert lifecycle.lifecycle_metadata["team"] is None
+    projected = analytics_projection._projection_values(
+        OutboxMessage.from_event(analytics)
+    )
+    assert projected["details"]["team_id"] == expected
