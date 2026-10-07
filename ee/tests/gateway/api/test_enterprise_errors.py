@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 
 from shim_enterprise.gateway.api.enterprise_errors import (
     raise_accounting_limit,
@@ -85,6 +86,8 @@ def test_enterprise_errors_keep_fixed_safe_envelopes(
         (QuotaLimitExceeded(), 429, "MONTHLY_QUOTA_EXCEEDED"),
         (SpendLimitExceeded(), 429, "SPEND_LIMIT_EXCEEDED"),
         (TenantPolicyConfigurationError(), 503, "INTERNAL_ERROR"),
+        (SQLAlchemyError(), 503, "INTERNAL_ERROR"),
+        (OSError(), 503, "INTERNAL_ERROR"),
     ],
 )
 async def test_enterprise_service_maps_enterprise_failures(
@@ -112,3 +115,24 @@ async def test_enterprise_service_maps_enterprise_failures(
 
     assert raised.value.status_code == status_code
     assert raised.value.detail["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_enterprise_service_leaves_programming_errors_alone() -> None:
+    service = EnterpriseGatewayService(
+        SimpleNamespace(execute=AsyncMock(side_effect=KeyError("bug"))),  # type: ignore[arg-type]
+        SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(KeyError):
+        await service.dispatch_inference(
+            payload={},
+            provider="openai",
+            protocol="chat",
+            model="gpt-test",
+            stream=False,
+            headers={},
+            provider_credential=None,
+            principal=SimpleNamespace(),  # type: ignore[arg-type]
+            request_metadata=GatewayRequestMetadata(endpoint="/v1/chat/completions"),
+        )
