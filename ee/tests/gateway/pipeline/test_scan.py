@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -315,6 +316,42 @@ async def test_unlimited_tier_tracks_usage_without_enforcing_a_cap(
         lifecycle.lifecycle_metadata["scan_counted"] is True for lifecycle in lifecycles
     )
     assert scrubber.calls == ["unlimited one", "unlimited two"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("features", "policy"),
+    [
+        ({}, "warn"),
+        ({"scan_policy": "block"}, "block"),
+        ({"scan_policy": "deny"}, None),
+    ],
+)
+async def test_an_api_key_scan_warns_unless_its_tier_chooses_block(
+    db, test_api_key, features: dict, policy: str | None
+) -> None:
+    await db.execute(
+        update(TierDefinition)
+        .where(TierDefinition.slug == test_api_key.tier)
+        .values(features={**features, "audit_policy_mode": "off"})
+    )
+    scrubber = StubScrubber(
+        [{"type": "EMAIL_ADDRESS", "score": 0.99, "start": 6, "end": 23}]
+    )
+    scan = ScanExecutionPipeline(scrubber=scrubber).execute(
+        ScanInput(text="Email alice@example.com", source="chatgpt"),
+        api_key_principal(test_api_key.id),
+        db,
+    )
+
+    if policy is None:
+        with pytest.raises(HTTPException) as refused:
+            await scan
+        assert refused.value.status_code == 503
+        assert scrubber.calls == []
+    else:
+        result = await scan
+        assert (result.policy, result.verdict) == (policy, policy)
 
 
 @pytest.mark.asyncio

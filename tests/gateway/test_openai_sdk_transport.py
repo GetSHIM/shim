@@ -25,6 +25,7 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderNonStream,
     ProviderStream,
 )
+from shim.gateway.streaming.session import MeterOnly
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.secrets.credentials import (
@@ -385,10 +386,19 @@ async def test_http_statuses_update_circuit_without_exposing_bodies(
     assert attempts == 1
     assert error.value.status_code == status_code
     assert str(error.value) == {
+        400: "PROVIDER_REJECTED_REQUEST",
+        401: "INVALID_PROVIDER_CREDENTIAL",
+        403: "PROVIDER_REJECTED_REQUEST",
+        404: "PROVIDER_REJECTED_REQUEST",
         408: "PROVIDER_TIMEOUT",
+        413: "PROVIDER_REJECTED_REQUEST",
+        422: "PROVIDER_REJECTED_REQUEST",
         429: "PROVIDER_RATE_LIMITED",
     }.get(status_code, "PROVIDER_UNAVAILABLE")
     assert "alice@example.com" not in repr(error.value)
+    assert error.value.message == (
+        "alice@example.com" if status_code in {400, 404, 413, 422} else None
+    )
     calls = {
         "success": execution.circuit.record_success.await_count,
         "failure": execution.circuit.record_failure.await_count,
@@ -1496,7 +1506,9 @@ async def test_chat_streams_are_metered_from_provider_usage(
 
 
 @pytest.mark.asyncio
-async def test_registry_targets_are_not_asked_for_stream_usage() -> None:
+async def test_registry_targets_are_asked_for_stream_usage_like_catalog_routes() -> (
+    None
+):
     seen: list[dict] = []
     prepared = _prepared(
         {"model": "gpt-5.6-luna", "messages": [], "stream": True},
@@ -1529,9 +1541,11 @@ async def test_registry_targets_are_not_asked_for_stream_usage() -> None:
             provider_start_callback=AsyncMock(),
         )
         assert isinstance(result, ProviderStream)
-        [chunk async for chunk in result.events]
+        chunks = [chunk async for chunk in result.events]
 
-    assert "stream_options" not in seen[0]
+    assert seen[0]["stream_options"] == {"include_usage": True}
+    [usage_chunk] = [chunk for chunk in chunks if isinstance(chunk, MeterOnly)]
+    assert b'"choices":[]' in usage_chunk.data
 
 
 def _recording_circuit() -> SimpleNamespace:
@@ -1605,3 +1619,38 @@ def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
             chain_store=SimpleNamespace(save=AsyncMock()),
             **circuits,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a refused request never leaves the gateway")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http, SimpleNamespace(save=AsyncMock()))
+        execution.circuit = circuit = _recording_circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=SimpleNamespace(
+                    db=object(),
+                    provider_credential=EphemeralProviderCredential("openai", "sk-key"),
+                ),
+                prepared=_prepared(
+                    {"model": "gpt-5.6-luna"},
+                    tenant="11111111-1111-1111-1111-111111111111",
+                    protocol="chat",
+                ),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert (raised.value.status_code, raised.value.error_code) == (
+        400,
+        "INVALID_REQUEST",
+    )
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()

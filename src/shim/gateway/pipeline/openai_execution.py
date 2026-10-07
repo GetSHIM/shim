@@ -19,12 +19,15 @@ from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.pipeline.provider_execution import (
+    ERROR_HINTS,
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    provider_reason,
     record_provider_error,
     retry_after_header,
     sdk_create_kwargs,
+    sdk_rejected_request,
     select_headers,
     status_error_code,
 )
@@ -132,7 +135,6 @@ class OpenAIExecution:
             meter_usage = (
                 prepared.protocol == "chat"
                 and prepared.stream
-                and prepared.target is None
                 and not (
                     isinstance(client_options, dict)
                     and client_options.get("include_usage") is True
@@ -150,8 +152,14 @@ class OpenAIExecution:
             if headers:
                 kwargs["extra_headers"] = headers
             with prepared.timing.exclude():
-                result = await create(**kwargs)
+                try:
+                    result = await create(**kwargs)
+                except TypeError:
+                    raise sdk_rejected_request("openai") from None
         except asyncio.CancelledError:
+            await circuit.release_probe()
+            raise
+        except ProviderCallError:
             await circuit.release_probe()
             raise
         except Exception as exc:
@@ -444,6 +452,7 @@ def _public_error(exc: Exception) -> ProviderCallError:
             retryable,
             request_id=getattr(exc, "request_id", None),
             retry_after=retry_after_header(exc),
+            message=provider_reason(exc.status_code, exc.body),
         )
     if isinstance(exc, APIConnectionError):
         return _error(503, "PROVIDER_UNAVAILABLE", True)
@@ -461,6 +470,7 @@ def _error(
     *,
     request_id: str | None = None,
     retry_after: str | None = None,
+    message: str | None = None,
 ) -> ProviderCallError:
     return ProviderCallError(
         status_code,
@@ -469,6 +479,7 @@ def _error(
         provider="openai",
         request_id=request_id,
         retry_after=retry_after,
+        message=message,
     )
 
 
@@ -483,6 +494,7 @@ def _responses_error_event(
             "code": code,
             "message": message,
             "param": None,
+            "hint": ERROR_HINTS.get(code),
             "sequence_number": sequence_number,
         }
     )
@@ -495,6 +507,7 @@ def _sanitize_responses_failure(payload: dict[str, Any]) -> dict[str, Any]:
             "code": "PROVIDER_UNAVAILABLE",
             "message": "The OpenAI stream ended with an error.",
             "param": None,
+            "hint": ERROR_HINTS["PROVIDER_UNAVAILABLE"],
         }
         if isinstance(payload.get("sequence_number"), int):
             sanitized["sequence_number"] = payload["sequence_number"]
@@ -592,6 +605,7 @@ def _chat_error_event(error: ProviderCallError) -> bytes:
                 "code": error.error_code,
                 "message": "The OpenAI stream ended with an error.",
                 "param": None,
+                "hint": ERROR_HINTS.get(error.error_code),
             }
         }
     )

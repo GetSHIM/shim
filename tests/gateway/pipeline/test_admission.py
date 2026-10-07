@@ -360,35 +360,68 @@ async def test_tpm_counts_approximate_tokens_and_reserves_bytes(
 
 
 @pytest.mark.asyncio
-async def test_tpm_refusal_leaves_its_window_free_but_spends_its_rpm_unit() -> None:
+async def test_a_request_that_can_never_fit_spends_no_rate_window() -> None:
     limiter = InMemoryRateLimiter()
 
     with pytest.raises(HTTPException) as refused:
         await _stage(limiter).run(
-            _prepared(TWELVE_KB, rate_limit_rpm=2, rate_limit_tpm=2_000)
+            _prepared("x" * 60_000, rate_limit_rpm=2, rate_limit_tpm=2_000)
         )
-    small = await _stage(limiter).run(
+    first = await _stage(limiter).run(
         _prepared("small", rate_limit_rpm=2, rate_limit_tpm=2_000)
     )
-    with pytest.raises(HTTPException) as spent:
-        await _stage(limiter).run(
-            _prepared("small again", rate_limit_rpm=2, rate_limit_tpm=2_000)
-        )
+    second = await _stage(limiter).run(
+        _prepared("small again", rate_limit_rpm=2, rate_limit_tpm=2_000)
+    )
 
     assert refused.value.detail["dimension"] == "tokens"
-    assert small.admission is not None
-    assert spent.value.detail["dimension"] == "requests"
+    assert first.admission is not None and second.admission is not None
+
+
+def _approximate_tokens(prepared: PreparedInference) -> int:
+    serialized = json.dumps(prepared.payload, ensure_ascii=False, separators=(",", ":"))
+    return -(-len(serialized.encode()) // 4)
 
 
 @pytest.mark.asyncio
-async def test_a_request_larger_than_the_tpm_window_tells_sdks_not_to_retry() -> None:
-    with pytest.raises(HTTPException) as refused:
-        await _stage(InMemoryRateLimiter()).run(
-            _prepared(TWELVE_KB, rate_limit_tpm=2_000)
-        )
+async def test_a_request_larger_than_the_tpm_window_says_why_and_not_to_retry() -> None:
+    limiter = SimpleNamespace(allow=AsyncMock(return_value=True))
+    prepared = _prepared(TWELVE_KB, rate_limit_tpm=2_000)
 
-    assert refused.value.detail["dimension"] == "tokens"
+    with pytest.raises(HTTPException) as refused:
+        await _stage(limiter).run(prepared)
+
+    tokens = _approximate_tokens(prepared)
+    assert refused.value.status_code == 429
     assert refused.value.headers == {"x-should-retry": "false"}
+    assert refused.value.detail["code"] == "RATE_LIMIT_EXCEEDED"
+    assert refused.value.detail["dimension"] == "tokens"
+    assert refused.value.detail["message"] == (
+        f"This request is about {tokens} tokens, more than the limit of 2000 "
+        "tokens per minute."
+    )
+    assert "smaller request" in refused.value.detail["hint"]
+    limiter.allow.assert_not_awaited()
+    [verdict] = [v for v in prepared.policy_verdicts if v.rule_id == "rate.tokens"]
+    assert verdict.outcome == "deny"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("headroom", "admitted"), [(0, True), (-1, False)])
+async def test_a_request_exactly_at_the_tpm_limit_is_admitted(
+    headroom: int, admitted: bool
+) -> None:
+    prepared = _prepared(TWELVE_KB)
+    limit = _approximate_tokens(prepared) + headroom
+    stage = _stage(InMemoryRateLimiter())
+
+    if admitted:
+        result = await stage.run(_prepared(TWELVE_KB, rate_limit_tpm=limit))
+        assert result.admission is not None
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await stage.run(_prepared(TWELVE_KB, rate_limit_tpm=limit))
+        assert refused.value.headers == {"x-should-retry": "false"}
 
 
 @pytest.mark.asyncio

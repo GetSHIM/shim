@@ -8,7 +8,7 @@ from starlette.responses import Response
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
-from shim.gateway.pipeline.provider_execution import ProviderCallError
+from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
 from shim.services.gateway.service import GatewayService
 
 
@@ -174,6 +174,7 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
                     "@type": "type.googleapis.com/google.rpc.ErrorInfo",
                     "reason": "PROVIDER_UNAVAILABLE",
                     "domain": "getshim.tech",
+                    "metadata": {"hint": ERROR_HINTS["PROVIDER_UNAVAILABLE"]},
                 }
             ],
         }
@@ -184,8 +185,12 @@ async def test_kernel_sanitizes_an_unconfigured_provider() -> None:
 @pytest.mark.parametrize(
     ("status_code", "error_code", "expected_reason"),
     [
-        (404, "PROVIDER_UNAVAILABLE", "provider_rejected_without_usage"),
+        (400, "PROVIDER_REJECTED_REQUEST", "provider_rejected_without_usage"),
+        (401, "INVALID_PROVIDER_CREDENTIAL", "provider_rejected_without_usage"),
+        (400, "INVALID_REQUEST", "provider_rejected_without_usage"),
+        (409, "PROVIDER_UNAVAILABLE", "provider_rejected_without_usage"),
         (429, "PROVIDER_RATE_LIMITED", "provider_rejected_without_usage"),
+        (408, "PROVIDER_TIMEOUT", "request_aborted"),
         (503, "PROVIDER_UNAVAILABLE", "request_aborted"),
     ],
 )

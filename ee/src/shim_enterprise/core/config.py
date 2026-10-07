@@ -14,6 +14,8 @@ from shim.core.community_config import CommunitySettings
 
 
 class Settings(CommunitySettings):
+    # The fallback for a tier without rate_limit_tpm keeps its enterprise value.
+    DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     MODEL_DEPLOYMENT_REQUIRED: bool = False
     MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
     MODEL_DEPLOYMENT_CA_BUNDLE: str | None = None

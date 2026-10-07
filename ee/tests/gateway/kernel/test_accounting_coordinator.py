@@ -38,10 +38,13 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
 )
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
+    ProviderCallError,
     ProviderExecutionStage,
     ProviderNonStream,
 )
 from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+import shim.gateway.kernel.gateway_kernel as kernel_module
+from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.streaming import StreamFinalization
 from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
@@ -917,6 +920,57 @@ async def test_provider_rejection_refunds_reserved_ceiling() -> None:
         error_message="The provider rejected the request without usage.",
         lifecycle_status="failed",
     )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_code"),
+    [
+        (400, "PROVIDER_REJECTED_REQUEST"),
+        (401, "INVALID_PROVIDER_CREDENTIAL"),
+        (422, "PROVIDER_REJECTED_REQUEST"),
+        (400, "INVALID_REQUEST"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_provider_refusal_after_start_is_refunded_as_a_rejection(
+    monkeypatch: pytest.MonkeyPatch, status_code: int, error_code: str
+) -> None:
+    prepared = _prepared()
+    accounting = SimpleNamespace(
+        failure_reservation_state=AsyncMock(return_value=_failure_state(True, True)),
+        refund=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield object()
+
+    async def run_stage(stage, _value):
+        if stage.name == "provider_execution":
+            raise ProviderCallError(status_code, error_code, False, provider="openai")
+        return prepared
+
+    monkeypatch.setattr(kernel_module, "run_stage", run_stage)
+    usage = DurableUsageLifecycle(accounting, session_scope)
+    usage.record_privacy = AsyncMock()
+    execution = SimpleNamespace(pii_scrubber=object())
+    kernel = GatewayKernel(
+        {"openai": execution},
+        chain_store=object(),
+        policy_resolver=object(),
+        rate_limiter=object(),
+        loop_detector=object(),
+        loop_repeat_limit=3,
+        loop_window_seconds=60,
+        cost_tag_max_length=64,
+        usage=usage,
+    )
+
+    with pytest.raises(ProviderCallError):
+        await kernel._execute(SimpleNamespace(provider="openai"))
+
+    assert accounting.refund.await_args.kwargs["error_code"] == "PROVIDER_UNAVAILABLE"
+    assert accounting.refund.await_args.kwargs["spend_reserved"] is True
 
 
 @pytest.mark.parametrize("spend_reserved", [True, False])

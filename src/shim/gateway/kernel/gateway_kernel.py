@@ -80,10 +80,12 @@ class GatewayKernel:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
         tenant_tier = "default"
         outcome = "server_error"
+        request_id: str | None = None
 
         def observe_prepared(prepared: PreparedInference) -> None:
-            nonlocal tenant_tier
+            nonlocal tenant_tier, request_id
             tenant_tier = bounded_label("tenant_tier", prepared.policy.tier)
+            request_id = str(prepared.request_id)
 
         with start_span(
             "gateway.request",
@@ -101,6 +103,14 @@ class GatewayKernel:
                 raise
             except HTTPException as exc:
                 outcome = "client_error" if exc.status_code < 500 else "server_error"
+                if request_id is not None:
+                    exc.headers = {
+                        **(exc.headers or {}),
+                        "X-Shim-Request-Id": request_id,
+                    }
+                raise
+            except ProviderCallError as exc:
+                exc.shim_request_id = request_id
                 raise
             else:
                 outcome = "success"
@@ -133,8 +143,12 @@ class GatewayKernel:
             prepared = await run_stage(authenticate_stage, invocation)
         except BaseException:
             if authenticate_stage.prepared is not None:
+                if prepared_observer is not None:
+                    prepared_observer(authenticate_stage.prepared)
                 await self.usage.reject(authenticate_stage.prepared)
             raise
+        if prepared_observer is not None:
+            prepared_observer(prepared)
         if self.prepare_inference is not None:
             try:
                 prepared = await self.prepare_inference(prepared)
@@ -152,8 +166,6 @@ class GatewayKernel:
                 await self.usage.reject(prepared)
                 raise
 
-        if prepared_observer is not None:
-            prepared_observer(prepared)
         admission_stage = AdmissionStage(
             invocation,
             self.usage,
@@ -250,9 +262,8 @@ class GatewayKernel:
             reason = (
                 "provider_rejected_without_usage"
                 if isinstance(error, ProviderCallError)
-                and error.error_code
-                in {"PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED"}
                 and error.status_code < 500
+                and error.error_code != "PROVIDER_TIMEOUT"
                 else "request_aborted"
             )
             if prepared.protocol != "count_tokens":

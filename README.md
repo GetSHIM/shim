@@ -75,7 +75,9 @@ request it:
   by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
   takes precedence, and header tags remain breakdown dimensions.
 - **Sanitizes provider errors**, so a provider error body does not reach your
-  caller unchanged.
+  caller unchanged. A provider's message is passed on only when it says how to
+  correct the request (400, 404, 413 and 422), still masked and at most 500
+  characters. Every error carries a code and, where one helps, a `hint`.
 - **Makes at most one billable provider attempt per admitted request**, because
   outbound SDK retries are disabled.
 

@@ -233,7 +233,9 @@ Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
    exists.
 4. Check health: `POST /api/v1/management/model-deployments/{id}/health` asks
    the server's model list for 5 seconds and marks the deployment `healthy` on
-   HTTP 200, otherwise `unhealthy`.
+   HTTP 200, otherwise `unhealthy`. An `unhealthy` mark refuses the alias with
+   503 `DEPLOYMENT_UNHEALTHY` for 300 seconds; disable the deployment to keep
+   traffic away for longer.
 5. Call the alias as the model name, with a gateway key.
 
 ```text

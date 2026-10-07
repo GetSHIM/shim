@@ -927,3 +927,35 @@ def test_an_execution_takes_exactly_one_circuit_source(circuits: dict) -> None:
             http_client=SimpleNamespace(),  # type: ignore[arg-type]
             **circuits,
         )
+
+
+@pytest.mark.asyncio
+async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a refused request never leaves the gateway")
+
+    payload = {"model": "claude-sonnet-4-5", "messages": []}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError) as raised:
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(payload),
+                provider_start_callback=AsyncMock(),
+            )
+
+    assert (raised.value.status_code, raised.value.error_code) == (
+        400,
+        "INVALID_REQUEST",
+    )
+    assert raised.value.message == (
+        "The request is missing a field or has a value the provider SDK refuses."
+    )
+    circuit.release_probe.assert_awaited_once()
+    circuit.record_failure.assert_not_awaited()
+    circuit.record_success.assert_not_awaited()

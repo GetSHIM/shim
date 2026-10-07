@@ -910,6 +910,9 @@ async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["error"]["code"] == "DEPLOYMENT_UNHEALTHY"
+    assert 295 <= int(refused.headers["retry-after"]) <= 300
+    assert refused.headers["x-should-retry"] == "false"
+    assert refused.headers["x-shim-request-id"].startswith("req_")
     assert "gpt-5.6-luna" not in listed
     assert (healthy.status_code, updated.status_code) == (200, 200)
     assert deployment.health == "unknown"
@@ -931,3 +934,35 @@ async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
         and verdict["reason_code"] == "DEPLOYMENT_UNHEALTHY"
         for verdict in verdicts
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("checked_ago", [timedelta(seconds=301), None])
+async def test_an_unhealthy_mark_expires_and_the_deployment_serves_again(
+    db, test_api_key, origins, checked_ago: timedelta | None
+):
+    deployment = (await _deployments(db, test_api_key))[1]
+    deployment.health = "unhealthy"
+    deployment.health_checked_at = (
+        None if checked_ago is None else datetime.now(timezone.utc) - checked_ago
+    )
+    await db.flush()
+    calls = []
+
+    def upstream(request):
+        calls.append(request.url.host)
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        served = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": deployment.alias,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+        listed = {row["id"] for row in (await client.get("/v1/models")).json()["data"]}
+
+    assert served.status_code == 200, served.text
+    assert deployment.alias in listed
+    assert calls == ["b.internal"]

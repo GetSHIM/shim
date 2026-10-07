@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from email.utils import parsedate_to_datetime
 from inspect import signature
 from time import perf_counter
@@ -31,6 +31,8 @@ class ProviderCallError(RuntimeError):
     provider: str
     request_id: str | None = None
     retry_after: str | None = None
+    message: str | None = field(default=None, repr=False)
+    shim_request_id: str | None = None
 
     def __str__(self) -> str:
         return self.error_code
@@ -113,6 +115,38 @@ _GOOGLE_RPC_STATUSES = {
     504: "DEADLINE_EXCEEDED",
     529: "UNAVAILABLE",
 }
+_FORWARDED_REASON_STATUSES = frozenset({400, 404, 413, 422})
+_REASON_LIMIT = 500
+ERROR_HINTS = {
+    "MISSING_API_KEY": "Send the shim key in Authorization: Bearer, x-shim-key, or the SDK's own key header.",
+    "INVALID_API_KEY": "Check the shim key. A provider key is sent in x-provider-key, never as the shim key.",
+    "INVALID_PROVIDER_CREDENTIAL": "Check the provider key sent in x-provider-key or configured on the gateway.",
+    "INVALID_REQUEST": "Correct the request as the message says; sending it again unchanged fails again.",
+    "REQUEST_TOO_LARGE": "Send a smaller request body.",
+    "MODEL_NOT_FOUND": "List the available models with GET /v1/models.",
+    "MODEL_NOT_PRICED": "Use a model listed by GET /v1/models.",
+    "PROVIDER_NOT_ALLOWED": "Use a provider your tenant policy allows, or ask an administrator to allow this one.",
+    "ZERO_RETENTION_REQUIRED": "Send a request the provider enforces zero retention for, as your tenant policy requires.",
+    "RATE_LIMIT_EXCEEDED": "Wait the number of seconds in Retry-After, then retry.",
+    "PRIVACY_POLICY_BLOCKED": "Remove the content the privacy policy blocks, or ask an administrator to change the policy.",
+    "PRIVACY_STATE_UNAVAILABLE": "Start a new conversation; the privacy state this one refers to is gone.",
+    "PROVIDER_NOT_CONFIGURED": "Configure a provider key on the gateway or send one in x-provider-key.",
+    "PROVIDER_RATE_LIMITED": "The provider's quota for your provider key is spent; wait for retry-after or raise that quota.",
+    "PROVIDER_REJECTED_REQUEST": "Correct the request as the provider's message says; retrying it unchanged fails again.",
+    "PROVIDER_UNAVAILABLE": "The provider failed or could not be reached; retry later.",
+    "PROVIDER_TIMEOUT": "Retry, stream the response, or ask for fewer output tokens.",
+    "INTERNAL_ERROR": "Retry later, and quote X-Shim-Request-Id if it persists.",
+    "MODEL_NOT_ALLOWED": "Use a model this key may call, or ask an administrator to enable it.",
+    "MODEL_NOT_REGISTERED": "Use a model registered for your tenant, listed by GET /v1/models.",
+    "DEPLOYMENT_NOT_APPROVED": "Ask the gateway operator to approve the deployment's destination.",
+    "DEPLOYMENT_UNHEALTHY": "Wait the number of seconds in Retry-After, or use another model.",
+    "MODEL_PRICE_UNKNOWN": "Use a priced model, or ask an administrator to price this deployment.",
+    "MONTHLY_QUOTA_EXCEEDED": "Wait for the next period, or ask an administrator to raise the quota.",
+    "SPEND_LIMIT_EXCEEDED": "Ask an administrator to raise the spend limit, or wait for the next period.",
+    "SCAN_LIMIT_EXCEEDED": "Wait for the next month, or ask an administrator to raise the scan limit.",
+    "TENANT_NOT_FOUND": "Ask an administrator to check this key's tenant and plan.",
+    "AUDIT_INTENT_FAILED": "Retry later; the request was not sent because its audit record could not be saved.",
+}
 _SDK_TRANSPORT_PARAMETERS = {
     "extra_body",
     "extra_headers",
@@ -149,7 +183,9 @@ def select_headers(
     }
 
 
-def google_error(status_code: int, message: str, code: str | None) -> dict[str, Any]:
+def google_error(
+    status_code: int, message: str, code: str | None, hint: str | None = None
+) -> dict[str, Any]:
     error: dict[str, Any] = {
         "code": status_code,
         "message": message,
@@ -163,14 +199,41 @@ def google_error(status_code: int, message: str, code: str | None) -> dict[str, 
                 "@type": "type.googleapis.com/google.rpc.ErrorInfo",
                 "reason": code,
                 "domain": "getshim.tech",
+                **({"metadata": {"hint": hint}} if hint else {}),
             }
         ]
     return {"error": error}
 
 
 def status_error_code(status_code: int) -> str:
+    if status_code == 401:
+        return "INVALID_PROVIDER_CREDENTIAL"
+    if status_code == 403 or status_code in _FORWARDED_REASON_STATUSES:
+        return "PROVIDER_REJECTED_REQUEST"
     return {408: "PROVIDER_TIMEOUT", 429: "PROVIDER_RATE_LIMITED"}.get(
         status_code, "PROVIDER_UNAVAILABLE"
+    )
+
+
+def provider_reason(status_code: int, body: object) -> str | None:
+    """The provider's own message for a request it refused, still masked."""
+
+    if status_code not in _FORWARDED_REASON_STATUSES or not isinstance(body, dict):
+        return None
+    error = body.get("error", body)
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str):
+        return None
+    return message.strip()[:_REASON_LIMIT] or None
+
+
+def sdk_rejected_request(provider: str) -> ProviderCallError:
+    return ProviderCallError(
+        400,
+        "INVALID_REQUEST",
+        False,
+        provider=provider,
+        message="The request is missing a field or has a value the provider SDK refuses.",
     )
 
 

@@ -172,6 +172,8 @@ Find out what shim would mask in a text, without calling a provider.
 2. Read `verdict`: `warn` when anything was found, otherwise `clean`. `entities`
    gives each finding's `type`, `score` and `start`/`end` offsets into your text;
    `entity_types` lists the distinct types; `policy` is always `warn` in community.
+   Enterprise answers `warn` as well, for gateway keys and signed-in users alike,
+   unless the plan's `scan_policy` feature is `block`.
    The full response is shown in the [README quickstart](../README.md#quickstart).
 
 ```python
@@ -202,11 +204,14 @@ Tell a refusal shim made from one the provider made, and retry only when a retry
 
 1. Read the `X-Shim-Error-Code` response header. Every provider-route error whose
    code shim knows carries it, in the OpenAI, Anthropic and Gemini shapes alike.
-   OpenAI bodies repeat it in `error.code`, Gemini bodies in an `ErrorInfo`
-   `reason`; Anthropic bodies keep only their native keys, so read the header.
-   Shapes and the full code list are in
+   OpenAI and Anthropic bodies repeat it in `error.code`, Gemini bodies in an
+   `ErrorInfo` `reason`. Shapes and the full code list are in
    [current architecture](CURRENT_ARCHITECTURE.md#native-responses-streams-and-errors).
-2. Decide from the table below.
+2. Read the hint: one sentence on what to do next, in `error.hint` (OpenAI and
+   Anthropic) or `ErrorInfo.metadata.hint` (Gemini). An error raised after the
+   shim key was accepted also carries `X-Shim-Request-Id`; quote it when you
+   report a problem.
+3. Decide from the table below.
 
 ```python
 import openai
@@ -226,11 +231,14 @@ except openai.APIStatusError as error:
 | Refusal | Status and code | Retry signal |
 | --- | --- | --- |
 | Requests per minute over `DEFAULT_RPM_LIMIT` (default 60) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: 60` |
-| Approximate tokens per minute over `DEFAULT_TPM_LIMIT` (default 10,000) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: 60` |
-| One request larger than the whole `DEFAULT_TPM_LIMIT` | 429 `RATE_LIMIT_EXCEEDED` | `x-should-retry: false`, no `Retry-After` |
+| Approximate tokens per minute over `DEFAULT_TPM_LIMIT` (default 1,000,000) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: 60` |
+| One request larger than the whole `DEFAULT_TPM_LIMIT`; the message gives its approximate size and the limit | 429 `RATE_LIMIT_EXCEEDED` | `x-should-retry: false`, no `Retry-After` |
 | More than `LOOP_REPEAT_LIMIT` (default 8) identical prompts within `LOOP_WINDOW_SECONDS` (default 300) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: <LOOP_WINDOW_SECONDS>` |
 | One client IP over `GLOBAL_RATE_LIMIT_PER_MINUTE` (default 1,000) | 429 `RATE_LIMIT_EXCEEDED` on provider routes; elsewhere 429 `{"detail": "Too Many Requests"}` without a code | `Retry-After: 60` |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
+| Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
+| Provider refused the provider key (401) | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
+| The provider SDK refused the request before sending it | 400 `INVALID_REQUEST` | none: correct the request |
 | Provider answered another error | the provider's status, `PROVIDER_TIMEOUT` for a timeout status, otherwise `PROVIDER_UNAVAILABLE` | none from shim |
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
@@ -242,7 +250,10 @@ In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 Notes:
 
 - Approximate tokens are the request body's compact JSON size in bytes divided
-  by four, rounded up. A refused amount is not added to the window that refused it.
+  by four, rounded up. A refused amount is not added to the window that refused it,
+  and a request larger than the whole limit is refused before any window is
+  counted, so it does not use up a request either. A request exactly at the limit
+  is admitted.
 - Rate windows are fixed 60-second windows, kept per process, so replicas do not share them.
 - A repeat is the same prompt-bearing fields (`messages`, `input`,
   `instructions`, `system`, `contents`, `systemInstruction`) and model, with
