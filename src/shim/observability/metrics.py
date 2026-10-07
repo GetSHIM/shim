@@ -86,6 +86,7 @@ LABEL_VALUES: Final = MappingProxyType(
                 "US_SSN",
                 "TR_NATIONAL_ID",
                 "TR_VKN",
+                "TR_LICENSE_PLATE",
                 "SECRET",
                 "DB_URI",
                 "FILE_PATH",
@@ -108,6 +109,7 @@ LABEL_VALUES: Final = MappingProxyType(
             {"chat.completions", "responses", "messages", "generateContent", "scan"}
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
+        "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
     }
 )
 
@@ -171,6 +173,11 @@ def _model_family(model: str) -> str:
     return "other"
 
 
+COMPLETION_OUTCOMES_TOTAL = Counter(
+    "shim_completion_outcomes_total",
+    "Settled requests by provider and completion outcome.",
+    ("provider", "outcome"),
+)
 LOCAL_USAGE_DROPPED_TOTAL = Counter(
     "shim_local_usage_dropped_total",
     "Non-durable local usage events dropped by the bounded writer.",
