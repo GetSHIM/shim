@@ -43,9 +43,9 @@ request it:
 
 - **Detects and replaces personal data before the request leaves.** Email
   addresses, phone numbers, credit cards, IBANs, Turkish national ID and tax
-  numbers, and provider secrets such as AWS keys and GitHub tokens. Each value
-  becomes a placeholder, and policy decides whether the request is masked,
-  blocked, or recorded.
+  numbers, and provider secrets such as AWS keys and GitHub tokens. Each
+  detected value becomes a placeholder before the request leaves, and is
+  restored in the answer before it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request
@@ -85,13 +85,13 @@ curl http://localhost:8000/v1/scan \
 ```json
 {
   "request_id": "scan_73ac33b589af4b82a1430b777a82d493",
-  "verdict": "block",
+  "verdict": "warn",
   "entities": [
     {"type": "EMAIL_ADDRESS", "score": 1.0, "start": 9, "end": 29},
     {"type": "IBAN_CODE", "score": 1.0, "start": 36, "end": 68}
   ],
   "entity_types": ["EMAIL_ADDRESS", "IBAN_CODE"],
-  "policy": "block"
+  "policy": "warn"
 }
 ```
 
@@ -100,7 +100,7 @@ Then point an existing client at it. No SDK change, only a base URL:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-shim-key")
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="a-key-of-at-least-16-chars")
 client.chat.completions.create(
     model="gpt-5-nano",
     messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
@@ -113,7 +113,10 @@ Gemini works the same way; the shim key goes where the SDK puts its API key:
 from google import genai
 from google.genai.types import HttpOptions
 
-client = genai.Client(api_key="your-shim-key", http_options=HttpOptions(base_url="http://localhost:8000"))
+client = genai.Client(
+    api_key="a-key-of-at-least-16-chars",
+    http_options=HttpOptions(base_url="http://localhost:8000"),
+)
 ```
 
 Under a masking policy the provider receives placeholders in place of the
