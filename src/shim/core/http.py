@@ -68,7 +68,7 @@ def install_http_middleware(
         )
     application.add_middleware(
         GlobalRateLimitMiddleware,
-        limit=1000,
+        limit=settings.GLOBAL_RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
         trusted_proxies=settings.TRUSTED_PROXIES,
         limiter=rate_limiter,

@@ -50,3 +50,9 @@ def test_community_api_key_is_optional_and_redacted() -> None:
     assert configured.SHIM_API_KEY is not None
     assert configured.SHIM_API_KEY.get_secret_value() == secret
     assert secret not in repr(configured)
+
+
+def test_global_rate_limit_defaults_to_one_thousand_and_must_be_positive() -> None:
+    assert CommunitySettings(_env_file=None).GLOBAL_RATE_LIMIT_PER_MINUTE == 1000
+    with pytest.raises(ValidationError):
+        CommunitySettings(GLOBAL_RATE_LIMIT_PER_MINUTE=0, _env_file=None)

@@ -477,3 +477,17 @@ async def test_browsers_can_read_the_gateway_error_code() -> None:
     assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
     exposed = response.headers["access-control-expose-headers"].lower().split(",")
     assert "x-shim-error-code" in [name.strip() for name in exposed]
+
+
+def test_global_rate_limit_comes_from_the_setting() -> None:
+    application = create_community_app(
+        _settings(GLOBAL_RATE_LIMIT_PER_MINUTE=7),
+        event_stream=StringIO(),
+    )
+
+    limit = next(
+        item.kwargs["limit"]
+        for item in application.user_middleware
+        if item.cls is GlobalRateLimitMiddleware
+    )
+    assert limit == 7

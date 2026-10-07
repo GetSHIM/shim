@@ -9,13 +9,18 @@ from shim_enterprise.cache.redis_index import CacheService
 
 logger = logging.getLogger(__name__)
 
+# A refused amount is never added, so a large refusal cannot block what follows.
 _INCREMENT_WINDOW = """
-local value = redis.call('INCRBY', KEYS[1], ARGV[1])
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+if current + tonumber(ARGV[1]) > tonumber(ARGV[3]) then
+    return 0
+end
+redis.call('INCRBY', KEYS[1], ARGV[1])
 local ttl = redis.call('TTL', KEYS[1])
 if ttl < 0 then
     redis.call('EXPIRE', KEYS[1], ARGV[2])
 end
-return value
+return 1
 """
 
 
@@ -47,11 +52,12 @@ class BurstRateLimiter:
                 f"burst:{key}",
                 amount,
                 window_seconds,
+                limit,
             )
         except Exception as exc:
             logger.error("Burst window failed open type=%s", type(exc).__name__)
             return True
-        return int(value) <= limit
+        return int(value) == 1
 
 
 def _validate_window(

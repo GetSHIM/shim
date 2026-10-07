@@ -48,7 +48,9 @@ request it:
   blocked, or recorded.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
-  detection.
+  detection. Tokens per minute are counted as approximate tokens (request
+  bytes divided by four), a refused request does not use up its own window, and
+  every limit refusal says when to retry in `Retry-After`.
 - **Accounts usage and cost per request**, from that same catalog, attributed
   by the `X-Shim-Tag` header.
 - **Sanitizes provider errors**, so a provider error body does not reach your
