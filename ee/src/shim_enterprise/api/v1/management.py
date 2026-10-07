@@ -56,6 +56,7 @@ from shim_enterprise.billing.spend import (
     validate_budget_notification_config,
 )
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
+from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
     assert_safe_forward_url,
@@ -1380,7 +1381,13 @@ async def create_provider_secret(
     session.add(row)
     try:
         await session.flush()
-        await _audit(session, user, "tenant.provider_secret_created", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.provider_secret_created",
+            str(row.id),
+            details=_provider_secret_details(row),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -1423,7 +1430,13 @@ async def update_provider_secret(
         row.masked_key = _mask(patch.key)
         row.verified_at = None
     try:
-        await _audit(session, user, "tenant.provider_secret_updated", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.provider_secret_updated",
+            str(row.id),
+            details=_provider_secret_details(row, key_rotated=patch.key is not None),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -1482,13 +1495,25 @@ async def verify_provider_secret(
         ) from exc
     if response.status_code in {401, 403}:
         row.verified_at = None
-        await _audit(session, user, "tenant.provider_secret_rejected", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.provider_secret_rejected",
+            str(row.id),
+            details=_provider_secret_details(row),
+        )
         await session.commit()
         raise HTTPException(status_code=400, detail="Provider rejected the credential")
     if response.status_code != 200:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
     row.verified_at = datetime.now(timezone.utc)
-    await _audit(session, user, "tenant.provider_secret_verified", str(row.id))
+    await _audit(
+        session,
+        user,
+        "tenant.provider_secret_verified",
+        str(row.id),
+        details=_provider_secret_details(row),
+    )
     await session.commit()
     await session.refresh(row)
     return row
@@ -1508,8 +1533,11 @@ async def delete_provider_secret(
     tenant_id = _tenant_id(user)
     secret_ref = SecretRef(row.secret_ref)
     purpose = _provider_purpose(row.provider)
+    details = _provider_secret_details(row)
     await session.delete(row)
-    await _audit(session, user, "tenant.provider_secret_deleted", str(row.id))
+    await _audit(
+        session, user, "tenant.provider_secret_deleted", str(row.id), details=details
+    )
     await session.commit()
     await _delete_secret_best_effort(tenant_id, secret_ref, purpose)
 
@@ -1534,9 +1562,33 @@ async def update_privacy_settings(
 ) -> Any:
     tenant_id = _tenant_id(user)
     row = await ensure_privacy_defaults(session, tenant_id)
+    before = {field: getattr(row, field) for field in PrivacySettings.model_fields}
     for field, value in patch.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
-    await _audit(session, user, "tenant.privacy_policy_updated", str(tenant_id))
+    after = {field: getattr(row, field) for field in PrivacySettings.model_fields}
+    await _audit(
+        session,
+        user,
+        "tenant.privacy_policy_updated",
+        str(tenant_id),
+        details=_change_details(before, after),
+    )
+    relaxed = [field for field in before if before[field] and not after[field]]
+    if relaxed:
+        event_id = await _audit(
+            session,
+            user,
+            "tenant.privacy_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": relaxed},
+        )
+        await ComplianceForwarderService().send_privacy_protection_relaxed(
+            session,
+            TenantId(tenant_id),
+            fields=relaxed,
+            actor=str(user.id),
+            event_id=event_id,
+        )
     await session.commit()
     try:
         cache: CacheService = request.app.state.cache
@@ -1623,7 +1675,13 @@ async def create_budget(
     session.add(row)
     try:
         await session.flush()
-        await _audit(session, user, "tenant.budget_created", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.budget_created",
+            str(row.id),
+            details=_change_details(None, _budget_facts(row)),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -1660,12 +1718,19 @@ async def update_budget(
             _tenant_id(user), patch.notify_targets
         )
         values["notify_targets"] = replacement_targets
+    before = _budget_facts(row)
     for field, value in values.items():
         setattr(row, field, value)
     try:
         if replacement_targets is not None:
             await _cancel_budget_deliveries(session, _tenant_id(user), row.id)
-        await _audit(session, user, "tenant.budget_updated", str(row.id))
+        await _audit(
+            session,
+            user,
+            "tenant.budget_updated",
+            str(row.id),
+            details=_change_details(before, _budget_facts(row)),
+        )
         await session.commit()
     except BaseException:
         await session.rollback()
@@ -1692,8 +1757,9 @@ async def delete_budget(
     targets = list(row.notify_targets or [])
     _reject_oversized_legacy_targets(targets)
     await _cancel_budget_deliveries(session, _tenant_id(user), row.id)
+    details = _change_details(_budget_facts(row), None)
     await session.delete(row)
-    await _audit(session, user, "tenant.budget_deleted", str(row.id))
+    await _audit(session, user, "tenant.budget_deleted", str(row.id), details=details)
     await session.commit()
     await _delete_budget_targets(_tenant_id(user), targets)
 
@@ -2196,6 +2262,55 @@ async def export_billing_breakdown(
             "Content-Disposition": f'attachment; filename="shim_billing_{group_by}.{format}"'
         },
     )
+
+
+def _change_details(
+    before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> dict[str, object]:
+    changed = [
+        field
+        for field in after or before or {}
+        if before is None or after is None or before[field] != after[field]
+    ]
+    return {
+        label: {
+            field: str(facts[field])
+            if isinstance(facts[field], Decimal)
+            else facts[field]
+            for field in changed
+        }
+        for label, facts in (("before", before), ("after", after))
+        if facts is not None
+    }
+
+
+def _budget_facts(row: CostBudget) -> dict[str, Any]:
+    return {
+        "scope_type": row.scope_type,
+        "scope_value": row.scope_value,
+        "period": row.period,
+        "limit_usd": row.limit_usd,
+        "limit_tokens": row.limit_tokens,
+        "alert_thresholds": list(row.alert_thresholds),
+        "enabled": row.enabled,
+        "notify_targets": [
+            {"kind": target["kind"], "endpoint_origin": target["endpoint_origin"]}
+            for target in row.notify_targets or []
+        ],
+    }
+
+
+def _provider_secret_details(
+    row: ProviderSecret, *, key_rotated: bool = False
+) -> dict[str, object]:
+    return {
+        "provider": row.provider,
+        "name": row.name,
+        "monthly_limit_usd": (
+            str(row.monthly_limit_usd) if row.monthly_limit_usd is not None else None
+        ),
+        "key_rotated": key_rotated,
+    }
 
 
 def _own_or_administered_key(user: User) -> Any:

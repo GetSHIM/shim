@@ -17,7 +17,7 @@ async def record_management_action(
     subject_id: str,
     *,
     details: dict[str, object] | None = None,
-) -> None:
+) -> str:
     """Append non-secret change facts to the caller's transaction; never commit."""
     event_id = f"management:{uuid4()}"
     await OutboxWriter().append(
@@ -40,3 +40,4 @@ async def record_management_action(
             "next_attempt_at": datetime.now(timezone.utc),
         },
     )
+    return event_id

@@ -850,6 +850,11 @@
             "title": "Event Type",
             "type": "string"
           },
+          "extra": {
+            "additionalProperties": true,
+            "title": "Extra",
+            "type": "object"
+          },
           "gateway_version": {
             "anyOf": [
               {

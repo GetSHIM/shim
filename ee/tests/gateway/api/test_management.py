@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime, timedelta, timezone
+import json
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,12 +10,21 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
+from shim_enterprise.ai_act.audit_writer import next_link
 from shim_enterprise.api.v1 import management
 from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.billing.models import CostBudget
+from shim_enterprise.compliance.models import (
+    ComplianceConnector,
+    ComplianceForwardTarget,
+)
+from shim_enterprise.compliance.services.forwarder import DELIVERY_EVENT
 from shim_enterprise.core.database import get_db
+from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import Organization
 from shim_enterprise.billing.read_models import BillingReadModels
 from shim.gateway.contracts.ids import TenantId
@@ -522,6 +532,8 @@ async def test_provider_verification_updates_only_conclusive_results(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
+        name=None,
+        monthly_limit_usd=None,
         secret_ref="fernet:v2:provider",
         verified_at=None,
     )
@@ -978,3 +990,226 @@ async def test_organization_wide_reads_need_an_organization_reader(
 
     assert refused == ["Organization reader required"] * len(routes)
     assert 403 not in admitted
+
+
+def _stored_extra(details: dict[str, object]) -> dict[str, object]:
+    return next_link(
+        None,
+        {"organization_id": str(uuid4()), "extra": {"subject_id": "x", **details}},
+        salt="audit-salt",
+        now=datetime.now(timezone.utc),
+        gateway_version="shim-gateway/test",
+    )["extra"]
+
+
+async def _audit_events(db, organization_id) -> list[dict]:
+    events = await db.scalars(
+        select(OutboxEvent).where(
+            OutboxEvent.organization_id == organization_id,
+            OutboxEvent.event_type == "audit.chain_append_requested",
+        )
+    )
+    return [event.payload for event in events]
+
+
+@pytest.mark.asyncio
+async def test_relaxing_privacy_records_before_after_and_forwards_once_per_target(
+    db, test_user_with_org
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    connector = ComplianceConnector(
+        organization_id=tenant_id,
+        provider="openai",
+        secret_ref="fernet:v2:connector",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(connector)
+    await db.flush()
+    targets = [
+        ComplianceForwardTarget(
+            connector_id=connector.id,
+            endpoint_origin=f"https://siem-{index}.example",
+            secret_ref=f"fernet:v2:target-{index}",
+            secret_backend="fernet",
+            secret_version="v2",
+            enabled=enabled,
+        )
+        for index, enabled in enumerate((True, True, False))
+    ]
+    db.add_all(targets)
+    await db.flush()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+
+    await management.update_privacy_settings(
+        management.PrivacyPatch(
+            block_email=False, block_phone=False, block_secrets=True
+        ),
+        request,
+        test_user_with_org,
+        db,
+    )
+    relaxed_events = {
+        event["endpoint"]: event for event in await _audit_events(db, tenant_id)
+    }
+    delivery_events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == tenant_id,
+                OutboxEvent.event_type == DELIVERY_EVENT,
+            )
+        )
+    ).all()
+    deliveries = [event.payload for event in delivery_events]
+    await management.update_privacy_settings(
+        management.PrivacyPatch(block_email=True),
+        request,
+        test_user_with_org,
+        db,
+    )
+    restored_events = [
+        event
+        for event in await _audit_events(db, tenant_id)
+        if event["request_id"]
+        not in {event["request_id"] for event in relaxed_events.values()}
+    ]
+
+    assert set(relaxed_events) == {
+        "tenant.privacy_policy_updated",
+        "tenant.privacy_protection_relaxed",
+    }
+    updated = relaxed_events["tenant.privacy_policy_updated"]
+    relaxed = relaxed_events["tenant.privacy_protection_relaxed"]
+    assert updated["extra"]["before"] == {"block_email": True, "block_phone": True}
+    assert updated["extra"]["after"] == {"block_email": False, "block_phone": False}
+    assert relaxed["extra"]["relaxed"] == ["block_email", "block_phone"]
+    assert sorted(delivery["target_id"] for delivery in deliveries) == sorted(
+        str(target.id) for target in targets[:2]
+    )
+    assert all(
+        event.idempotency_key.endswith(
+            f":privacy_protection_relaxed:{relaxed['request_id']}"
+        )
+        for event in delivery_events
+    )
+    assert {
+        json.dumps(delivery["body"] | {"occurred_at": None}, sort_keys=True)
+        for delivery in deliveries
+    } == {
+        json.dumps(
+            {
+                "source": "shim",
+                "event_type": "tenant_policy",
+                "kind": "privacy_protection_relaxed",
+                "fields": ["block_email", "block_phone"],
+                "actor": str(test_user_with_org.id),
+                "occurred_at": None,
+            },
+            sort_keys=True,
+        )
+    }
+    assert [event["endpoint"] for event in restored_events] == [
+        "tenant.privacy_policy_updated"
+    ]
+    assert restored_events[0]["extra"]["after"] == {"block_email": True}
+    assert (
+        await db.scalar(
+            select(func.count()).where(
+                OutboxEvent.organization_id == tenant_id,
+                OutboxEvent.event_type == DELIVERY_EVENT,
+            )
+        )
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_budget_changes_record_changed_fields_and_target_origins(
+    db, test_user_with_org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget = CostBudget(
+        organization_id=test_user_with_org.organization_id,
+        scope_type="org",
+        limit_usd=Decimal("10"),
+        alert_thresholds=[0.8, 1.0],
+        notify_targets=[
+            {
+                "kind": "webhook",
+                "endpoint_origin": "https://alerts.example",
+                "secret_ref": "fernet:v2:budget-target",
+            }
+        ],
+    )
+    db.add(budget)
+    await db.flush()
+    audit = AsyncMock()
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "_delete_budget_targets", AsyncMock())
+
+    await management.update_budget(
+        budget.id,
+        management.BudgetPatch(limit_usd=Decimal("20"), enabled=False),
+        test_user_with_org,
+        db,
+    )
+    await management.delete_budget(budget.id, test_user_with_org, db)
+
+    updated, deleted = (call.kwargs["details"] for call in audit.await_args_list)
+    assert updated == {
+        "before": {"limit_usd": "10", "enabled": True},
+        "after": {"limit_usd": "20", "enabled": False},
+    }
+    assert set(deleted) == {"before"}
+    assert deleted["before"]["notify_targets"] == [
+        {"kind": "webhook", "endpoint_origin": "https://alerts.example"}
+    ]
+    assert "budget-target" not in json.dumps(_stored_extra(deleted))
+
+
+@pytest.mark.asyncio
+async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-proj-" + "0" * 40
+    row = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        provider="openai",
+        name="Primary",
+        monthly_limit_usd=Decimal("10"),
+        secret_ref="fernet:v2:old-reference",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="sk-...0000",
+        verified_at=None,
+    )
+    store = SimpleNamespace(
+        rotate_secret=AsyncMock(return_value="fernet:v2:new-reference"),
+        delete_secret=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+
+    await management.update_provider_secret(
+        row.id,
+        management.ProviderSecretPatch(key=secret),
+        SimpleNamespace(organization_id=row.organization_id),
+        SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
+    )
+
+    details = audit.await_args.kwargs["details"]
+    assert details == {
+        "provider": "openai",
+        "name": "Primary",
+        "monthly_limit_usd": "10",
+        "key_rotated": True,
+    }
+    stored = json.dumps(_stored_extra(details))
+    assert not any(secret[i : i + 8] in stored for i in range(len(secret) - 7))
+    assert "reference" not in stored and row.masked_key not in stored

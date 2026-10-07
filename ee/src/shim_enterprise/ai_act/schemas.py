@@ -49,6 +49,7 @@ class AuditLogRead(OrmReadModel):
     output_hash: str | None = None
     prev_hash: str
     row_hash: str
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditLogPage(BaseModel):

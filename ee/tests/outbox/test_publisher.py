@@ -371,3 +371,62 @@ async def test_compliance_email_uses_fixed_resend_endpoint(
     assert client.post.await_args.kwargs["headers"]["authorization"] == (
         "Bearer re_secret"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_kind", ["siem_webhook", "slack"])
+async def test_tenant_policy_delivery_keeps_its_body_shape(
+    monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    organization_id = uuid4()
+    connector_id = uuid4()
+    body = {
+        "source": "shim",
+        "event_type": "tenant_policy",
+        "kind": "privacy_protection_relaxed",
+        "fields": ["block_email"],
+        "actor": str(uuid4()),
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+    }
+    event = OutboxMessage(
+        id=uuid4(),
+        organization_id=organization_id,
+        event_type=handlers.COMPLIANCE_DELIVERY,
+        aggregate_type="compliance_connector",
+        aggregate_id=str(connector_id),
+        idempotency_key="compliance:tenant-policy",
+        payload={
+            "organization_id": str(organization_id),
+            "connector_id": str(connector_id),
+            "target_id": str(uuid4()),
+            "target_kind": target_kind,
+            "secret_ref": "fernet:v2:target",
+            "body": body,
+        },
+        attempt_count=1,
+        created_at=datetime.now(timezone.utc),
+    )
+    store = SimpleNamespace(
+        get_secret=AsyncMock(
+            return_value=json.dumps(
+                {
+                    "kind": target_kind,
+                    "endpoint": "https://siem.example/hook",
+                    "signing_secret": None,
+                }
+            )
+        )
+    )
+    posted = AsyncMock()
+    monkeypatch.setattr(handlers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(handlers, "_post_forward_url", posted)
+
+    await handlers.deliver_compliance_event(event)
+
+    delivered = json.loads(posted.await_args.kwargs["content"])
+    if target_kind == "siem_webhook":
+        assert delivered == body
+    else:
+        assert delivered == {
+            "text": "shim compliance alert: privacy_protection_relaxed"
+        }
