@@ -42,6 +42,77 @@ class ShimEmailRecognizer(EmailRecognizer):
         return bool(separator) and self._validate_domain(domain.casefold())
 
 
+class ShimWrittenAtEmailRecognizer(ShimEmailRecognizer):
+    """jane[at]example.com and jane(at)example.com, the whole written form."""
+
+    _AT = re.compile(r"\[ *at *\]|\( *at *\)", re.IGNORECASE)
+    PATTERNS = [
+        Pattern(
+            "Email with a written at",
+            rf"\b[\w.+-]+(?:{_AT.pattern})[\w-]+(?:\.[\w-]+)+\b",
+            0.5,
+        )
+    ]
+
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+        regex_flags: int | None = None,
+    ) -> list[RecognizerResult]:
+        # Presidio's regex engine tries the pattern at every word; this scan is ten times cheaper.
+        if not self._AT.search(text):
+            return []
+        return super().analyze(text, entities, nlp_artifacts, regex_flags)
+
+    def validate_result(self, pattern_text: str) -> bool:
+        return super().validate_result(self._AT.sub("@", pattern_text))
+
+
+class ShimIbanRecognizer(IbanRecognizer):
+    """An IBAN typed in lowercase or broken over a line.
+
+    Presidio's recognizer stays in the registry for every other IBAN: a case-insensitive,
+    line-crossing pattern alone pulls a following word or line into the match, and the upstream
+    fallback retries only three cut points, so a correct IBAN would be lost.
+    """
+
+    _HEAD = re.compile(r"(?<![A-Z0-9])[A-Z]{2}[0-9]{2}", re.IGNORECASE)
+    _SEPARATOR = r"(?:[ -]|[ ]*\r?\n[ ]*)?"
+    PATTERNS = [
+        Pattern(
+            "IBAN lowercase or line-broken",
+            rf"(?i)(?<![A-Z0-9])([A-Z]{{2}}[0-9]{{2}}(?:{_SEPARATOR}[A-Z0-9]{{4}}){{2,6}})"
+            rf"((?:{_SEPARATOR}[A-Z0-9]{{4}})?)((?:{_SEPARATOR}[A-Z0-9]{{1,3}})?)"
+            r"(?![A-Z0-9])",
+            0.5,
+        ),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__(
+            supported_language=_LANGUAGE,
+            replacement_pairs=[("-", ""), (" ", ""), ("\r", ""), ("\n", "")],
+        )
+
+    def analyze(
+        self,
+        text: str,
+        entities: list[str],
+        nlp_artifacts: NlpArtifacts | None = None,
+        regex_flags: int | None = None,
+    ) -> list[RecognizerResult]:
+        # As for the written-at email: a cheap scan for the IBAN head before the full pattern.
+        # Presidio's IBAN analysis reads neither the NLP artifacts nor the flags.
+        if not self._HEAD.search(text):
+            return []
+        return super().analyze(text, entities)
+
+    def validate_result(self, pattern_text: str) -> bool | None:
+        return super().validate_result(pattern_text.upper())
+
+
 class ShimPhoneRecognizer(PhoneRecognizer):
     """A bare digit run is a phone only with a Turkish phone shape or a phone cue."""
 
@@ -308,6 +379,10 @@ def _custom_recognizers() -> list[EntityRecognizer]:
             ],
         ),
         ShimTurkishTaxIdRecognizer(),
+        ShimWrittenAtEmailRecognizer(
+            supported_language=_LANGUAGE,
+            context=["email", "e-posta", "mail"],
+        ),
     ]
 
 
@@ -340,10 +415,23 @@ def _build_registry() -> RecognizerRegistry:
             ],
         ),
         IbanRecognizer(supported_language=_LANGUAGE),
+        ShimIbanRecognizer(),
         ShimIpRecognizer(supported_language=_LANGUAGE),
         MacAddressRecognizer(supported_language=_LANGUAGE),
         UsSsnRecognizer(supported_language=_LANGUAGE),
-        TrNationalIdRecognizer(supported_language=_LANGUAGE),
+        TrNationalIdRecognizer(
+            supported_language=_LANGUAGE,
+            patterns=[
+                *TrNationalIdRecognizer.PATTERNS,
+                Pattern(
+                    "TR_NATIONAL_ID in groups",
+                    r"\b[1-9][0-9]{2}([ -])[0-9]{3}\1"
+                    r"(?:[0-9]{3}\1[0-9]{2}|[0-9]{2}\1[0-9]{3})\b",
+                    0.3,
+                ),
+            ],
+            replacement_pairs=[(" ", ""), ("-", "")],
+        ),
         *_custom_recognizers(),
     ]
     return RecognizerRegistry(

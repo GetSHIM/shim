@@ -704,6 +704,51 @@ def test_vendor_tokens_and_turkish_passwords_are_one_secret(
     assert secret not in scrubbed
 
 
+@pytest.mark.parametrize(
+    ("value", "entity"),
+    [
+        ("100 000 001 46", "TR_NATIONAL_ID"),
+        ("100-000-00-146", "TR_NATIONAL_ID"),
+        ("tr33 0006 1005 1978 6457 8413 26", "IBAN_CODE"),
+        ("TR33 0006 1005 1978\n  6457 8413 26", "IBAN_CODE"),
+        ("jane[at]example.com", "EMAIL_ADDRESS"),
+        ("jane( AT )example.com", "EMAIL_ADDRESS"),
+    ],
+)
+def test_identifiers_written_around_the_detector_are_one_placeholder(
+    scrubber: PIIScrubberService,
+    value: str,
+    entity: str,
+) -> None:
+    text = f"Müşteri bilgisi: {value}, teşekkürler"
+
+    scrubbed, mapping = scrubber.scrub(text)
+
+    assert list(mapping.values()) == [value]
+    assert next(iter(mapping)).startswith(f"<{entity}_")
+    assert value not in scrubbed
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "iban"),
+    [
+        ("BE68 5390 0754 7034 adlı hesap", "BE68 5390 0754 7034"),
+        ("AT61 1904 3002 3457 3201 adet", "AT61 1904 3002 3457 3201"),
+        ("BE68 5390 0754 7034\n2026 yılında", "BE68 5390 0754 7034"),
+    ],
+)
+def test_a_lowercase_word_or_next_line_after_an_iban_does_not_hide_it(
+    scrubber: PIIScrubberService,
+    text: str,
+    iban: str,
+) -> None:
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text)
+    ] == [("IBAN_CODE", iban)]
+
+
 def test_native_payload_restores_content_not_metadata_or_ids(
     scrubber: PIIScrubberService,
 ) -> None:
