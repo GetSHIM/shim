@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import re
 import subprocess
@@ -8,8 +9,30 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 import pytest
 from sqlalchemy.dialects import postgresql
+
+from shim.gateway.contracts.context import (
+    AuditPolicy,
+    GatewayContext,
+    PrivacyPolicy,
+    TierPolicy,
+)
+from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
+from shim.gateway.kernel.result import AdmissionState, PreparedInference
+from shim.gateway.pipeline.provider_execution import ProviderNonStream
+from shim.gateway.request_policy import RequestPolicyContext
+import shim.observability.tracing as tracing_module
+from shim.observability.tracing import start_span
+from shim.privacy.pii_scrubber import PIIScrubberService
+import shim_enterprise.application as enterprise_application
+from shim_enterprise.cache.redis_index import CacheService
 
 from shim_enterprise.gateway.contracts.audit import validate_audit_intent
 from shim_enterprise.observability.lifecycle import (
@@ -202,3 +225,77 @@ def test_analytics_projection_preserves_nullable_shim_measurement(shim_latency_m
     values = _projection_values(message)
     assert values["latency_ms"] == 20000
     assert values["details"]["shim_latency_ms"] == shim_latency_ms
+
+
+@pytest.mark.asyncio
+async def test_enterprise_postprocessor_puts_model_tokens_and_cost_on_the_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", tracer_provider.get_tracer)
+    async with httpx.AsyncClient() as http_client:
+        with httpx.Client() as google_sync_client:
+            kernel = enterprise_application._create_gateway_kernel(
+                CacheService(), http_client, google_sync_client, PIIScrubberService()
+            )
+    # The span is the subject; durable settlement is covered by the accounting tests.
+    kernel.postprocessor.usage = SimpleNamespace(finalize=AsyncMock())
+    prepared = PreparedInference(
+        context=GatewayContext(
+            request_id=RequestId("req_enterprise_span"),
+            tenant_id=TenantId(uuid4()),
+            actor_type="api_key",
+            api_key_id=ApiKeyId(uuid4()),
+            user_id=None,
+            endpoint="/v1/chat/completions",
+            started_at=datetime.now(timezone.utc),
+            tier_policy=TierPolicy(),
+            privacy_policy=PrivacyPolicy(pii_mode="scrub"),
+            audit_policy=AuditPolicy(mode="best_effort"),
+        ),
+        payload={"model": "gpt-5.6-luna", "messages": []},
+        provider=ProviderId("openai"),
+        protocol="chat",
+        model="gpt-5.6-luna",
+        stream=False,
+        policy=RequestPolicyContext(rate_limit_key_hash="key-hash", tier="enterprise"),
+        pii_config=None,
+        admission=AdmissionState(
+            estimated_input_tokens=40,
+            maximum_output_tokens=16,
+            cost_center="untagged",
+            tags=(),
+        ),
+    )
+    completion = {
+        "id": "chatcmpl_enterprise",
+        "object": "chat.completion",
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 7, "completion_tokens": 16, "total_tokens": 23},
+    }
+
+    with start_span("gateway.postprocess"):
+        await kernel.postprocessor.finalize(
+            prepared,
+            ProviderNonStream(payload=completion, request_id=None),
+            stream_session=None,
+        )
+
+    attributes = exporter.get_finished_spans()[0].attributes or {}
+    assert attributes["gen_ai.request.model"] == "gpt-5.6-luna"
+    assert attributes["gen_ai.usage.input_tokens"] == 7
+    assert attributes["gen_ai.usage.output_tokens"] == 16
+    assert attributes["gen_ai.response.finish_reasons"] == "length"
+    assert attributes["shim.usage_estimated"] is False
+    assert float(str(attributes["shim.cost_usd"])) > 0
+    kernel.postprocessor.usage.finalize.assert_awaited_once()
+    tracer_provider.shutdown()

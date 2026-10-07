@@ -103,7 +103,7 @@ from the same public kernel and provider executions:
 ```text
 create_enterprise_app
 |-- DatabaseGatewayAuthenticator and tenant policy
-|-- Redis admission, loop, circuit, and continuation adapters
+|-- Redis admission, loop, circuit (per tenant and target), and continuation adapters
 |-- ManagedProviderCredentialResolver
 |-- DurableUsageLifecycle and accounting coordinator
 |-- enterprise scan pipeline and error composition
@@ -115,7 +115,9 @@ PostgreSQL is authoritative for request lifecycle, quota and spend
 reservations, audit intent, reconciliation, and outbox delivery. Redis is an
 accelerator for burst control, loop detection, circuit state, tenant-policy
 caching, and encrypted privacy-continuation mappings. Redis is never a second
-accounting truth store.
+accounting truth store. Each provider circuit is keyed by tenant and target (the
+deployment base URL, or the catalog route), so one tenant's failing traffic does
+not open another tenant's circuit; community keeps one circuit per provider.
 
 No database transaction spans the provider call. Provider-start, heartbeat,
 finalization, and reconciliation use their established short transaction
@@ -138,6 +140,8 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 
 - OpenAI SDKs carry the shim key in `Authorization: Bearer ...`.
 - Anthropic SDKs carry the shim key in `x-api-key` on Anthropic routes.
+- Gemini SDKs carry the shim key in `x-goog-api-key` on Gemini routes; it is
+  never inferred to be a provider credential.
 - `x-shim-key` is the explicit provider-independent gateway-key header.
 - `x-provider-key` is an invocation-scoped provider credential.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
@@ -158,7 +162,25 @@ OpenAI errors retain the safe `{error: {message, type, param, code}}` shape.
 Anthropic errors retain `{type: "error", error: {type, message}}`. Gemini errors
 retain the google.rpc.Status `{error: {code, message, status}}` shape. Upstream
 details that could contain credentials or PII are discarded. A stream failure
-after headers is emitted as a sanitized terminal event.
+after headers is emitted as a sanitized terminal event. A provider 429 keeps its
+status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`; it is the
+caller's quota, so it neither opens nor closes the provider circuit.
+
+Every gateway error response whose code shim knows carries it in
+`X-Shim-Error-Code`, in all three shapes, and browsers may read that header.
+OpenAI bodies repeat the code in `error.code`; Gemini bodies, JSON and stream,
+carry it as a google.rpc `ErrorInfo` detail (`reason`, domain `getshim.tech`)
+beside a google.rpc `status`; Anthropic bodies keep exactly their native keys.
+The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
+`INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
+`MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `PROVIDER_NOT_ALLOWED`,
+`ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
+`PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
+`PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
+`MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
+`MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
+`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND` and `AUDIT_INTENT_FAILED`. A request
+that fails schema validation carries the validator's error type instead.
 
 `background=true` Responses requests remain unsupported because shim has no
 retrieval lifecycle with which to settle them safely. Community model IDs must exist in the checked-in model and price catalog.
@@ -228,7 +250,7 @@ customer wheels/images. See the [cloud runbook](../ee/cloud/README.md).
 | Provider HTTP boundaries | `src/shim/api/v1/` |
 | Kernel and public contracts | `src/shim/gateway/` |
 | Provider execution and streams | `src/shim/gateway/pipeline/`, `src/shim/gateway/streaming/` |
-| Privacy | `src/shim/privacy/`, enterprise continuation adapter under `ee/src/shim_enterprise/privacy/` |
+| Privacy | `src/shim/privacy/`, enterprise continuation adapter under `ee/src/shim_enterprise/privacy/`; the detection contract is `tests/gateway/privacy/corpus/detection-v1.json` |
 | Enterprise composition and authentication | `ee/src/shim_enterprise/application.py`, `ee/src/shim_enterprise/api/` |
 | Durable accounting | `ee/src/shim_enterprise/gateway/pipeline/quota_reservation.py` |
 | Tenancy and managed secrets | `ee/src/shim_enterprise/tenants/`, `ee/src/shim_enterprise/secrets/` |

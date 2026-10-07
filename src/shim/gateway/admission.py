@@ -70,6 +70,18 @@ class _FixedWindowCounters:
         self.windows[key] = (count, current[1])
         return count
 
+    def add_within(
+        self, key: Hashable, *, amount: int, limit: int, window_seconds: int
+    ) -> bool:
+        current = self.windows.get(key)
+        if current is not None and current[1] > self.clock():
+            if current[0] + amount > limit:
+                return False
+        elif amount > limit:
+            return False
+        self.increment(key, amount=amount, window_seconds=window_seconds)
+        return True
+
     def _discard_expired(self, now: float) -> None:
         while self._expirations and self._expirations[0][0] <= now:
             expires_at, _, key = heapq.heappop(self._expirations)
@@ -101,12 +113,12 @@ class InMemoryRateLimiter:
         amount: int = 1,
     ) -> bool:
         _validate_rate_window(key, limit, window_seconds, amount)
-        count = self._counters.increment(
+        return self._counters.add_within(
             key,
             amount=amount,
+            limit=limit,
             window_seconds=window_seconds,
         )
-        return count <= limit
 
 
 class InMemoryLoopDetector:

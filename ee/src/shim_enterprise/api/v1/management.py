@@ -555,6 +555,9 @@ class RequestActivityView(BaseModel):
     provider: str | None
     team: str | None
     provider_finish_reasons: dict[str, str] | None = None
+    completion_outcome: (
+        Literal["complete", "truncated", "empty", "refused", "filtered"] | None
+    ) = None
     repeat_chain_length: int | None = Field(default=None, ge=1)
     ttft_ms: float | None = Field(default=None, ge=0)
     system_prompt_hash: str | None = None
@@ -1910,6 +1913,7 @@ async def list_requests(
                     field: (row.details or {}).get(field)
                     for field in (
                         "provider_finish_reasons",
+                        "completion_outcome",
                         "repeat_chain_length",
                         "ttft_ms",
                         "shim_latency_ms",
@@ -2014,6 +2018,7 @@ async def export_requests(
                 "cost_center",
                 "team",
                 "provider_finish_reasons",
+                "completion_outcome",
                 "repeat_chain_length",
                 "ttft_ms",
                 "system_prompt_hash",
@@ -2054,6 +2059,7 @@ async def export_requests(
                             if details.get("provider_finish_reasons") is not None
                             else None
                         ),
+                        details.get("completion_outcome"),
                         details.get("repeat_chain_length"),
                         details.get("ttft_ms"),
                         details.get("system_prompt_hash"),
