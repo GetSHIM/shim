@@ -1217,11 +1217,15 @@ def test_ids_numbers_and_versions_are_not_phones_or_addresses(
         ("Kunde Hans, 01725955200", "PHONE_NUMBER", "01725955200"),
         ("Reach me at 4155552671", "PHONE_NUMBER", "4155552671"),
         ("patient ID 12345678901", "PHONE_NUMBER", "12345678901"),
+        ('{"customer_phone": 4155552671}', "PHONE_NUMBER", "4155552671"),
+        ('{"x": 2125551234}', "PHONE_NUMBER", "2125551234"),
+        ("contact code 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("https://wa.me/4155552671", "PHONE_NUMBER", "4155552671"),
         ("DNS server 8.8.8.8 is down", "IP_ADDRESS", "8.8.8.8"),
         ("release 10.20.30.40 failed", "IP_ADDRESS", "10.20.30.40"),
     ],
 )
-def test_shaped_or_cued_phones_and_real_addresses_still_match(
+def test_phones_and_addresses_are_detected_unless_marked_otherwise(
     scrubber: PIIScrubberService,
     text: str,
     entity: str,

@@ -148,11 +148,15 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     )
     _NOT_PHONE_CUE = re.compile(
         r"\b(?:order|sipari[şs]|fatura|invoice|ticket|ref|reference|sku|kod|code|"
-        r"timestamp|epoch|created|updated|value|amount|total|count)"
+        r"timestamp|epoch|ts|duration|created|updated|value|amount|total|count)"
         r"(?:[ _-]?(?:numaras[ıi]|number|no|num|id|at|ms))*[\"':=#. _-]{0,4}$",
         re.IGNORECASE,
     )
-    _JSON_NUMBER = re.compile(r"\"\s*:\s*$")
+    # Anywhere in the window and inside keys (customer_phone, mobilePhone): it overrules
+    # a non-phone word, so "contact code 4155552671" stays a phone.
+    _PHONE_WORD = re.compile(
+        r"tel|phone|mobil|gsm|cell|msisdn|fax|whatsapp|contact|cep", re.IGNORECASE
+    )
     _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
     _LETTER = re.compile(r"[A-Za-z]")
 
@@ -180,16 +184,14 @@ class ShimPhoneRecognizer(PhoneRecognizer):
             text, window, start
         ):
             return True
-        if start and text[start - 1] in "-_./":
+        if start and text[start - 1] in "-_.":
             tail = self._IDENTIFIER_TAIL.search(text, max(0, start - 65), start - 1)
             if tail is not None and self._LETTER.search(tail.group()):
                 return False
         return not (
             bare
-            and (
-                self._NOT_PHONE_CUE.search(text, window, start)
-                or self._JSON_NUMBER.search(text, window, start)
-            )
+            and self._NOT_PHONE_CUE.search(text, window, start)
+            and not self._PHONE_WORD.search(text, window, start)
         )
 
     @staticmethod

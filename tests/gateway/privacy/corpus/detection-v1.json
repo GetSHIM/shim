@@ -661,9 +661,39 @@
       "expect": []
     },
     {
-      "id": "not-phone-json-number",
+      "id": "not-phone-duration-value",
       "text": "{\"duration_ms\": 4155552671}",
       "expect": []
+    },
+    {
+      "id": "phone-json-number-with-phone-key",
+      "text": "{\"customer_phone\": 4155552671}",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-word-beats-code-word",
+      "text": "contact code 4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
+    },
+    {
+      "id": "phone-whatsapp-link-us",
+      "text": "https://wa.me/4155552671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4155552671"
+        }
+      ]
     },
     {
       "id": "phone-cue-glued-with-dot",
@@ -716,10 +746,14 @@
       ]
     },
     {
-      "id": "order-number-with-no-cue",
+      "id": "number-after-no-cue-is-masked",
       "text": "Sipariş no: 4829104455",
-      "expect": [],
-      "known_gap": "tier 3, `no` is a phone cue"
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "4829104455"
+        }
+      ]
     },
     {
       "id": "ip-after-turkish-ver",
