@@ -3,14 +3,19 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from io import StringIO
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from google import genai
 from google.genai import types
 import httpx
 import pytest
+from starlette.requests import Request
 
+import shim.api.deps as deps
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
+from shim.secrets.credentials import extract_provider_credential
 
 
 MODEL = "gemini-3.5-flash"
@@ -28,16 +33,16 @@ def _settings() -> CommunitySettings:
     )
 
 
-def _sdk_client(gateway_http: httpx.AsyncClient) -> genai.Client:
+def _sdk_client(
+    gateway_http: httpx.AsyncClient,
+    api_key: str = GATEWAY_KEY,
+    base_url: str = "http://shim.test",
+) -> genai.Client:
     return genai.Client(
-        api_key="sdk-routing-key",
+        api_key=api_key,
         http_options=types.HttpOptions(
-            base_url="http://shim.test",
+            base_url=base_url,
             api_version="v1beta",
-            headers={
-                "x-shim-key": GATEWAY_KEY,
-                "x-provider-key": PROVIDER_KEY,
-            },
             retry_options=types.HttpRetryOptions(attempts=1),
             httpx_async_client=gateway_http,
         ),
@@ -45,7 +50,10 @@ def _sdk_client(gateway_http: httpx.AsyncClient) -> genai.Client:
 
 
 @pytest.mark.asyncio
-async def test_gemini_json_works_with_official_sdk_and_restores_privacy() -> None:
+async def test_gemini_json_works_with_official_sdk_and_restores_privacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", PROVIDER_KEY)
     attempts: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -284,8 +292,16 @@ async def test_gemini_validation_precedes_one_sanitized_provider_attempt() -> No
             "code": 500,
             "message": "The Google request failed.",
             "status": "INTERNAL",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "PROVIDER_UNAVAILABLE",
+                    "domain": "getshim.tech",
+                }
+            ],
         }
     }
+    assert failed.headers["x-shim-error-code"] == "PROVIDER_UNAVAILABLE"
     assert failed.headers["x-goog-request-id"] == "google_failed_1"
     assert attempts == 1
     assert "secret upstream detail" not in failed.text
@@ -293,3 +309,80 @@ async def test_gemini_validation_precedes_one_sanitized_provider_attempt() -> No
     assert PROVIDER_KEY not in failed.text
     assert upstream.is_closed is False
     await upstream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_google_key_in_the_sdk_header_is_never_a_provider_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    attempts: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request)
+        return httpx.Response(500)
+
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        CommunitySettings(
+            BACKEND_CORS_ORIGINS=[],
+            GOOGLE_BASE_URL="https://upstream.test",
+            SHIM_API_KEY=None,
+            _env_file=None,
+        ),
+        http_client=upstream,
+        event_stream=StringIO(),
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as gateway_http:
+            client = _sdk_client(gateway_http, PROVIDER_KEY, "http://127.0.0.1")
+            with pytest.raises(genai.errors.ServerError) as raised:
+                await client.aio.models.generate_content(model=MODEL, contents="hi")
+    await upstream.aclose()
+
+    assert raised.value.code == 503
+    assert raised.value.response.headers["x-shim-error-code"] == (
+        "PROVIDER_NOT_CONFIGURED"
+    )
+    assert attempts == []
+
+
+@pytest.mark.asyncio
+async def test_gemini_x_goog_api_key_is_a_gateway_key_never_a_provider_key() -> None:
+    principal = SimpleNamespace()
+    authenticator = SimpleNamespace(resolve=AsyncMock(return_value=principal))
+
+    def gemini_request(*headers: tuple[bytes, bytes]) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/v1beta/models/gemini-3.5-flash:generateContent",
+                "headers": list(headers),
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(gateway_authenticator=authenticator)
+                ),
+            }
+        )
+
+    only_google = gemini_request((b"x-goog-api-key", b"sk-shim-tenant-key"))
+    mixed = gemini_request(
+        (b"x-shim-key", b"sk-shim-tenant-key"),
+        (b"x-goog-api-key", b"another-value"),
+    )
+    for request in (only_google, mixed):
+        assert (
+            await deps.get_google_authenticated_principal(request, None, None, None)
+            is principal
+        )
+    forwarded, credential = extract_provider_credential(mixed.headers, "google")
+
+    assert [call.args for call in authenticator.resolve.await_args_list] == [
+        ("sk-shim-tenant-key",),
+        ("sk-shim-tenant-key",),
+    ]
+    assert credential is None
+    assert "another-value" not in forwarded.values()

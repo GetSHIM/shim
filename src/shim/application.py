@@ -33,6 +33,8 @@ from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
 from shim.gateway.request_policy import LocalRequestPolicyResolver
 from shim.gateway.usage import LocalUsageLifecycle
+from shim.observability.logging import configure_error_reporting, configure_logging
+from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim.privacy.continuation import InMemoryPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.secrets.credentials import EnvironmentProviderCredentialResolver
@@ -49,6 +51,17 @@ def create_community_app(
     event_stream: TextIO | None = None,
 ) -> FastAPI:
     configured = settings or CommunitySettings()
+    configure_logging(configured.LOG_LEVEL)
+    configure_error_reporting(
+        sentry_dsn=configured.SENTRY_DSN,
+        environment=configured.ENVIRONMENT,
+    )
+    tracing = bool(configured.OTEL_EXPORTER_OTLP_ENDPOINT)
+    if tracing:
+        configure_tracing(
+            endpoint=configured.OTEL_EXPORTER_OTLP_ENDPOINT,
+            service_name=configured.OTEL_SERVICE_NAME,
+        )
     rate_limiter = InMemoryRateLimiter(max_entries=_LOCAL_STATE_CAPACITY)
     loop_detector = InMemoryLoopDetector(max_entries=_LOCAL_STATE_CAPACITY)
     chain_store = InMemoryPrivacyContinuationStore(
@@ -73,6 +86,7 @@ def create_community_app(
             follow_redirects=False,
         )
         application.state.http_client = client
+        google_sync_client = httpx.Client()
         application.state.gateway_service = GatewayService(
             GatewayKernel(
                 {
@@ -92,6 +106,7 @@ def create_community_app(
                         circuit=InMemoryCircuitBreaker(),
                         settings=configured,
                         http_client=client,
+                        sync_http_client=google_sync_client,
                         pii_scrubber=pii_scrubber,
                     ),
                     "openai": OpenAIExecution(
@@ -123,6 +138,9 @@ def create_community_app(
         finally:
             await application.state.gateway_service.kernel.postprocessor.drain()
             await usage.aclose()
+            google_sync_client.close()
+            if tracing:
+                shutdown_tracing()
             if owns_http_client:
                 await client.aclose()
 

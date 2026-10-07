@@ -22,9 +22,11 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    record_provider_error,
     retry_after_header,
     sdk_create_kwargs,
     select_headers,
+    status_error_code,
 )
 from shim.gateway.streaming.sse import encode_responses_event
 from shim.privacy.deanonymizer import (
@@ -46,8 +48,8 @@ class AnthropicExecution:
         self,
         *,
         credential_resolver: ProviderCredentialResolver,
-        circuit: CircuitBreaker,
-        circuit_for_target: Callable[[str], CircuitBreaker] | None = None,
+        circuit: CircuitBreaker | None = None,
+        circuit_for: Callable[[PreparedInference], CircuitBreaker] | None = None,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
         pii_scrubber: PIIScrubberService | None = None,
@@ -55,8 +57,10 @@ class AnthropicExecution:
         self.credential_resolver = credential_resolver
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
+        if (circuit is None) == (circuit_for is None):
+            raise ValueError("exactly one of circuit and circuit_for is required")
         self.circuit = circuit
-        self.circuit_for_target = circuit_for_target
+        self.circuit_for = circuit_for
         self.settings = settings
         self.timeout = httpx.Timeout(
             connect=settings.ANTHROPIC_CONNECT_TIMEOUT_SECONDS,
@@ -73,10 +77,9 @@ class AnthropicExecution:
         provider_start_callback: Callable[[], Awaitable[None]],
     ) -> ProviderNonStream | ProviderStream:
         circuit = (
-            self.circuit_for_target(prepared.target.base_url)
-            if prepared.target is not None and self.circuit_for_target is not None
-            else self.circuit
+            self.circuit_for(prepared) if self.circuit_for is not None else self.circuit
         )
+        assert circuit is not None
         if prepared.privacy is None:
             raise RuntimeError("privacy stage must run before Anthropic execution")
         try:
@@ -110,15 +113,14 @@ class AnthropicExecution:
                 True,
                 provider="anthropic",
             )
+        timeout = prepared.target.timeout_seconds if prepared.target else self.timeout
         try:
             client = AsyncAnthropic(
                 api_key=api_key,
                 base_url=prepared.target.base_url
                 if prepared.target
                 else (self.settings.ANTHROPIC_BASE_URL or "https://api.anthropic.com"),
-                timeout=prepared.target.timeout_seconds
-                if prepared.target
-                else self.timeout,
+                timeout=timeout,
                 max_retries=0,
                 http_client=self.http_client,
             )
@@ -139,6 +141,8 @@ class AnthropicExecution:
                 prepared.payload,
                 reserved=frozenset({"betas"}),
             )
+            # Explicit, so the SDK does not refuse a large non-streaming max_tokens itself.
+            kwargs["timeout"] = timeout
             headers = select_headers(
                 getattr(invocation, "headers", {}),
                 _ANTHROPIC_HEADERS,
@@ -183,7 +187,11 @@ class AnthropicExecution:
                 close=close_stream,
             )
 
-        payload = _dump_sdk(result)
+        try:
+            payload = _dump_sdk(result)
+        except BaseException:
+            await circuit.release_probe()
+            raise
         if _is_anthropic_failure(payload):
             await circuit.record_failure()
             raise ProviderCallError(
@@ -261,14 +269,8 @@ class AnthropicExecution:
             await close_stream()
 
     async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
-        if (
-            isinstance(exc, APIStatusError)
-            and 400 <= exc.status_code < 500
-            and exc.status_code not in {408, 409, 429}
-        ):
-            await circuit.record_success()
-        else:
-            await circuit.record_failure()
+        status_code = exc.status_code if isinstance(exc, APIStatusError) else None
+        await record_provider_error(circuit, exc, status_code, APIError)
 
 
 def _dump_sdk(value: Any) -> dict[str, Any]:
@@ -313,7 +315,7 @@ def _public_error(exc: Exception) -> ProviderCallError:
     if isinstance(exc, APIStatusError):
         return ProviderCallError(
             exc.status_code,
-            "PROVIDER_TIMEOUT" if exc.status_code == 408 else "PROVIDER_UNAVAILABLE",
+            status_error_code(exc.status_code),
             exc.status_code in {408, 409, 429} or exc.status_code >= 500,
             provider="anthropic",
             request_id=getattr(exc, "request_id", None),
