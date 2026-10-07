@@ -1298,11 +1298,10 @@ async def test_provider_wait_is_excluded_but_restoration_is_counted(
             ),
             settings=settings,
             http_client=http,
-            **(
-                {"chain_store": SimpleNamespace(save=saved)}
-                if provider == "openai"
-                else {}
-            ),
+            **{
+                "openai": {"chain_store": SimpleNamespace(save=saved)},
+                "google": {"sync_http_client": httpx.Client()},
+            }.get(provider, {}),
         )
         original_resolve = execution.credential_resolver.resolve
 
