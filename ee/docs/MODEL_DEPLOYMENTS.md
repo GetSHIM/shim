@@ -27,8 +27,12 @@ For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
 There is no retry or failover. A five-second model-list health probe records
-only HTTP success/failure and never reads an unbounded response body. Health is
-an observation, not a request-routing or version-verification guarantee.
+only HTTP success/failure and never reads an unbounded response body. A
+deployment marked `unhealthy` receives no traffic: requests for its alias get 503
+`DEPLOYMENT_UNHEALTHY` and it leaves `/v1/models`, until a health check marks it
+healthy or an update resets it to `unknown`. Nothing is routed to another
+deployment or to the public catalog instead, and no probe runs automatically.
+Health is not a version-verification guarantee.
 
 The declared version/hash/digest is operator supplied and included in the
 registry policy evidence. Pin the actual serving image and model revision at

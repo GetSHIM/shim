@@ -27,6 +27,7 @@ also remains outside tenant decision evidence.
 | `privacy.input` | Scrubbing masked data, found no enabled entity, was disabled, blocked unsupported content, or failed closed. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
+| `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
 
 `allow` means that individual check passed; it does not imply that the entire
 request completed. `mask`, `deny`, `error`, and `skip` are distinct outcomes.
