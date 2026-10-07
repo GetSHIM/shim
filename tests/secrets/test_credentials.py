@@ -123,15 +123,16 @@ def test_all_credential_headers_are_removed_before_invocation() -> None:
 
 
 @pytest.mark.parametrize(
-    ("provider", "header"),
+    ("provider", "header", "is_provider_credential"),
     [
-        ("openai", "x-openai-api-key"),
-        ("google", "x-goog-api-key"),
+        ("openai", "x-openai-api-key", True),
+        ("google", "x-goog-api-key", False),
     ],
 )
 def test_native_provider_headers_are_one_use_and_never_forwarded(
     provider: str,
     header: str,
+    is_provider_credential: bool,
 ) -> None:
     headers, credential = extract_provider_credential(
         {header: "tenant-provider-secret", "x-shim-tag": "engineering"},
@@ -139,8 +140,11 @@ def test_native_provider_headers_are_one_use_and_never_forwarded(
     )
 
     assert headers == {"x-shim-tag": "engineering"}
-    assert credential is not None
-    assert credential.consume() == "tenant-provider-secret"
+    if is_provider_credential:
+        assert credential is not None
+        assert credential.consume() == "tenant-provider-secret"
+    else:
+        assert credential is None
 
 
 @pytest.mark.asyncio

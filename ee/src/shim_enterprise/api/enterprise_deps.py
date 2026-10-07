@@ -158,15 +158,15 @@ async def _authenticate_gateway_key(
     plain_key: str | None,
 ) -> ApiKey:
     if plain_key is None:
-        raise authentication_error("Missing API Key")
+        raise authentication_error("Missing API Key", code="MISSING_API_KEY")
     if not plain_key:
-        raise authentication_error("Invalid API Key")
+        raise authentication_error("Invalid API Key", code="INVALID_API_KEY")
 
     api_key = await authenticate_api_key(session, plain_key)
 
     if not api_key:
         logger.warning("Invalid API Key attempt (key redacted)")
-        raise authentication_error("Invalid API Key")
+        raise authentication_error("Invalid API Key", code="INVALID_API_KEY")
 
     return api_key
 

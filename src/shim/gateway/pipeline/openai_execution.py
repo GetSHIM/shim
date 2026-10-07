@@ -22,10 +22,13 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderStream,
+    record_provider_error,
     retry_after_header,
     sdk_create_kwargs,
     select_headers,
+    status_error_code,
 )
+from shim.gateway.streaming.session import MeterOnly
 from shim.gateway.streaming.sse import encode_data, encode_responses_event
 from shim.privacy.continuation import (
     PrivacyContinuationStore,
@@ -50,8 +53,8 @@ class OpenAIExecution:
         self,
         *,
         credential_resolver: ProviderCredentialResolver,
-        circuit: CircuitBreaker,
-        circuit_for_target: Callable[[str], CircuitBreaker] | None = None,
+        circuit: CircuitBreaker | None = None,
+        circuit_for: Callable[[PreparedInference], CircuitBreaker] | None = None,
         settings: CommunitySettings,
         http_client: httpx.AsyncClient,
         chain_store: PrivacyContinuationStore,
@@ -61,8 +64,10 @@ class OpenAIExecution:
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
         self.chain_store = chain_store
+        if (circuit is None) == (circuit_for is None):
+            raise ValueError("exactly one of circuit and circuit_for is required")
         self.circuit = circuit
-        self.circuit_for_target = circuit_for_target
+        self.circuit_for = circuit_for
         self.settings = settings
         self.timeout = httpx.Timeout(
             connect=settings.OPENAI_CONNECT_TIMEOUT_SECONDS,
@@ -79,10 +84,9 @@ class OpenAIExecution:
         provider_start_callback: Callable[[], Awaitable[None]],
     ) -> ProviderNonStream | ProviderStream:
         circuit = (
-            self.circuit_for_target(prepared.target.base_url)
-            if prepared.target is not None and self.circuit_for_target is not None
-            else self.circuit
+            self.circuit_for(prepared) if self.circuit_for is not None else self.circuit
         )
+        assert circuit is not None
         if prepared.privacy is None:
             raise RuntimeError("privacy stage must run before OpenAI execution")
         try:
@@ -124,6 +128,21 @@ class OpenAIExecution:
                 else client.chat.completions.create
             )
             kwargs = sdk_create_kwargs(create, prepared.payload)
+            client_options = prepared.payload.get("stream_options")
+            meter_usage = (
+                prepared.protocol == "chat"
+                and prepared.stream
+                and prepared.target is None
+                and not (
+                    isinstance(client_options, dict)
+                    and client_options.get("include_usage") is True
+                )
+            )
+            if meter_usage:
+                kwargs["stream_options"] = {
+                    **(client_options if isinstance(client_options, dict) else {}),
+                    "include_usage": True,
+                }
             headers = select_headers(
                 getattr(invocation, "headers", {}),
                 _OPENAI_HEADERS,
@@ -160,7 +179,9 @@ class OpenAIExecution:
             events = (
                 self._responses_stream(result, prepared, state, close_stream, circuit)
                 if prepared.protocol == "responses"
-                else self._chat_stream(result, prepared, state, close_stream, circuit)
+                else self._chat_stream(
+                    result, prepared, state, close_stream, circuit, meter_usage
+                )
             )
             return ProviderStream(
                 events=events,
@@ -168,7 +189,11 @@ class OpenAIExecution:
                 close=close_stream,
             )
 
-        payload = _dump_sdk(result)
+        try:
+            payload = _dump_sdk(result)
+        except BaseException:
+            await circuit.release_probe()
+            raise
         if _is_openai_failure(payload) and not (
             prepared.protocol == "responses" and payload.get("status") == "failed"
         ):
@@ -308,7 +333,8 @@ class OpenAIExecution:
         state: dict[str, bool],
         close_stream: Callable[[], Awaitable[None]],
         circuit: CircuitBreaker,
-    ) -> AsyncIterator[bytes]:
+        meter_usage: bool,
+    ) -> AsyncIterator[bytes | MeterOnly]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
             prepared.privacy.verification_map,
@@ -337,7 +363,10 @@ class OpenAIExecution:
                     await circuit.record_success()
                     state["recorded"] = True
                 restored = restorer.restore_chat_chunk(payload)
-                yield encode_data(restored)
+                if meter_usage and not payload.get("choices") and payload.get("usage"):
+                    yield MeterOnly(encode_data(restored))
+                else:
+                    yield encode_data(restored)
             if len(finished_choices) >= expected_choices:
                 yield b"data: [DONE]\n\n"
             else:
@@ -357,14 +386,8 @@ class OpenAIExecution:
             await close_stream()
 
     async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
-        if (
-            isinstance(exc, APIStatusError)
-            and exc.status_code < 500
-            and exc.status_code not in {408, 409, 429}
-        ):
-            await circuit.record_success()
-        else:
-            await circuit.record_failure()
+        status_code = exc.status_code if isinstance(exc, APIStatusError) else None
+        await record_provider_error(circuit, exc, status_code, APIError)
 
 
 def _dump_sdk(value: Any) -> dict[str, Any]:
@@ -417,7 +440,7 @@ def _public_error(exc: Exception) -> ProviderCallError:
         retryable = exc.status_code in {408, 409, 429} or exc.status_code >= 500
         return _error(
             exc.status_code,
-            "PROVIDER_TIMEOUT" if exc.status_code == 408 else "PROVIDER_UNAVAILABLE",
+            status_error_code(exc.status_code),
             retryable,
             request_id=getattr(exc, "request_id", None),
             retry_after=retry_after_header(exc),

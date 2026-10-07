@@ -46,6 +46,7 @@ class CommunitySettings(BaseSettings):
         le=30 * 24 * 60 * 60,
     )
 
+    GLOBAL_RATE_LIMIT_PER_MINUTE: int = Field(default=1000, ge=1)
     DEFAULT_RPM_LIMIT: int = Field(default=60, ge=1)
     DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     COST_TAG_MAX_LENGTH: int = Field(default=64, ge=1, le=256)
@@ -55,7 +56,7 @@ class CommunitySettings(BaseSettings):
 
     SENTRY_DSN: str | None = None
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
-    OTEL_SERVICE_NAME: str = "ai-gateway-optimizer"
+    OTEL_SERVICE_NAME: str = "shim"
 
     @field_validator("TRUSTED_PROXIES", "BACKEND_CORS_ORIGINS", mode="before")
     @classmethod

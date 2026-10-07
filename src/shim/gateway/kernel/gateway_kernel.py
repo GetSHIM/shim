@@ -250,7 +250,8 @@ class GatewayKernel:
             reason = (
                 "provider_rejected_without_usage"
                 if isinstance(error, ProviderCallError)
-                and error.error_code == "PROVIDER_UNAVAILABLE"
+                and error.error_code
+                in {"PROVIDER_UNAVAILABLE", "PROVIDER_RATE_LIMITED"}
                 and error.status_code < 500
                 else "request_aborted"
             )

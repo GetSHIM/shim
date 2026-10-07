@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import shim.cli as cli
 from shim.core.community_config import CommunitySettings
 
 
@@ -50,3 +51,24 @@ def test_community_api_key_is_optional_and_redacted() -> None:
     assert configured.SHIM_API_KEY is not None
     assert configured.SHIM_API_KEY.get_secret_value() == secret
     assert secret not in repr(configured)
+
+
+def test_global_rate_limit_defaults_to_one_thousand_and_must_be_positive() -> None:
+    assert CommunitySettings(_env_file=None).GLOBAL_RATE_LIMIT_PER_MINUTE == 1000
+    with pytest.raises(ValidationError):
+        CommunitySettings(GLOBAL_RATE_LIMIT_PER_MINUTE=0, _env_file=None)
+
+
+def test_cli_names_the_bad_setting_without_its_value(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("SHIM_API_KEY", "twelve-chars")
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["serve"])
+
+    error = capsys.readouterr().err
+    assert exit_info.value.code == 2
+    assert "shim: error: SHIM_API_KEY: Value should have at least 16 items" in error
+    assert "twelve-chars" not in error
