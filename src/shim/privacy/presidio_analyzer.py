@@ -47,6 +47,10 @@ class ShimSecretRecognizer(EntityRecognizer):
         r"postgres_password"
     )
     _ASSIGNMENT_PREFIX = rf"[\"']?(?:{_SECRET_KEY})[\"']?\s*(?:(?:=|:)\s*|\s+)"
+    # An explicit separator, unlike the English keys, so "şifre unuttum" is not a finding.
+    _TURKISH_ASSIGNMENT_PREFIX = (
+        r"[\"']?(?:şifre(?:si|m)?|sifre|parola(?:sı|m)?)[\"']?\s*(?:=|:)\s*"
+    )
     _PATTERNS: tuple[tuple[re.Pattern[str], str | None, float], ...] = (
         (
             re.compile(
@@ -63,7 +67,11 @@ class ShimSecretRecognizer(EntityRecognizer):
                 r"sk_(?:live|test)_[A-Za-z0-9]{16,}|"
                 r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|"
                 r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|"
-                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"
+                r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
+                r"(?<![A-Za-z0-9])(?:AIza[0-9A-Za-z_-]{35}|"
+                r"xox[abposr]-[0-9A-Za-z-]{10,}|"
+                r"hf_[A-Za-z0-9]{30,}|"
+                r"glpat-[0-9A-Za-z_-]{20,}))"
             ),
             None,
             0.99,
@@ -89,6 +97,23 @@ class ShimSecretRecognizer(EntityRecognizer):
         (
             re.compile(
                 rf"{_ASSIGNMENT_PREFIX}(?P<value>[^\s,}}\]\"']{{6,}})",
+                re.IGNORECASE,
+            ),
+            "value",
+            0.97,
+        ),
+        (
+            re.compile(
+                rf"{_TURKISH_ASSIGNMENT_PREFIX}(?P<quote>[\"'])"
+                r"(?P<value>[^\r\n]{6,}?)(?P=quote)",
+                re.IGNORECASE,
+            ),
+            "value",
+            0.97,
+        ),
+        (
+            re.compile(
+                rf"{_TURKISH_ASSIGNMENT_PREFIX}(?P<value>[^\s,}}\]\"']{{6,}})",
                 re.IGNORECASE,
             ),
             "value",

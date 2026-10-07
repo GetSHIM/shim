@@ -43,7 +43,9 @@ request it:
 
 - **Detects and replaces personal data before the request leaves.** Email
   addresses, phone numbers, credit cards, IBANs, Turkish national ID and tax
-  numbers, and provider secrets such as AWS keys and GitHub tokens. Each
+  numbers, provider secrets such as AWS keys and GitHub, Google, Slack, Hugging
+  Face and GitLab tokens, and password assignments, Turkish (`şifre:`,
+  `parola:`) included. Each
   detected value becomes a placeholder before the request leaves, and is
   restored in the answer before it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
