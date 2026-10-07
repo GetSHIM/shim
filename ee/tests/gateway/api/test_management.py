@@ -362,12 +362,14 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "provider",
         "team",
         "provider_finish_reasons",
+        "completion_outcome",
         "repeat_chain_length",
         "ttft_ms",
         "system_prompt_hash",
         "deployment_kind",
     }
     assert page.items[0].provider_finish_reasons is None
+    assert page.items[0].completion_outcome is None
     assert page.items[0].repeat_chain_length is None
     assert page.items[0].shim_latency_ms is None
     assert "latency_ms" not in page.items[0].model_dump()
@@ -574,6 +576,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "provider": "openai",
             "lifecycle_status": "completed",
             "provider_finish_reasons": {"status": "incomplete"},
+            "completion_outcome": "truncated",
             "repeat_chain_length": 2,
             "ttft_ms": 42.5,
             "shim_latency_ms": 0,
@@ -615,6 +618,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert "'@ops" in content
     exported = list(csv.DictReader(content.splitlines()))[0]
     assert exported["provider_finish_reasons"] == '{"status": "incomplete"}'
+    assert exported["completion_outcome"] == "truncated"
     assert exported["repeat_chain_length"] == "2"
     assert exported["ttft_ms"] == "42.5"
     assert exported["deployment_kind"] == "internal"

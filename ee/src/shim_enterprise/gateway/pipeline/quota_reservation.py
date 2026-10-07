@@ -951,6 +951,7 @@ class DurableUsageLifecycle:
                         terminal_error_message=terminal.error_message,
                         output_hash=usage.output_hash,
                         provider_finish_reasons=usage.provider_finish_reasons,
+                        completion_outcome=usage.completion_outcome,
                         ttft_ms=usage.ttft_ms,
                         shim_latency_ms=terminal.shim_latency_ms,
                         completed_at=terminal.completed_at,

@@ -114,6 +114,8 @@ def test_every_gateway_stage_span_is_registered() -> None:
 def test_public_metrics_are_bounded_and_exclude_enterprise_families() -> None:
     assert bounded_label("model", "gpt-5.4") == "gpt-*"
     assert bounded_label("provider", "tenant-defined-provider") == "other"
+    assert bounded_label("outcome", "refused") == "refused"
+    assert bounded_label("outcome", "provider-defined-outcome") == "other"
     public = {
         "privacy_detection",
         "provider_latency_ms",
