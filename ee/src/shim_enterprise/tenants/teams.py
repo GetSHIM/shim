@@ -56,8 +56,11 @@ async def synchronize_oidc_teams(
     user: User,
     groups: list[str],
     mapping: dict[str, dict[str, str]],
-) -> None:
-    """Replace IdP grants atomically; explicit local membership stays authoritative."""
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Replace IdP grants atomically; explicit local membership stays authoritative.
+
+    Returns the user's IdP grants, team id to role, before and after the change.
+    """
     await session.scalar(
         select(Organization.id)
         .where(Organization.id == user.organization_id)
@@ -84,6 +87,27 @@ async def synchronize_oidc_teams(
     )
     if owned != set(desired):
         raise ValueError("OIDC team does not belong to the configured organization")
+    sources = {
+        row.team_id: (row.role, row.source)
+        for row in await session.execute(
+            select(
+                TeamMembership.team_id, TeamMembership.role, TeamMembership.source
+            ).where(
+                TeamMembership.organization_id == user.organization_id,
+                TeamMembership.user_id == user.id,
+            )
+        )
+    }
+    before = {
+        str(team_id): role
+        for team_id, (role, source) in sorted(sources.items())
+        if source == "oidc"
+    }
+    after = {
+        str(team_id): role
+        for team_id, role in sorted(desired.items())
+        if sources.get(team_id, (role, "oidc"))[1] == "oidc"
+    }
     await session.execute(
         delete(TeamMembership).where(
             TeamMembership.organization_id == user.organization_id,
@@ -111,3 +135,4 @@ async def synchronize_oidc_teams(
                 where=TeamMembership.source == "oidc",
             )
         )
+    return before, after

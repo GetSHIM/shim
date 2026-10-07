@@ -84,6 +84,28 @@ async def db(async_engine):
     await connection.close()
 
 
+@pytest.fixture
+def audit_events(db):
+    """Read the audit-chain intents a test's transaction appended to the outbox."""
+    from sqlalchemy import select
+
+    from shim_enterprise.outbox.models import OutboxEvent
+
+    async def read(organization_id) -> list[dict]:
+        events = await db.scalars(
+            select(OutboxEvent)
+            .where(
+                OutboxEvent.organization_id == organization_id,
+                OutboxEvent.event_type == "audit.chain_append_requested",
+            )
+            # One transaction shares created_at; the writer stamps this per event.
+            .order_by(OutboxEvent.next_attempt_at)
+        )
+        return [event.payload for event in events]
+
+    return read
+
+
 @pytest_asyncio.fixture
 async def test_org(db):
     from shim_enterprise.tenants.models import Organization

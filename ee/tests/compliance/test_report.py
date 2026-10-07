@@ -228,6 +228,8 @@ async def test_forward_target_rotation_rebinds_queued_delivery_before_cleanup(
     )
     monkeypatch.setattr(compliance_api, "_validate_forward_url", AsyncMock())
     monkeypatch.setattr(compliance_api, "get_secret_store", lambda: store)
+    audit = AsyncMock()
+    monkeypatch.setattr(compliance_api, "_audit", audit)
 
     operation = compliance_api.update_forward_target(
         target.id,
@@ -250,6 +252,12 @@ async def test_forward_target_rotation_rebinds_queued_delivery_before_cleanup(
         assert target.secret_backend == "fernet"
         assert target.secret_version == "v2"
         assert queued.payload["secret_ref"] == "fernet:v2:replacement"
+    assert audit.await_args.args[2] == "compliance.forward_target_updated"
+    assert audit.await_args.kwargs["details"] == {
+        "before": {"endpoint_origin": "https://old.example"},
+        "after": {"endpoint_origin": "https://new.example"},
+        "destination_rotated": True,
+    }
     store.delete_secret.assert_awaited_once_with(
         tenant_id,
         deleted_ref,
@@ -262,7 +270,13 @@ async def test_connector_delete_cancels_target_deliveries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tenant_id = uuid4()
-    connector = SimpleNamespace(id=uuid4(), secret_ref="fernet:v2:connector")
+    connector = SimpleNamespace(
+        id=uuid4(),
+        secret_ref="fernet:v2:connector",
+        provider="anthropic",
+        status="active",
+        config={"scope_id": "org-1"},
+    )
     target = SimpleNamespace(id=uuid4(), secret_ref="fernet:v2:target")
     session = SimpleNamespace(
         execute=AsyncMock(
@@ -284,6 +298,8 @@ async def test_connector_delete_cancels_target_deliveries(
         cancel_deliveries,
     )
     monkeypatch.setattr(compliance_api, "get_secret_store", lambda: store)
+    audit = AsyncMock()
+    monkeypatch.setattr(compliance_api, "_audit", audit)
 
     await compliance_api.delete_connector(
         connector.id,
@@ -292,6 +308,17 @@ async def test_connector_delete_cancels_target_deliveries(
     )
 
     cancel_deliveries.assert_awaited_once_with(session, tenant_id, target.id)
+    assert audit.await_args.args[2:] == (
+        "compliance.connector_deleted",
+        str(connector.id),
+    )
+    assert audit.await_args.kwargs["details"] == {
+        "before": {
+            "provider": "anthropic",
+            "status": "active",
+            "config": {"scope_id": "org-1"},
+        }
+    }
     assert store.delete_secret.await_count == 2
 
 
@@ -824,3 +851,95 @@ async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
     assert not any("Architecture Test Tenant" in item for item in strings)
     assert strings[strings.index("TR_NATIONAL_ID") + 2] == "3"
     assert "Gateway detections" not in _pdf_strings(_render_pdf(connector_scoped))
+
+
+@pytest.mark.asyncio
+async def test_connector_and_forward_target_changes_runs_and_reports_are_audited(
+    db, test_user_with_org, audit_events, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shim_enterprise.compliance.schemas import ConnectorCreate, ConnectorUpdate
+
+    user = test_user_with_org
+    user.role = "admin"
+    store = SimpleNamespace(
+        put_secret=AsyncMock(side_effect=lambda *_, **__: f"fernet:v2:{uuid4()}"),
+        delete_secret=AsyncMock(),
+    )
+    monkeypatch.setattr(compliance_api, "get_secret_store", lambda: store)
+    monkeypatch.setattr(compliance_api, "_probe_credential", AsyncMock())
+    monkeypatch.setattr(compliance_api, "_validate_forward_url", AsyncMock())
+    run_once = AsyncMock(return_value={"connector_id": uuid4(), "status": "completed"})
+    monkeypatch.setattr(ComplianceIngestService, "__init__", lambda self, **_: None)
+    monkeypatch.setattr(ComplianceIngestService, "run_once", run_once)
+
+    connector = await compliance_api.create_connector(
+        ConnectorCreate(provider="anthropic", api_key="sk-ant-never-recorded"),
+        user,
+        db,
+    )
+    await compliance_api.update_connector(
+        connector.id, ConnectorUpdate(status="paused"), user, db
+    )
+    await compliance_api.run_connector(
+        connector.id,
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None))),
+        user,
+        db,
+    )
+    target = await compliance_api.create_forward_target(
+        connector.id,
+        ForwardTargetCreate(endpoint="https://siem.example/hook"),
+        user,
+        db,
+    )
+    await compliance_api.update_forward_target(
+        target.id, ForwardTargetUpdate(min_severity="critical"), user, db
+    )
+    await compliance_api.delete_forward_target(target.id, user, db)
+    await compliance_api.generate_kvkk_report(ReportRequest(format="csv"), user, db)
+    await compliance_api.delete_connector(connector.id, user, db)
+
+    events = await audit_events(user.organization_id)
+    extra = {event["endpoint"]: event["extra"] for event in events}
+    assert sorted(event["endpoint"] for event in events) == [
+        "compliance.connector_created",
+        "compliance.connector_deleted",
+        "compliance.connector_run_requested",
+        "compliance.connector_updated",
+        "compliance.forward_target_created",
+        "compliance.forward_target_deleted",
+        "compliance.forward_target_updated",
+        "compliance.kvkk_report_generated",
+    ]
+    assert "sk-ant" not in str(events)
+    assert extra["compliance.connector_created"]["after"] == {
+        "provider": "anthropic",
+        "status": "active",
+        "config": {},
+    }
+    updated = extra["compliance.connector_updated"]
+    assert (updated["before"], updated["after"]) == (
+        {"status": "active"},
+        {"status": "paused"},
+    )
+    assert extra["compliance.connector_deleted"]["before"]["status"] == "paused"
+    assert extra["compliance.connector_run_requested"]["provider"] == "anthropic"
+    run_once.assert_awaited_once()
+    assert extra["compliance.forward_target_created"]["after"] == {
+        "kind": "siem_webhook",
+        "endpoint_origin": "https://siem.example",
+        "signed": False,
+        "min_severity": "high",
+        "enabled": True,
+    }
+    target_update = extra["compliance.forward_target_updated"]
+    assert target_update == {
+        "subject_id": str(target.id),
+        "before": {"min_severity": "high"},
+        "after": {"min_severity": "critical"},
+        "destination_rotated": False,
+    }
+    assert extra["compliance.forward_target_deleted"]["before"]["min_severity"] == (
+        "critical"
+    )
+    assert extra["compliance.kvkk_report_generated"]["format"] == "csv"

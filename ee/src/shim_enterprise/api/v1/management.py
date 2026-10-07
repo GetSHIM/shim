@@ -68,6 +68,7 @@ from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
+from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -715,15 +716,30 @@ async def update_profile(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> UserView:
+    # The audit chain is immutable, so a person's name is recorded as changed, never stored.
+    previous_full_name = user.full_name
     if "full_name" in patch.model_fields_set:
         user.full_name = patch.full_name
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
     if patch.organization_name is not None:
         _require_role(user, "owner", "admin")
         tenant = await session.get(Organization, _tenant_id(user))
         if tenant is None:
             raise HTTPException(status_code=403, detail="Tenant does not exist")
+        before["organization_name"] = tenant.name
         tenant.name = patch.organization_name.strip()
-    await _audit(session, user, "tenant.profile_updated", str(user.id))
+        after["organization_name"] = tenant.name
+    await _audit(
+        session,
+        user,
+        "tenant.profile_updated",
+        str(user.id),
+        details={
+            **change_details(before, after),
+            "full_name_changed": user.full_name != previous_full_name,
+        },
+    )
     await session.commit()
     await session.refresh(user)
     return await _user_view(session, user)
@@ -1312,14 +1328,16 @@ async def update_api_key(
             await require_team(session, user, patch.team_id, administer=True)
     if "allowed_models" in patch.model_fields_set:
         await require_model_aliases(session, _tenant_id(user), patch.allowed_models)
-    for field, value in patch.model_dump(exclude_unset=True).items():
+    changes = patch.model_dump(exclude_unset=True)
+    before = {field: getattr(api_key, field) for field in changes}
+    for field, value in changes.items():
         setattr(api_key, field, value)
     await _audit(
         session,
         user,
         "tenant.api_key_updated",
         str(api_key.id),
-        details={"changes": patch.model_dump(mode="json", exclude_unset=True)},
+        details=change_details(before, changes),
     )
     await session.commit()
     await session.refresh(api_key)
@@ -1417,6 +1435,7 @@ async def update_provider_secret(
     purpose = _provider_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
+    before = _provider_secret_details(row)
     if "name" in patch.model_fields_set:
         row.name = patch.name
     if "monthly_limit_usd" in patch.model_fields_set:
@@ -1438,7 +1457,10 @@ async def update_provider_secret(
             user,
             "tenant.provider_secret_updated",
             str(row.id),
-            details=_provider_secret_details(row, key_rotated=patch.key is not None),
+            details={
+                **change_details(before, _provider_secret_details(row)),
+                "key_rotated": patch.key is not None,
+            },
         )
         await session.commit()
     except BaseException:
@@ -1574,7 +1596,7 @@ async def update_privacy_settings(
         user,
         "tenant.privacy_policy_updated",
         str(tenant_id),
-        details=_change_details(before, after),
+        details=change_details(before, after),
     )
     relaxed = [field for field in before if before[field] and not after[field]]
     if relaxed:
@@ -1683,7 +1705,7 @@ async def create_budget(
             user,
             "tenant.budget_created",
             str(row.id),
-            details=_change_details(None, _budget_facts(row)),
+            details=change_details(None, _budget_facts(row)),
         )
         await session.commit()
     except BaseException:
@@ -1732,7 +1754,7 @@ async def update_budget(
             user,
             "tenant.budget_updated",
             str(row.id),
-            details=_change_details(before, _budget_facts(row)),
+            details=change_details(before, _budget_facts(row)),
         )
         await session.commit()
     except BaseException:
@@ -1760,7 +1782,7 @@ async def delete_budget(
     targets = list(row.notify_targets or [])
     _reject_oversized_legacy_targets(targets)
     await _cancel_budget_deliveries(session, _tenant_id(user), row.id)
-    details = _change_details(_budget_facts(row), None)
+    details = change_details(_budget_facts(row), None)
     await session.delete(row)
     await _audit(session, user, "tenant.budget_deleted", str(row.id), details=details)
     await session.commit()
@@ -1828,6 +1850,13 @@ async def evaluate_budgets(
     except BudgetConfigurationError as exc:
         await session.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from None
+    await _audit(
+        session,
+        user,
+        "tenant.budgets_evaluated",
+        str(_tenant_id(user)),
+        details={"budgets_evaluated": len(results)},
+    )
     await session.commit()
     return BudgetEvaluationView(
         period=now.strftime("%Y-%m"),
@@ -2063,6 +2092,21 @@ async def export_requests(
             ),
         )
 
+    # Buffered, not session.stream(): server-side cursors break on the
+    # statement_cache_size=0 engine (core/database.py). The cap bounds memory.
+    rows = (
+        await session.execute(rows_statement.limit(_MAX_SYNC_REQUEST_EXPORT_ROWS))
+    ).all()
+    # Recorded after the rows are read, so the export never contains its own event.
+    await _audit(
+        session,
+        user,
+        "tenant.requests_exported",
+        str(tenant_id),
+        details=export_details(start_at, end_at, rows=len(rows)),
+    )
+    await session.commit()
+
     async def content() -> AsyncIterator[bytes]:
         output = io.StringIO()
         writer = csv.writer(output)
@@ -2092,49 +2136,41 @@ async def export_requests(
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        result = await session.stream(
-            rows_statement.limit(_MAX_SYNC_REQUEST_EXPORT_ROWS)
-        )
-        try:
-            async for row, cost_usd in result:
-                details = row.details or {}
-                output.seek(0)
-                output.truncate(0)
-                writer.writerow(
-                    _safe_csv(value)
-                    for value in (
-                        row.request_id,
-                        row.timestamp.isoformat(),
-                        row.path,
-                        row.model,
-                        _request_provider(row),
-                        _request_activity_status(row.details),
-                        row.prompt_tokens,
-                        row.completion_tokens,
-                        Decimal(str(cost_usd)) if cost_usd is not None else None,
-                        details.get("shim_latency_ms"),
-                        row.pii_detected,
-                        ",".join(row.tags or []),
-                        row.cost_center,
-                        row.team,
-                        (
-                            json.dumps(
-                                details["provider_finish_reasons"], sort_keys=True
-                            )
-                            if details.get("provider_finish_reasons") is not None
-                            else None
-                        ),
-                        details.get("completion_outcome"),
-                        details.get("repeat_chain_length"),
-                        details.get("ttft_ms"),
-                        details.get("system_prompt_hash"),
-                        details.get("deployment_kind"),
-                        cost_usd is not None,
-                    )
+        for row, cost_usd in rows:
+            details = row.details or {}
+            output.seek(0)
+            output.truncate(0)
+            writer.writerow(
+                _safe_csv(value)
+                for value in (
+                    row.request_id,
+                    row.timestamp.isoformat(),
+                    row.path,
+                    row.model,
+                    _request_provider(row),
+                    _request_activity_status(row.details),
+                    row.prompt_tokens,
+                    row.completion_tokens,
+                    Decimal(str(cost_usd)) if cost_usd is not None else None,
+                    details.get("shim_latency_ms"),
+                    row.pii_detected,
+                    ",".join(row.tags or []),
+                    row.cost_center,
+                    row.team,
+                    (
+                        json.dumps(details["provider_finish_reasons"], sort_keys=True)
+                        if details.get("provider_finish_reasons") is not None
+                        else None
+                    ),
+                    details.get("completion_outcome"),
+                    details.get("repeat_chain_length"),
+                    details.get("ttft_ms"),
+                    details.get("system_prompt_hash"),
+                    details.get("deployment_kind"),
+                    cost_usd is not None,
                 )
-                yield output.getvalue().encode("utf-8")
-        finally:
-            await result.close()
+            )
+            yield output.getvalue().encode("utf-8")
 
     return StreamingResponse(
         content(),
@@ -2253,6 +2289,16 @@ async def export_billing_breakdown(
                 f"{MAX_BILLING_BREAKDOWN_ROWS} groups"
             ),
         )
+    await _audit(
+        session,
+        user,
+        "tenant.billing_exported",
+        str(_tenant_id(user)),
+        details=export_details(
+            start, end, rows=len(records), group_by=group_by, format=format
+        ),
+    )
+    await session.commit()
     content = (
         _billing_breakdown_csv(records)
         if format == "csv"
@@ -2267,26 +2313,6 @@ async def export_billing_breakdown(
             "Content-Disposition": f'attachment; filename="shim_billing_{group_by}.{format}"'
         },
     )
-
-
-def _change_details(
-    before: dict[str, Any] | None, after: dict[str, Any] | None
-) -> dict[str, object]:
-    changed = [
-        field
-        for field in after or before or {}
-        if before is None or after is None or before[field] != after[field]
-    ]
-    return {
-        label: {
-            field: str(facts[field])
-            if isinstance(facts[field], Decimal)
-            else facts[field]
-            for field in changed
-        }
-        for label, facts in (("before", before), ("after", after))
-        if facts is not None
-    }
 
 
 def _budget_facts(row: CostBudget) -> dict[str, Any]:
@@ -3070,7 +3096,9 @@ async def update_model_deployment(
     secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
     if secret.provider != payload.provider:
         raise HTTPException(422, detail="Credential provider does not match deployment")
-    for field, value in payload.model_dump().items():
+    configuration = payload.model_dump()
+    before = {field: getattr(row, field) for field in configuration}
+    for field, value in configuration.items():
         setattr(row, field, value)
     row.health, row.health_checked_at = "unknown", None
     try:
@@ -3079,7 +3107,7 @@ async def update_model_deployment(
             user,
             "tenant.model_deployment_updated",
             str(row.id),
-            details={"configuration": payload.model_dump(mode="json")},
+            details=change_details(before, configuration),
         )
         await session.commit()
     except IntegrityError:

@@ -166,15 +166,20 @@ uvx shim-audit-verify shim-audit-bundle-*.json
 Notes:
 
 - The export answers 422 above 10,000 rows or 366 anchors, or when `start` is
-  after `end`, and 404 for a window without rows. The file is saved as
+  after `end`, and 404 for a window without rows. A tenant writing more than
+  10,000 rows a day exports hour-sized windows. The file is saved as
   `shim-audit-bundle-<organization id>.json`.
 - The server-side check is `POST /api/v1/compliance/audit/verify?from=…&to=…`:
-  its parameters are `from` and `to`, not `start` and `end`, and it reads the
-  chain from sequence 1 up to `to` whatever `from` is. A tenant with more than
-  10,000 rows before `to` therefore gets 422 there; export a bundle and verify it
-  offline instead. With both bounds set, the window may span at most 31 days. It
-  answers `ok`, `rows_checked`, `first_break`, `last_verified_seq`,
-  `anchors_checked` and `anchor_mismatches`.
+  its parameters are `from` and `to`, not `start` and `end`. With `from`, it
+  starts after the latest daily anchor dated before `from` and checks that the
+  chain still links to that anchor's tip (`anchor_link_mismatch` otherwise);
+  without an earlier anchor, or without `from`, it starts at sequence 1. It reads
+  at most 10,000 rows (422 beyond). With both bounds set, the window may span at
+  most 31 days. It answers `ok`, `chain_start` (`from_seq`, `anchor_date`),
+  `rows_checked`, `first_break`, `last_verified_seq`, `anchors_checked` and
+  `anchor_mismatches`. A check that starts at an anchor trusts that stored
+  anchor; see [decision evidence](POLICY_DECISIONS.md#audit-evidence-bundle).
+- Exports, verifications and reports are themselves recorded in the audit chain.
 - Read the verifier's "What it does not prove" before relying on a result. The
   format and limits are in [decision evidence](POLICY_DECISIONS.md#audit-evidence-bundle).
 - Audit-chain appends that the outbox dead-lettered can be queued again from the

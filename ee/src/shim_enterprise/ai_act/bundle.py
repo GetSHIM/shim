@@ -8,7 +8,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.audit_writer import (
@@ -48,20 +48,35 @@ async def build_audit_bundle(
     end: datetime | None,
     now: datetime,
 ) -> dict[str, Any] | None:
+    tenant = AIActAuditLog.organization_id == organization_id
     statement = (
         select(AIActAuditLog)
-        .where(AIActAuditLog.organization_id == organization_id)
+        .where(tenant)
         .order_by(AIActAuditLog.seq)
         .limit(MAX_SYNC_AUDIT_ROWS + 1)
     )
+    # created_at is each instance's clock, so the window becomes a contiguous seq
+    # range: a skewed row inside it can no longer fake a seq_gap at the edges.
     if start is not None:
-        statement = statement.where(AIActAuditLog.created_at >= start)
+        first_seq = await session.scalar(
+            select(func.min(AIActAuditLog.seq)).where(
+                tenant, AIActAuditLog.created_at >= start
+            )
+        )
+        statement = statement.where(AIActAuditLog.seq >= first_seq)
     if end is not None:
-        statement = statement.where(AIActAuditLog.created_at <= end)
+        last_seq = await session.scalar(
+            select(func.max(AIActAuditLog.seq)).where(
+                tenant, AIActAuditLog.created_at <= end
+            )
+        )
+        statement = statement.where(AIActAuditLog.seq <= last_seq)
     rows = list((await session.execute(statement)).scalars())
     if len(rows) > MAX_SYNC_AUDIT_ROWS:
         raise AuditVerificationLimitExceeded(
-            f"bundle export is limited to {MAX_SYNC_AUDIT_ROWS} rows"
+            f"bundle export is limited to {MAX_SYNC_AUDIT_ROWS} rows; "
+            f"a tenant writing more than {MAX_SYNC_AUDIT_ROWS} rows a day "
+            "exports hour-sized windows"
         )
     if not rows:
         return None

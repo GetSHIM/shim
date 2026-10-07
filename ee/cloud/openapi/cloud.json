@@ -1940,6 +1940,33 @@
         "title": "ChainBreak",
         "type": "object"
       },
+      "ChainStart": {
+        "description": "Where the chain check started: genesis, or after a stored daily anchor.",
+        "properties": {
+          "anchor_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Date"
+          },
+          "from_seq": {
+            "exclusiveMinimum": 0.0,
+            "title": "From Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_seq"
+        ],
+        "title": "ChainStart",
+        "type": "object"
+      },
       "ChatRequest": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -9754,6 +9781,9 @@
             "title": "Anchors Checked",
             "type": "integer"
           },
+          "chain_start": {
+            "$ref": "#/components/schemas/ChainStart"
+          },
           "first_break": {
             "anyOf": [
               {
@@ -9788,6 +9818,7 @@
         },
         "required": [
           "ok",
+          "chain_start",
           "rows_checked",
           "anchors_checked"
         ],

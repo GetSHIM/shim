@@ -242,6 +242,7 @@ async def test_audit_verification_without_a_range_preserves_full_verification(
     verify = AsyncMock(
         return_value={
             "ok": True,
+            "chain_start": {"from_seq": 1, "anchor_date": None},
             "rows_checked": 0,
             "first_break": None,
             "last_verified_seq": None,
@@ -250,10 +251,12 @@ async def test_audit_verification_without_a_range_preserves_full_verification(
     anchors = AsyncMock(
         return_value={"ok": True, "anchors_checked": 0, "mismatches": []}
     )
-    session = SimpleNamespace()
+    session = SimpleNamespace(commit=AsyncMock())
+    audit = AsyncMock()
     monkeypatch.setattr(api_module, "_tenant_for_write", tenant_for_write)
     monkeypatch.setattr(api_module, "verify_chain", verify)
     monkeypatch.setattr(api_module, "verify_anchors", anchors)
+    monkeypatch.setattr(api_module, "_audit", audit)
 
     result = await api_module.verify_audit_chain(
         start=None,
@@ -265,6 +268,8 @@ async def test_audit_verification_without_a_range_preserves_full_verification(
     assert result.ok is True
     verify.assert_awaited_once_with(session, tenant_id, start=None, end=None)
     anchors.assert_awaited_once_with(session, tenant_id, start=None, end=None)
+    assert audit.await_args.args[2] == "compliance.audit_verified"
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -427,7 +432,9 @@ async def test_bundle_window_validation_and_empty_windows(
             {"organization_id": test_org.id, "request_id": f"req-limit-{index}"}, db
         )
     monkeypatch.setattr(bundle_module, "MAX_SYNC_AUDIT_ROWS", 1)
-    with pytest.raises(HTTPException, match="limited to 1 rows") as over_limit:
+    with pytest.raises(
+        HTTPException, match="limited to 1 rows; .* hour-sized windows"
+    ) as over_limit:
         await api_module.export_audit_bundle(
             start=None, end=None, current_user=user, session=db
         )
@@ -476,3 +483,78 @@ async def test_bundle_is_for_organization_readers_with_a_user_session(
         f'"shim-audit-bundle-{test_user_with_org.organization_id}.json"'
     )
     assert auditor.json()["row_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_oversight_changes_triggers_and_evidence_reads_are_audited(
+    db, test_user_with_org, audit_events
+) -> None:
+    from shim_enterprise.ai_act.schemas import (
+        OversightPolicyCreate,
+        OversightPolicyUpdate,
+    )
+
+    user = test_user_with_org
+    user.role = "admin"
+    tenant_id = user.organization_id
+    await write_audit_row({"organization_id": tenant_id, "request_id": "req-1"}, db)
+
+    policy = await api_module.create_oversight_policy(
+        OversightPolicyCreate(name="PII", trigger={"pii_detected": True}),
+        current_user=user,
+        session=db,
+    )
+    await api_module.update_oversight_policy(
+        policy.id,
+        OversightPolicyUpdate(enabled=False),
+        current_user=user,
+        session=db,
+    )
+    await api_module.delete_oversight_policy(policy.id, current_user=user, session=db)
+    await api_module.trigger_oversight_evaluation(current_user=user, session=db)
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    await api_module.trigger_anchor(
+        anchor_date=yesterday, current_user=user, session=db
+    )
+    bundle = await api_module.export_audit_bundle(
+        start=None, end=None, current_user=user, session=db
+    )
+    await api_module.verify_audit_chain(
+        start=None, end=None, current_user=user, session=db
+    )
+    await api_module.generate_audit_report_endpoint(
+        AuditReportRequest(format="csv"), current_user=user, session=db
+    )
+
+    events = await audit_events(tenant_id)
+    extra = {event["endpoint"]: event["extra"] for event in events}
+    assert sorted(event["endpoint"] for event in events) == [
+        "compliance.audit_anchored",
+        "compliance.audit_bundle_exported",
+        "compliance.audit_report_generated",
+        "compliance.audit_verified",
+        "compliance.oversight_evaluated",
+        "compliance.oversight_policy_created",
+        "compliance.oversight_policy_deleted",
+        "compliance.oversight_policy_updated",
+    ]
+    assert all(event["actor"] == str(user.id) for event in events)
+    created = extra["compliance.oversight_policy_created"]
+    assert set(created) == {"subject_id", "after"}
+    assert created["after"]["trigger"] == {"pii_detected": True}
+    updated = extra["compliance.oversight_policy_updated"]
+    assert (updated["before"], updated["after"]) == (
+        {"enabled": True},
+        {"enabled": False},
+    )
+    assert extra["compliance.oversight_policy_deleted"]["before"]["enabled"] is False
+    assert extra["compliance.audit_anchored"] == {
+        "subject_id": str(tenant_id),
+        "anchor_date": yesterday.isoformat(),
+        "row_count": 0,
+    }
+    # The bundle was selected before its own event was recorded.
+    assert bytes(bundle.body).count(b'"request_id"') == 1
+    assert extra["compliance.audit_bundle_exported"]["rows"] == 1
+    assert extra["compliance.audit_verified"]["ok"] is True
+    assert extra["compliance.audit_report_generated"]["frameworks"] == ["ai_act"]

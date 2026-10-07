@@ -73,8 +73,16 @@ class AnchorMismatch(BaseModel):
     live_row_count: int = Field(ge=0)
 
 
+class ChainStart(BaseModel):
+    """Where the chain check started: genesis, or after a stored daily anchor."""
+
+    from_seq: int = Field(gt=0)
+    anchor_date: date | None = None
+
+
 class VerifyResult(BaseModel):
     ok: bool
+    chain_start: ChainStart
     rows_checked: int = Field(ge=0)
     first_break: ChainBreak | None = None
     last_verified_seq: int | None = Field(default=None, gt=0)

@@ -29,6 +29,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.tenants.audit import change_details, record_management_action
 from shim_enterprise.tenants.models import Organization, User
 from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
@@ -175,6 +176,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         .where(User.oidc_issuer == issuer, User.oidc_subject == subject)
         .with_for_update()
     )
+    previous_role = user.role if user is not None else None
     if user is None:
         if claims.get("email_verified") is not True:
             raise HTTPException(403, "A verified email address is required")
@@ -208,9 +210,25 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
     user.role = role
     try:
         await session.flush()
-        await synchronize_oidc_teams(
+        teams_before, teams_after = await synchronize_oidc_teams(
             session, user, groups, settings.OIDC_TEAM_GROUP_MAP
         )
+        before = {"role": previous_role, "oidc_teams": teams_before}
+        after = {"role": role, "oidc_teams": teams_after}
+        # An unchanged login writes nothing; the identity provider is the source.
+        if previous_role is None or before != after:
+            await record_management_action(
+                session,
+                user,
+                "tenant.oidc_user_provisioned"
+                if previous_role is None
+                else "tenant.oidc_user_synchronized",
+                str(user.id),
+                details={
+                    "source": "oidc",
+                    **change_details(None if previous_role is None else before, after),
+                },
+            )
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()

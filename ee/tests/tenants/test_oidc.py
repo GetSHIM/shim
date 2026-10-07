@@ -367,3 +367,56 @@ async def test_login_projects_and_removes_oidc_team_membership(
         await db.scalar(select(TeamMembership).where(TeamMembership.user_id == user.id))
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_logins(
+    db, test_org, monkeypatch, oidc_config, audit_events
+):
+    from shim_enterprise.tenants.models import Team
+
+    team = Team(id=uuid4(), organization_id=test_org.id, name="OIDC team")
+    db.add(team)
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_TEAM_GROUP_MAP",
+        {"/shim/team": {"team_id": str(team.id), "role": "member"}},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="audited-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members"],
+    )
+
+    user = await oidc.synchronize_user(db, claims)
+    await oidc.synchronize_user(db, claims)
+    after_plain_login = await audit_events(test_org.id)
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/owners"]})
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/owners", "/shim/team"]})
+    events = await audit_events(test_org.id)
+
+    assert [event["endpoint"] for event in after_plain_login] == [
+        "tenant.oidc_user_provisioned"
+    ]
+    assert after_plain_login[0]["extra"] == {
+        "subject_id": str(user.id),
+        "source": "oidc",
+        "after": {"role": "member", "oidc_teams": {}},
+    }
+    changes = [event["extra"] for event in events[1:]]
+    assert [event["endpoint"] for event in events[1:]] == [
+        "tenant.oidc_user_synchronized"
+    ] * 2
+    assert all(event["actor"] == str(user.id) for event in events)
+    assert (changes[0]["before"], changes[0]["after"]) == (
+        {"role": "member"},
+        {"role": "owner"},
+    )
+    assert (changes[1]["before"], changes[1]["after"]) == (
+        {"oidc_teams": {}},
+        {"oidc_teams": {str(team.id): "member"}},
+    )

@@ -801,17 +801,16 @@ async def test_registry_management_requires_admin_and_audits_configuration(
             )
         )
     ).all()
-    configs = {
-        event.payload["endpoint"]: event.payload["extra"]["configuration"]
-        for event in events
-        if "configuration" in event.payload.get("extra", {})
-    }
-    assert configs["tenant.model_deployment_created"]["declared_version"] == "sha256:v1"
-    assert configs["tenant.model_deployment_updated"]["declared_version"] == "sha256:v2"
-    assert configs["tenant.model_deployment_created"]["provider_secret_id"] == str(
-        rows[0].provider_secret_id
+    extras = {event.payload["endpoint"]: event.payload["extra"] for event in events}
+    created_config = extras["tenant.model_deployment_created"]["configuration"]
+    assert created_config["declared_version"] == "sha256:v1"
+    assert created_config["provider_secret_id"] == str(rows[0].provider_secret_id)
+    assert "key" not in created_config
+    updated = extras["tenant.model_deployment_updated"]
+    assert (updated["before"], updated["after"]) == (
+        {"declared_version": "sha256:v1", "enabled": True},
+        {"declared_version": "sha256:v2", "enabled": False},
     )
-    assert all("key" not in config for config in configs.values())
 
 
 @pytest.mark.asyncio

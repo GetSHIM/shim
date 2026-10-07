@@ -748,7 +748,9 @@ async def test_member_reads_requests_of_own_and_administered_team_keys(
         second = (
             await client.get("/requests", params={"limit": 3, "offset": 3})
         ).json()
-        exported = await client.get("/requests/export")
+        # Two exports on one pooled connection: the second used to bind the
+        # cached rows statement against the count query's unnamed statement.
+        exports = [await client.get("/requests/export") for _ in range(2)]
         current = owner
         everything = (await client.get("/requests", params={"limit": 200})).json()
 
@@ -757,8 +759,10 @@ async def test_member_reads_requests_of_own_and_administered_team_keys(
     assert first["summary"]["requests"] == 4
     assert [len(first["items"]), len(second["items"])] == [3, 1]
     assert {item["request_id"] for item in first["items"] + second["items"]} == readable
-    assert {
-        row["request_id"]
-        for row in csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
-    } == readable
+    for exported in exports:
+        assert exported.status_code == 200
+        assert {
+            row["request_id"]
+            for row in csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
+        } == readable
     assert everything["total"] == 8

@@ -85,9 +85,32 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
-| `tenant.provider_secret_created` / `_updated` / `_verified` / `_rejected` / `_deleted` | `provider`, `name`, `monthly_limit_usd`, `key_rotated` (true only when an update replaced the key) |
+| `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `name`, `monthly_limit_usd`, `key_rotated` (false) |
+| `tenant.provider_secret_updated` | `before` and `after` of `name` and `monthly_limit_usd` when they changed, and `key_rotated` (true when the update replaced the key) |
+| `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |
+| `tenant.api_key_updated` | `before` and `after` of the changed fields (`cost_center`, `team`, `team_id`, `allowed_models`) |
+| `tenant.model_deployment_updated` | `before` and `after` of the changed configuration fields |
+| `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
+| `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
+| `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |
+| `compliance.connector_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `provider`, `status`, and the redacted `config` |
+| `compliance.connector_run_requested` | `provider`; recorded before the manual run starts |
+| `compliance.forward_target_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `kind`, `endpoint_origin`, `signed`, `min_severity`, `enabled`; an update adds `destination_rotated` (true when the endpoint or signing secret was replaced) |
+| `compliance.oversight_policy_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` |
+| `compliance.oversight_evaluated` | `evaluated`, `created`, `expired` counts of the manual run |
+| `compliance.audit_anchored` | `anchor_date` and `row_count` of the manually written anchor |
 
-No key, secret reference, masked key or fingerprint is recorded.
+No key, secret reference, masked key, endpoint path or fingerprint is recorded.
+The actor of every event is the signed-in user. For the two OIDC events the actor
+is the user who signed in, and a login that changes nothing records nothing.
+
+Evidence reads are recorded too, once the data is selected, so an export never
+contains its own event: `compliance.audit_bundle_exported`,
+`compliance.audit_verified` (with `ok`), `compliance.audit_report_generated`,
+`compliance.kvkk_report_generated`, `tenant.requests_exported` and
+`tenant.billing_exported`. Each carries the window `start` and `end` and, where it
+applies, the row count, format, frameworks, connector or grouping. List views
+(`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
 Turning any privacy switch off also queues, for every enabled compliance forward
 target of the tenant's connectors, one `compliance.connector_delivery_requested`
@@ -110,12 +133,34 @@ stored link instead. Rows are written exactly as they were hashed, together with
 the daily anchors of the days in the window. The genesis salt never leaves the
 deployment.
 
+The window is resolved to a sequence range first: from the lowest `seq` written
+at or after `start` to the highest written at or before `end`. Rows carry each
+instance's own clock, so a row from a slightly skewed instance stays inside the
+range instead of showing up as a gap at the window's edge.
+
 Synchronous limits: at most 10,000 rows and 366 anchors (422 beyond), 404 for a
-window without rows, and 422 when `start` is after `end`. The server-side check,
-`POST /api/v1/compliance/audit/verify`, names its window `from` and `to` and
-always reads the chain from sequence 1 up to `to`, so a tenant with more than
-10,000 rows before `to` gets 422 there whatever `from` is; export a bundle and
-verify it offline instead. A float that jsonb
+window without rows, and 422 when `start` is after `end`. A tenant that writes
+more than 10,000 rows a day exports hour-sized windows; the verifier skips the
+anchors of days a window only partly covers, so such windows verify.
+
+The server-side check, `POST /api/v1/compliance/audit/verify`, names its window
+`from` and `to`. With `from`, it starts after the latest daily anchor dated
+before `from`: it checks that the stored row at the anchor's `to_seq` still has
+the anchor's `tip_hash` (`anchor_link_mismatch` otherwise) and verifies every row
+from there through `to`, read in pages. Without such an anchor, or without
+`from`, it starts at genesis, as before. The 10,000-row budget counts only the
+rows read, so a window after a recent anchor stays within it however long the
+chain is. The response's `chain_start` (`from_seq`, `anchor_date`) says where the
+check started. `POST /api/v1/compliance/reports/audit` runs the same check over
+its window.
+
+The trade-off: the anchors live in the same database as the rows. A check seeded
+from an anchor proves that the window links to that stored anchor, not that the
+rows before it are intact; someone able to rewrite both rows and anchors is not
+detected (see "Anchors are local only" in the verifier's `FORMAT.md`). The
+anchor check of the same call recomputes the anchors of the days in the window
+only. To check a whole chain from genesis, call without `from` (up to 10,000
+rows), or export bundles and verify them offline. A float that jsonb
 would store in another form (non-finite, or `abs(value) >= 1e16`) is written to
 the chain as its string, so every stored row re-hashes as written.
 
