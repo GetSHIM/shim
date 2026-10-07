@@ -83,6 +83,8 @@ class AccountingPersistenceError(PersistenceError):
 
 
 logger = logging.getLogger(__name__)
+# The spend-policy version that records a tenant's refusal of customer provider keys.
+_CUSTOMER_KEY_REFUSED = "spend:customer-provider-key:refused:v1"
 
 
 def _system_prompt_hash(prepared: PreparedInference) -> str | None:
@@ -308,8 +310,15 @@ class AccountingPolicyLoader:
         ephemeral_byok: bool,
     ) -> SpendPolicySnapshot:
         if ephemeral_byok:
+            allowed = await session.scalar(
+                select(Organization.allow_customer_provider_keys).where(
+                    Organization.id == prepared.tenant_id
+                )
+            )
             return SpendPolicySnapshot(
-                version="spend:ephemeral-byok:unlimited:v1",
+                version="spend:ephemeral-byok:unlimited:v1"
+                if allowed
+                else _CUSTOMER_KEY_REFUSED,
                 monthly_limit_usd=None,
             )
 
@@ -521,6 +530,8 @@ class DurableAccountingCoordinator:
                     for verdict in prepared.policy_verdicts
                 ),
             )
+            if policy.version == _CUSTOMER_KEY_REFUSED:
+                raise SpendLimitExceeded("PROVIDER_KEY_NOT_ALLOWED")
             if prepared.unpriced and policy.monthly_limit_usd is not None:
                 raise SpendLimitExceeded("MODEL_PRICE_UNKNOWN")
             result = await self.repository.reserve_provider_spend(
@@ -537,8 +548,8 @@ class DurableAccountingCoordinator:
                 "spend.provider_monthly",
                 stage="provider_spend",
                 outcome="deny",
-                reason_code="MODEL_PRICE_UNKNOWN"
-                if str(exc) == "MODEL_PRICE_UNKNOWN"
+                reason_code=str(exc)
+                if str(exc) in {"MODEL_PRICE_UNKNOWN", "PROVIDER_KEY_NOT_ALLOWED"}
                 else "SPEND_LIMIT_EXCEEDED",
                 policy_version=command.policy.version,
             )

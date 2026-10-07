@@ -1387,6 +1387,18 @@
             "title": "Key",
             "type": "string"
           },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The team's current name when grouped by team_id.",
+            "title": "Label"
+          },
           "prompt_tokens": {
             "minimum": 0.0,
             "title": "Prompt Tokens",
@@ -6589,6 +6601,20 @@
           "block_pii_tr"
         ],
         "title": "PrivacySettings",
+        "type": "object"
+      },
+      "ProviderKeySettings": {
+        "properties": {
+          "allow_customer_provider_keys": {
+            "description": "When false, a request carrying its own provider key (x-provider-key) on a catalog route is refused with 403 PROVIDER_KEY_NOT_ALLOWED.",
+            "title": "Allow Customer Provider Keys",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allow_customer_provider_keys"
+        ],
+        "title": "ProviderKeySettings",
         "type": "object"
       },
       "ProviderSecretInput": {
@@ -13557,6 +13583,76 @@
           }
         ],
         "summary": "Update Privacy Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/settings/provider-keys": {
+      "get": {
+        "operationId": "get_provider_key_settings_api_v1_management_settings_provider_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeySettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Provider Key Settings",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "update_provider_key_settings_api_v1_management_settings_provider_keys_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderKeySettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderKeySettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Provider Key Settings",
         "tags": [
           "management"
         ]

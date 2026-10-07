@@ -88,6 +88,14 @@ class EnterpriseGatewayService(GatewayService):
                         "message": "A priced model is required to enforce this provider spending limit.",
                     },
                 ) from None
+            if str(exc) == "PROVIDER_KEY_NOT_ALLOWED":
+                raise HTTPException(
+                    403,
+                    detail={
+                        "code": "PROVIDER_KEY_NOT_ALLOWED",
+                        "message": "This organization does not accept provider keys in requests; remove x-provider-key to use the organization's stored key.",
+                    },
+                ) from None
             raise_accounting_limit("SPEND_LIMIT_EXCEEDED")
         except TenantPolicyConfigurationError:
             raise_tenant_policy_error()

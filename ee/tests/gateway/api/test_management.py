@@ -757,11 +757,12 @@ def test_billing_exports_render_safe_csv_and_pdf() -> None:
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)
 
-    assert "'=formula" in management._billing_breakdown_csv([record]).decode(
-        "utf-8-sig"
-    )
+    exported = management._billing_breakdown_csv(
+        [record], {"=formula": "=team"}
+    ).decode("utf-8-sig")
+    assert "'=formula" in exported and "'=team" in exported
     assert management._billing_breakdown_pdf(
-        [record], "provider", start, end
+        [record], {}, "provider", start, end
     ).startswith(b"%PDF")
 
 

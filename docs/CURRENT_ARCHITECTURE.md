@@ -143,7 +143,10 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 - Gemini SDKs carry the shim key in `x-goog-api-key` on Gemini routes; it is
   never inferred to be a provider credential.
 - `x-shim-key` is the explicit provider-independent gateway-key header.
-- `x-provider-key` is an invocation-scoped provider credential.
+- `x-provider-key` is an invocation-scoped provider credential. In enterprise it
+  wins over the tenant's stored key on catalog routes, is ignored on registered
+  deployments, and is refused with 403 `PROVIDER_KEY_NOT_ALLOWED` when the tenant
+  turns `allow_customer_provider_keys` off.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
 
 Credential-bearing headers are removed before request metadata is recorded.
@@ -195,6 +198,7 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `INTERNAL_ERROR`; enterprise adds
 `MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
 `MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
+`PROVIDER_KEY_NOT_ALLOWED`,
 `SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY` and
 `AUDIT_INTENT_FAILED`. A request
 that fails schema validation carries the validator's error type instead.

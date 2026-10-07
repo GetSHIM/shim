@@ -296,6 +296,17 @@ class PrivacySettings(BaseModel):
     block_pii_tr: bool
 
 
+class ProviderKeySettings(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    allow_customer_provider_keys: bool = Field(
+        description=(
+            "When false, a request carrying its own provider key (x-provider-key) "
+            "on a catalog route is refused with 403 PROVIDER_KEY_NOT_ALLOWED."
+        )
+    )
+
+
 class PrivacyPatch(BaseModel):
     block_email: bool | None = None
     block_phone: bool | None = None
@@ -720,6 +731,9 @@ class BillingBreakdownRow(BaseModel):
     unpriced_requests: int = 0
     cost_complete: bool = True
     key: str = Field(min_length=1)
+    label: str | None = Field(
+        default=None, description="The team's current name when grouped by team_id."
+    )
     request_count: int = Field(ge=0)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
@@ -805,6 +819,13 @@ async def list_team_members(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> list[User]:
+    # Team admins pick members to add from this list; ordinary members do not see it.
+    if user.role not in ORGANIZATION_READERS and not await session.scalar(
+        select(member_team_ids(user, administer=True).exists())
+    ):
+        raise HTTPException(
+            status_code=403, detail="Organization reader or team admin required"
+        )
     return list(
         (
             await session.execute(
@@ -1658,6 +1679,39 @@ async def update_privacy_settings(
     return row
 
 
+@router.get("/settings/provider-keys", response_model=ProviderKeySettings)
+async def get_provider_key_settings(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant = await session.get(Organization, _tenant_id(user))
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    return tenant
+
+
+@router.put("/settings/provider-keys", response_model=ProviderKeySettings)
+async def update_provider_key_settings(
+    payload: ProviderKeySettings,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    before = {"allow_customer_provider_keys": tenant.allow_customer_provider_keys}
+    tenant.allow_customer_provider_keys = payload.allow_customer_provider_keys
+    await _audit(
+        session,
+        user,
+        "tenant.provider_key_policy_updated",
+        str(tenant.id),
+        details=change_details(before, payload.model_dump()),
+    )
+    await session.commit()
+    return tenant
+
+
 @router.get("/tier-info", response_model=TierView)
 async def tier_info(
     user: User = Depends(get_current_user),
@@ -2278,11 +2332,14 @@ async def billing_breakdown(
         group_by=group_by,
         limit=limit,
     )
+    labels = await _team_labels(session, user, group_by)
     return BillingBreakdownView(
         period=BillingPeriodView(start=start, end=end),
         group_by=group_by,
         rows=[
-            BillingBreakdownRow.model_validate(record.as_public_record())
+            BillingBreakdownRow.model_validate(
+                record.as_public_record() | {"label": labels.get(record.key)}
+            )
             for record in records
         ],
         limit=limit,
@@ -2321,6 +2378,7 @@ async def export_billing_breakdown(
                 f"{MAX_BILLING_BREAKDOWN_ROWS} groups"
             ),
         )
+    labels = await _team_labels(session, user, group_by)
     await _audit(
         session,
         user,
@@ -2332,10 +2390,10 @@ async def export_billing_breakdown(
     )
     await session.commit()
     content = (
-        _billing_breakdown_csv(records)
+        _billing_breakdown_csv(records, labels)
         if format == "csv"
         else await asyncio.to_thread(
-            _billing_breakdown_pdf, records, group_by, start, end
+            _billing_breakdown_pdf, records, labels, group_by, start, end
         )
     )
     return Response(
@@ -2623,7 +2681,18 @@ def _safe_csv(value: object) -> str:
     )
 
 
-def _billing_breakdown_csv(records: list[Any]) -> bytes:
+async def _team_labels(
+    session: AsyncSession, user: User, group_by: BillingBreakdownGroup
+) -> dict[str, str]:
+    if group_by != "team_id":
+        return {}
+    rows = await session.execute(
+        select(Team.id, Team.name).where(Team.organization_id == _tenant_id(user))
+    )
+    return {str(team_id): name for team_id, name in rows}
+
+
+def _billing_breakdown_csv(records: list[Any], labels: dict[str, str]) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -2635,6 +2704,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
             "cost_usd",
             "unpriced_requests",
             "cost_complete",
+            "label",
         )
     )
     for record in records:
@@ -2648,6 +2718,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
                 None if record.unpriced_requests else record.cost_usd,
                 record.unpriced_requests,
                 record.unpriced_requests == 0,
+                labels.get(record.key),
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -2655,6 +2726,7 @@ def _billing_breakdown_csv(records: list[Any]) -> bytes:
 
 def _billing_breakdown_pdf(
     records: list[Any],
+    labels: dict[str, str],
     group_by: BillingBreakdownGroup,
     start: datetime,
     end: datetime,
@@ -2696,7 +2768,7 @@ def _billing_breakdown_pdf(
             evidence_table(
                 [
                     [
-                        record.key,
+                        labels.get(record.key, record.key),
                         str(record.request_count),
                         str(record.prompt_tokens + record.completion_tokens),
                         str(record.cost_usd)

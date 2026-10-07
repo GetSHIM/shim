@@ -25,7 +25,7 @@ also remains outside tenant decision evidence.
 | `rate.requests`, `rate.tokens`, `rate.repeated_requests` | Configured burst/repeat checks passed, were unlimited, or denied admission. `rate.tokens` counts approximate tokens (serialized request bytes divided by four, rounded up; its policy carries `"unit": "approximate_tokens"`), while quota and spend reservation keep the byte count as their upper bound. A denied amount is not added to its window. Repeated content does not establish an automatic retry. |
 | `quota.requests_and_tokens` | Atomic request/token reservation passed or was rejected, using the policy loaded under the accounting lock. The combined limit is not attributed to a particular counter when the atomic check cannot distinguish it. |
 | `privacy.input` | Scrubbing masked data, found no enabled entity, was disabled, blocked unsupported content, or failed closed. |
-| `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap. |
+| `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
 
@@ -85,6 +85,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
+| `tenant.provider_key_policy_updated` | `before` and `after` of `allow_customer_provider_keys` when it changed |
 | `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `name`, `monthly_limit_usd`, `key_rotated` (false) |
 | `tenant.provider_secret_updated` | `before` and `after` of `name` and `monthly_limit_usd` when they changed, and `key_rotated` (true when the update replaced the key) |
 | `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |

@@ -17,7 +17,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from shim.application import create_community_app
@@ -965,3 +965,136 @@ async def test_an_unhealthy_mark_expires_and_the_deployment_serves_again(
     assert served.status_code == 200, served.text
     assert deployment.alias in listed
     assert calls == ["b.internal"]
+
+
+_CATALOG_REQUESTS = {
+    "openai": (
+        "/v1/chat/completions",
+        {"model": "gpt-5-nano", "messages": [{"role": "user", "content": "hi"}]},
+    ),
+    "anthropic": (
+        "/v1/messages",
+        {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    ),
+    "google": (
+        "/v1beta/models/gemini-3.5-flash:generateContent",
+        {"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", sorted(_CATALOG_REQUESTS))
+async def test_tenant_can_refuse_customer_provider_keys_before_any_upstream_call(
+    db, test_api_key, provider
+):
+    organization = await db.get(Organization, test_api_key.organization_id)
+    organization.allow_customer_provider_keys = False
+    calls = []
+    async with _gateway(db, test_api_key, calls.append) as (client, _, store):
+        path, payload = _CATALOG_REQUESTS[provider]
+        refused = await client.post(path, json=payload)
+    assert refused.status_code == 403, refused.text
+    assert refused.headers["x-shim-error-code"] == "PROVIDER_KEY_NOT_ALLOWED"
+    assert calls == []
+    store.get_secret.assert_not_awaited()
+    denial = await db.scalar(
+        select(AuditIntent).where(
+            AuditIntent.organization_id == test_api_key.organization_id,
+            AuditIntent.event_type == "preflight",
+        )
+    )
+    assert (denial.provider, denial.lifecycle_status) == (provider, "spend_denied")
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    assert "PROVIDER_KEY_NOT_ALLOWED" in {
+        verdict["reason_code"]
+        for event in events
+        for verdict in event.payload.get("policy_verdicts", [])
+    }
+
+
+@pytest.mark.asyncio
+async def test_refusing_customer_keys_keeps_deployments_on_the_managed_key(
+    db, test_api_key, origins
+):
+    rows = await _deployments(db, test_api_key)
+    organization = await db.get(Organization, test_api_key.organization_id)
+    organization.allow_customer_provider_keys = False
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _store):
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": rows[0].alias,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert [request.headers["authorization"] for request in calls] == ["Bearer key-a"]
+
+
+@pytest.mark.asyncio
+async def test_allowed_customer_key_still_wins_on_catalog_routes(db, test_api_key):
+    organization = await db.get(Organization, test_api_key.organization_id)
+    assert organization.allow_customer_provider_keys is True
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5-nano",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            },
+        )
+
+    async with _gateway(db, test_api_key, upstream) as (client, app, store):
+        execution = app.state.gateway_service.kernel.executions["openai"]
+        execution.circuit_for = lambda prepared: InMemoryCircuitBreaker()
+        path, payload = _CATALOG_REQUESTS["openai"]
+        response = await client.post(path, json=payload)
+    assert response.status_code == 200, response.text
+    assert [request.headers["authorization"] for request in calls] == [
+        "Bearer ignored-override"
+    ]
+    store.get_secret.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_customer_provider_keys_default_to_allowed_for_existing_rows(db):
+    organization_id = db.info["tenant_id"]
+    await db.execute(
+        text("INSERT INTO organizations (id, name, slug) VALUES (:id, 'Old', :slug)"),
+        {"id": organization_id, "slug": f"old-{organization_id}"},
+    )
+    assert await db.scalar(
+        select(Organization.allow_customer_provider_keys).where(
+            Organization.id == organization_id
+        )
+    )

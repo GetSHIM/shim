@@ -48,6 +48,7 @@ enterprise = [
   { method = "GET", path = "/api/v1/management/requests" },
   { method = "GET", path = "/api/v1/management/requests/export" },
   { method = "GET", path = "/api/v1/management/settings/pii" },
+  { method = "GET", path = "/api/v1/management/settings/provider-keys" },
   { method = "GET", path = "/api/v1/management/subscription" },
   { method = "GET", path = "/api/v1/management/team/invites" },
   { method = "GET", path = "/api/v1/management/team/members" },
@@ -99,6 +100,7 @@ enterprise = [
   { method = "PUT", path = "/api/v1/management/model-deployments/{deployment_id}" },
   { method = "PUT", path = "/api/v1/management/providers/{secret_id}" },
   { method = "PUT", path = "/api/v1/management/settings/pii" },
+  { method = "PUT", path = "/api/v1/management/settings/provider-keys" },
   { method = "PUT", path = "/api/v1/management/teams/{team_id}" },
   { method = "PUT", path = "/api/v1/management/teams/{team_id}/members/{member_id}" },
 ]
@@ -139,6 +141,7 @@ cloud = [
   { method = "GET", path = "/api/v1/management/requests" },
   { method = "GET", path = "/api/v1/management/requests/export" },
   { method = "GET", path = "/api/v1/management/settings/pii" },
+  { method = "GET", path = "/api/v1/management/settings/provider-keys" },
   { method = "GET", path = "/api/v1/management/subscription" },
   { method = "GET", path = "/api/v1/management/team/invites" },
   { method = "GET", path = "/api/v1/management/team/members" },
@@ -193,6 +196,7 @@ cloud = [
   { method = "PUT", path = "/api/v1/management/model-deployments/{deployment_id}" },
   { method = "PUT", path = "/api/v1/management/providers/{secret_id}" },
   { method = "PUT", path = "/api/v1/management/settings/pii" },
+  { method = "PUT", path = "/api/v1/management/settings/provider-keys" },
   { method = "PUT", path = "/api/v1/management/teams/{team_id}" },
   { method = "PUT", path = "/api/v1/management/teams/{team_id}/members/{member_id}" },
 ]

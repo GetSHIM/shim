@@ -16,6 +16,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
 - [Send tenant alerts](#send-tenant-alerts)
+- [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
@@ -53,9 +54,12 @@ curl 'http://localhost:8000/api/v1/management/billing/breakdown?group_by=team_id
   -H "Authorization: Bearer $USER_TOKEN"
 ```
 
-Each row has `key`, `request_count`, `prompt_tokens`, `completion_tokens`,
+Each row has `key`, `label`, `request_count`, `prompt_tokens`, `completion_tokens`,
 `cost_usd`, `unpriced_requests` and `cost_complete`; `cost_usd` is `null` when
-any request in the row had no price.
+any request in the row had no price. With `group_by=team_id`, `label` is the
+team's current name, and `null` for `unassigned` or a deleted team; the other
+groupings leave it `null`. The CSV export adds it as the last column, and the
+PDF prints the name in place of the team id.
 
 Notes:
 
@@ -192,6 +196,35 @@ be public HTTPS or an origin approved in `ALERT_ALLOWED_ORIGINS`; e-mail goes
 through Resend (`RESEND_API_KEY`, `COMPLIANCE_EMAIL_FROM`) and is unavailable
 on a closed network, see
 [on-prem alerts](ON_PREM_IDENTITY.md#alert-delivery-on-a-closed-network).
+
+## Refuse provider keys sent in requests
+
+Make every request use the provider keys stored for your tenant, so their
+spending limits always apply.
+
+1. Read the switch with `GET /api/v1/management/settings/provider-keys`. It is
+   `true` by default.
+2. Turn it off with `PUT /api/v1/management/settings/provider-keys` (owner or admin).
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/settings/provider-keys \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"allow_customer_provider_keys": false}'
+```
+
+Notes:
+
+- With the switch on, a provider key the caller sends in `x-provider-key` (or
+  `x-openai-api-key` on OpenAI routes) wins over the stored key on catalog
+  models, for OpenAI, Anthropic and Gemini. The stored key's `monthly_limit_usd`
+  does not apply to it, because the spend is on the caller's provider account;
+  key and team quotas and budget alerts still do.
+- With the switch off, such a request gets 403 `PROVIDER_KEY_NOT_ALLOWED` before
+  any provider call, and the refusal is recorded in the audit trail. Requests
+  without a provider key are unaffected.
+- A [registered deployment](#register-a-private-model-deployment) always uses
+  its stored key and ignores the header, whatever the switch says.
+- Every change records a `tenant.provider_key_policy_updated` audit event.
 
 ## Export and verify the audit trail
 
