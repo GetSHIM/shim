@@ -10152,6 +10152,72 @@
         ]
       }
     },
+    "/api/v1/compliance/audit/bundle": {
+      "get": {
+        "operationId": "export_audit_bundle_api_v1_compliance_audit_bundle_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "A `shim.audit.bundle` v1 evidence file."
+          },
+          "404": {
+            "description": "No audit rows in the requested window."
+          },
+          "422": {
+            "description": "Window rejected or above the synchronous limits."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Audit Bundle",
+        "tags": [
+          "ai-act-control-plane"
+        ]
+      }
+    },
     "/api/v1/compliance/audit/logs": {
       "get": {
         "operationId": "list_audit_logs_api_v1_compliance_audit_logs_get",

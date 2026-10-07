@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,12 +18,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from shim_enterprise.ai_act import audit_writer
 from shim_enterprise.ai_act.anchor import compute_daily_anchor, write_anchor
+from shim_enterprise.ai_act.bundle import UnverifiableAuditRow, build_audit_bundle
 from shim_enterprise.ai_act.audit_writer import (
     append_audit_row_deduplicated,
     next_link,
     write_audit_row,
 )
-from shim_enterprise.ai_act.hashing import compute_row_hash
+from shim_enterprise.ai_act.hashing import canonical_row, chain_hash, compute_row_hash
 from shim_enterprise.ai_act.models import AIActAuditLog
 import shim_enterprise.ai_act.verify as verify_module
 from shim_enterprise.ai_act.verify import (
@@ -406,3 +408,105 @@ async def test_append_restores_the_callers_lock_timeout(db, test_org) -> None:
     )
 
     assert await db.scalar(text("SHOW lock_timeout")) == "7s"
+
+
+BUNDLE_KEYS = {
+    "format",
+    "format_version",
+    "generated_at",
+    "gateway_version",
+    "organization_id",
+    "genesis_hash",
+    "chain_start",
+    "period",
+    "row_count",
+    "rows",
+    "anchors",
+    "notes",
+}
+
+
+async def _bundle_rows(db, organization_id) -> list:
+    return [
+        await write_audit_row(
+            {
+                "organization_id": organization_id,
+                "event_type": "ai_request",
+                "request_id": f"req-bundle-{index}",
+                "model": "gpt-5.6-luna",
+                "cost_usd": cost,
+                "extra": {"score": 0.85, "label": "ölçüm"},
+            },
+            db,
+        )
+        for index, cost in enumerate(("0", "0.125", "0.00000012"))
+    ]
+
+
+@pytest.mark.asyncio
+async def test_full_chain_bundle_follows_format_v1_and_rehashes(db, test_org) -> None:
+    written = await _bundle_rows(db, test_org.id)
+
+    bundle = await build_audit_bundle(
+        db, test_org.id, start=None, end=None, now=datetime.now(timezone.utc)
+    )
+
+    assert bundle is not None
+    assert set(bundle) == BUNDLE_KEYS
+    assert (bundle["format"], bundle["format_version"]) == ("shim.audit.bundle", 1)
+    assert bundle["chain_start"] == {"from_seq": 1, "prev_hash": bundle["genesis_hash"]}
+    assert bundle["row_count"] == len(bundle["rows"]) == len(written)
+    assert bundle["generated_at"].endswith("+00:00")
+    assert bundle["period"]["end"].endswith("+00:00")
+    previous = bundle["genesis_hash"]
+    for row in bundle["rows"]:
+        assert set(row) == {*audit_writer.CANONICAL_KEYS, "prev_hash", "row_hash", "id"}
+        fields = {key: row[key] for key in audit_writer.CANONICAL_KEYS}
+        assert row["prev_hash"] == previous
+        assert chain_hash(previous, canonical_row(fields)) == row["row_hash"]
+        previous = row["row_hash"]
+    assert [row["cost_usd"] for row in bundle["rows"]] == [
+        "0E-8",
+        "0.12500000",
+        "1.2E-7",
+    ]
+    assert audit_writer.audit_salt() not in json.dumps(bundle)
+
+
+@pytest.mark.asyncio
+async def test_partial_bundle_starts_at_the_first_rows_stored_link(
+    db, test_org
+) -> None:
+    written = await _bundle_rows(db, test_org.id)
+
+    bundle = await build_audit_bundle(
+        db,
+        test_org.id,
+        start=written[1].created_at,
+        end=None,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert bundle is not None
+    assert bundle["chain_start"] == {
+        "from_seq": written[1].seq,
+        "prev_hash": written[0].row_hash,
+    }
+    assert [row["seq"] for row in bundle["rows"]] == [written[1].seq, written[2].seq]
+
+
+@pytest.mark.asyncio
+async def test_bundle_refuses_a_float_that_cannot_round_trip(db, test_org) -> None:
+    row = await write_audit_row(
+        {
+            "organization_id": test_org.id,
+            "request_id": "req-big",
+            "extra": {"value": 1e16},
+        },
+        db,
+    )
+
+    with pytest.raises(UnverifiableAuditRow, match=f"seq {row.seq}"):
+        await build_audit_bundle(
+            db, test_org.id, start=None, end=None, now=datetime.now(timezone.utc)
+        )
