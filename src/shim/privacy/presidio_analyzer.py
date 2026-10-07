@@ -23,7 +23,6 @@ from presidio_analyzer.predefined_recognizers import (
     IpRecognizer,
     MacAddressRecognizer,
     PhoneRecognizer,
-    TrLicensePlateRecognizer,
     TrNationalIdRecognizer,
     UsSsnRecognizer,
 )
@@ -34,6 +33,16 @@ _SCORE_THRESHOLD = 0.4
 
 
 class ShimEmailRecognizer(EmailRecognizer):
+    # Presidio's pattern with the local part bounded to 64 characters (RFC 5321). Unbounded,
+    # every start inside a long dotted run rescans the run: quadratic in the prompt.
+    PATTERNS = [
+        Pattern(
+            "Email (Medium)",
+            EmailRecognizer.PATTERNS[0].regex.replace("{0,}", "{0,62}", 1),
+            0.5,
+        )
+    ]
+
     @lru_cache(maxsize=4096)
     def _validate_domain(self, domain: str) -> bool:
         return bool(super().validate_result(f"shim@{domain}"))
@@ -50,7 +59,7 @@ class ShimWrittenAtEmailRecognizer(ShimEmailRecognizer):
     PATTERNS = [
         Pattern(
             "Email with a written at",
-            rf"\b[\w.+-]+(?:{_AT.pattern})[\w-]+(?:\.[\w-]+)+\b",
+            rf"\b[\w.+-]{{1,64}}(?:{_AT.pattern})[\w-]+(?:\.[\w-]+)+\b",
             0.5,
         )
     ]
@@ -121,8 +130,8 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     _DECIMAL = re.compile(r"\d+\.\d+")
     _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
     _CUE = re.compile(
-        r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|fax|whatsapp|call|numara|num|no)\b"
-        r"[\"':=. ]{0,4}$",
+        r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|fax|whatsapp|call|numara|num|no)"
+        r"(?:[ _-]?(?:number|numaras[ıi]|numaram|no|num))?\b[\"':=. ]{0,4}$",
         re.IGNORECASE,
     )
     _IDENTIFIER_TAIL = re.compile(r"[A-Za-z0-9_.-]*$")
@@ -144,18 +153,18 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 
     def _is_phone(self, text: str, start: int, end: int) -> bool:
         raw = text[start:end]
-        if start and text[start - 1] in "-_./":
-            tail = self._IDENTIFIER_TAIL.search(text, 0, start - 1)
-            if tail is not None and self._LETTER.search(tail.group()):
-                return False
         if self._DECIMAL.fullmatch(raw) or self._in_decimal(text, start, end):
             return False
-        if self._BARE.fullmatch(raw):
-            return bool(
-                self._TURKISH.fullmatch(raw)
-                or self._CUE.search(text, max(0, start - 16), start)
-            )
-        return True
+        bare = self._BARE.fullmatch(raw)
+        if (bare and self._TURKISH.fullmatch(raw)) or self._CUE.search(
+            text, max(0, start - 24), start
+        ):
+            return True
+        if start and text[start - 1] in "-_./":
+            tail = self._IDENTIFIER_TAIL.search(text, max(0, start - 65), start - 1)
+            if tail is not None and self._LETTER.search(tail.group()):
+                return False
+        return not bare
 
     @staticmethod
     def _in_decimal(text: str, start: int, end: int) -> bool:
@@ -168,9 +177,7 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 class ShimIpRecognizer(IpRecognizer):
     """A version string is not an IP address."""
 
-    _VERSION_CUE = re.compile(
-        r"\b(?:v|ver|version|sürüm|release)\W{0,2}$", re.IGNORECASE
-    )
+    _VERSION_CUE = re.compile(r"\b(?:v|version|sürüm|release)\W{0,2}$", re.IGNORECASE)
     _IP_CUE = re.compile(r"\b(?:ip|addr|address|adres|host)\b", re.IGNORECASE)
     _SINGLE_DIGIT_QUAD = re.compile(r"\d\.\d\.\d\.\d")
 
@@ -204,9 +211,7 @@ class ShimSecretRecognizer(EntityRecognizer):
     )
     _ASSIGNMENT_PREFIX = rf"[\"']?(?:{_SECRET_KEY})[\"']?\s*(?:(?:=|:)\s*|\s+)"
     # An explicit separator, unlike the English keys, so "şifre unuttum" is not a finding.
-    _TURKISH_ASSIGNMENT_PREFIX = (
-        r"[\"']?(?:şifre(?:si|m)?|sifre|parola(?:sı|m)?)[\"']?\s*(?:=|:)\s*"
-    )
+    _TURKISH_ASSIGNMENT_PREFIX = r"[\"']?(?:[şs]ifre(?:si|m|n|niz)?|parola(?:s[ıi]|m|n|n[ıi]z)?)[\"']?\s*(?:=|:)\s*"
     _PATTERNS: tuple[tuple[re.Pattern[str], str | None, float], ...] = (
         (
             re.compile(
@@ -366,7 +371,6 @@ class ShimTurkishPlateRecognizer(PatternRecognizer):
         super().__init__(
             supported_entity="TR_LICENSE_PLATE",
             supported_language=_LANGUAGE,
-            context=TrLicensePlateRecognizer.CONTEXT,
             patterns=[
                 Pattern(
                     "Turkish licence plate",

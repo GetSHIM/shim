@@ -289,6 +289,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "lifecycle_status": "completed",
             "provider": "openai",
             "usage_estimated": False,
+            "completion_outcome": "refused",
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -369,7 +370,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "deployment_kind",
     }
     assert page.items[0].provider_finish_reasons is None
-    assert page.items[0].completion_outcome is None
+    assert page.items[0].completion_outcome == "refused"
     assert page.items[0].repeat_chain_length is None
     assert page.items[0].shim_latency_ms is None
     assert "latency_ms" not in page.items[0].model_dump()

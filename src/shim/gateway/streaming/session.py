@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from inspect import isawaitable
 from time import monotonic
@@ -232,9 +232,14 @@ class StreamSession:
             if self._pending_terminal is None:
                 completed_at = self._now()
                 error_code, default_message = self._terminal_error(terminal_status)
+                usage = self.meter.snapshot()
                 self._pending_terminal = StreamFinalization(
                     terminal_status=terminal_status,
-                    usage=self.meter.snapshot(),
+                    # A provider block is an answer; any other failure has none to classify.
+                    usage=usage
+                    if terminal_status == "completed"
+                    or usage.completion_outcome == "filtered"
+                    else replace(usage, completion_outcome=None),
                     completed_at=completed_at,
                     error_code=error_code,
                     error_message=(error_message or default_message),

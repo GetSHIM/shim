@@ -57,6 +57,7 @@ def _terminal(*, model: str = "gpt-5.6-luna") -> StreamFinalization:
             pricing_metadata={},
             estimated=False,
             output_hash=None,
+            completion_outcome="complete",
         ),
         completed_at=datetime.now(timezone.utc),
         error_code=None,

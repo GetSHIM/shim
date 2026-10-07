@@ -44,18 +44,22 @@ request it:
 - **Detects and replaces personal data before the request leaves.** Email
   addresses, phone numbers, credit cards (Troy included), IBANs, Turkish
   national ID and tax numbers, Turkish licence plates (`34 ABC 123`; not
-  `16 GB 512`), provider secrets such as AWS keys and GitHub,
+  `16 GB 512`, though uppercase product and date strings such as `15 PRO 256`
+  or `07 OCT 26` can still match), provider secrets such as AWS keys and GitHub,
   Google, Slack, Hugging Face and GitLab tokens, and password assignments,
-  Turkish (`şifre:`, `parola:`) included. A bare digit run counts as a phone
-  number only with a Turkish phone shape or a phone cue such as `Tel:`, so
-  order numbers and ids glued to names (`claude-sonnet-4-5-20250929`) stay
-  intact. Each detected value becomes a placeholder before the request leaves,
-  and is restored in the answer before it reaches your caller.
+  Turkish (`şifre:`, `parolanız:`) included. A bare digit run counts as a phone
+  number only with a Turkish phone shape or a phone cue such as `Tel:` or
+  `no:`, so an order number without such a cue and ids glued to names
+  (`claude-sonnet-4-5-20250929`) stay intact. Each detected value becomes a
+  placeholder before the request leaves, and is restored in the answer before
+  it reaches your caller.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request
   bytes divided by four), a refused request does not use up its own window, and
-  every limit refusal says when to retry in `Retry-After`.
+  every limit refusal says when to retry in `Retry-After`, except a request
+  larger than the whole tokens-per-minute limit, which can never be admitted and
+  answers `x-should-retry: false` so the OpenAI and Anthropic SDKs do not wait.
 - **Accounts usage and cost per request**, from that same catalog, attributed
   by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
   takes precedence, and header tags remain breakdown dimensions.
@@ -124,8 +128,8 @@ client = genai.Client(
 )
 ```
 
-Under a masking policy the provider receives placeholders in place of the
-detected values, in the form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
+The provider receives placeholders in place of the detected values, in the
+form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
 They are generated per request, so the same value gets a different placeholder
 next time, and the reply is restored before it reaches your caller.
 

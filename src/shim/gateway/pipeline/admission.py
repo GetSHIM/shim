@@ -183,10 +183,14 @@ class AdmissionStage:
                 policy={"limit": limit, "window_seconds": 60, **unit},
             )
             if denied:
+                # Larger than the whole window, it can never be admitted: SDKs must not wait.
+                never_fits = limit is not None and amount > limit
                 raise HTTPException(
                     status_code=429,
                     detail={"code": "RATE_LIMIT_EXCEEDED", "dimension": dimension},
-                    headers={"Retry-After": "60"},
+                    headers={"x-should-retry": "false"}
+                    if never_fits
+                    else {"Retry-After": "60"},
                 )
         repeat_material = _repeat_material(
             {

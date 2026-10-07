@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from unittest.mock import Mock
 
 from fastapi import HTTPException
@@ -689,6 +690,9 @@ def test_troy_and_mastercard_two_series_are_one_card(
         ("GitLab glpat-" + "0" * 20, "glpat-" + "0" * 20),
         ("ŞİFRE: x123456", "x123456"),
         ('parolam="Gizli Parola 2026"', "Gizli Parola 2026"),
+        ("Geçici şifreniz: Abc12345", "Abc12345"),
+        ("sifresi: Abc12345", "Abc12345"),
+        ("parolanız: Abc12345", "Abc12345"),
     ],
 )
 def test_vendor_tokens_and_turkish_passwords_are_one_secret(
@@ -1194,8 +1198,19 @@ def test_ids_numbers_and_versions_are_not_phones_or_addresses(
         ("Tel: 0212 555 12 34", "PHONE_NUMBER", "0212 555 12 34"),
         ("Call (555) 123-4567", "PHONE_NUMBER", "(555) 123-4567"),
         ("Ruf +49 172 5955200", "PHONE_NUMBER", "+49 172 5955200"),
+        ("Tel.05321234567", "PHONE_NUMBER", "05321234567"),
+        ("Tel.0532 123 45 67", "PHONE_NUMBER", "0532 123 45 67"),
+        ("fax.02125551234", "PHONE_NUMBER", "02125551234"),
+        ("GSM-05321234567", "PHONE_NUMBER", "05321234567"),
+        ("https://wa.me/905321234567", "PHONE_NUMBER", "905321234567"),
+        ('{"phone_number": "4155552671"}', "PHONE_NUMBER", "4155552671"),
+        ('{"phoneNumber": "4155552671"}', "PHONE_NUMBER", "4155552671"),
+        ("Phone number: 4155552671", "PHONE_NUMBER", "4155552671"),
+        ("Telefon numarası: 2125551234", "PHONE_NUMBER", "2125551234"),
+        ("Cep numaram 4155552671", "PHONE_NUMBER", "4155552671"),
         ("IP 1.2.3.4 engellendi", "IP_ADDRESS", "1.2.3.4"),
         ("gateway 10.0.0.1 down", "IP_ADDRESS", "10.0.0.1"),
+        ("izin ver 10.0.0.5", "IP_ADDRESS", "10.0.0.5"),
     ],
 )
 def test_shaped_or_cued_phones_and_real_addresses_still_match(
@@ -1208,6 +1223,21 @@ def test_shaped_or_cued_phones_and_real_addresses_still_match(
         (finding["type"], text[finding["start"] : finding["end"]])
         for finding in scrubber.analyze(text)
     ] == [(entity, value)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a." * 16000 + "@",
+        "a." * 16000 + " [at] ",
+    ],
+)
+def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
+    started = time.perf_counter()
+    scrubber.analyze(text)
+
+    # Unbounded, the email patterns took 20 s and more on 32 KB.
+    assert time.perf_counter() - started < 5
 
 
 def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(

@@ -154,6 +154,12 @@ class ResponsePostprocessor:
         completed_at = datetime.now(timezone.utc)
         finish_reasons = native_finish_reasons(response.payload, provider=provider)
         refusal, tool_call = answer_markers(response.payload)
+        outcome = completion_outcome(
+            finish_reasons,
+            output_characters=answer_characters(response.payload),
+            refusal=refusal,
+            tool_call=tool_call,
+        )
         terminal = StreamFinalization(
             terminal_status=lifecycle_status,
             usage=StreamUsageSnapshot(
@@ -170,12 +176,10 @@ class ResponsePostprocessor:
                 ),
                 estimated=not fully_actual,
                 provider_finish_reasons=finish_reasons,
-                completion_outcome=completion_outcome(
-                    finish_reasons,
-                    output_characters=answer_characters(response.payload),
-                    refusal=refusal,
-                    tool_call=tool_call,
-                ),
+                # A provider block is an answer; any other failure has none to classify.
+                completion_outcome=outcome
+                if lifecycle_status == "completed" or outcome == "filtered"
+                else None,
                 output_hash=(
                     content_ref(
                         self.output_hash_salt, bytes(gateway_response.body).decode()
@@ -257,10 +261,11 @@ class ResponsePostprocessor:
 def record_settled_usage(
     prepared: PreparedInference, usage: StreamUsageSnapshot
 ) -> None:
-    COMPLETION_OUTCOMES_TOTAL.labels(
-        provider=bounded_label("provider", prepared.provider),
-        outcome=bounded_label("outcome", usage.completion_outcome),
-    ).inc()
+    if usage.completion_outcome is not None:
+        COMPLETION_OUTCOMES_TOTAL.labels(
+            provider=bounded_label("provider", prepared.provider),
+            outcome=bounded_label("outcome", usage.completion_outcome),
+        ).inc()
     span = trace.get_current_span()
     if not span.is_recording():
         return

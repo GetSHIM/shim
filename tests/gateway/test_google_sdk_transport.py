@@ -446,6 +446,34 @@ async def test_rate_limit_releases_the_probe_and_forwards_retry_after(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [httpx.ConnectError("refused"), httpx.ReadTimeout("slow")]
+)
+async def test_connection_and_timeout_errors_count_as_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    error: httpx.TransportError,
+) -> None:
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        raise error
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http)
+        execution.circuit = circuit = _circuit()
+        with pytest.raises(ProviderCallError):
+            await execution.execute(
+                invocation=_invocation(),
+                prepared=_prepared(_HELLO),
+                provider_start_callback=AsyncMock(),
+            )
+
+    # google-genai does not wrap httpx errors, so only this arm opens the circuit.
+    circuit.record_failure.assert_awaited_once()
+    circuit.release_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["sdk_refusal", "unserializable_answer"])
 async def test_local_exceptions_release_the_probe_without_counting(
     monkeypatch: pytest.MonkeyPatch,

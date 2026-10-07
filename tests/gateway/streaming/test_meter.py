@@ -375,6 +375,68 @@ def test_native_finish_facts_match_json_and_sse(
 
 
 @pytest.mark.parametrize(
+    ("provider", "events", "payload"),
+    [
+        (
+            "anthropic",
+            [
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "Let me think."},
+                },
+                {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+            ],
+            {
+                "content": [{"type": "thinking", "thinking": "Let me think."}],
+                "stop_reason": "end_turn",
+            },
+        ),
+        (
+            "openai",
+            [
+                {
+                    "type": "response.reasoning_summary_text.delta",
+                    "delta": "Let me think.",
+                },
+                {"type": "response.completed", "response": {"status": "completed"}},
+            ],
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "content": [
+                            {"type": "reasoning_text", "text": "Let me think."}
+                        ],
+                    }
+                ],
+            },
+        ),
+    ],
+)
+def test_reasoning_alone_is_an_empty_answer_over_json_and_sse(
+    provider, events, payload
+) -> None:
+    stream_meter = meter(provider)
+    for event in events:
+        stream_meter.observe_sse(f"data: {json.dumps(event)}\n\n".encode())
+    refusal, tool_call = answer_markers(payload)
+
+    assert stream_meter.emitted_output_characters == len("Let me think.")
+    assert stream_meter.snapshot().completion_outcome == "empty"
+    assert (
+        completion_outcome(
+            native_finish_reasons(payload, provider=provider),
+            output_characters=answer_characters(payload),
+            refusal=refusal,
+            tool_call=tool_call,
+        )
+        == "empty"
+    )
+
+
+@pytest.mark.parametrize(
     ("reasons", "characters", "refusal", "tool_call", "expected"),
     [
         ({"choices.0.finish_reason": "content_filter"}, 4, False, False, "filtered"),

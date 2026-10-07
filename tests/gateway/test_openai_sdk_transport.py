@@ -1435,8 +1435,22 @@ def _usage_aware_upstream(seen: list[dict]):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_asked", [False, True])
-async def test_chat_streams_are_metered_from_provider_usage(client_asked: bool) -> None:
+@pytest.mark.parametrize(
+    ("client_options", "upstream_options", "client_asked"),
+    [
+        (None, {"include_usage": True}, False),
+        ({"include_usage": True}, {"include_usage": True}, True),
+        ({"include_usage": False}, {"include_usage": True}, False),
+        (
+            {"include_obfuscation": False},
+            {"include_obfuscation": False, "include_usage": True},
+            False,
+        ),
+    ],
+)
+async def test_chat_streams_are_metered_from_provider_usage(
+    client_options: dict | None, upstream_options: dict, client_asked: bool
+) -> None:
     seen: list[dict] = []
     events = StringIO()
     upstream = httpx.AsyncClient(
@@ -1455,7 +1469,7 @@ async def test_chat_streams_are_metered_from_provider_usage(client_asked: bool) 
         "model": "gpt-5.6-luna",
         "stream": True,
         "messages": [{"role": "user", "content": "hello"}],
-        **({"stream_options": {"include_usage": True}} if client_asked else {}),
+        **({"stream_options": client_options} if client_options is not None else {}),
     }
     async with (
         application.router.lifespan_context(application),
@@ -1475,7 +1489,7 @@ async def test_chat_streams_are_metered_from_provider_usage(client_asked: bool) 
         line for line in response.text.splitlines() if '"choices":[]' in line
     ]
     event = json.loads(events.getvalue().splitlines()[-1])
-    assert seen[0]["stream_options"] == {"include_usage": True}
+    assert seen[0]["stream_options"] == upstream_options
     assert len(usage_chunks) == (1 if client_asked else 0)
     assert (event["prompt_tokens"], event["completion_tokens"]) == (61, 9)
     assert event["estimated"] is False

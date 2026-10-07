@@ -7,7 +7,7 @@ provider attempt rule are unchanged.
 | Field | Meaning | Unknown/unavailable value |
 | --- | --- | --- |
 | `provider_finish_reasons` | Map of native completion facts, preserving candidate indices and provider spelling. See the protocol table below. | `null` when no recognized native completion fact was observed; absent map entries remain unknown. |
-| `completion_outcome` | One classification per settled request: `complete`, `truncated`, `empty`, `refused` or `filtered`, derived from `provider_finish_reasons`, the emitted answer text and whether a refusal or tool call was seen. See the mapping below. | `null` for rejected and failed requests and for historical rows. |
+| `completion_outcome` | One classification per settled request: `complete`, `truncated`, `empty`, `refused` or `filtered`, derived from `provider_finish_reasons`, the emitted answer text and whether a refusal or tool call was seen. See the mapping below. | `null` for rejected and failed requests (a provider block stays `filtered`) and for historical rows. |
 | `repeat_chain_length` | Number of matching request-content observations in the configured tenant repeat window, including this request (`1` for the first observation). | `null` when the detector has no observation, including Redis unavailability. |
 | `shim_latency_ms` | Integer milliseconds spent processing inside shim, excluding provider waits and generation; measured with a monotonic clock up to the terminal accounting handoff. Includes invocation preprocessing and response transformation; excludes provider SDK awaits, raw stream awaits, client suspension and transport close. Terminal persistence after the snapshot is outside the measurement. Provider-free scans use the same snapshot boundary. | `null` when unmeasured, including historical rows and recovery after process loss; measured zero remains zero. |
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
@@ -26,11 +26,13 @@ or candidates:
 | `empty` | none of the above, no answer text and no tool call |
 | `complete` | otherwise |
 
-Only the allowlisted native values above reach the classifier. Community
-records the field in its JSONL usage event and counts it in
-`shim_completion_outcomes_total{provider, outcome}`; enterprise carries it in
-lifecycle metadata, the analytics projection, the request list and its CSV
-export.
+Only the allowlisted native values above reach the classifier. Thinking and
+reasoning text is output but not answer text, so a reasoning-only answer is
+`empty` over JSON and over SSE alike. Both editions count the field in
+`shim_completion_outcomes_total{provider, outcome}` (a failed request is not
+counted, except a provider block, which is `filtered`); community records it in its JSONL usage event, and enterprise carries
+it in lifecycle metadata, the analytics projection, the request list and its
+CSV export.
 
 The repeat count is a content-match observation, **not evidence of a retry**.
 Its existing matching algorithm selects prompt fields plus provider/model,

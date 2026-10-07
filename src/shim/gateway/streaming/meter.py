@@ -52,7 +52,7 @@ class StreamUsageSnapshot:
     output_hash: str | None
     provider_finish_reasons: dict[str, str] | None = None
     ttft_ms: float | None = None
-    completion_outcome: str = "complete"
+    completion_outcome: CompletionOutcome | None = None
 
 
 class StreamMeter:
@@ -88,6 +88,7 @@ class StreamMeter:
         self.completion_tokens_actual: int | None = None
         self.response_model: str | None = None
         self.emitted_output_characters = 0
+        self.emitted_answer_characters = 0
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
@@ -186,7 +187,7 @@ class StreamMeter:
             ttft_ms=self.ttft_ms,
             completion_outcome=completion_outcome(
                 self.provider_finish_reasons,
-                output_characters=self.emitted_output_characters,
+                output_characters=self.emitted_answer_characters,
                 refusal=self.refusal_seen,
                 tool_call=self.tool_call_seen,
             ),
@@ -231,6 +232,9 @@ class StreamMeter:
             payload,
         )
         self.emitted_output_characters += output_characters
+        self.emitted_answer_characters += output_characters - _reasoning_characters(
+            payload_type, payload
+        )
         if (
             self.ttft_ms is None
             and self.started_at_monotonic is not None
@@ -482,6 +486,17 @@ class StreamMeter:
 def _sum_optional_counts(*values: int | None) -> int | None:
     present = [value for value in values if value is not None]
     return sum(present) if present else None
+
+
+def _reasoning_characters(event_type: str, payload: Mapping[str, Any]) -> int:
+    """Thinking and reasoning deltas: billed output, but not answer text."""
+
+    delta = payload.get("delta")
+    if isinstance(delta, str) and "reasoning" in event_type:
+        return len(delta)
+    if isinstance(delta, Mapping) and isinstance(delta.get("thinking"), str):
+        return len(delta["thinking"])
+    return 0
 
 
 def _initial_or_media_content(event_type: str, payload: Mapping[str, Any]) -> bool:
@@ -742,6 +757,8 @@ def answer_characters(payload: Mapping[str, Any]) -> int:
                 if isinstance(value, str)
             ]
     for item in _mappings(payload.get("output")):
+        if item.get("type") == "reasoning":
+            continue
         for part in _mappings(item.get("content")):
             texts += [
                 value
