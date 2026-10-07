@@ -26,16 +26,29 @@ the feature:
  "message": "This feature needs one of the plans listed in eligible_plans."}
 ```
 
-Existing organization overview and member-directory visibility is preserved.
-Team delegation limits mutation authority; it does not introduce a separate
-tenant or hide existing organization aggregate dashboards.
-
 Use **Workspace → Teams** to create a team, configure quotas, and assign
 members. Use **Gateway → Keys** to assign a key's access team and model list.
 Only organization owners/admins can move a key between teams. A member with
 team memberships must select a team when creating a key. Removing membership
 denies subsequent inference through that user's team keys; organization
 owners/admins retain organization-wide authority.
+
+## Read scope
+
+Organization-wide reads belong to owners, admins and auditors. A member reads
+the requests of the keys they own and of the keys in teams they administer;
+the filter is applied in the query, so totals, summaries, pages and the CSV
+export cover only those keys. Other roles get 403 "Organization reader
+required" on organization-wide reads.
+
+| Read | Owner, admin, auditor | Member |
+| --- | --- | --- |
+| `/management/requests`, `/management/requests/export` | Whole organization | Own keys and administered teams' keys |
+| `/management/overview`, `/management/billing/*`, `GET /management/cost/budgets` | Yes | 403 |
+| `/compliance/overview`, `/compliance/audit/logs`, `POST /compliance/audit/verify`, `POST /compliance/reports/audit`, `POST /compliance/reports/kvkk` | Yes | 403 |
+| Compliance connectors, findings, forward targets, oversight and oversight policies (`GET`) | Yes | 403 |
+| `/management/model-deployments` (`GET`) | Yes | 403 |
+| `/auth/me`, `/subscription`, `GET /settings/pii`, `/team/members`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
 
 ## Attribution and migration
 

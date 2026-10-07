@@ -1,7 +1,9 @@
 """Team boundaries use real PostgreSQL authorization and reservation transactions."""
 
 import asyncio
+import csv
 from datetime import datetime, timedelta, timezone
+import io
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -28,6 +30,7 @@ from shim_enterprise.billing.models import (
 )
 from shim_enterprise.core.database import get_db
 from shim_enterprise.gateway.pipeline.quota_reservation import AccountingPolicyLoader
+from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -665,3 +668,88 @@ async def test_organization_quota_shares_existing_usage_across_new_keys(async_en
             await session.execute(
                 delete(Organization).where(Organization.id == organization_id)
             )
+
+
+@pytest.mark.asyncio
+async def test_member_reads_requests_of_own_and_administered_team_keys(
+    db, test_user_with_org
+):
+    owner = test_user_with_org
+    owner.role = "owner"
+    member = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"reader-{uuid4()}@example.com",
+        role="member",
+        is_active=True,
+        is_verified=True,
+    )
+    administered_team = Team(
+        id=uuid4(), organization_id=owner.organization_id, name="Administered"
+    )
+    other_team = Team(id=uuid4(), organization_id=owner.organization_id, name="Other")
+    db.add_all([member, administered_team, other_team])
+    await db.flush()
+    db.add(
+        TeamMembership(
+            organization_id=owner.organization_id,
+            team_id=administered_team.id,
+            user_id=member.id,
+            role="team_admin",
+        )
+    )
+    await db.flush()
+    keys = {
+        "own": (await create_api_key(db, user_id=member.id, name="own"))[1],
+        "administered": (
+            await create_api_key(
+                db, user_id=owner.id, name="administered", team_id=administered_team.id
+            )
+        )[1],
+        "other team": (
+            await create_api_key(
+                db, user_id=owner.id, name="other", team_id=other_team.id
+            )
+        )[1],
+        "owner": (await create_api_key(db, user_id=owner.id, name="owner"))[1],
+    }
+    now = datetime.now(timezone.utc)
+    requests = {name: [f"req_scope_{uuid4().hex}" for _ in range(2)] for name in keys}
+    db.add_all(
+        RequestLog(
+            request_id=request_id,
+            api_key_id=keys[name].id,
+            organization_id=owner.organization_id,
+            timestamp=now - timedelta(seconds=index),
+        )
+        for name, request_ids in requests.items()
+        for index, request_id in enumerate(request_ids)
+    )
+    await db.flush()
+
+    app = FastAPI()
+    app.include_router(management.router)
+    current = member
+    app.dependency_overrides[get_current_user] = lambda: current
+    app.dependency_overrides[get_db] = lambda: db
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        first = (await client.get("/requests", params={"limit": 3})).json()
+        second = (
+            await client.get("/requests", params={"limit": 3, "offset": 3})
+        ).json()
+        exported = await client.get("/requests/export")
+        current = owner
+        everything = (await client.get("/requests", params={"limit": 200})).json()
+
+    readable = {*requests["own"], *requests["administered"]}
+    assert (first["total"], second["total"]) == (4, 4)
+    assert first["summary"]["requests"] == 4
+    assert [len(first["items"]), len(second["items"])] == [3, 1]
+    assert {item["request_id"] for item in first["items"] + second["items"]} == readable
+    assert {
+        row["request_id"]
+        for row in csv.DictReader(io.StringIO(exported.content.decode("utf-8-sig")))
+    } == readable
+    assert everything["total"] == 8

@@ -35,6 +35,7 @@ from shim_enterprise.tenants.service import (
 
 logger = logging.getLogger(__name__)
 jwt_verifier = JwtIdentityVerifier()
+ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
 
 
 def get_enterprise_gateway_service(request: Request) -> EnterpriseGatewayService:
@@ -317,7 +318,7 @@ async def get_org_admin(user: User = Depends(get_current_user)) -> User:
 
 
 async def get_org_reader(user: User = Depends(get_current_user)) -> User:
-    if user.role not in {"owner", "admin", "auditor"}:
+    if user.role not in ORGANIZATION_READERS:
         raise HTTPException(status_code=403, detail="Organization reader required")
     return user
 

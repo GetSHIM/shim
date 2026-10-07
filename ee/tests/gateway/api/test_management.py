@@ -327,7 +327,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         cost_center=" Research ",
         limit=25,
         offset=5,
-        user=SimpleNamespace(organization_id=tenant_id),
+        user=SimpleNamespace(role="owner", organization_id=tenant_id),
         session=session,
     )
 
@@ -608,7 +608,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         pii_detected=None,
         tag=None,
         cost_center=None,
-        user=SimpleNamespace(organization_id=tenant_id),
+        user=SimpleNamespace(role="owner", organization_id=tenant_id),
         session=session,
     )
     content = b"".join([chunk async for chunk in response.body_iterator]).decode(
@@ -685,7 +685,7 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
             pii_detected=None,
             tag=None,
             cost_center=None,
-            user=SimpleNamespace(organization_id=uuid4()),
+            user=SimpleNamespace(role="owner", organization_id=uuid4()),
             session=session,
         )
 
@@ -925,3 +925,51 @@ async def test_plan_upgrade_error_names_the_eligible_plans(db) -> None:
         "eligible_plans": ["agency", "enterprise"],
         "message": "This feature needs one of the plans listed in eligible_plans.",
     }
+
+
+@pytest.mark.asyncio
+async def test_organization_wide_reads_need_an_organization_reader(
+    db, test_user_with_org
+) -> None:
+    routes = [
+        ("GET", "/api/v1/management/overview"),
+        ("GET", "/api/v1/management/billing/usage"),
+        ("GET", "/api/v1/management/billing/breakdown"),
+        ("GET", "/api/v1/management/billing/export"),
+        ("GET", "/api/v1/management/cost/budgets"),
+        ("GET", "/api/v1/compliance/overview"),
+        ("GET", "/api/v1/compliance/audit/logs"),
+        ("POST", "/api/v1/compliance/audit/verify"),
+        ("POST", "/api/v1/compliance/reports/audit"),
+        ("GET", "/api/v1/compliance/oversight/policies"),
+        ("GET", "/api/v1/compliance/oversight"),
+        ("GET", "/api/v1/compliance/connectors"),
+        ("GET", f"/api/v1/compliance/connectors/{uuid4()}"),
+        ("GET", "/api/v1/compliance/findings"),
+        ("GET", "/api/v1/compliance/findings/summary"),
+        ("GET", "/api/v1/compliance/forward-targets"),
+        ("POST", "/api/v1/compliance/reports/kvkk"),
+    ]
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        test_user_with_org.role = "member"
+        refused = [
+            (await client.request(method, path, json={})).json()["detail"]
+            for method, path in routes
+        ]
+        test_user_with_org.role = "auditor"
+        admitted = [
+            (await client.request(method, path, json={})).status_code
+            for method, path in routes
+        ]
+
+    assert refused == ["Organization reader required"] * len(routes)
+    assert 403 not in admitted
