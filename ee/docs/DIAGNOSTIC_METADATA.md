@@ -153,8 +153,13 @@ Enterprise writes an encrypted continuation marker to Redis for every Responses
 turn, with the `PRIVACY_CHAIN_TTL_SECONDS` lifetime, so a later
 `previous_response_id` can restore that turn's placeholders. The marker of a turn
 without personal data is empty and best-effort: if Redis cannot store it, the
-turn still succeeds. A missing marker still reads as a turn without personal
-data; a later release will make it fail closed.
+turn still succeeds. A missing marker is refused with 503
+`PRIVACY_STATE_UNAVAILABLE` before any provider call, as community does: since
+every turn writes one, a missing marker means the state was lost (a Redis restart
+without persistence, an eviction, or the TTL), and continuing would show the
+caller placeholders instead of their own values. Start a new conversation
+without `previous_response_id`. A present empty marker still loads as a turn
+without personal data, and a marker written for another tenant is refused.
 
 ## Unpriced deployment costs
 
