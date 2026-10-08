@@ -779,3 +779,102 @@ async def test_the_jsonl_event_lists_the_requests_warnings() -> None:
     await usage.aclose()
 
     assert json.loads(stream.getvalue())["warnings"] == ["MODEL_DEPRECATED"]
+
+
+_PINNED_PROMPTS = {
+    "chat": {
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "developer", "content": "Use Turkish."},
+            {"role": "user", "content": "hi"},
+        ]
+    },
+    "responses": {
+        "instructions": "Be brief.",
+        "input": [
+            {"role": "developer", "content": "Use Turkish."},
+            {"role": "user", "content": "hi"},
+        ],
+    },
+    "messages": {
+        "system": [{"type": "text", "text": "Be brief. Ünlü"}],
+        "messages": [{"role": "user", "content": "hi"}],
+    },
+    "count_tokens": {"system": "Be brief.", "messages": []},
+    "generate_content": {
+        "systemInstruction": {"parts": [{"text": "Be brief."}]},
+        "contents": [],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("protocol", "deployment", "digest"),
+    [
+        # Computed by the enterprise implementation before it moved to the core.
+        (
+            "chat",
+            False,
+            "8445b0326d15e8bf73be73411086f2537c9c1d2876ad7b3e34a1d8188be01952",
+        ),
+        (
+            "chat",
+            True,
+            "1181818d789660ae2fdd82f2d6203436cf441fcabced1b2aff827e1af5b21ce5",
+        ),
+        (
+            "responses",
+            False,
+            "8013098bd02771debde101e17ad0f3b51d9f637ec5ab3149662b9250645ca767",
+        ),
+        (
+            "responses",
+            True,
+            "8d175fda2c62907b50568e7c055303079a196fa0a3aa9d825e664dcd9b675b9c",
+        ),
+        (
+            "messages",
+            False,
+            "e1efded75e69ae58e5785ab8a00d8384b2b07651f8539d97113e2a1a65f3ab08",
+        ),
+        (
+            "messages",
+            True,
+            "6b9b9e4df9573baacf5ab8cf6fb210b262ed443bd361f69159b90a68c9649f15",
+        ),
+        (
+            "count_tokens",
+            False,
+            "879c5cb9d35e05717764ca76d9752dcc9921e7d7854c33135dca45d5e318265f",
+        ),
+        (
+            "count_tokens",
+            True,
+            "e5e296d337da3f4b4ca8406c93cf93a9c25fd55c823bc94ebe7443a8c92ef9ed",
+        ),
+        (
+            "generate_content",
+            False,
+            "0b38bdbcc05a35d72b2585db2c47267607a197e099a75660b8ccebc4281513bd",
+        ),
+        (
+            "generate_content",
+            True,
+            "762c05a75629fcf3dbd0ecc5bf8502293922d51ae23a8766b48da8d75540c791",
+        ),
+    ],
+)
+def test_the_system_prompt_hash_keeps_its_pinned_digests(protocol, deployment, digest):
+    from shim.gateway.usage import system_prompt_hash
+
+    prepared = SimpleNamespace(
+        payload=_PINNED_PROMPTS[protocol],
+        protocol=protocol,
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        target=SimpleNamespace(deployment_id="dep-1") if deployment else None,
+        deployment_kind="internal" if deployment else "unknown",
+    )
+
+    assert system_prompt_hash(prepared, b"pinned-system-prompt-hash-key-0000") == (
+        f"hmac-sha256:v1:{digest}"
+    )

@@ -6,7 +6,6 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 import hashlib
-import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -33,7 +32,7 @@ from shim_enterprise.gateway.contracts.enterprise_scan import (
 from shim.gateway.contracts.ids import RequestId, TenantId
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
-from shim.gateway.usage import UsageFailureReason
+from shim.gateway.usage import UsageFailureReason, system_prompt_hash
 from shim_enterprise.billing.ledger import (
     DurableAccountingRepository,
     FailureReservationState,
@@ -89,52 +88,9 @@ _CUSTOMER_KEY_REFUSED = "spend:customer-provider-key:refused:v1"
 
 
 def _system_prompt_hash(prepared: PreparedInference) -> str | None:
-    """Hash only explicitly supplied system content, before privacy transformation."""
-
-    payload = prepared.payload
-    material: dict[str, Any] = {}
-    field = {
-        "chat": None,
-        "responses": "instructions",
-        "messages": "system",
-        "count_tokens": "system",
-        "generate_content": "systemInstruction",
-    }[prepared.protocol]
-    if field is not None and payload.get(field) is not None:
-        material[field] = payload[field]
-    if prepared.protocol in {"chat", "responses"}:
-        messages = payload.get("messages" if prepared.protocol == "chat" else "input")
-        if isinstance(messages, list):
-            instructions = [
-                {"role": item["role"], "content": item["content"]}
-                for item in messages
-                if isinstance(item, dict)
-                and item.get("role") in ("system", "developer")
-                and item.get("content") is not None
-            ]
-            if instructions:
-                material["messages"] = instructions
-    if not material:
-        return None
-    canonical = json.dumps(
-        [
-            "shim.system_prompt.v1",
-            str(prepared.tenant_id),
-            prepared.protocol,
-            {
-                "deployment_id": prepared.target.deployment_id
-                if prepared.target
-                else None,
-                "deployment_kind": prepared.deployment_kind,
-            },
-            material,
-        ],
-        sort_keys=True,
-        ensure_ascii=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
-    return "hmac-sha256:v1:" + hmac.digest(key, canonical, "sha256").hex()
+    return system_prompt_hash(
+        prepared, (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
+    )
 
 
 class AccountingPolicyLoader:

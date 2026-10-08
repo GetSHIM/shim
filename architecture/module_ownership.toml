@@ -71,7 +71,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
 "shim.gateway.request_policy" = ["RequestPolicyContext", "ResolvedRequestPolicy"]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
-"shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded"]
+"shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded", "system_prompt_hash"]
 "shim.observability.logging" = [
   "configure_error_reporting",
   "configure_logging",

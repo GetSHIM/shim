@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from decimal import Decimal
@@ -84,9 +85,20 @@ class UsageLifecycle(Protocol):
 class LocalUsageLifecycle:
     """Queue redacted JSONL events; drop newest on overflow or sink failure."""
 
-    def __init__(self, stream: TextIO, *, capacity: int = 1024) -> None:
+    def __init__(
+        self,
+        stream: TextIO,
+        *,
+        capacity: int = 1024,
+        system_prompt_hash_key: bytes | None = None,
+    ) -> None:
         if capacity < 1:
             raise ValueError("event queue capacity must be positive")
+        self._system_prompt_hash_key = system_prompt_hash_key
+        # Hashed at admission, before privacy rewrites the payload.
+        # ponytail: one entry per admitted request until its event is written; bound it if an
+        # admitted request can ever end without one.
+        self._prompt_hashes: dict[str, str | None] = {}
         self._stream = stream
         self._queue: Queue[str] = Queue(maxsize=capacity)
         self._writer: Thread | None = None
@@ -119,7 +131,10 @@ class LocalUsageLifecycle:
         prepared: PreparedInference,
         admission: AdmissionState,
     ) -> None:
-        pass
+        if self._system_prompt_hash_key is not None:
+            self._prompt_hashes[str(prepared.request_id)] = system_prompt_hash(
+                prepared, self._system_prompt_hash_key
+            )
 
     async def reject(self, prepared: PreparedInference) -> None:
         self._write(
@@ -277,7 +292,9 @@ class LocalUsageLifecycle:
             ),
             "cost_center": admission.cost_center if admission is not None else None,
             "tags": list(admission.tags) if admission is not None else [],
-            "system_prompt_hash": None,
+            "system_prompt_hash": self._prompt_hashes.pop(
+                str(prepared.request_id), None
+            ),
             "deployment_kind": prepared.deployment_kind,
             "privacy_counts": dict(privacy.pii_entities) if privacy else {},
             "monitored_entities": dict(privacy.monitored_entities) if privacy else {},
@@ -304,3 +321,51 @@ class LocalUsageLifecycle:
         if self._writer is None:
             self._writer = Thread(target=self._write_events, daemon=True)
             self._writer.start()
+
+
+def system_prompt_hash(prepared: PreparedInference, key: bytes) -> str | None:
+    """Hash only explicitly supplied system content, before privacy transformation."""
+
+    payload = prepared.payload
+    material: dict[str, Any] = {}
+    field = {
+        "chat": None,
+        "responses": "instructions",
+        "messages": "system",
+        "count_tokens": "system",
+        "generate_content": "systemInstruction",
+    }[prepared.protocol]
+    if field is not None and payload.get(field) is not None:
+        material[field] = payload[field]
+    if prepared.protocol in {"chat", "responses"}:
+        messages = payload.get("messages" if prepared.protocol == "chat" else "input")
+        if isinstance(messages, list):
+            instructions = [
+                {"role": item["role"], "content": item["content"]}
+                for item in messages
+                if isinstance(item, dict)
+                and item.get("role") in ("system", "developer")
+                and item.get("content") is not None
+            ]
+            if instructions:
+                material["messages"] = instructions
+    if not material:
+        return None
+    canonical = json.dumps(
+        [
+            "shim.system_prompt.v1",
+            str(prepared.tenant_id),
+            prepared.protocol,
+            {
+                "deployment_id": prepared.target.deployment_id
+                if prepared.target
+                else None,
+                "deployment_kind": prepared.deployment_kind,
+            },
+            material,
+        ],
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "hmac-sha256:v1:" + hmac.digest(key, canonical, "sha256").hex()

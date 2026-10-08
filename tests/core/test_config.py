@@ -198,3 +198,16 @@ def test_the_response_scan_is_off_unless_count_is_chosen() -> None:
     ).PII_RESPONSE_SCAN == ("count")
     with pytest.raises(ValueError, match="'off' or 'count'"):
         CommunitySettings(_env_file=None, PII_RESPONSE_SCAN="mask")
+
+
+def test_cli_names_a_short_system_prompt_hash_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("SYSTEM_PROMPT_HASH_KEY", "k" * 31)
+
+    with pytest.raises(SystemExit):
+        cli.main(["serve"])
+
+    error = capsys.readouterr().err
+    assert "shim: error: SYSTEM_PROMPT_HASH_KEY: Value should have at least 32" in error
+    assert "k" * 31 not in error

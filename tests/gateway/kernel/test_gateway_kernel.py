@@ -609,3 +609,34 @@ async def test_a_bulk_disclosure_is_recorded_in_the_event_and_the_request_decide
         bulk is not None
     )
     assert "a@example.com" not in json.dumps(event)
+
+
+@pytest.mark.asyncio
+async def test_community_hashes_the_system_prompt_only_with_a_key(
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("DEBUG")
+    key = {"SYSTEM_PROMPT_HASH_KEY": "h" * 32}
+
+    def chat(system: str | None) -> dict:
+        messages = [{"role": "user", "content": "Summarise"}]
+        if system is not None:
+            messages.insert(0, {"role": "system", "content": system})
+        return {"model": "gpt-5-nano", "messages": messages}
+
+    hashes = []
+    for settings, system in (
+        (key, "Be brief."),
+        (key, "Be brief."),
+        (key, "Be brief!"),
+        (key, None),
+        ({}, "Be brief."),
+    ):
+        response, _, events = await _send({}, "chat", chat(system), settings=settings)
+        assert response.status_code == 200
+        hashes.append(events[0]["system_prompt_hash"])
+
+    assert hashes[0] is not None and hashes[0].startswith("hmac-sha256:v1:")
+    assert hashes[0] == hashes[1] != hashes[2]
+    assert hashes[3:] == [None, None]
+    assert "h" * 32 not in caplog.text

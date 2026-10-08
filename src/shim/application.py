@@ -70,7 +70,10 @@ def create_community_app(
         max_entries=_LOCAL_STATE_CAPACITY,
     )
     usage = LocalUsageLifecycle(
-        event_stream if event_stream is not None else sys.stderr
+        event_stream if event_stream is not None else sys.stderr,
+        system_prompt_hash_key=configured.SYSTEM_PROMPT_HASH_KEY.get_secret_value().encode()
+        if configured.SYSTEM_PROMPT_HASH_KEY is not None
+        else None,
     )
     pii_scrubber = PIIScrubberService()
 

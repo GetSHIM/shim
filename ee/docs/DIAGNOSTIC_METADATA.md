@@ -89,8 +89,9 @@ refuses the option answers with its own 400, which reaches the caller as
 
 ## System-instruction hashing
 
-The enterprise quota reservation computes the digest before input privacy
-transformation. Hash material is the JSON array
+The enterprise quota reservation and, when configured, the community usage
+lifecycle compute the digest with one function, `shim.gateway.usage.system_prompt_hash`,
+at admission and before input privacy transformation. Hash material is the JSON array
 `["shim.system_prompt.v1", tenant_id, protocol, deployment, instructions]`:
 
 - Chat: only `role` and `content` from ordered system/developer messages.
@@ -100,8 +101,10 @@ transformation. Hash material is the JSON array
 
 Canonical JSON sorts object keys, uses compact separators and ASCII escapes,
 and preserves array order, content whitespace, and Unicode without normalization.
-The HMAC key is `COMPLIANCE_HASH_SALT`, falling back to `SECRET_KEY`. Keep that
-key secret and unique per installation. Comparisons are scoped to that key,
+The enterprise HMAC key is `COMPLIANCE_HASH_SALT`, falling back to `SECRET_KEY`;
+community uses `SYSTEM_PROMPT_HASH_KEY` (at least 32 characters) and writes null
+without it. Keep that key secret and unique per installation: two installations
+with different keys produce different hashes for the same prompt. Comparisons are scoped to that key,
 tenant, protocol, deployment identity/kind, and algorithm version; changing the key ends comparability
 with earlier digests. The deployment scope uses its stable registry UUID and internal/external/unknown
 kind; unregistered requests use a null UUID. Alias, endpoint, upstream model and
@@ -158,8 +161,8 @@ second line per request, `event: "response_privacy"`, next to the
 `event: "request"` line.
 
 The community JSONL v4 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
-with `system_prompt_hash: null` because community
-has no configured installation hashing key. It also carries `cost_center` (the
+with `system_prompt_hash` set only when `SYSTEM_PROMPT_HASH_KEY` is configured
+(null otherwise, and for a request without system instructions). It also carries `cost_center` (the
 first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
 tags); an event written before admission, such as a rejection, has
 `cost_center: null` and `tags: []`.

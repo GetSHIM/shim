@@ -49,6 +49,7 @@ class CommunitySettings(BaseSettings):
     PII_PLACEHOLDER_KEY: SecretStr | None = Field(
         default=None, min_length=32, validate_default=True
     )
+    SYSTEM_PROMPT_HASH_KEY: SecretStr | None = Field(default=None, min_length=32)
     PII_BULK_THRESHOLD: int = Field(default=50, ge=0)
     PII_RESPONSE_SCAN: Literal["off", "count"] = "off"
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(

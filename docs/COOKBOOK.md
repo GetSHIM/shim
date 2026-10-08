@@ -448,6 +448,7 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    | `OTEL_SERVICE_NAME` | `service.name` of the spans, default `shim`. |
    | `SENTRY_DSN` | Error reports only, no performance traces. Request body, URL, query string, cookies and exception messages are stripped. |
    | `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR` or `CRITICAL`; JSON lines on stdout. |
+   | `SYSTEM_PROMPT_HASH_KEY` | A secret of at least 32 characters. The usage event's `system_prompt_hash` becomes an HMAC of the system and developer instructions, so a changed prompt shows as a changed hash. Unset means `null`. Another installation's key gives other hashes for the same prompt. |
 
 2. Read the cost and usage of a settled request from its span attributes:
    `gen_ai.request.model` (`unpriced` for a model without a catalog price),
