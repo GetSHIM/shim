@@ -24,6 +24,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
+- [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
 ## Attribute spend to teams
 
@@ -494,3 +495,31 @@ Notes:
   kind and month is written once; the script refuses a second run.
 - What the file contains and does not contain is in
   [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).
+
+## Prepare for ISO/IEC 42001
+
+See which Annex A controls your gateway traffic evidences, and record your own
+statement for the rest. Needs the enterprise plan.
+
+1. As an owner or admin, declare the controls shim cannot measure:
+   `PUT /api/v1/compliance/readiness/iso42001/declarations/{control_id}` with
+   `status` and an optional `note`.
+2. As an owner, admin or auditor, produce the report:
+   `POST /api/v1/compliance/reports/readiness`.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/compliance/readiness/iso42001/declarations/A.3.2 \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status": "implemented", "note": "AI roles are assigned in the RACI of 2026-09."}'
+
+curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"framework": "iso42001", "start": "2026-07-01T00:00:00Z", "end": "2026-09-30T23:59:59Z", "format": "csv"}' \
+  -o iso42001_readiness.csv
+```
+
+Notes: the CSV has `control_id`, `title`, `source` (`measured`, `input` or
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`;
+the PDF holds the same 38 rows. The report is not an audit or a certification.
+Sources, rules and the numbering caveat are in
+[decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

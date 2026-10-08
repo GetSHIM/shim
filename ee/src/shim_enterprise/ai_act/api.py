@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.anchor import write_anchor
@@ -18,6 +19,7 @@ from shim_enterprise.ai_act.models import (
     AIActAuditLog,
     OversightPolicy,
     OversightRequest,
+    ReadinessDeclaration,
 )
 from shim_enterprise.ai_act.overview import build_overview, empty_overview
 from shim_enterprise.ai_act.oversight import (
@@ -27,6 +29,12 @@ from shim_enterprise.ai_act.oversight import (
     run_oversight_evaluation,
     validate_trigger,
 )
+from shim_enterprise.ai_act.readiness.report import (
+    FRAMEWORK as READINESS_FRAMEWORK,
+    MAX_READINESS_WINDOW,
+    generate_readiness_report,
+    load_mapping,
+)
 from shim_enterprise.ai_act.report import FRAMEWORK_ORDER, generate_audit_report
 from shim_enterprise.ai_act.schemas import (
     AnchorResult,
@@ -34,6 +42,9 @@ from shim_enterprise.ai_act.schemas import (
     AuditLogRead,
     AuditReportRequest,
     MonthlyEvidenceRead,
+    ReadinessDeclarationInput,
+    ReadinessDeclarationRead,
+    ReadinessReportRequest,
     OversightDecision,
     OversightPolicyCreate,
     OversightPolicyRead,
@@ -48,6 +59,7 @@ from shim_enterprise.ai_act.verify import (
     verify_chain,
 )
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
+from shim_enterprise.api.v1.management import _require_entitlement
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
@@ -416,6 +428,130 @@ async def generate_audit_report_endpoint(
             connector_id=(
                 str(payload.connector_id) if payload.connector_id is not None else None
             ),
+        ),
+    )
+    await session.commit()
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get(
+    "/readiness/iso42001/declarations",
+    response_model=list[ReadinessDeclarationRead],
+)
+async def list_readiness_declarations(
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> list[ReadinessDeclaration]:
+    return list(
+        await session.scalars(
+            select(ReadinessDeclaration)
+            .where(
+                ReadinessDeclaration.organization_id == current_user.organization_id,
+                ReadinessDeclaration.framework == READINESS_FRAMEWORK,
+            )
+            .order_by(ReadinessDeclaration.control_id)
+        )
+    )
+
+
+@router.put(
+    "/readiness/iso42001/declarations/{control_id}",
+    response_model=ReadinessDeclarationRead,
+)
+async def declare_readiness_control(
+    control_id: str,
+    payload: ReadinessDeclarationInput,
+    current_user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> ReadinessDeclaration:
+    if load_mapping().control(control_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown control")
+    tenant_id = await _tenant_for_write(session, current_user)
+    previous = await session.scalar(
+        select(ReadinessDeclaration)
+        .where(
+            ReadinessDeclaration.organization_id == tenant_id,
+            ReadinessDeclaration.framework == READINESS_FRAMEWORK,
+            ReadinessDeclaration.control_id == control_id,
+        )
+        .with_for_update()
+    )
+    before = None if previous is None else {"status": previous.status}
+    note_changed = (previous.note if previous else None) != payload.note
+    upserted = await session.execute(
+        pg_insert(ReadinessDeclaration)
+        .values(
+            organization_id=tenant_id,
+            framework=READINESS_FRAMEWORK,
+            control_id=control_id,
+            status=payload.status,
+            note=payload.note,
+            declared_by=current_user.id,
+        )
+        .on_conflict_do_update(
+            constraint="uq_readiness_declarations_control",
+            set_={
+                "status": payload.status,
+                "note": payload.note,
+                "declared_by": current_user.id,
+                "updated_at": func.now(),
+            },
+        )
+        .returning(ReadinessDeclaration)
+        .execution_options(populate_existing=True)
+    )
+    declaration = upserted.scalar_one()
+    # The note is the organization's own text; the chain records only that it changed.
+    await _audit(
+        session,
+        current_user,
+        "tenant.readiness_declared",
+        str(tenant_id),
+        details={
+            "framework": READINESS_FRAMEWORK,
+            "control_id": control_id,
+            **change_details(before, {"status": payload.status}),
+            "note_changed": note_changed,
+        },
+    )
+    await session.commit()
+    return declaration
+
+
+@router.post(
+    "/reports/readiness",
+    response_class=Response,
+    responses=_REPORT_RESPONSES,
+)
+async def generate_readiness_report_endpoint(
+    payload: ReadinessReportRequest,
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    tenant_id = await _tenant_for_write(session, current_user)
+    await _require_entitlement(session, tenant_id, "readiness_report")
+    end = _aware(payload.end or datetime.now(timezone.utc))
+    start = _aware(payload.start or end - timedelta(days=30))
+    if start > end:
+        raise HTTPException(status_code=422, detail="start must not be after end")
+    if end - start > MAX_READINESS_WINDOW:
+        raise HTTPException(
+            status_code=422, detail="readiness reports are limited to 366 days"
+        )
+    content, media_type, filename = await generate_readiness_report(
+        session, tenant_id=tenant_id, start=start, end=end, fmt=payload.format
+    )
+    await _audit(
+        session,
+        current_user,
+        "compliance.readiness_report_generated",
+        str(tenant_id),
+        details=export_details(
+            start, end, framework=payload.framework, format=payload.format
         ),
     )
     await session.commit()

@@ -103,19 +103,22 @@ def previous_period(now: datetime) -> str:
     return f"{first - timedelta(days=1):%Y-%m}"
 
 
-def _lifecycle_window(tenant_id: UUID, window: MonthlyWindow) -> tuple[Any, ...]:
+def lifecycle_window(
+    tenant_id: UUID, start: datetime, end: datetime
+) -> tuple[Any, ...]:
     return (
         RequestLifecycle.organization_id == tenant_id,
-        RequestLifecycle.started_at >= window.start,
-        RequestLifecycle.started_at <= window.end,
+        RequestLifecycle.started_at >= start,
+        RequestLifecycle.started_at <= end,
     )
 
 
-async def _entity_counts(
-    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow, key: str
+async def entity_counts(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime, key: str
 ) -> dict[tuple[str, str], int] | None:
+    """Per provider and entity type, or None when no request recorded the key."""
     metadata = RequestLifecycle.lifecycle_metadata
-    in_window = _lifecycle_window(tenant_id, window)
+    in_window = lifecycle_window(tenant_id, start, end)
     if not await session.scalar(
         select(RequestLifecycle.id).where(*in_window, metadata.has_key(key)).limit(1)
     ):
@@ -152,7 +155,7 @@ async def collect_monthly_evidence(
         )
 
     metadata = RequestLifecycle.lifecycle_metadata
-    in_window = _lifecycle_window(tenant_id, window)
+    in_window = lifecycle_window(tenant_id, window.start, window.end)
     bulk = None
     if await session.scalar(
         select(RequestLifecycle.id)
@@ -164,7 +167,9 @@ async def collect_monthly_evidence(
                 *in_window, func.jsonb_typeof(metadata["bulk_disclosure"]) == "object"
             )
         )
-    response = await _entity_counts(session, tenant_id, window, "response_entities")
+    response = await entity_counts(
+        session, tenant_id, window.start, window.end, "response_entities"
+    )
     response_by_type: dict[str, int] | None = None
     if response is not None:
         response_by_type = {}
@@ -175,21 +180,6 @@ async def collect_monthly_evidence(
         AIActAuditLog.organization_id == tenant_id,
         AIActAuditLog.created_at >= window.start,
         AIActAuditLog.created_at <= window.end,
-    )
-    verdicts = (
-        func.jsonb_array_elements(AIActAuditLog.policy_verdicts)
-        .table_valued("value")
-        .lateral()
-    )
-    rule = verdicts.c.value.op("->>")("rule_id")
-    reason = verdicts.c.value.op("->>")("reason_code")
-    denials = await session.execute(
-        select(rule, func.coalesce(reason, "unspecified"), func.count())
-        .select_from(AIActAuditLog)
-        .join(verdicts, true())
-        .where(*audit_window, verdicts.c.value.op("->>")("outcome") == "deny")
-        .group_by(rule, reason)
-        .order_by(func.count().desc(), rule)
     )
     actor_type = func.coalesce(
         AIActAuditLog.extra["actor_type"].as_string(), NOT_RECORDED
@@ -234,16 +224,43 @@ async def collect_monthly_evidence(
         by_provider=await breakdown("provider"),
         by_model=await breakdown("model"),
         entities={
-            key: await _entity_counts(session, tenant_id, window, key)
+            key: await entity_counts(session, tenant_id, window.start, window.end, key)
             for key, _ in _MASK_KEYS
         },
         bulk_disclosures=bulk,
         response_entities=response_by_type,
-        denials=tuple((str(a), str(b), int(c)) for a, b, c in denials),
+        denials=await denial_counts(session, tenant_id, window.start, window.end),
         changes=tuple((str(a), str(b), int(c)) for a, b, c in changes),
         chain=chain,
         findings=tuple((str(a), int(b), int(c), int(d)) for a, b, c, d in findings),
     )
+
+
+async def denial_counts(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+) -> tuple[tuple[str, str, int], ...]:
+    """Deny verdicts in the audit chain, by rule and reason code."""
+    verdicts = (
+        func.jsonb_array_elements(AIActAuditLog.policy_verdicts)
+        .table_valued("value")
+        .lateral()
+    )
+    rule = verdicts.c.value.op("->>")("rule_id")
+    reason = verdicts.c.value.op("->>")("reason_code")
+    rows = await session.execute(
+        select(rule, func.coalesce(reason, "unspecified"), func.count())
+        .select_from(AIActAuditLog)
+        .join(verdicts, true())
+        .where(
+            AIActAuditLog.organization_id == tenant_id,
+            AIActAuditLog.created_at >= start,
+            AIActAuditLog.created_at <= end,
+            verdicts.c.value.op("->>")("outcome") == "deny",
+        )
+        .group_by(rule, reason)
+        .order_by(func.count().desc(), rule)
+    )
+    return tuple((str(a), str(b), int(c)) for a, b, c in rows)
 
 
 def _cost(rows: tuple[BillingBreakdown, ...]) -> str:

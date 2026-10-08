@@ -250,3 +250,46 @@ def _block_audit_delete(
     _target: AIActAuditLog,
 ) -> None:
     raise AuditLogImmutableError("ai_act_audit_log is append-only")
+
+
+class ReadinessDeclaration(Base):
+    """The organization's own statement about one readiness control."""
+
+    __tablename__ = "readiness_declarations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('implemented', 'partial', 'not_implemented', 'not_applicable')",
+            name="ck_readiness_declarations_status",
+        ),
+        CheckConstraint(
+            "char_length(note) <= 2000", name="ck_readiness_declarations_note"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "framework",
+            "control_id",
+            name="uq_readiness_declarations_control",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id", name="fk_readiness_declarations_organization_id"
+        ),
+        nullable=False,
+    )
+    framework: Mapped[str] = mapped_column(String(32), nullable=False)
+    control_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    declared_by: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), nullable=False)
+    declared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

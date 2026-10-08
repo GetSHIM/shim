@@ -304,6 +304,7 @@ async def get_current_user(
             ("POST", "/api/v1/compliance/audit/verify"),
             ("POST", "/api/v1/compliance/reports/audit"),
             ("POST", "/api/v1/compliance/reports/kvkk"),
+            ("POST", "/api/v1/compliance/reports/readiness"),
         }
     ):
         raise HTTPException(403, "Auditor access is read-only")

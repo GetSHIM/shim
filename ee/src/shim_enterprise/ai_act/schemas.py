@@ -200,3 +200,27 @@ class MonthlyEvidenceRead(OrmReadModel):
     size_bytes: int = Field(ge=0)
     sha256: str
     generated_at: datetime
+
+
+ReadinessStatus = Literal["implemented", "partial", "not_implemented", "not_applicable"]
+
+
+class ReadinessDeclarationInput(BaseModel):
+    status: ReadinessStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ReadinessDeclarationRead(OrmReadModel):
+    control_id: str
+    status: ReadinessStatus
+    note: str | None
+    declared_by: UUID
+    declared_at: datetime
+    updated_at: datetime
+
+
+class ReadinessReportRequest(BaseModel):
+    framework: Literal["iso42001"]
+    start: datetime | None = None
+    end: datetime | None = None
+    format: Literal["pdf", "csv"] = "pdf"

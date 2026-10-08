@@ -7596,6 +7596,138 @@
         "title": "RagRetrievalConfigRankingRankService",
         "type": "object"
       },
+      "ReadinessDeclarationInput": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "enum": [
+              "implemented",
+              "partial",
+              "not_implemented",
+              "not_applicable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ReadinessDeclarationInput",
+        "type": "object"
+      },
+      "ReadinessDeclarationRead": {
+        "properties": {
+          "control_id": {
+            "title": "Control Id",
+            "type": "string"
+          },
+          "declared_at": {
+            "format": "date-time",
+            "title": "Declared At",
+            "type": "string"
+          },
+          "declared_by": {
+            "format": "uuid",
+            "title": "Declared By",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "enum": [
+              "implemented",
+              "partial",
+              "not_implemented",
+              "not_applicable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "control_id",
+          "status",
+          "note",
+          "declared_by",
+          "declared_at",
+          "updated_at"
+        ],
+        "title": "ReadinessDeclarationRead",
+        "type": "object"
+      },
+      "ReadinessReportRequest": {
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "format": {
+            "default": "pdf",
+            "enum": [
+              "pdf",
+              "csv"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "framework": {
+            "const": "iso42001",
+            "title": "Framework",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          }
+        },
+        "required": [
+          "framework"
+        ],
+        "title": "ReadinessReportRequest",
+        "type": "object"
+      },
       "ReplicatedVoiceConfig": {
         "additionalProperties": false,
         "description": "The configuration for the replicated voice to use.",
@@ -12773,6 +12905,93 @@
         ]
       }
     },
+    "/api/v1/compliance/readiness/iso42001/declarations": {
+      "get": {
+        "operationId": "list_readiness_declarations_api_v1_compliance_readiness_iso42001_declarations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReadinessDeclarationRead"
+                  },
+                  "title": "Response List Readiness Declarations Api V1 Compliance Readiness Iso42001 Declarations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Readiness Declarations",
+        "tags": [
+          "ai-act-control-plane"
+        ]
+      }
+    },
+    "/api/v1/compliance/readiness/iso42001/declarations/{control_id}": {
+      "put": {
+        "operationId": "declare_readiness_control_api_v1_compliance_readiness_iso42001_declarations__control_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "control_id",
+            "required": true,
+            "schema": {
+              "title": "Control Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadinessDeclarationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessDeclarationRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Declare Readiness Control",
+        "tags": [
+          "ai-act-control-plane"
+        ]
+      }
+    },
     "/api/v1/compliance/reports/audit": {
       "post": {
         "operationId": "generate_audit_report_endpoint_api_v1_compliance_reports_audit_post",
@@ -12892,6 +13111,67 @@
         "summary": "Generate Kvkk Report",
         "tags": [
           "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/reports/readiness": {
+      "post": {
+        "operationId": "generate_readiness_report_endpoint_api_v1_compliance_reports_readiness_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadinessReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "PDF or CSV report attachment.",
+            "headers": {
+              "Content-Disposition": {
+                "description": "Attachment disposition and filename.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate Readiness Report Endpoint",
+        "tags": [
+          "ai-act-control-plane"
         ]
       }
     },

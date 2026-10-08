@@ -103,6 +103,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `compliance.oversight_policy_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` |
 | `compliance.oversight_evaluated` | `evaluated`, `created`, `expired` counts of the manual run |
 | `compliance.audit_anchored` | `anchor_date` and `row_count` of the manually written anchor |
+| `tenant.readiness_declared` | `framework`, `control_id`, `before` and `after` of `status`, and `note_changed` (the note itself is never written to the chain) |
 
 No key, secret reference, masked key, endpoint path or fingerprint is recorded.
 The actor of every event is the signed-in user or service account, and `extra.actor_type`
@@ -112,7 +113,7 @@ is the user who signed in, and a login that changes nothing records nothing.
 Evidence reads are recorded too, once the data is selected, so an export never
 contains its own event: `compliance.audit_bundle_exported`,
 `compliance.audit_verified` (with `ok`), `compliance.audit_report_generated`,
-`compliance.kvkk_report_generated`, `tenant.requests_exported`,
+`compliance.kvkk_report_generated`, `compliance.readiness_report_generated`, `tenant.requests_exported`,
 `tenant.billing_exported` and `tenant.evidence_downloaded` (with `kind`,
 `period` and `sha256` of the file). Each carries the window `start` and `end` and, where it
 applies, the row count, format, frameworks, connector or grouping. List views
@@ -227,3 +228,47 @@ An operator can write one file with `ee/scripts/generate_monthly_evidence.py
 the current month as `monthly_partial` (so a test never takes the closed
 month's place), a future month is refused, and so is a period that already has
 a file of that kind.
+
+## ISO/IEC 42001 readiness report
+
+`POST /api/v1/compliance/reports/readiness` with `{"framework": "iso42001",
+"start", "end", "format": "pdf" | "csv"}` lists the 38 Annex A controls, one row
+each, for a window of at most 366 days (default the last 30 days). Owners, admins
+and auditors can produce it; it is a paid report (tier feature
+`readiness_report`, enterprise tier), so other plans get 403
+`PLAN_UPGRADE_REQUIRED` with the eligible plans.
+
+Each row has a source:
+
+- `measured` (A.4.2, A.4.4, A.6.2.6, A.6.2.8, A.9.2, A.10.3): numbers from
+  `request_lifecycle`, the audit chain, the settlements and the model registry
+  over the window, and whether evidence is present by the rule printed beside
+  it, for example "present when the window has audit rows, the chain verifies
+  and retention is at least 180 days".
+- `input` (A.2.2, A.4.3, A.5.4, A.9.4): numbers for the organization's own
+  statement, never proof of the control. A.9.4 shows the share of requests
+  with a tag or cost center, which says nothing about whether the use was the
+  intended one.
+- `declared` (the other 28): the organization's statement only, or "not
+  declared".
+
+Two rows differ from the 3 September coverage matrix on purpose: A.8.3 is
+declared, because stored evidence files do not show a way for interested parties
+to report adverse impacts, and A.9.4 is input, as above. A.6.2.4 and A.8.4 stay
+declared until continuous evaluation and an incident record exist.
+
+Declarations are kept per organization and control:
+`GET /api/v1/compliance/readiness/iso42001/declarations` (readers) and
+`PUT /api/v1/compliance/readiness/iso42001/declarations/{control_id}` (owners
+and admins) with `status` (`implemented`, `partial`, `not_implemented`,
+`not_applicable`) and an optional `note` of up to 2,000 characters; an unknown
+control is 404.
+
+The cover says: "This report shows which ISO/IEC 42001 Annex A controls shim can
+evidence from gateway traffic, and records the organization's own statements for
+the rest. It is not an audit, a certification or a statement of conformity."
+The control numbers and titles come from secondary sources; until they are
+checked against the purchased standard, `verified_against_standard` in
+`shim_enterprise/ai_act/readiness/iso42001.yaml` stays false and the cover adds
+"Control numbers and titles have not yet been checked against the published
+standard." The five-control framework report (`/reports/audit`) is unchanged.
