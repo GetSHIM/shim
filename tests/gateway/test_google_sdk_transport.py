@@ -29,6 +29,10 @@ from shim.secrets.credentials import (
     EnvironmentProviderCredentialResolver,
     EphemeralProviderCredential,
 )
+from shim.privacy.policies import effective_entity_actions
+
+
+DEFAULT_ACTIONS = effective_entity_actions()
 
 
 settings = CommunitySettings(_env_file=None)
@@ -93,7 +97,7 @@ def test_google_scrubbing_covers_native_json_schemas() -> None:
         }
     ).model_dump(mode="json", exclude_none=True, by_alias=True)
 
-    safe, mapping = scrub_payload(payload, None, PIIScrubberService())
+    safe, mapping = scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
 
     assert mapping
     assert email not in json.dumps(safe)

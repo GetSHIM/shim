@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
@@ -45,6 +46,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             action=PrivacyAction.SCRUBBED,
             pii_detected=True,
             verification_map={"<EMAIL_ADDRESS_a1>": "private@example.com"},
+            pii_entities={"EMAIL_ADDRESS": 1},
         ),
     )
     prepared.warn = MethodType(PreparedInference.warn, prepared)
@@ -517,6 +519,37 @@ async def test_a_stream_is_neither_held_nor_changed_by_its_response_scan(monkeyp
     usage.record_response_privacy.assert_awaited_once_with(
         prepared, {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_response_scans_never_hold_the_request_path_threads(
+    monkeypatch,
+):
+    import threading
+
+    release = threading.Event()
+    scanned: list[str] = []
+
+    def scan(text, _prepared, _scrubber):
+        release.wait(5)
+        scanned.append(text)
+        return {"response_entities": {}, "truncated": False}
+
+    processor, prepared, usage = _scan_processor(monkeypatch, scan)
+    # More than the default executor's largest pool, min(32, cpu_count + 4).
+    for index in range(40):
+        processor._start_response_scan(prepared, str(index))
+    await asyncio.sleep(0.05)
+
+    # What the next request's privacy stage does while the scans are pending.
+    assert await asyncio.wait_for(asyncio.to_thread(lambda: "scrubbed"), 1) == (
+        "scrubbed"
+    )
+    assert scanned == []
+    release.set()
+    await processor.drain(timeout_seconds=5)
+    assert sorted(scanned, key=int) == [str(index) for index in range(40)]
+    assert usage.record_response_privacy.await_count == 40
 
 
 @pytest.mark.asyncio

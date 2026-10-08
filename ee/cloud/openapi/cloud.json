@@ -7234,6 +7234,7 @@
           "bulk_threshold": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 2.0,
                 "type": "integer"
               },
@@ -7249,8 +7250,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
@@ -7260,24 +7261,36 @@
             "type": "object"
           },
           "placeholder_mode": {
-            "default": "random",
-            "description": "Left unchanged when absent.",
-            "enum": [
-              "random",
-              "stable"
+            "anyOf": [
+              {
+                "enum": [
+                  "random",
+                  "stable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Placeholder Mode",
-            "type": "string"
+            "description": "Left unchanged when absent; never null.",
+            "title": "Placeholder Mode"
           },
           "response_scan": {
-            "default": "off",
-            "description": "Left unchanged when absent.",
-            "enum": [
-              "off",
-              "count"
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "count"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Response Scan",
-            "type": "string"
+            "description": "Left unchanged when absent; never null.",
+            "title": "Response Scan"
           }
         },
         "title": "PrivacyPatch",
@@ -7322,8 +7335,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
@@ -7338,8 +7351,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
@@ -7349,7 +7362,7 @@
             "type": "object"
           },
           "placeholder_mode": {
-            "description": "random: a new placeholder per request. stable: the same value keeps its placeholder for up to 30 days, so provider prompt caching works and the provider can link the value across requests.",
+            "description": "random: a new placeholder per request. stable: the same value keeps its placeholder for up to 30 days, so provider prompt caching works and the provider can link the value across requests; that linkage can stay in provider logs after the window ends.",
             "enum": [
               "random",
               "stable"

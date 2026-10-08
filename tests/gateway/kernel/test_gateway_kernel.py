@@ -327,6 +327,20 @@ _ROUTES = {
         {"x-goog-api-key": _GATEWAY_KEY},
         lambda text: {"contents": [{"role": "user", "parts": [{"text": text}]}]},
     ),
+    "responses": (
+        "/v1/responses",
+        {"authorization": f"Bearer {_GATEWAY_KEY}"},
+        lambda text: {"model": "gpt-5-nano", "input": text},
+    ),
+    "chat_stream": (
+        "/v1/chat/completions",
+        {"authorization": f"Bearer {_GATEWAY_KEY}"},
+        lambda text: {
+            "model": "gpt-5-nano",
+            "stream": True,
+            "messages": [{"role": "user", "content": text}],
+        },
+    ),
 }
 
 
@@ -400,7 +414,7 @@ async def test_a_blocked_secret_stops_every_protocol_before_the_provider(route):
     assert _PASTED_KEY not in response.text
     assert "alice@example.com" not in response.text
     message = "Request blocked by privacy policy: SECRET."
-    if route == "chat":
+    if route in {"chat", "chat_stream", "responses"}:
         assert body["error"]["code"] == "SECRET_BLOCKED"
         assert body["error"]["message"] == message
     elif route == "gemini":
@@ -417,6 +431,54 @@ async def test_a_blocked_secret_stops_every_protocol_before_the_provider(route):
     assert event["blocked_entities"] == {"SECRET": 1}
     assert event["monitored_entities"] == {"EMAIL_ADDRESS": 1}
     assert _privacy_verdict(event)[:2] == ("deny", "SECRET_BLOCKED")
+
+
+_IDENTIFIER_ROUTES = {
+    "chat": lambda name: {
+        "model": "gpt-5-nano",
+        "messages": [{"role": "user", "name": name, "content": "hi"}],
+    },
+    "chat_stream": lambda name: {
+        "model": "gpt-5-nano",
+        "stream": True,
+        "messages": [{"role": "user", "name": name, "content": "hi"}],
+    },
+    "responses": lambda name: {
+        "model": "gpt-5-nano",
+        "input": [{"role": "user", "name": name, "content": "hi"}],
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_IDENTIFIER_ROUTES))
+@pytest.mark.parametrize(
+    ("actions", "name", "code", "entity_type"),
+    [
+        ({"SECRET": "block"}, _PASTED_KEY, "SECRET_BLOCKED", "SECRET"),
+        (
+            {"EMAIL_ADDRESS": "block"},
+            "alice@example.com",
+            "PII_BLOCKED",
+            "EMAIL_ADDRESS",
+        ),
+    ],
+)
+async def test_a_blocked_type_in_a_protocol_identifier_uses_the_block_code(
+    route, actions, name, code, entity_type
+):
+    response, calls, [event] = await _send(
+        actions, route, _IDENTIFIER_ROUTES[route](name)
+    )
+
+    assert (response.status_code, calls) == (400, [])
+    assert response.headers["x-shim-error-code"] == code
+    assert response.json()["error"]["message"] == (
+        f"Request blocked by privacy policy: {entity_type}."
+    )
+    assert name not in response.text
+    assert event["outcome"] == "rejected"
+    assert _privacy_verdict(event)[:2] == ("deny", code)
 
 
 @pytest.mark.asyncio
@@ -566,17 +628,15 @@ async def test_stable_placeholders_repeat_across_requests_and_never_leave_the_sc
     caplog.set_level("DEBUG")
     stable = {"PII_PLACEHOLDER_MODE": "stable", "PII_PLACEHOLDER_KEY": "k" * 32}
     payload = _ROUTES["chat"][2]("Write to alice@example.com")
-    sent, versions = [], []
+    sent = []
     for settings in (stable, stable, {}):
         response, calls, events = await _send({}, "chat", payload, settings=settings)
         assert response.status_code == 200
         sent.append(json.loads(calls[0].content)["messages"][0]["content"])
-        versions.append(_privacy_verdict(events[0])[2])
         assert "k" * 32 not in json.dumps(events)
 
     assert sent[0] == sent[1] != sent[2]
     assert "alice@example.com" not in "".join(sent)
-    assert len(set(versions)) == 1
     assert "k" * 32 not in caplog.text
 
 

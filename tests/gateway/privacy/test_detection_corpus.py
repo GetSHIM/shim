@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
 
 
 CORPUS = json.loads(
@@ -28,7 +29,7 @@ def _actual(case: dict[str, Any]) -> set[tuple[str, str]]:
     text = case["text"]
     return {
         (finding["type"], text[finding["start"] : finding["end"]])
-        for finding in PIIScrubberService().analyze(text)
+        for finding in PIIScrubberService().analyze(text, effective_entity_actions())
     }
 
 

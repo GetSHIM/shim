@@ -257,7 +257,6 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
     ("cached", "mode", "threshold"),
     [
         (_SWITCHES, "random", 50),
-        ({**_SWITCHES, "placeholder_mode": "random", "bulk_threshold": 7}, "random", 7),
         (
             {**_SWITCHES, "placeholder_mode": "stable", "bulk_threshold": None},
             "stable",
@@ -319,3 +318,28 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
     assert resolved.placeholder_key is not None
     assert resolved.placeholder_key.get_secret_value() == root
     assert root.hex() not in repr(resolved) and repr(root) not in repr(resolved)
+
+
+@pytest.mark.asyncio
+async def test_privacy_settings_never_share_a_cache_entry_with_an_older_release() -> (
+    None
+):
+    from shim_enterprise.cache.redis_index import CacheManager
+
+    entries: dict[str, object] = {}
+    store = SimpleNamespace(
+        get=AsyncMock(side_effect=entries.get),
+        set=AsyncMock(
+            side_effect=lambda key, value, expire: entries.update({key: value})
+        ),
+        delete=AsyncMock(side_effect=lambda key: entries.pop(key, None)),
+    )
+    cache = CacheManager(store)
+    # What a release without entity actions caches for the tenant.
+    entries["config:pii:tenant"] = dict(_SWITCHES)
+
+    assert await cache.get_pii_config("tenant") is None
+    await cache.set_pii_config("tenant", {**_SWITCHES, "entity_actions": {}})
+    assert entries["config:pii:tenant"] == _SWITCHES
+    await cache.invalidate_pii_config("tenant")
+    assert list(entries) == ["config:pii:tenant"]

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim_enterprise.api.enterprise_deps import get_current_api_key
 from shim_enterprise.core.database import get_db
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
 from shim_enterprise.shared_results.models import SharedResult
 from shim_enterprise.tenants.models import ApiKey
 
@@ -68,9 +69,11 @@ async def create_shared_result(
     session: AsyncSession = Depends(get_db),
 ) -> SharedResultCreated:
     scrubber = PIIScrubberService()
-    prompt, prompt_map = scrubber.scrub(payload.prompt)
+    actions = effective_entity_actions()
+    prompt, prompt_map = scrubber.scrub(payload.prompt, actions)
     result, _ = scrubber.scrub(
         payload.response,
+        actions,
         known_placeholders=prompt_map,
     )
     token = secrets.token_urlsafe(32)

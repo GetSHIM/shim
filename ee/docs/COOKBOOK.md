@@ -187,8 +187,13 @@ curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
 `placeholder_mode` is `random` (default: a new placeholder per request) or
 `stable`: the same value keeps its placeholder within the tenant for up to 30
 days, so the provider's prompt cache works on prompts that carry a masked value,
-and the provider can tell that two requests carry the same value. The key is
-derived from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder.
+and the provider can tell that two requests carry the same value; that linkage
+can stay in the provider's logs after the window ends, and anyone who can read
+those logs and send requests can confirm a guessed value. The key is derived
+from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder. A leaked
+`SECRET_KEY` lets its holder recompute the placeholders of low-entropy values
+(phone numbers, national IDs) already in provider logs, and rotating afterwards
+does not undo that.
 
 `response_scan` is `off` (default) or `count`: after an answer is delivered,
 shim counts the personal data in it that the request did not carry, and the
@@ -204,7 +209,8 @@ type, the API key and the time, never a value.
 
 Notes: an unknown type or action, `mask_last4` on a type other than
 `CREDIT_CARD` or `IBAN_CODE`, `"entity_actions": null`, a `placeholder_mode`
-other than `random` or `stable`, a `bulk_threshold` below 2, or a
+other than `random` or `stable`, a `bulk_threshold` below 2 or above
+2,147,483,647, or a
 `response_scan` other than `off` or `count`, is 422. A blocked
 request is listed under `/requests` as `rejected` with its `blocked_entities`.
 Every change records a `tenant.privacy_policy_updated` audit event.

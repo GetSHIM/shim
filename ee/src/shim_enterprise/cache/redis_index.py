@@ -74,6 +74,11 @@ class CacheService:
             return False
 
 
+# Versioned with its shape, so a rolling deploy never lets an older release's
+# entry (without entity actions) stand in for this one's.
+_PII_CONFIG_KEY = "config:pii:v2:{}"
+
+
 class CacheManager:
     """Namespaced, short-lived cache for tenant configuration read models."""
 
@@ -81,13 +86,13 @@ class CacheManager:
         self.cache = cache
 
     async def get_pii_config(self, tenant_id: str) -> dict[str, Any] | None:
-        return _mapping(await self.cache.get(f"config:pii:{tenant_id}"))
+        return _mapping(await self.cache.get(_PII_CONFIG_KEY.format(tenant_id)))
 
     async def set_pii_config(self, tenant_id: str, config: dict[str, Any]) -> None:
-        await self.cache.set(f"config:pii:{tenant_id}", config, expire=300)
+        await self.cache.set(_PII_CONFIG_KEY.format(tenant_id), config, expire=300)
 
     async def invalidate_pii_config(self, tenant_id: str) -> None:
-        await self.cache.delete(f"config:pii:{tenant_id}")
+        await self.cache.delete(_PII_CONFIG_KEY.format(tenant_id))
 
     async def get_tier_definition(self, slug: str) -> dict[str, Any] | None:
         return _mapping(await self.cache.get(f"config:tier:{slug}"))

@@ -13,7 +13,7 @@ import itertools
 import json
 import logging
 import secrets
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, cast, get_args
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -79,13 +79,18 @@ from shim_enterprise.compliance.url_guard import (
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
+from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
     STATUS_IDS,
     STATUS_RESOLVED,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
-from shim.privacy.policies import EntityAction, effective_entity_actions
+from shim.privacy.policies import (
+    PII_CONFIG_DEFAULTS,
+    EntityAction,
+    effective_entity_actions,
+)
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
@@ -318,16 +323,6 @@ class ProviderSecretView(BaseModel):
     verified_at: datetime | None
 
 
-_PRIVACY_SWITCHES = (
-    "block_email",
-    "block_phone",
-    "block_credit_card",
-    "block_secrets",
-    "block_pii_tr",
-)
-_ACTION_RANK = {"off": 0, "monitor": 1, "mask_last4": 2, "mask": 3, "block": 4}
-
-
 class PrivacySettings(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -355,7 +350,8 @@ class PrivacySettings(BaseModel):
         description=(
             "random: a new placeholder per request. stable: the same value keeps "
             "its placeholder for up to 30 days, so provider prompt caching works "
-            "and the provider can link the value across requests."
+            "and the provider can link the value across requests; that linkage "
+            "can stay in provider logs after the window ends."
         )
     )
 
@@ -363,7 +359,7 @@ class PrivacySettings(BaseModel):
     @property
     def effective_actions(self) -> dict[str, EntityAction]:
         return effective_entity_actions(
-            {field: getattr(self, field) for field in _PRIVACY_SWITCHES},
+            {field: getattr(self, field) for field in PII_CONFIG_DEFAULTS},
             self.entity_actions,
         )
 
@@ -389,17 +385,26 @@ class PrivacyPatch(BaseModel):
         default_factory=dict,
         description="Replaces the stored overrides whole; {} removes them all.",
     )
-    placeholder_mode: Literal["random", "stable"] = Field(
-        default="random", description="Left unchanged when absent."
+    placeholder_mode: Literal["random", "stable"] | None = Field(
+        default=None, description="Left unchanged when absent; never null."
     )
-    response_scan: Literal["off", "count"] = Field(
-        default="off", description="Left unchanged when absent."
+    response_scan: Literal["off", "count"] | None = Field(
+        default=None, description="Left unchanged when absent; never null."
     )
     bulk_threshold: int | None = Field(
         default=None,
         ge=2,
+        le=2_147_483_647,
         description="null turns the alarm off; left unchanged when absent.",
     )
+
+    @field_validator("placeholder_mode", "response_scan")
+    @classmethod
+    def reject_null(cls, value: str | None) -> str:
+        # None is only the absent default; the columns are NOT NULL.
+        if value is None:
+            raise ValueError("must not be null")
+        return value
 
     @field_validator("entity_actions")
     @classmethod
@@ -2046,7 +2051,7 @@ async def update_privacy_settings(
         ),
     )
     relaxed = [
-        field for field in _PRIVACY_SWITCHES if before[field] and not after[field]
+        field for field in PII_CONFIG_DEFAULTS if before[field] and not after[field]
     ]
     if before["placeholder_mode"] == "random" and after["placeholder_mode"] == "stable":
         relaxed.append("placeholder_mode")
@@ -2060,7 +2065,8 @@ async def update_privacy_settings(
     relaxed += [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
-        if _ACTION_RANK[action] < _ACTION_RANK[before["effective_actions"][entity_type]]
+        if get_args(EntityAction).index(action)
+        < get_args(EntityAction).index(before["effective_actions"][entity_type])
         and before["entity_actions"].get(entity_type)
         != after["entity_actions"].get(entity_type)
     ]
@@ -2525,21 +2531,7 @@ async def list_requests(
                 team=row.team,
                 **{
                     field: (row.details or {}).get(field)
-                    for field in (
-                        "provider_finish_reasons",
-                        "completion_outcome",
-                        "repeat_chain_length",
-                        "ttft_ms",
-                        "cached_input_tokens",
-                        "warnings",
-                        "shim_latency_ms",
-                        "system_prompt_hash",
-                        "deployment_kind",
-                        "pii_entities",
-                        "monitored_entities",
-                        "blocked_entities",
-                        "bulk_disclosure",
-                    )
+                    for field in _DIAGNOSTIC_FIELDS
                 },
                 response_entities=response_entities,
             )

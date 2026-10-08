@@ -3636,8 +3636,8 @@
             "enum": [
               "off",
               "monitor",
-              "mask",
               "mask_last4",
+              "mask",
               "block"
             ],
             "title": "Action",

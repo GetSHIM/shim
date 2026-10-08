@@ -26,6 +26,10 @@ from shim.privacy.continuation import (
     PrivacyContinuationUnavailableError,
 )
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim.privacy.policies import effective_entity_actions
+
+
+DEFAULT_ACTIONS = effective_entity_actions()
 
 
 def _tenant(value: str) -> TenantId:
@@ -153,7 +157,9 @@ async def test_stage_accepts_empty_marker_and_rejects_unknown_parent_first() -> 
 @pytest.mark.asyncio
 async def test_previous_response_mapping_is_loaded_and_merged_before_sdk() -> None:
     scrubber = PIIScrubberService()
-    parent_placeholder, parent_map = scrubber.scrub("parent@example.com")
+    parent_placeholder, parent_map = scrubber.scrub(
+        "parent@example.com", DEFAULT_ACTIONS
+    )
     prepared = _prepared(
         {
             "model": "gpt-5.6-luna",
@@ -202,9 +208,23 @@ async def test_privacy_stage_runs_scrubbing_off_the_event_loop() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_tailed_placeholder_is_counted_once() -> None:
+    prepared = replace(
+        _prepared({"input": "4111 1111 1111 1111 and 4111 1111 1111 1111"}),
+        entity_actions={"CREDIT_CARD": "mask_last4"},
+    )
+    continuation_store = SimpleNamespace(load=AsyncMock(), ensure_available=AsyncMock())
+
+    result = await PrivacyStage(PIIScrubberService(), continuation_store).run(prepared)
+
+    assert result.privacy is not None
+    assert dict(result.privacy.pii_entities) == {"CREDIT_CARD": 1}
+
+
+@pytest.mark.asyncio
 async def test_a_continuation_counts_only_values_first_seen_in_this_request() -> None:
     scrubber = PIIScrubberService()
-    _, parent_map = scrubber.scrub("parent@example.com")
+    _, parent_map = scrubber.scrub("parent@example.com", DEFAULT_ACTIONS)
     continuation_store = SimpleNamespace(
         load=AsyncMock(return_value=parent_map), ensure_available=AsyncMock()
     )
@@ -244,7 +264,7 @@ async def test_bulk_disclosure_counts_distinct_new_values_of_every_action(
     threshold, bulk
 ) -> None:
     scrubber = PIIScrubberService()
-    _, parent_map = scrubber.scrub("parent@example.com")
+    _, parent_map = scrubber.scrub("parent@example.com", DEFAULT_ACTIONS)
     stage = PrivacyStage(
         scrubber,
         SimpleNamespace(

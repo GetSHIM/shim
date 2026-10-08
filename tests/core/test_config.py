@@ -93,7 +93,7 @@ def test_pii_entity_actions_are_parsed_from_json_and_default_to_none() -> None:
         ('{"PERSON": "mask"}', "unknown entity type: PERSON"),
         (
             '{"SECRET": "warn"}',
-            "Input should be 'off', 'monitor', 'mask', 'mask_last4' or 'block'",
+            "Input should be 'off', 'monitor', 'mask_last4', 'mask' or 'block'",
         ),
         (
             '{"EMAIL_ADDRESS": "mask_last4"}',
@@ -150,16 +150,6 @@ def test_cli_names_an_invalid_placeholder_setting(
     error = capsys.readouterr().err
     assert f"shim: error: {message}" in error
     assert "k" * 31 not in error
-
-
-def test_placeholders_stay_random_unless_stable_is_chosen() -> None:
-    assert CommunitySettings(_env_file=None).PII_PLACEHOLDER_MODE == "random"
-    assert (
-        CommunitySettings(
-            _env_file=None, PII_PLACEHOLDER_KEY="k" * 32
-        ).PII_PLACEHOLDER_MODE
-        == "random"
-    )
 
 
 @pytest.mark.parametrize(

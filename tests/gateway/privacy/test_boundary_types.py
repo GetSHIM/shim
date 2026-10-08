@@ -45,6 +45,7 @@ def test_privacy_outcome_keeps_verification_map_out_of_repr_and_trace() -> None:
         action=PrivacyAction.SCRUBBED,
         pii_detected=True,
         verification_map={"<PERSON_aaaa1111>": "Ada"},
+        pii_entities={"PERSON": 1},
     )
 
     assert "Ada" not in repr(outcome)

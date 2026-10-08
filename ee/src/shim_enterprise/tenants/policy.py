@@ -25,7 +25,7 @@ from shim.gateway.request_policy import (
     RequestPolicyContext,
     ResolvedRequestPolicy,
 )
-from shim.privacy.policies import EntityAction
+from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
 from shim_enterprise.tenants.models import (
     ApiKey,
     OrganizationPIIConfig,
@@ -125,7 +125,7 @@ class TenantPolicyService:
         pii_config = await self._pii_config(tenant_id, session)
         tier = await self._tier_definition(api_key.tier, session)
         switches = dict(pii_config or {})
-        # A value cached by an earlier release lacks these keys.
+        # Every key but the five switches is a setting of its own.
         entity_actions = switches.pop("entity_actions", None)
         placeholder_mode = switches.pop("placeholder_mode", "random")
         bulk_threshold = switches.pop("bulk_threshold", 50)
@@ -161,11 +161,7 @@ class TenantPolicyService:
         if row is None:
             return None
         value = {
-            "block_email": row.block_email,
-            "block_phone": row.block_phone,
-            "block_credit_card": row.block_credit_card,
-            "block_secrets": row.block_secrets,
-            "block_pii_tr": row.block_pii_tr,
+            **{name: getattr(row, name) for name in PII_CONFIG_DEFAULTS},
             "entity_actions": dict(row.entity_actions),
             "placeholder_mode": row.placeholder_mode,
             "bulk_threshold": row.bulk_threshold,

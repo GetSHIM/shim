@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -50,7 +49,9 @@ def effective_pii_config(config: Mapping[str, Any] | None = None) -> dict[str, b
     }
 
 
-EntityAction = Literal["off", "monitor", "mask", "mask_last4", "block"]
+# Weakest to strongest: an overlap goes to the stronger action, and a move down
+# this order is a relaxation.
+EntityAction = Literal["off", "monitor", "mask_last4", "mask", "block"]
 
 
 def effective_entity_actions(
@@ -79,6 +80,13 @@ def effective_entity_actions(
     return dict(sorted(actions.items()))
 
 
+def block_code(blocked_types: Iterable[str]) -> str | None:
+    blocked = set(blocked_types)
+    if not blocked:
+        return None
+    return "SECRET_BLOCKED" if blocked & {"SECRET", "DB_URI"} else "PII_BLOCKED"
+
+
 class PrivacyAction(str, Enum):
     DISABLED = "disabled"
     DETECTED = "detected"
@@ -101,6 +109,9 @@ class PrivacyOutcome:
         repr=False,
         compare=False,
     )
+    # Values first detected in this request, by type; inherited placeholders
+    # of a Responses continuation are not counted again.
+    pii_entities: Mapping[str, int] = field(default_factory=dict)
     monitored_entities: Mapping[str, int] = field(default_factory=dict)
     blocked_entities: Mapping[str, int] = field(default_factory=dict)
     bulk_disclosure: Mapping[str, int] | None = None
@@ -108,25 +119,19 @@ class PrivacyOutcome:
     monitored_values: frozenset[str] = field(
         default=frozenset(), repr=False, compare=False
     )
-    inherited_placeholders: frozenset[str] = field(
-        default=frozenset(), repr=False, compare=False
-    )
 
     def __post_init__(self) -> None:
-        for name in ("verification_map", "monitored_entities", "blocked_entities"):
+        for name in (
+            "verification_map",
+            "pii_entities",
+            "monitored_entities",
+            "blocked_entities",
+        ):
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
-        if self.bulk_disclosure is not None:
-            object.__setattr__(
-                self, "bulk_disclosure", MappingProxyType(dict(self.bulk_disclosure))
-            )
 
     @property
     def block_code(self) -> str | None:
-        if not self.blocked_entities:
-            return None
-        if self.blocked_entities.keys() & {"SECRET", "DB_URI"}:
-            return "SECRET_BLOCKED"
-        return "PII_BLOCKED"
+        return block_code(self.blocked_entities)
 
     def trace_metadata(self) -> dict[str, str | bool]:
         """Return only metadata safe for a sanitized pipeline trace."""
@@ -141,14 +146,3 @@ class PrivacyOutcome:
         """Return placeholder identifiers without their reversible values."""
 
         return tuple(self.verification_map)
-
-    @property
-    def pii_entities(self) -> Mapping[str, int]:
-        """Return irreversible entity counts for audit/analytics metadata."""
-
-        counts: Counter[str] = Counter()
-        for placeholder in self.verification_map.keys() - self.inherited_placeholders:
-            name = str(placeholder).strip("<>").partition("~")[0]
-            entity_type, _, _suffix = name.rpartition("_")
-            counts[entity_type or name] += 1
-        return MappingProxyType(dict(counts))

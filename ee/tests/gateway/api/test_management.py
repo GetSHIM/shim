@@ -1552,6 +1552,18 @@ def test_privacy_patch_rejects_an_unknown_placeholder_mode(mode) -> None:
         management.PrivacyPatch.model_validate({"placeholder_mode": mode})
 
 
+@pytest.mark.parametrize("field", ["placeholder_mode", "response_scan"])
+def test_the_privacy_patch_contract_advertises_no_value_for_an_absent_mode(
+    field,
+) -> None:
+    schema = management.PrivacyPatch.model_json_schema()["properties"][field]
+
+    # A generated client sends an advertised default on every PUT.
+    assert schema.get("default") is None
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate({field: None})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("before", "after", "relaxed"),
@@ -1598,8 +1610,9 @@ async def test_raising_or_clearing_the_bulk_threshold_is_a_relaxation(
         assert updated_event["after"]["bulk_threshold"] == after
 
 
-@pytest.mark.parametrize("threshold", [1, 0, -5, "many"])
-def test_privacy_patch_rejects_a_bulk_threshold_below_two(threshold) -> None:
+# The column is a PostgreSQL integer: a larger value must be a 422, not a 500.
+@pytest.mark.parametrize("threshold", [1, 0, -5, "many", 2**31])
+def test_privacy_patch_rejects_a_bulk_threshold_outside_its_range(threshold) -> None:
     with pytest.raises(ValidationError):
         management.PrivacyPatch.model_validate({"bulk_threshold": threshold})
 

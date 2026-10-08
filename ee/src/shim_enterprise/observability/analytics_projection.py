@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shim_enterprise.core.database import AsyncSessionLocal, Base
+from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.outbox.publisher import OutboxMessage, OutboxPublisher
 
 
@@ -131,24 +132,7 @@ def _projection_values(message: OutboxMessage) -> dict:
             "usage_estimated": bool(payload.get("usage_estimated")),
             "pricing_resolution": payload.get("pricing_resolution"),
             "team_id": payload.get("team_id"),
-            **{
-                field: payload.get(field)
-                for field in (
-                    "provider_finish_reasons",
-                    "completion_outcome",
-                    "repeat_chain_length",
-                    "ttft_ms",
-                    "cached_input_tokens",
-                    "warnings",
-                    "shim_latency_ms",
-                    "system_prompt_hash",
-                    "deployment_kind",
-                    "pii_entities",
-                    "monitored_entities",
-                    "blocked_entities",
-                    "bulk_disclosure",
-                )
-            },
+            **{field: payload.get(field) for field in _DIAGNOSTIC_FIELDS},
         },
         "cost_center": payload.get("cost_center"),
         "team": payload.get("team"),

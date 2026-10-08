@@ -140,6 +140,13 @@ def rejection_intent(prepared: PreparedInference) -> GatewayOutboxIntent:
                     else "failed",
                     "admitted": False,
                     "shim_latency_ms": prepared.timing.shim_latency_ms,
+                    # A count_tokens block never reaches the lifecycle.
+                    **(
+                        {"blocked_entities": dict(prepared.privacy.blocked_entities)}
+                        if prepared.privacy is not None
+                        and prepared.privacy.blocked_entities
+                        else {}
+                    ),
                 },
             }
         ),

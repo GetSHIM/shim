@@ -151,3 +151,21 @@ async def test_local_scan_reports_each_action_and_skips_off_types() -> None:
         ("SECRET", "block"),
     ]
     assert body["entity_types"] == ["EMAIL_ADDRESS", "SECRET"]
+
+
+@pytest.mark.asyncio
+async def test_local_scan_reports_the_stronger_action_of_an_overlap() -> None:
+    application = _application('{"EMAIL_ADDRESS": "block"}')
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://shim.test",
+    ) as client:
+        response = await client.post(
+            "/v1/scan",
+            headers={"x-shim-key": GATEWAY_KEY},
+            json={"text": "Open /home/alice/john.doe@example.com/notes.txt please"},
+        )
+
+    assert [(item["type"], item["action"]) for item in response.json()["entities"]] == [
+        ("EMAIL_ADDRESS", "block")
+    ]

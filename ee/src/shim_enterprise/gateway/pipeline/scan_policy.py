@@ -15,7 +15,11 @@ from shim.gateway.contracts.ids import ApiKeyId, TenantId, UserId
 from shim.gateway.contracts.inference import ScanPolicy
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim_enterprise.gateway.pipeline.audit_intent import resolve_audit_policy
-from shim.privacy.policies import EntityAction, effective_entity_actions
+from shim.privacy.policies import (
+    PII_CONFIG_DEFAULTS,
+    EntityAction,
+    effective_entity_actions,
+)
 from shim_enterprise.tenants.models import (
     Organization,
     OrganizationPIIConfig,
@@ -68,13 +72,7 @@ class ScanPolicyResolver:
         return replace(
             actor,
             entity_actions=effective_entity_actions(
-                {
-                    "block_email": config.block_email,
-                    "block_phone": config.block_phone,
-                    "block_credit_card": config.block_credit_card,
-                    "block_secrets": config.block_secrets,
-                    "block_pii_tr": config.block_pii_tr,
-                },
+                {name: getattr(config, name) for name in PII_CONFIG_DEFAULTS},
                 config.entity_actions,
             ),
         )

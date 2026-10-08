@@ -32,6 +32,10 @@ from shim.secrets.credentials import (
     EnvironmentProviderCredentialResolver,
     EphemeralProviderCredential,
 )
+from shim.privacy.policies import effective_entity_actions
+
+
+DEFAULT_ACTIONS = effective_entity_actions()
 
 
 settings = CommunitySettings(_env_file=None)
@@ -100,7 +104,7 @@ async def test_responses_nonstream_uses_sdk_key_and_restores_native_output(
 ) -> None:
     monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     seen: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
