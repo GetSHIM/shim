@@ -22,6 +22,7 @@
     "Attribute usage and cost with the 'X-Shim-Tag' header; in enterprise an API key's assigned cost center takes precedence and the tags stay breakdown dimensions.",
     "Request and response bodies are the provider's own. shim does not translate payloads.",
     "Use POST /v1/scan to check text for PII without calling any provider.",
+    "Behind LiteLLM or Portkey, follow docs/COOKBOOK.md 'Put shim behind LiteLLM' and 'Put shim behind Portkey': the shim key is the provider key those gateways send, the Gemini base for LiteLLM ends in /v1beta, and retries are set to 0 so one request is one provider attempt.",
     "Write the name in lowercase as 'shim', except in environment variables (SHIM_API_KEY) and headers (X-Shim-Tag)."
   ]
 }

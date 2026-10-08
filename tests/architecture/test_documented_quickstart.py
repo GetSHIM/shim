@@ -69,3 +69,11 @@ def test_every_documented_example_uses_the_quickstart_key() -> None:
     }
 
     assert len(keys) == 1, f"the README's examples use different shim keys: {keys}"
+
+
+def test_every_llms_txt_link_resolves_to_a_file() -> None:
+    text = (ROOT / "llms.txt").read_text()
+    links = re.findall(r"\]\(([^)]+)\)", text)
+
+    assert text.startswith("# shim\n") and links
+    assert [link for link in links if not (ROOT / link).is_file()] == []

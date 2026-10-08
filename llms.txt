@@ -1,0 +1,21 @@
+# shim
+
+> shim is a B2B AI gateway that sits between applications and the OpenAI, Anthropic and Google APIs. Callers keep the provider's own SDK and change only its base URL. shim masks personal data and secrets before a request leaves and restores them in the answer, applies rate, token and catalog admission, accounts tokens and cost per request, and returns provider-native payloads, errors and streams. The community gateway (Apache-2.0) needs no external services; the enterprise edition (Elastic-2.0, under `ee/`) adds tenants, budgets, audit evidence and private model deployments.
+
+## Docs
+
+- [README](README.md): what shim does, the quickstart and the settings that matter first
+- [Cookbook](docs/COOKBOOK.md): SDK setup, tags and cost, scan, privacy actions, errors and retries, warnings, streaming, observability, LiteLLM and Portkey in front of shim
+- [Current architecture](docs/CURRENT_ARCHITECTURE.md): the request path, product boundaries, error codes and contracts
+- [Developer guide](DEVELOPER_GUIDE.md): where code lives, runtime invariants and the required gates
+
+## Enterprise
+
+- [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings, the daily privacy card, alerts, audit export, KVKK report, model deployments
+- [Model deployments](ee/docs/MODEL_DEPLOYMENTS.md): registering private model servers, their prices and context windows
+- [Diagnostic metadata](ee/docs/DIAGNOSTIC_METADATA.md): every field shim records per request and its null behaviour
+- [Policy decisions](ee/docs/POLICY_DECISIONS.md): the policy verdicts and the audit evidence of management changes
+- [On-prem identity](ee/docs/ON_PREM_IDENTITY.md): OIDC and Vault for customer-operated installations
+- [Provisioning](ee/docs/PROVISIONING.md): operator-managed plans and the existing-customer transition
+- [Team access](ee/docs/team-access.md): teams, roles and gateway key controls
+- [Offline releases](ee/docs/OFFLINE_RELEASES.md): signed releases and offline bundles

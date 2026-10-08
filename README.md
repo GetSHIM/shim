@@ -201,7 +201,9 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
 ## Documentation
 
 - [Cookbook](docs/COOKBOOK.md): SDK setup, tags and cost, scan, errors and
-  retries, streaming, observability
+  retries, streaming, observability, and shim behind
+  [LiteLLM](docs/COOKBOOK.md#put-shim-behind-litellm) or
+  [Portkey](docs/COOKBOOK.md#put-shim-behind-portkey)
 - [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings,
   audit export, KVKK report, model deployments
 - [Developer guide](DEVELOPER_GUIDE.md)

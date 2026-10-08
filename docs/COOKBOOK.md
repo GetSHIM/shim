@@ -17,6 +17,8 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Read warnings](#read-warnings)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
+- [Put shim behind LiteLLM](#put-shim-behind-litellm)
+- [Put shim behind Portkey](#put-shim-behind-portkey)
 
 ## Use the OpenAI SDK
 
@@ -481,3 +483,117 @@ go through the vocabulary in `src/shim/observability/metrics.py`, and anything
 outside it is recorded as `other`: `model` is a family (`gpt-*`, `claude-*`,
 `gemini-*`, `other`), never a full model id, and `endpoint` is the route
 template. `reason` is `queue_unavailable` or `sink_failure`.
+
+## Put shim behind LiteLLM
+
+Keep an existing LiteLLM proxy and add shim's privacy and accounting behind it.
+Verified with LiteLLM 1.104.1 against a community gateway for OpenAI, Anthropic
+and Gemini models: answers arrive, personal data is masked at the provider and
+restored for the client, the shim key never reaches the provider, and a provider
+error is one attempt.
+
+1. Point each model at shim and give LiteLLM the shim key as that provider's
+   key. LiteLLM sends it where shim reads it: `Authorization: Bearer` for
+   OpenAI, `x-api-key` for Anthropic, `x-goog-api-key` for Gemini. The OpenAI
+   base ends in `/v1`, the Anthropic base is the shim root, and the Gemini base
+   ends in `/v1beta`, because LiteLLM appends `/models/...` to it.
+2. Set `num_retries: 0`. With LiteLLM's defaults one client request reached the
+   provider three times when it failed; shim already makes exactly one attempt
+   and sends `x-should-retry` and `Retry-After` where a retry can succeed.
+3. Keep the provider keys on the shim side (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+   `GOOGLE_API_KEY`). LiteLLM recent releases also need a master key for their own
+   clients.
+
+```yaml
+model_list:
+  - model_name: shim-openai
+    litellm_params:
+      model: openai/gpt-5-nano
+      api_base: http://localhost:8000/v1
+      api_key: a-key-of-at-least-16-chars
+  - model_name: shim-anthropic
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_base: http://localhost:8000
+      api_key: a-key-of-at-least-16-chars
+  - model_name: shim-gemini
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_base: http://localhost:8000/v1beta
+      api_key: a-key-of-at-least-16-chars
+litellm_settings:
+  num_retries: 0
+router_settings:
+  num_retries: 0
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+```
+
+```python
+import os
+
+from openai import OpenAI
+
+# Clients talk to LiteLLM with its master key; LiteLLM talks to shim with the shim key.
+client = OpenAI(base_url="http://localhost:4000/v1", api_key=os.environ["LITELLM_MASTER_KEY"])
+client.chat.completions.create(
+    model="shim-anthropic",
+    messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
+)
+```
+
+Without the proxy, LiteLLM's SDK takes the same values on each call:
+
+```python
+import litellm
+
+for model, api_base in (
+    ("openai/gpt-5-nano", "http://localhost:8000/v1"),
+    ("anthropic/claude-haiku-5-5", "http://localhost:8000"),
+    ("gemini/gemini-3.5-flash-lite", "http://localhost:8000/v1beta"),
+):
+    litellm.completion(
+        model=model,
+        api_base=api_base,
+        api_key="a-key-of-at-least-16-chars",
+        num_retries=0,
+        messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
+    )
+```
+
+## Put shim behind Portkey
+
+Route the open-source Portkey gateway's OpenAI and Anthropic traffic through
+shim. Verified with `@portkey-ai/gateway` 1.15.2 against a community gateway:
+answers arrive, personal data is masked at the provider and restored, the shim
+key never reaches the provider, and a provider error is one attempt (Portkey
+retries only when a retry config asks it to; leave it unset).
+
+1. Send each request to Portkey with `x-portkey-provider` (`openai` or
+   `anthropic`) and `x-portkey-custom-host` set to shim's `/v1`, for both
+   providers.
+2. Put the shim key in `Authorization: Bearer`; Portkey passes it to shim as the
+   provider's own key header.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8787/v1",
+    api_key="a-key-of-at-least-16-chars",
+    default_headers={
+        "x-portkey-provider": "anthropic",
+        "x-portkey-custom-host": "http://localhost:8000/v1",
+    },
+)
+client.chat.completions.create(
+    model="claude-haiku-5-5",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
+)
+```
+
+Notes: Gemini behind Portkey does not work: Portkey sends the Gemini key as a
+`?key=` query parameter and adds a `model` field to the body, and shim reads the
+key only from a header and refuses fields the Gemini route does not define. Send
+Gemini traffic to shim directly or through LiteLLM.
