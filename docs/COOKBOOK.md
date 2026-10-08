@@ -220,7 +220,8 @@ The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 [README](../README.md#what-it-does) gives examples and known false positives.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
-is `off` is not reported. The response also carries the `request_id` in
+is `off` is not reported. Enterprise names the list `entities_found` and gives
+each entry the same `action`, taken from the tenant's privacy settings. The response also carries the `request_id` in
 `X-Shim-Request-Id`. This route takes
 the shim key in `Authorization: Bearer` or `x-shim-key`, not `x-api-key`, and its
 errors use the `{"detail": ...}` shape; text over the limit is 422.

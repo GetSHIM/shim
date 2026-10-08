@@ -404,6 +404,20 @@ def _media_payload(protocol: str, part: dict[str, object]) -> dict[str, object]:
             },
         ),
         (
+            "anthropic",
+            {
+                "type": "document",
+                "source": {"type": "file", "file_id": "file_123"},
+            },
+        ),
+        (
+            "anthropic",
+            {
+                "type": "image",
+                "source": {"type": "file", "file_id": "file_123"},
+            },
+        ),
+        (
             "google",
             {
                 "inlineData": {

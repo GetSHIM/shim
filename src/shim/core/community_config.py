@@ -19,7 +19,7 @@ from shim.privacy.policies import EntityAction, effective_entity_actions
 
 class CommunitySettings(BaseSettings):
     PROJECT_NAME: str = "shim trust-boundary gateway"
-    VERSION: str = "0.1.3"
+    VERSION: str = "0.3.0"
     ENVIRONMENT: Literal["development", "test", "production"] = "development"
     IS_DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

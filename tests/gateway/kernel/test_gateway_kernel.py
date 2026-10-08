@@ -10,6 +10,7 @@ from starlette.responses import Response
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
@@ -233,6 +234,28 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
 
     assert error.value is failure
     usage.fail.assert_awaited_once_with(prepared, reason=expected_reason)
+
+
+@pytest.mark.asyncio
+async def test_kernel_publishes_the_request_id_once_a_request_is_prepared() -> None:
+    kernel = _kernel(SimpleNamespace())
+
+    async def fail_after_preparing(_invocation, *, prepared_observer):
+        prepared_observer(
+            SimpleNamespace(policy=SimpleNamespace(tier="team"), request_id="req_seen")
+        )
+        raise RuntimeError("refused after admission")
+
+    kernel._execute = fail_after_preparing  # type: ignore[method-assign]
+    invocation = SimpleNamespace(
+        metadata=GatewayRequestMetadata(endpoint="/v1/chat/completions"),
+        protocol="chat",
+    )
+
+    with pytest.raises(RuntimeError):
+        await kernel.execute(invocation)  # type: ignore[arg-type]
+
+    assert CURRENT_REQUEST_ID.get() == "req_seen"
 
 
 @pytest.mark.asyncio

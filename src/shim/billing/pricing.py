@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import json
 from pathlib import Path
 from types import MappingProxyType
@@ -13,6 +13,9 @@ from typing import Any
 
 
 TOKENS_PER_MILLION = Decimal("1000000")
+# The ledger stores USD at eight decimal places. Costs are produced at that
+# precision so a reservation reads back exactly as it was computed.
+COST_QUANTUM = Decimal("0.00000001")
 DEFAULT_MAX_OUTPUT_TOKENS = 200_000
 UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
@@ -143,7 +146,8 @@ class ModelPrice:
                 + Decimal(write_tokens) * write
                 + Decimal(one_hour_tokens) * one_hour
             )
-        return (input_cost + Decimal(output_tokens) * output_price) / TOKENS_PER_MILLION
+        cost = (input_cost + Decimal(output_tokens) * output_price) / TOKENS_PER_MILLION
+        return cost.quantize(COST_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 @dataclass(frozen=True, slots=True)

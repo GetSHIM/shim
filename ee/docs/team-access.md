@@ -101,7 +101,8 @@ and breakdowns by model and by API key (`api_key_id`, `name`,
 `cost_complete: false` when a settlement had no price). A member reads
 the requests of the keys they own and of the keys in teams they administer;
 the filter is applied in the query, so totals, summaries, pages and the CSV
-export cover only those keys. Other roles get 403 "Organization reader
+export cover only those keys. `api_key_id` narrows either read to one key and
+never widens a member's scope: a key the member cannot see returns no rows. Other roles get 403 "Organization reader
 required" on organization-wide reads.
 
 | Read | Owner, admin, auditor | Member |

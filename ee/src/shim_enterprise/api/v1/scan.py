@@ -18,6 +18,7 @@ from shim_enterprise.gateway.contracts.enterprise_errors import (
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanInput
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.privacy.policies import EntityAction
 from shim_enterprise.services.gateway.enterprise import EnterpriseGatewayService
 
 
@@ -29,6 +30,7 @@ class EntityFound(BaseModel):
     score: float
     start: int
     end: int
+    action: EntityAction
 
 
 class ScanResponse(BaseModel):
@@ -85,6 +87,7 @@ async def scan_text(
                 score=entity.score,
                 start=entity.start,
                 end=entity.end,
+                action=entity.action,
             )
             for entity in result.entities_found
         ],

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib.metadata import version
 from io import StringIO
 import json
 import os
@@ -108,7 +109,7 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
                 },
             )
 
-    assert health.json() == {"status": "ok", "version": "0.1.3"}
+    assert health.json() == {"status": "ok", "version": version("shim-gateway")}
     assert completion.id == "chatcmpl_community"
     assert completion.choices[0].message.content == f"Received Contact {EMAIL}"
     assert len(attempts) == 1

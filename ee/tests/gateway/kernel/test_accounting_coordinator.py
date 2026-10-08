@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.billing.attribution import CostAttribution
+from shim.billing.pricing import ModelPrice, compute_cost_usd
 from shim_enterprise.billing.spend import BudgetEvaluator
 from shim_enterprise.core.config import settings
 from shim_enterprise.api.v1 import management
@@ -1363,6 +1364,70 @@ async def test_failure_state_uses_durable_provider_marker(
         tenant_id=test_api_key.organization_id,
         request_id=request_id,
     ) == _failure_state(True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_spend_estimate_reads_back_exactly_at_ledger_precision(
+    db,
+    test_api_key,
+) -> None:
+    repository = DurableAccountingRepository()
+    request_id = f"req_precision_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=91,
+            maximum_output_tokens=128_000,
+            policy=QuotaPolicySnapshot(
+                version="precision-quota-v1",
+                daily_request_limit=None,
+                monthly_request_limit=1000,
+                monthly_token_limit=1_000_000,
+            ),
+        ),
+    )
+    # Unrounded, this estimate has nine decimal places and Postgres stored a
+    # rounded copy that no longer matched the command: a 503 on every such request.
+    estimate = compute_cost_usd(
+        "gpt-6-luna",
+        91,
+        128_000,
+        price=ModelPrice(
+            input_per_million=Decimal("0.125"),
+            output_per_million=Decimal("0.5"),
+        ),
+    )
+    command = SpendReservationCommand(
+        tenant_id=test_api_key.organization_id,
+        api_key_id=test_api_key.id,
+        request_id=request_id,
+        requested_model="gpt-6-luna",
+        provider="openai",
+        provider_model="gpt-6-luna",
+        estimated_cost_usd=estimate,
+        pricing_metadata={"catalog_version": "catalog-v1"},
+        cache_status="miss",
+        audit_policy_mode="off",
+        policy=SpendPolicySnapshot(
+            version="precision-spend-v1", monthly_limit_usd=None
+        ),
+    )
+
+    reservation = await repository.reserve_provider_spend(db, command)
+    replay = await repository.reserve_provider_spend(db, command)
+
+    stored = await db.get(UsageLedger, reservation.event_id)
+    assert stored is not None
+    assert stored.cost_usd == estimate == Decimal("0.06401138")
+    assert replay.replayed
 
 
 @pytest.mark.asyncio

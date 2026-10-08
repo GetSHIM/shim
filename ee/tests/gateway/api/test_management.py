@@ -34,7 +34,7 @@ from shim_enterprise.compliance.services.forwarder import DELIVERY_EVENT
 from shim_enterprise.core.database import get_db
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
-from shim_enterprise.tenants.models import Organization
+from shim_enterprise.tenants.models import ApiKey, Organization, User
 from shim_enterprise.billing.read_models import BillingReadModels
 from shim.gateway.contracts.ids import TenantId
 
@@ -1909,3 +1909,72 @@ async def test_prompt_versions_are_for_readers_and_requests_filter_by_hash(
     }
     assert len(list(csv.DictReader(io.StringIO(exported.text.lstrip("﻿"))))) == 1
     assert malformed == [422] * 6
+
+
+@pytest.mark.asyncio
+async def test_requests_filter_by_api_key_without_widening_member_scope(
+    db, test_user_with_org, test_api_key, test_tier
+) -> None:
+    user = test_user_with_org
+    colleague = User(
+        id=uuid4(),
+        organization_id=user.organization_id,
+        email=f"colleague-{uuid4().hex}@example.com",
+        role="member",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(colleague)
+    await db.flush()
+    other_key = ApiKey(
+        id=uuid4(),
+        user_id=colleague.id,
+        organization_id=user.organization_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-other",
+        name="Colleague key",
+        tier=test_tier,
+        is_active=True,
+    )
+    db.add(other_key)
+    await db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        RequestLog(
+            request_id=f"req_key_{uuid4().hex}",
+            api_key_id=key_id,
+            organization_id=user.organization_id,
+            timestamp=now - timedelta(seconds=index),
+        )
+        for index, key_id in enumerate([test_api_key.id, other_key.id, other_key.id])
+    )
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        user.role = "owner"
+        listed = await client.get(
+            "/api/v1/management/requests", params={"api_key_id": str(other_key.id)}
+        )
+        exported = await client.get(
+            "/api/v1/management/requests/export",
+            params={"api_key_id": str(test_api_key.id)},
+        )
+        user.role = "member"
+        widened = await client.get(
+            "/api/v1/management/requests", params={"api_key_id": str(other_key.id)}
+        )
+        malformed = await client.get(
+            "/api/v1/management/requests", params={"api_key_id": "not-a-uuid"}
+        )
+
+    assert listed.json()["total"] == 2
+    assert listed.json()["summary"]["requests"] == 2
+    assert len(list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))) == 1
+    assert widened.json()["total"] == 0
+    assert malformed.status_code == 422

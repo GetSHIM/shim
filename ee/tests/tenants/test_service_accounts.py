@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.requests import Request
@@ -217,6 +218,33 @@ async def test_service_accounts_cannot_take_human_powers(db) -> None:
         management.ApiKeyInput(name="pipeline"), admin, db
     )
     assert (await db.get(ApiKey, key.id)).user_id == admin.id
+
+
+@pytest.mark.asyncio
+async def test_a_service_account_issues_a_key_that_expires(db) -> None:
+    owner = await _owner(db)
+    _, admin = await _create(db, owner)
+
+    lasting = await management.create_api_key(
+        management.ApiKeyInput(name="lasting"), admin, db
+    )
+    demo = await management.create_api_key(
+        management.ApiKeyInput(name="demo", expires_in_days=7), admin, db
+    )
+
+    assert lasting.expires_at is None
+    remaining = demo.expires_at - datetime.now(timezone.utc)
+    assert timedelta(days=6) < remaining <= timedelta(days=7)
+    assert (await authenticate_api_key(db, demo.plaintext)).id == demo.id
+    await db.execute(
+        update(ApiKey)
+        .where(ApiKey.id == demo.id)
+        .values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    )
+    assert await authenticate_api_key(db, demo.plaintext) is None
+    for days in (0, 366):
+        with pytest.raises(ValidationError):
+            management.ApiKeyInput(name="demo", expires_in_days=days)
 
 
 @pytest.mark.asyncio

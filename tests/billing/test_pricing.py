@@ -17,6 +17,19 @@ def test_cost_uses_decimal_prices_per_million_tokens() -> None:
     assert compute_cost_usd("gpt-5-nano", 1_000_000, 500_000) == Decimal("0.25")
 
 
+def test_costs_are_produced_at_the_ledger_precision() -> None:
+    # 91 tokens at 0.125 per million is 0.000011375: nine places, one more than
+    # the ledger's Numeric(18, 8) keeps.
+    price = ModelPrice(
+        input_per_million=Decimal("0.125"), output_per_million=Decimal("0.5")
+    )
+
+    assert price.cost(91, 0) == Decimal("0.00001138")
+    assert price.cost(91, 128_000) == Decimal("0.06401138")
+    assert price.cost(1, 0) == Decimal("0.00000013")
+    assert price.cost(0, 0) == Decimal("0")
+
+
 @pytest.mark.parametrize(
     ("model", "input_price", "output_price"),
     [
