@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import io
+import itertools
 import json
 import logging
 import secrets
@@ -45,8 +46,10 @@ from shim_enterprise.billing.models import AuditIntent, CostBudget, UsageLedger
 from shim_enterprise.billing.read_models import (
     MAX_BILLING_DAILY_ROWS,
     MAX_BILLING_BREAKDOWN_ROWS,
+    BillingBreakdown,
     BillingBreakdownGroup,
     BillingReadModels,
+    DailyUsage,
 )
 from shim_enterprise.billing.spend import (
     MAX_BUDGET_ALERT_THRESHOLDS,
@@ -583,6 +586,37 @@ class BillingUsageView(BaseModel):
     total_cost: float | None
     unpriced_requests: int = 0
     cost_complete: bool = True
+
+
+class UsageTotalsView(BaseModel):
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: Decimal | None
+    cost_complete: bool
+    unpriced_requests: int
+
+
+class UsageDayView(UsageTotalsView):
+    date: date
+
+
+class UsageModelView(UsageTotalsView):
+    model: str
+
+
+class UsageKeyView(UsageTotalsView):
+    api_key_id: UUID
+    name: str | None
+    prefix: str
+
+
+class MyUsageView(BaseModel):
+    period: BillingPeriodView
+    totals: UsageTotalsView
+    daily: list[UsageDayView]
+    by_model: list[UsageModelView]
+    by_api_key: list[UsageKeyView]
 
 
 KNOWN_REQUEST_ACTIVITY_STATUSES = (
@@ -2438,6 +2472,82 @@ async def export_requests(
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="shim_requests.csv"'},
     )
+
+
+@router.get("/usage/mine", response_model=MyUsageView)
+async def my_usage(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> MyUsageView:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(
+        start or end_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    )
+    _validate_sync_window(start_at, end_at)
+    keys = {
+        key_id: (name, prefix)
+        for key_id, name, prefix in await session.execute(
+            select(ApiKey.id, ApiKey.name, ApiKey.prefix).where(
+                ApiKey.organization_id == _tenant_id(user),
+                _own_or_administered_key(user),
+            )
+        )
+    }
+    read_models = BillingReadModels()
+    window = {
+        "tenant_id": TenantId(_tenant_id(user)),
+        "start_at": start_at,
+        "end_at": end_at,
+        "api_key_ids": list(keys),
+    }
+    daily = await read_models.daily_usage(session, **window)
+    if len(daily) > MAX_BILLING_DAILY_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"synchronous usage is limited to {MAX_BILLING_DAILY_ROWS} rows",
+        )
+    by_model = await read_models.breakdown(
+        session, **window, group_by="model", limit=None
+    )
+    by_key = await read_models.breakdown(
+        session, **window, group_by="api_key_id", limit=None
+    )
+    return MyUsageView(
+        period=BillingPeriodView(start=start_at, end=end_at),
+        totals=UsageTotalsView(**_usage_totals(by_model)),
+        daily=[
+            UsageDayView(date=day, **_usage_totals(list(rows)))
+            for day, rows in itertools.groupby(daily, key=lambda row: row.usage_date)
+        ],
+        by_model=[
+            UsageModelView(model=row.key, **_usage_totals([row])) for row in by_model
+        ],
+        by_api_key=[
+            UsageKeyView(
+                api_key_id=UUID(row.key),
+                name=keys[UUID(row.key)][0],
+                prefix=keys[UUID(row.key)][1],
+                **_usage_totals([row]),
+            )
+            for row in by_key
+        ],
+    )
+
+
+def _usage_totals(rows: Sequence[BillingBreakdown | DailyUsage]) -> dict[str, Any]:
+    unpriced = sum(row.unpriced_requests for row in rows)
+    return {
+        "requests": sum(row.request_count for row in rows),
+        "input_tokens": sum(row.prompt_tokens for row in rows),
+        "output_tokens": sum(row.completion_tokens for row in rows),
+        "cost_usd": None
+        if unpriced
+        else sum((row.cost_usd for row in rows), Decimal()),
+        "cost_complete": not unpriced,
+        "unpriced_requests": unpriced,
+    }
 
 
 @router.get("/billing/usage", response_model=BillingUsageView)

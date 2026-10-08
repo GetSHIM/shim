@@ -369,6 +369,7 @@ enterprise = [
   "ee/tests/ai_act/test_audit_chain.py",
   "ee/tests/ai_act/test_control_plane.py",
   "ee/tests/architecture/test_manual_test_dashboard.py",
+  "ee/tests/billing/test_my_usage.py",
   "ee/tests/billing/test_quota.py",
   "ee/tests/billing/test_reconciliation.py",
   "ee/tests/billing/test_spend.py",

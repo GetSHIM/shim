@@ -86,7 +86,12 @@ management API without a person's sign-in. It is an organization user of kind
 
 ## Read scope
 
-Organization-wide reads belong to owners, admins and auditors. A member reads
+Organization-wide reads belong to owners, admins and auditors. Everyone, readers
+included, reads their own usage with `GET /management/usage/mine?start=…&end=…`
+(default the current UTC month to now, at most 31 days): totals, a daily UTC
+series, and breakdowns by model and by API key (`api_key_id`, `name`,
+`prefix`), with the billing cost semantics (`cost_usd` null and
+`cost_complete: false` when a settlement had no price). A member reads
 the requests of the keys they own and of the keys in teams they administer;
 the filter is applied in the query, so totals, summaries, pages and the CSV
 export cover only those keys. Other roles get 403 "Organization reader
@@ -99,6 +104,7 @@ required" on organization-wide reads.
 | `/compliance/overview`, `/compliance/audit/logs`, `/compliance/audit/bundle`, `POST /compliance/audit/verify`, `POST /compliance/reports/audit`, `POST /compliance/reports/kvkk` | Yes | 403 |
 | Compliance connectors, findings, forward targets, oversight and oversight policies (`GET`) | Yes | 403 |
 | `/management/model-deployments` (`GET`) | Yes | 403 |
+| `/management/usage/mine` | Own keys and administered teams' keys | Own keys and administered teams' keys |
 | `/team/members` (names and emails of the organization's users) | Yes | Team administrators only; other members 403 |
 | `/auth/me`, `/subscription`, `/tier-info`, `GET /settings/pii`, `GET /settings/provider-keys`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
 
