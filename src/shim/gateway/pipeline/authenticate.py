@@ -103,6 +103,7 @@ class AuthenticateStage:
             pii_config=policy.pii_config,
             entity_actions=policy.entity_actions,
             placeholder_key=policy.placeholder_key,
+            bulk_threshold=policy.bulk_threshold,
             provider=ProviderId(value.provider),
             timing=value.timing,
         )

@@ -578,3 +578,34 @@ async def test_stable_placeholders_repeat_across_requests_and_never_leave_the_sc
     assert "alice@example.com" not in "".join(sent)
     assert len(set(versions)) == 1
     assert "k" * 32 not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("threshold", "actions", "bulk", "status"),
+    [
+        ("3", {}, {"distinct_values": 3, "threshold": 3}, 200),
+        ("4", {}, None, 200),
+        ("0", {}, None, 200),
+        ("3", {"EMAIL_ADDRESS": "block"}, {"distinct_values": 3, "threshold": 3}, 400),
+    ],
+)
+async def test_a_bulk_disclosure_is_recorded_in_the_event_and_the_request_decides_alone(
+    threshold, actions, bulk, status
+):
+    emails = "a@example.com, b@example.com, c@example.com, a@example.com"
+    response, calls, events = await _send(
+        actions,
+        "chat",
+        _ROUTES["chat"][2](f"Mail {emails}"),
+        settings={"PII_BULK_THRESHOLD": threshold},
+    )
+
+    [event] = events
+    assert response.status_code == status
+    assert len(calls) == (1 if status == 200 else 0)
+    assert event["bulk_disclosure"] == bulk
+    assert ("privacy.bulk" in {v["rule_id"] for v in event["policy_verdicts"]}) is (
+        bulk is not None
+    )
+    assert "a@example.com" not in json.dumps(event)

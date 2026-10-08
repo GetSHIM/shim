@@ -14,7 +14,11 @@ from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
-from shim.observability.metrics import PRIVACY_DETECTION_TOTAL, bounded_label
+from shim.observability.metrics import (
+    PRIVACY_BULK_DISCLOSURES_TOTAL,
+    PRIVACY_DETECTION_TOTAL,
+    bounded_label,
+)
 from shim.privacy.pii_scrubber import (
     PIIInputTooLarge,
     PIIScrubberService,
@@ -173,6 +177,17 @@ class PrivacyStage:
             raise
         privacy = prepared.privacy
         assert privacy is not None
+        if privacy.bulk_disclosure is not None:
+            prepared.record_verdict(
+                "privacy.bulk",
+                stage="privacy",
+                outcome="allow",
+                reason_code="BULK_DISCLOSURE",
+                policy={"bulk_threshold": value.bulk_threshold},
+            )
+            PRIVACY_BULK_DISCLOSURES_TOTAL.labels(
+                provider=bounded_label("provider", str(value.provider))
+            ).inc()
         disabled = value.context.privacy_policy.pii_mode == "disabled"
         outcome, reason_code = (
             ("deny", privacy.block_code)
@@ -242,6 +257,10 @@ class PrivacyStage:
             if actions[entity_type] == "block"
         )
         pii_detected = bool(verification_map or unmasked)
+        distinct_values = len(verification_map.keys() - parent_map.keys()) + len(
+            unmasked
+        )
+        threshold = value.bulk_threshold
         privacy = PrivacyOutcome(
             action=(
                 PrivacyAction.SCRUBBED
@@ -254,6 +273,9 @@ class PrivacyStage:
             verification_map=verification_map,
             monitored_entities=Counter(monitored.values()),
             blocked_entities=blocked,
+            bulk_disclosure={"distinct_values": distinct_values, "threshold": threshold}
+            if threshold is not None and distinct_values >= threshold
+            else None,
             monitored_values=frozenset(monitored),
             inherited_placeholders=frozenset(parent_map),
         )

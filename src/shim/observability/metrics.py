@@ -140,6 +140,11 @@ PRIVACY_DETECTION_TOTAL = Counter(
     "Detected privacy entities by entity type.",
     ("entity_type",),
 )
+PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
+    "shim_privacy_bulk_disclosures_total",
+    "Requests whose distinct detected values reached the bulk threshold.",
+    ("provider",),
+)
 
 
 def bounded_label(kind: str, value: object) -> str:

@@ -144,6 +144,7 @@ def _projection_values(message: OutboxMessage) -> dict:
                     "pii_entities",
                     "monitored_entities",
                     "blocked_entities",
+                    "bulk_disclosure",
                 )
             },
         },

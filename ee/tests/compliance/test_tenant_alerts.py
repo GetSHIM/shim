@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -18,7 +20,9 @@ from shim_enterprise.compliance.services.forwarder import (
     ComplianceForwarderService,
 )
 from shim_enterprise.core.database import get_db
+from shim_enterprise.outbox import handlers
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.models import Organization
 from shim.gateway.contracts.ids import TenantId
 
@@ -165,3 +169,58 @@ async def test_forward_targets_are_created_without_a_connector_and_tenant_scoped
     assert [item["id"] for item in listed.json()] == [created.json()["id"]]
     assert (foreign_patch.status_code, foreign_delete.status_code) == (404, 404)
     assert disabled.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled_targets", [2, 0])
+async def test_a_bulk_disclosure_intent_fans_out_to_every_enabled_target(
+    db, test_org, monkeypatch, enabled_targets
+) -> None:
+    db.add_all(
+        [_target(test_org.id) for _ in range(enabled_targets)]
+        + [_target(test_org.id, enabled=False)]
+    )
+    await db.flush()
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    monkeypatch.setattr(handlers, "AsyncSessionLocal", session_scope)
+    monkeypatch.setattr(db, "commit", AsyncMock())
+    message = OutboxMessage(
+        id=uuid4(),
+        organization_id=test_org.id,
+        event_type=handlers.BULK_DISCLOSURE,
+        aggregate_type="request",
+        aggregate_id="req_bulk",
+        idempotency_key="bulk_disclosure:req_bulk",
+        payload={
+            "organization_id": str(test_org.id),
+            "request_id": "req_bulk",
+            "api_key_id": None,
+            "provider": "openai",
+            "model": "gpt-5-nano",
+            "distinct_values": 60,
+            "threshold": 50,
+            "entity_counts": {"EMAIL_ADDRESS": 60},
+            "occurred_at": "2026-10-08T00:00:00+00:00",
+        },
+        attempt_count=0,
+        created_at=datetime.now(timezone.utc),
+    )
+
+    for _ in range(2):
+        await handlers.build_publisher().publish(message)
+
+    deliveries = await _deliveries(db, test_org.id)
+    assert len(deliveries) == enabled_targets
+    for delivery in deliveries:
+        body = delivery.payload["body"]
+        assert body["kind"] == "bulk_disclosure"
+        assert body["distinct_values"] == 60
+        assert delivery.idempotency_key.endswith(":bulk_disclosure:req_bulk")
+        assert handlers._compliance_text(body) == (
+            "shim bulk disclosure: 60 distinct values (EMAIL_ADDRESS 60) in one "
+            "request with API key None at 2026-10-08T00:00:00+00:00, threshold 50"
+        )

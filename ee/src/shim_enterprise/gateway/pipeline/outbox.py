@@ -209,6 +209,7 @@ _DIAGNOSTIC_FIELDS = (
     "pii_entities",
     "monitored_entities",
     "blocked_entities",
+    "bulk_disclosure",
 )
 
 

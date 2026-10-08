@@ -35,6 +35,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     entity_actions: Mapping[str, EntityAction] | None = None
     # Stable-placeholder root key; None keeps placeholders random.
     placeholder_key: SecretBytes | None = None
+    bulk_threshold: int | None = None
 
 
 class RequestPolicyResolver(Protocol):
@@ -48,6 +49,7 @@ class LocalRequestPolicyResolver:
     """Resolve the fixed single-user community policy."""
 
     __slots__ = (
+        "_bulk_threshold",
         "_entity_actions",
         "_placeholder_key",
         "_rate_limit_rpm",
@@ -61,11 +63,13 @@ class LocalRequestPolicyResolver:
         rate_limit_tpm: int,
         entity_actions: Mapping[str, EntityAction] | None = None,
         placeholder_key: SecretBytes | None = None,
+        bulk_threshold: int | None = None,
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
         self._entity_actions = entity_actions
         self._placeholder_key = placeholder_key
+        self._bulk_threshold = bulk_threshold
 
     async def resolve(
         self,
@@ -94,4 +98,5 @@ class LocalRequestPolicyResolver:
             pii_config=effective_pii_config(),
             entity_actions=self._entity_actions,
             placeholder_key=self._placeholder_key,
+            bulk_threshold=self._bulk_threshold,
         )

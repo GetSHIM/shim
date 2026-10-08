@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 import hashlib
@@ -597,6 +598,7 @@ class DurableAccountingCoordinator:
         if prepared.privacy is None:
             raise ValueError("privacy outcome is required")
         privacy_facts = REQUEST_PRIVACY_RETENTION.durable_facts(prepared.privacy)
+        bulk = prepared.privacy.bulk_disclosure
         try:
             lifecycle = await RequestLifecycleRepository.update(
                 session,
@@ -616,12 +618,44 @@ class DurableAccountingCoordinator:
                                 prepared.privacy.monitored_entities
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
+                            "bulk_disclosure": None if bulk is None else dict(bulk),
                         }
                     ),
                 },
             )
             if lifecycle is None:
                 raise AccountingPersistenceError("privacy lifecycle is missing")
+            if bulk is not None:
+                counts = (
+                    Counter(prepared.privacy.pii_entities)
+                    + Counter(prepared.privacy.monitored_entities)
+                    + Counter(prepared.privacy.blocked_entities)
+                )
+                await OutboxWriter().append(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    values={
+                        "event_type": "privacy.bulk_disclosure",
+                        "aggregate_type": "request",
+                        "aggregate_id": str(prepared.request_id),
+                        "idempotency_key": f"bulk_disclosure:{prepared.request_id}",
+                        "payload": {
+                            "organization_id": str(prepared.tenant_id),
+                            "request_id": str(prepared.request_id),
+                            "api_key_id": None
+                            if prepared.api_key_id is None
+                            else str(prepared.api_key_id),
+                            "provider": str(prepared.provider),
+                            "model": prepared.model,
+                            "distinct_values": bulk["distinct_values"],
+                            "threshold": bulk["threshold"],
+                            "entity_counts": dict(sorted(counts.items())),
+                            "occurred_at": prepared.context.started_at.isoformat(),
+                        },
+                        "status": "pending",
+                        "next_attempt_at": datetime.now(timezone.utc),
+                    },
+                )
             await session.commit()
         except Exception as exc:
             await session.rollback()

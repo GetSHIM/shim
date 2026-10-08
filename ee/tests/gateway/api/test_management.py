@@ -381,6 +381,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "pii_entities",
         "monitored_entities",
         "blocked_entities",
+        "bulk_disclosure",
     }
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
@@ -1527,3 +1528,55 @@ async def test_turning_stable_placeholders_on_is_a_relaxation_and_off_is_not(
 def test_privacy_patch_rejects_an_unknown_placeholder_mode(mode) -> None:
     with pytest.raises(ValidationError):
         management.PrivacyPatch.model_validate({"placeholder_mode": mode})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("before", "after", "relaxed"),
+    [
+        (50, 100, ["bulk_threshold"]),
+        (50, None, ["bulk_threshold"]),
+        (50, 20, None),
+        (None, 50, None),
+        (50, 50, None),
+    ],
+)
+async def test_raising_or_clearing_the_bulk_threshold_is_a_relaxation(
+    db, test_user_with_org, audit_events, before, after, relaxed
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    await management.update_privacy_settings(
+        management.PrivacyPatch(bulk_threshold=before),
+        request,
+        test_user_with_org,
+        db,
+    )
+    seen = {event["request_id"] for event in await audit_events(tenant_id)}
+
+    updated = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(bulk_threshold=after),
+            request,
+            test_user_with_org,
+            db,
+        )
+    )
+
+    events = {
+        event["endpoint"]: event["extra"]
+        for event in await audit_events(tenant_id)
+        if event["request_id"] not in seen
+    }
+    assert updated.bulk_threshold == after
+    assert events.get("tenant.privacy_protection_relaxed", {}).get("relaxed") == relaxed
+    if before != after:
+        updated_event = events["tenant.privacy_policy_updated"]
+        assert updated_event["after"]["bulk_threshold"] == after
+
+
+@pytest.mark.parametrize("threshold", [1, 0, -5, "many"])
+def test_privacy_patch_rejects_a_bulk_threshold_below_two(threshold) -> None:
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate({"bulk_threshold": threshold})

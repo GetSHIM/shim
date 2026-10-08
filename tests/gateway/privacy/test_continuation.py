@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
+from prometheus_client import REGISTRY
 import pytest
 
 import shim.privacy.continuation as continuation_module
@@ -226,3 +228,59 @@ async def test_a_continuation_counts_only_values_first_seen_in_this_request() ->
     assert repeated.privacy.verification_map == parent_map
     assert dict(extended.privacy.pii_entities) == {"EMAIL_ADDRESS": 1}
     assert len(extended.privacy.verification_map) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("threshold", "bulk"),
+    [
+        (5, None),
+        (4, {"distinct_values": 4, "threshold": 4}),
+        (2, {"distinct_values": 4, "threshold": 2}),
+        (None, None),
+    ],
+)
+async def test_bulk_disclosure_counts_distinct_new_values_of_every_action(
+    threshold, bulk
+) -> None:
+    scrubber = PIIScrubberService()
+    _, parent_map = scrubber.scrub("parent@example.com")
+    stage = PrivacyStage(
+        scrubber,
+        SimpleNamespace(
+            load=AsyncMock(return_value=parent_map), ensure_available=AsyncMock()
+        ),
+    )
+    prepared = replace(
+        _prepared(
+            {
+                "previous_response_id": "resp_parent",
+                "input": "parent@example.com one@example.com one@example.com "
+                "two@example.com +90 532 000 00 00 key sk-proj-" + "0" * 32,
+            }
+        ),
+        entity_actions={"PHONE_NUMBER": "monitor", "SECRET": "block"},
+        bulk_threshold=threshold,
+    )
+    before = (
+        REGISTRY.get_sample_value(
+            "shim_privacy_bulk_disclosures_total", {"provider": "openai"}
+        )
+        or 0
+    )
+
+    result = await stage.run(prepared)
+
+    assert result.privacy is not None
+    assert result.privacy.bulk_disclosure == bulk
+    verdicts = [v for v in result.policy_verdicts if v.rule_id == "privacy.bulk"]
+    assert [(v.outcome, v.reason_code) for v in verdicts] == (
+        [("allow", "BULK_DISCLOSURE")] if bulk else []
+    )
+    after = (
+        REGISTRY.get_sample_value(
+            "shim_privacy_bulk_disclosures_total", {"provider": "openai"}
+        )
+        or 0
+    )
+    assert after - before == (1 if bulk else 0)

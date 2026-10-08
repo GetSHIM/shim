@@ -227,6 +227,7 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         **_SWITCHES,
         entity_actions={"EMAIL_ADDRESS": "monitor"},
         placeholder_mode="stable",
+        bulk_threshold=None,
     )
     session = SimpleNamespace(
         execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: row))
@@ -240,22 +241,30 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         **_SWITCHES,
         "entity_actions": {"EMAIL_ADDRESS": "monitor"},
         "placeholder_mode": "stable",
+        "bulk_threshold": None,
     }
     assert resolved.pii_config == _SWITCHES
     assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
     assert resolved.placeholder_mode == "stable"
+    assert resolved.bulk_threshold is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("cached", "mode"),
+    ("cached", "mode", "threshold"),
     [
-        (_SWITCHES, "random"),
-        ({**_SWITCHES, "placeholder_mode": "random"}, "random"),
-        ({**_SWITCHES, "placeholder_mode": "stable"}, "stable"),
+        (_SWITCHES, "random", 50),
+        ({**_SWITCHES, "placeholder_mode": "random", "bulk_threshold": 7}, "random", 7),
+        (
+            {**_SWITCHES, "placeholder_mode": "stable", "bulk_threshold": None},
+            "stable",
+            None,
+        ),
     ],
 )
-async def test_cached_placeholder_mode_stays_out_of_the_switches(cached, mode) -> None:
+async def test_cached_placeholder_mode_stays_out_of_the_switches(
+    cached, mode, threshold
+) -> None:
     api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
 
     resolved = await policy_module.TenantPolicyService(_PolicyCache(cached)).resolve(
@@ -264,6 +273,7 @@ async def test_cached_placeholder_mode_stays_out_of_the_switches(cached, mode) -
 
     assert resolved.pii_config == _SWITCHES
     assert resolved.placeholder_mode == mode
+    assert resolved.bulk_threshold == threshold
 
 
 @pytest.mark.asyncio
@@ -298,6 +308,7 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
         b"shim.placeholder.root.v1",
         hashlib.sha256,
     ).digest()
+    assert resolved.bulk_threshold == 50
     if mode == "random":
         assert resolved.placeholder_key is None
         return

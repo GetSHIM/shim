@@ -160,3 +160,32 @@ def test_placeholders_stay_random_unless_stable_is_chosen() -> None:
         ).PII_PLACEHOLDER_MODE
         == "random"
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("1", "PII_BULK_THRESHOLD: Value error, must be 0 (off) or at least 2"),
+        ("-1", "PII_BULK_THRESHOLD: Input should be greater than or equal to 0"),
+        ("many", "PII_BULK_THRESHOLD: Input should be a valid integer"),
+    ],
+)
+def test_cli_names_an_invalid_bulk_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+    message: str,
+) -> None:
+    monkeypatch.setenv("PII_BULK_THRESHOLD", value)
+
+    with pytest.raises(SystemExit):
+        cli.main(["serve"])
+
+    assert f"shim: error: {message}" in capsys.readouterr().err
+
+
+def test_the_bulk_threshold_defaults_to_50_and_0_is_accepted() -> None:
+    assert CommunitySettings(_env_file=None).PII_BULK_THRESHOLD == 50
+    assert (
+        CommunitySettings(_env_file=None, PII_BULK_THRESHOLD=0).PII_BULK_THRESHOLD == 0
+    )

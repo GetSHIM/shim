@@ -308,6 +308,12 @@ class PrivacySettings(BaseModel):
     entity_actions: dict[str, EntityAction] = Field(
         description="Stored per-type overrides of the group switches."
     )
+    bulk_threshold: int | None = Field(
+        description=(
+            "Distinct detected values in one request that raise a bulk-disclosure "
+            "alert; null turns the alarm off."
+        )
+    )
     placeholder_mode: Literal["random", "stable"] = Field(
         description=(
             "random: a new placeholder per request. stable: the same value keeps "
@@ -348,6 +354,11 @@ class PrivacyPatch(BaseModel):
     )
     placeholder_mode: Literal["random", "stable"] = Field(
         default="random", description="Left unchanged when absent."
+    )
+    bulk_threshold: int | None = Field(
+        default=None,
+        ge=2,
+        description="null turns the alarm off; left unchanged when absent.",
     )
 
     @field_validator("entity_actions")
@@ -664,6 +675,13 @@ class RequestActivityView(BaseModel):
     blocked_entities: dict[str, int] | None = Field(
         default=None,
         description="Values that stopped the request under a block action, by entity type.",
+    )
+    bulk_disclosure: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "distinct_values and threshold when the request carried at least the "
+            "tenant's bulk threshold of distinct detected values; null otherwise."
+        ),
     )
 
 
@@ -1713,6 +1731,11 @@ async def update_privacy_settings(
     ]
     if before["placeholder_mode"] == "random" and after["placeholder_mode"] == "stable":
         relaxed.append("placeholder_mode")
+    if before["bulk_threshold"] is not None and (
+        after["bulk_threshold"] is None
+        or after["bulk_threshold"] > before["bulk_threshold"]
+    ):
+        relaxed.append("bulk_threshold")
     relaxed += [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
@@ -2171,6 +2194,7 @@ async def list_requests(
                         "pii_entities",
                         "monitored_entities",
                         "blocked_entities",
+                        "bulk_disclosure",
                     )
                 },
             )
@@ -2294,6 +2318,7 @@ async def export_requests(
                 "pii_entities",
                 "monitored_entities",
                 "blocked_entities",
+                "bulk_disclosure",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -2337,6 +2362,7 @@ async def export_requests(
                             "pii_entities",
                             "monitored_entities",
                             "blocked_entities",
+                            "bulk_disclosure",
                         )
                     ),
                 )

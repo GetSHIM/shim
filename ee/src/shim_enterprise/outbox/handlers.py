@@ -14,7 +14,9 @@ from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
     assert_safe_forward_url,
 )
+from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.core.config import settings
+from shim_enterprise.core.database import AsyncSessionLocal
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim_enterprise.outbox.publisher import OutboxMessage, OutboxPublisher
 from shim_enterprise.secrets.store import get_secret_store
@@ -25,6 +27,7 @@ AUDIT_CHAIN_APPEND = "audit.chain_append_requested"
 GATEWAY_RECONCILIATION = "gateway.reconciliation"
 BUDGET_THRESHOLD = "budget.threshold_crossed"
 COMPLIANCE_DELIVERY = "compliance.connector_delivery_requested"
+BULK_DISCLOSURE = "privacy.bulk_disclosure"
 _DELIVERY_TIMEOUT_SECONDS = 10.0
 _COMPLIANCE_DELIVERY_PURPOSE = "compliance-forward-target-delivery"
 
@@ -63,6 +66,7 @@ def build_publisher() -> OutboxPublisher:
     publisher.register(GATEWAY_RECONCILIATION, report_reconciliation)
     publisher.register(BUDGET_THRESHOLD, deliver_budget_alert)
     publisher.register(COMPLIANCE_DELIVERY, deliver_compliance_event)
+    publisher.register(BULK_DISCLOSURE, fan_out_bulk_disclosure)
     register_analytics_handlers(publisher)
     return publisher
 
@@ -128,6 +132,24 @@ async def deliver_budget_alert(message: OutboxMessage) -> None:
         raise ValueError("budget alert endpoint is unsafe") from exc
 
 
+async def fan_out_bulk_disclosure(message: OutboxMessage) -> None:
+    payload = _request_payload(message)
+    body = {
+        "source": "shim",
+        "event_type": "privacy_alert",
+        "kind": "bulk_disclosure",
+        **{key: value for key, value in payload.items() if key != "organization_id"},
+    }
+    async with AsyncSessionLocal() as session:
+        await ComplianceForwarderService().send_tenant_alert(
+            session,
+            TenantId(message.organization_id),
+            body=body,
+            delivery_key=f"bulk_disclosure:{payload['request_id']}",
+        )
+        await session.commit()
+
+
 async def deliver_compliance_event(message: OutboxMessage) -> None:
     tenant_level = message.aggregate_type == "organization"
     payload = _tenant_payload(
@@ -155,14 +177,12 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
     if bundle_kind != target_kind:
         raise ValueError("compliance delivery target kind mismatch")
     if target_kind == "email":
-        relaxed = body.get("kind") == "privacy_protection_relaxed"
         await _send_compliance_email(
             endpoint,
-            subject=(
-                "shim privacy protection turned off"
-                if relaxed
-                else "shim compliance finding summary"
-            ),
+            subject={
+                "privacy_protection_relaxed": "shim privacy protection turned off",
+                "bulk_disclosure": "shim bulk disclosure in one request",
+            }.get(str(body.get("kind")), "shim compliance finding summary"),
             text=_compliance_text(body),
             idempotency_key=message.idempotency_key,
         )
@@ -233,6 +253,16 @@ def _compliance_text(body: dict) -> str:
         fields = ", ".join(map(str, body.get("fields", [])))
         actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
         return f"shim privacy protection turned off: {fields} (by {actor})"
+    if body.get("kind") == "bulk_disclosure":
+        counts = ", ".join(
+            f"{entity_type} {count}"
+            for entity_type, count in (body.get("entity_counts") or {}).items()
+        )
+        return (
+            f"shim bulk disclosure: {body.get('distinct_values')} distinct values "
+            f"({counts}) in one request with API key {body.get('api_key_id')} "
+            f"at {body.get('occurred_at')}, threshold {body.get('threshold')}"
+        )
     return f"shim compliance alert: {body.get('message', body.get('kind', 'event'))}"
 
 

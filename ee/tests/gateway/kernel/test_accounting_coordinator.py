@@ -2528,3 +2528,129 @@ async def test_reservation_records_the_keys_team_id(db, test_api_key, team_id) -
         OutboxMessage.from_event(analytics)
     )
     assert projected["details"]["team_id"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bulk", [{"distinct_values": 4, "threshold": 3}, None])
+async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
+    db, test_api_key, monkeypatch, bulk
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    values = ["bulk.one@example.com", "bulk.two@example.com", "+90 532 000 00 00"]
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        verification_map={
+            "<EMAIL_ADDRESS_ff8d9811>": values[0],
+            "<EMAIL_ADDRESS_ff8d9812>": values[1],
+        },
+        monitored_entities={"PHONE_NUMBER": 1},
+        blocked_entities={"SECRET": 1},
+        bulk_disclosure=bulk,
+    )
+    prepared.record_verdict(
+        "privacy.input", stage="privacy", outcome="deny", reason_code="SECRET_BLOCKED"
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    for _ in range(2):
+        await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    intents = list(
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == prepared.tenant_id,
+                OutboxEvent.event_type == "privacy.bulk_disclosure",
+            )
+        )
+    )
+    assert lifecycle.lifecycle_metadata["bulk_disclosure"] == bulk
+    if bulk is None:
+        assert intents == []
+        return
+    [intent] = intents
+    assert intent.idempotency_key == f"bulk_disclosure:{prepared.request_id}"
+    assert (intent.aggregate_type, intent.aggregate_id) == (
+        "request",
+        prepared.request_id,
+    )
+    assert intent.payload["distinct_values"] == 4
+    assert intent.payload["threshold"] == 3
+    assert intent.payload["entity_counts"] == {
+        "EMAIL_ADDRESS": 2,
+        "PHONE_NUMBER": 1,
+        "SECRET": 1,
+    }
+    assert intent.payload["api_key_id"] == str(test_api_key.id)
+    encoded = json.dumps(intent.payload)
+    assert not any(value in encoded for value in values)
+    assert "<EMAIL_ADDRESS_" not in encoded
+
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(), role="owner", organization_id=prepared.tenant_id
+        ),
+        session=db,
+    )
+    page = await management.list_requests(**filters, limit=1, offset=0)
+    exported = await management.export_requests(**filters)
+    rows = list(
+        csv.DictReader(
+            io.StringIO(
+                b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                    "utf-8-sig"
+                )
+            )
+        )
+    )
+    assert page.items[0].bulk_disclosure == bulk
+    assert json.loads(rows[0]["bulk_disclosure"]) == bulk

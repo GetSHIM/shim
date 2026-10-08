@@ -6733,6 +6733,19 @@
             ],
             "title": "Block Secrets"
           },
+          "bulk_threshold": {
+            "anyOf": [
+              {
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null turns the alarm off; left unchanged when absent.",
+            "title": "Bulk Threshold"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -6784,6 +6797,18 @@
             "title": "Block Secrets",
             "type": "boolean"
           },
+          "bulk_threshold": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Distinct detected values in one request that raise a bulk-disclosure alert; null turns the alarm off.",
+            "title": "Bulk Threshold"
+          },
           "effective_actions": {
             "additionalProperties": {
               "enum": [
@@ -6832,6 +6857,7 @@
           "block_secrets",
           "block_pii_tr",
           "entity_actions",
+          "bulk_threshold",
           "placeholder_mode",
           "effective_actions"
         ],
@@ -7558,6 +7584,21 @@
             ],
             "description": "Values that stopped the request under a block action, by entity type.",
             "title": "Blocked Entities"
+          },
+          "bulk_disclosure": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "distinct_values and threshold when the request carried at least the tenant's bulk threshold of distinct detected values; null otherwise.",
+            "title": "Bulk Disclosure"
           },
           "completion_outcome": {
             "anyOf": [

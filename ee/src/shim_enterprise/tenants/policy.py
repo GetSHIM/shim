@@ -104,6 +104,7 @@ class ResolvedTenantSettings:
     tier_definition: dict[str, Any] | None
     entity_actions: dict[str, EntityAction] | None = None
     placeholder_mode: str = "random"
+    bulk_threshold: int | None = 50
 
 
 class TenantPolicyService:
@@ -126,6 +127,7 @@ class TenantPolicyService:
         # A value cached by an earlier release lacks these keys.
         entity_actions = switches.pop("entity_actions", None)
         placeholder_mode = switches.pop("placeholder_mode", "random")
+        bulk_threshold = switches.pop("bulk_threshold", 50)
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
             pii_config=None
@@ -134,6 +136,7 @@ class TenantPolicyService:
             tier_definition=tier,
             entity_actions=dict(entity_actions) if entity_actions else None,
             placeholder_mode=placeholder_mode,
+            bulk_threshold=bulk_threshold,
         )
 
     async def _pii_config(
@@ -162,6 +165,7 @@ class TenantPolicyService:
             "block_pii_tr": row.block_pii_tr,
             "entity_actions": dict(row.entity_actions),
             "placeholder_mode": row.placeholder_mode,
+            "bulk_threshold": row.bulk_threshold,
         }
         await self.cache.set_pii_config(cache_key, value)
         return value
@@ -260,5 +264,6 @@ class TenantRequestPolicyResolver:
                 placeholder_key=self._placeholder_root
                 if tenant_settings.placeholder_mode == "stable"
                 else None,
+                bulk_threshold=tenant_settings.bulk_threshold,
             )
         return resolved

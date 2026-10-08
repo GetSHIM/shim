@@ -258,6 +258,9 @@ class LocalUsageLifecycle:
             "privacy_counts": dict(privacy.pii_entities) if privacy else {},
             "monitored_entities": dict(privacy.monitored_entities) if privacy else {},
             "blocked_entities": dict(privacy.blocked_entities) if privacy else {},
+            "bulk_disclosure": dict(privacy.bulk_disclosure)
+            if privacy and privacy.bulk_disclosure
+            else None,
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
             ],

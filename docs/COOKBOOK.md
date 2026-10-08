@@ -154,10 +154,11 @@ Each event has `version`, `request_id`, `provider`, `model`, `outcome`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
-`deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`
-and `policy_verdicts`. The three count maps give values by entity type: masked,
-sent unchanged under `monitor`, and refused under `block`; each is `{}` when
-empty. `outcome` is `completed` for a finished request and `rejected` for one
+`deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
+`bulk_disclosure` and `policy_verdicts`. The three count maps give values by
+entity type: masked, sent unchanged under `monitor`, and refused under `block`;
+each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
+the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
 refused at admission or by a privacy block; other values name a failure.
 
 Notes: `estimated_cost_usd` is a decimal string that can use exponent form
@@ -248,8 +249,19 @@ from the key with HMAC-SHA256; the provider can tell that two requests carry the
 same value, never the value itself. Two spellings of a value are two values.
 Changing the key changes every placeholder.
 
-Notes: an unknown type or action, `mask_last4` on another type, or `stable`
-without a key, stops the gateway at start-up with the setting named. A tailed placeholder is restored
+A pasted customer list is masked like any other text, so shim also counts the
+distinct values it found in one request, across every type and action. When
+that count reaches `PII_BULK_THRESHOLD` (default 50; `0` turns the alarm off,
+otherwise at least 2), the usage event carries
+`"bulk_disclosure": {"distinct_values": 60, "threshold": 50}`, the
+`privacy.bulk` verdict (`allow`, `BULK_DISCLOSURE`) is added and
+`shim_privacy_bulk_disclosures_total` counts it. The request itself goes on as
+its actions decide. A repeated value counts once, and a Responses continuation
+does not count the values it inherits.
+
+Notes: an unknown type or action, `mask_last4` on another type, `stable`
+without a key, or an invalid bulk threshold, stops the gateway at start-up with
+the setting named. A tailed placeholder is restored
 whether the model writes it back with or without its tail; with a different
 tail it is left as written. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
@@ -406,6 +418,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `provider_latency_ms` (histogram) | `provider`, `model` |
 | `stream_terminal_state_total` | `terminal_state` |
 | `privacy_detection_total` | `entity_type` |
+| `shim_privacy_bulk_disclosures_total` | `provider` |
 | `shim_completion_outcomes_total` | `provider`, `outcome` |
 | `shim_local_usage_dropped_total` | `reason` |
 

@@ -135,6 +135,17 @@ so null marks a row written before they existed. They are in the lifecycle
 metadata, the request list and its CSV (as JSON) and the audit completion
 `extra`; the community JSONL event names the masked map `privacy_counts`.
 
+`bulk_disclosure` is `{"distinct_values": n, "threshold": t}` when the distinct
+values first seen in the request, summed over those three maps, reached the
+tenant's `bulk_threshold`, and null otherwise or on rows written before it
+existed. It is in the lifecycle metadata, the analytics row, the request list
+and its CSV (as JSON) and the community JSONL event. A crossing request also
+appends one `privacy.bulk_disclosure` outbox intent, idempotency key
+`bulk_disclosure:<request_id>`, carrying ids, provider, model, the two numbers
+and counts by type; never a value, placeholder or prompt text. Its handler
+queues one delivery per enabled forward target (`kind: "bulk_disclosure"`), and
+none when the tenant has no target.
+
 The community JSONL v4 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
 has no configured installation hashing key. It also carries `cost_center` (the

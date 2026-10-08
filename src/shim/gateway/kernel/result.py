@@ -129,6 +129,7 @@ class PreparedInference:
     admission: AdmissionState | None = None
     entity_actions: Mapping[str, EntityAction] | None = None
     placeholder_key: SecretBytes | None = field(default=None, repr=False, compare=False)
+    bulk_threshold: int | None = None
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None

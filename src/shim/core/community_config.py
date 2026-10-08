@@ -49,6 +49,7 @@ class CommunitySettings(BaseSettings):
     PII_PLACEHOLDER_KEY: SecretStr | None = Field(
         default=None, min_length=32, validate_default=True
     )
+    PII_BULK_THRESHOLD: int = Field(default=50, ge=0)
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,
@@ -98,6 +99,13 @@ class CommunitySettings(BaseSettings):
     ) -> SecretStr | None:
         if value is None and info.data.get("PII_PLACEHOLDER_MODE") == "stable":
             raise ValueError("required when PII_PLACEHOLDER_MODE is stable")
+        return value
+
+    @field_validator("PII_BULK_THRESHOLD")
+    @classmethod
+    def reject_a_bulk_threshold_of_one(cls, value: int) -> int:
+        if value == 1:
+            raise ValueError("must be 0 (off) or at least 2")
         return value
 
     @field_validator("SHIM_API_KEY")
