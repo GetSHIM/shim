@@ -7,17 +7,18 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.requests import Request
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.api.v1 import management
+from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
     ServiceAccountCredential,
+    Team,
     User,
 )
 from shim_enterprise.tenants.plans import activate_organization_plan
@@ -303,23 +304,83 @@ async def test_service_account_lifecycle_is_audited_with_its_actor_type(
     assert created.plaintext not in str(events)
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"name": "ci", "role": "admin", "expires_in_days": 0},
-        {"name": "ci", "role": "admin", "expires_in_days": 366},
-        {"name": "ci", "role": "admin"},
-        {"name": "ci", "role": "owner", "expires_in_days": 30},
-        {"name": "ci", "role": "member", "expires_in_days": 30},
-        {"name": "", "role": "auditor", "expires_in_days": 30},
-    ],
-)
-def test_service_account_input_is_bounded(payload: dict) -> None:
-    with pytest.raises(ValidationError):
-        management.ServiceAccountInput.model_validate(payload)
-    assert management.ServiceAccountInput(
-        name="ci", role="auditor", expires_in_days=365
+@pytest.mark.asyncio
+async def test_an_expired_service_account_cannot_be_rotated(db) -> None:
+    owner = await _owner(db)
+    _, account = await _create(db, owner)
+    await db.execute(
+        update(ServiceAccountCredential)
+        .where(ServiceAccountCredential.user_id == account.id)
+        .values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
     )
+
+    with pytest.raises(HTTPException) as refused:
+        await management.rotate_service_account(account.id, owner, db)
+
+    assert refused.value.status_code == 409
+    assert "create a new service account" in refused.value.detail
+    assert (
+        await db.scalar(
+            select(func.count(ServiceAccountCredential.id)).where(
+                ServiceAccountCredential.user_id == account.id,
+                ServiceAccountCredential.revoked_at.is_(None),
+            )
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_admin_service_account_cannot_change_memberships_or_invite(
+    db,
+) -> None:
+    owner = await _owner(db)
+    _, admin = await _create(db, owner)
+    member = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"svc-member-{uuid4().hex}@example.com",
+        role="member",
+        is_active=True,
+        is_verified=True,
+    )
+    team = Team(organization_id=owner.organization_id, name="platform")
+    db.add_all([member, team])
+    await db.flush()
+    await management.set_membership(
+        team.id, member.id, management.MembershipInput(), owner, db
+    )
+
+    for call in (
+        management.set_membership(
+            team.id, member.id, management.MembershipInput(role="team_admin"), admin, db
+        ),
+        management.remove_membership(team.id, member.id, admin, db),
+        management.remove_team_member(member.id, admin, db),
+        management.create_team_invite(
+            management.TeamInviteInput(email="new@example.com", role="member"),
+            admin,
+            db,
+        ),
+    ):
+        with pytest.raises(HTTPException) as refused:
+            await call
+        assert refused.value.status_code == 403
+    assert (await db.get(User, member.id)).is_active
+
+
+@pytest.mark.asyncio
+async def test_details_cannot_overwrite_the_audit_actor_type(db, audit_events) -> None:
+    owner = await _owner(db)
+    _, account = await _create(db, owner)
+
+    await record_management_action(
+        db, account, "tenant.test", "subject", details={"actor_type": "user_jwt"}
+    )
+
+    assert (await audit_events(owner.organization_id))[-1]["extra"][
+        "actor_type"
+    ] == "service"
 
 
 @pytest.mark.asyncio

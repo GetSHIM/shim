@@ -243,7 +243,7 @@ async def test_invite_acceptance_locks_destination_before_revalidating_invite(
         commit=AsyncMock(),
         refresh=AsyncMock(),
     )
-    move = AsyncMock(return_value=(user, []))
+    move = AsyncMock(return_value=(user, [], []))
     monkeypatch.setattr(management, "_require_entitlement", AsyncMock())
     monkeypatch.setattr(management, "move_user_from_bootstrap", move)
     monkeypatch.setattr(management, "_audit", AsyncMock())

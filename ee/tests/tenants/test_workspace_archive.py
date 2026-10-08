@@ -13,10 +13,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from shim_enterprise.ai_act.audit_writer import write_audit_row
 from shim_enterprise.ai_act.models import AIActAuditAnchor, AIActAuditLog
 from shim_enterprise.api.v1 import management
-from shim_enterprise.billing.models import RequestLifecycle
-from shim_enterprise.compliance.models import ComplianceForwardTarget
+from shim_enterprise.billing.models import CostBudget, RequestLifecycle
+from shim_enterprise.compliance.models import (
+    ComplianceActivity,
+    ComplianceConnector,
+    ComplianceFinding,
+    ComplianceForwardTarget,
+)
 from shim_enterprise.core.database import Base
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -26,10 +32,7 @@ from shim_enterprise.tenants.models import (
     ServiceAccountCredential,
     User,
 )
-from shim_enterprise.tenants.plans import (
-    activate_organization_plan,
-    billing_organization_ids,
-)
+from shim_enterprise.tenants.plans import activate_organization_plan
 from shim_enterprise.tenants.service import (
     _ARCHIVE_KEPT_TABLES,
     _REQUEST_HISTORY,
@@ -371,36 +374,167 @@ async def test_concurrent_invitations_move_the_user_once(
 
 
 @pytest.mark.asyncio
-async def test_archived_workspaces_get_no_anchor_and_no_billing_listing(db) -> None:
-    active = Organization(id=uuid4(), name="Active", slug=f"active-{uuid4().hex}")
-    archived = Organization(
-        id=uuid4(),
-        name="Archived",
-        slug=f"archived-{uuid4().hex}",
-        billing_source="operator",
-        archived_at=datetime.now(timezone.utc),
-        archived_reason="joined_organization",
+async def test_the_archive_day_is_anchored(db, monkeypatch: pytest.MonkeyPatch) -> None:
+    _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    await _configure(db, analyst)
+    token = await _invite(db, owner, analyst.email)
+    await _accept(db, token, analyst)
+    # The delivered tenant.personal_workspace_archived append, written after archiving.
+    await write_audit_row(
+        {"organization_id": workspace_id, "request_id": f"management:{uuid4()}"}, db
     )
-    db.add_all([active, archived])
-    await db.flush()
-    for organization in (active, archived):
-        await write_audit_row(
-            {"organization_id": organization.id, "request_id": f"req-{uuid4()}"}, db
-        )
 
     await AuditMaintenanceWorker()._anchor_tenants(
         db, datetime.now(timezone.utc).date()
     )
 
-    anchored = set(
-        await db.scalars(
-            select(AIActAuditAnchor.organization_id).where(
-                AIActAuditAnchor.organization_id.in_([active.id, archived.id])
+    assert await _count(db, AIActAuditAnchor, workspace_id) == 1
+
+
+async def _pending(
+    session, tenant_id, event_type: str, aggregate_id: str
+) -> OutboxEvent:
+    return await OutboxWriter().append(
+        session,
+        organization_id=tenant_id,
+        values={
+            "event_type": event_type,
+            "aggregate_type": "test",
+            "aggregate_id": aggregate_id,
+            "idempotency_key": f"{aggregate_id}:{event_type}",
+            "payload": {"target_id": aggregate_id},
+            "status": "pending",
+            "next_attempt_at": datetime.now(timezone.utc),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_archiving_deletes_budget_secrets_and_cancels_their_deliveries(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    budget = CostBudget(
+        organization_id=workspace_id,
+        scope_type="org",
+        limit_tokens=10,
+        notify_targets=[
+            {
+                "kind": "webhook",
+                "endpoint_origin": "https://hooks.example.com",
+                "secret_ref": "ref-budget",
+                "signing_secret_ref": "ref-signing",
+            }
+        ],
+    )
+    db.add(budget)
+    await db.flush()
+    deliveries = [
+        await _pending(db, workspace_id, "budget.threshold_crossed", str(budget.id)),
+        await _pending(
+            db, workspace_id, "compliance.connector_delivery_requested", "target"
+        ),
+    ]
+    audit_append = await _pending(
+        db, workspace_id, "audit.chain_append_requested", "append"
+    )
+    token = await _invite(db, owner, analyst.email)
+
+    await _accept(db, token, analyst)
+
+    for event in deliveries:
+        await db.refresh(event)
+        assert event.status == "processed"
+    await db.refresh(audit_append)
+    assert audit_append.status == "pending"
+    assert store.delete_secret.await_args_list == [
+        call(workspace_id, "ref-budget", expected_purpose="budget-alert-endpoint"),
+        call(workspace_id, "ref-signing", expected_purpose="budget-alert-signing"),
+    ]
+
+
+async def _connector(session, tenant_id) -> ComplianceConnector:
+    connector = ComplianceConnector(
+        organization_id=tenant_id,
+        provider="anthropic",
+        secret_ref="ref-connector",
+        secret_backend="local",
+        secret_version="1",
+        masked_key="sk-...0000",
+    )
+    session.add(connector)
+    await session.flush()
+    return connector
+
+
+@pytest.mark.asyncio
+async def test_a_connector_without_evidence_is_archived_and_counted(
+    db, monkeypatch: pytest.MonkeyPatch, audit_events
+) -> None:
+    store = _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    await _connector(db, workspace_id)
+    token = await _invite(db, owner, analyst.email)
+
+    await _accept(db, token, analyst)
+
+    assert await _count(db, ComplianceConnector, workspace_id) == 0
+    removed = (await audit_events(workspace_id))[-1]["extra"]["removed"]
+    assert removed["compliance_connector"] == 1
+    store.delete_secret.assert_awaited_once_with(
+        workspace_id, "ref-connector", expected_purpose="compliance-connector-api-key"
+    )
+
+
+@pytest.mark.parametrize("evidence", ["finding", "activity"])
+@pytest.mark.asyncio
+async def test_compliance_evidence_keeps_the_workspace_like_request_history(
+    db, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    store = _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    connector = await _connector(db, workspace_id)
+    if evidence == "finding":
+        db.add(
+            ComplianceFinding(
+                connector_id=connector.id,
+                content_id="message-1",
+                entity_type="EMAIL_ADDRESS",
+                severity="medium",
+                match_offset=0,
+                match_length=5,
+                value_hash="hash",
             )
         )
-    )
-    assert anchored == {active.id}
-    assert archived.id not in await billing_organization_ids(db, "operator", limit=500)
+    else:
+        db.add(
+            ComplianceActivity(
+                connector_id=connector.id,
+                provider_event_id="event-1",
+                event_type="message.created",
+            )
+        )
+    await db.flush()
+    token = await _invite(db, owner, analyst.email)
+
+    with pytest.raises(management.HTTPException) as refused:
+        await _accept(db, token, analyst)
+
+    assert refused.value.status_code == 409
+    assert HISTORY_MESSAGE in str(refused.value.detail)
+    assert (await db.get(Organization, workspace_id)).archived_at is None
+    assert await _count(db, ComplianceConnector, workspace_id) == 1
+    store.delete_secret.assert_not_awaited()
 
 
 # Foreign keys that archiving neither deletes through nor rules out by R1, and why.

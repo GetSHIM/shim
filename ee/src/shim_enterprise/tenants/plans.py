@@ -180,9 +180,7 @@ async def apply_billing_plan(
 async def billing_organization_ids(
     session: AsyncSession, source: str, *, after: UUID | None = None, limit: int = 100
 ) -> tuple[UUID, ...]:
-    query = select(Organization.id).where(
-        Organization.billing_source == source, Organization.archived_at.is_(None)
-    )
+    query = select(Organization.id).where(Organization.billing_source == source)
     if after is not None:
         query = query.where(Organization.id > after)
     return tuple(

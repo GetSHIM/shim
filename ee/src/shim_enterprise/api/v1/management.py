@@ -1119,6 +1119,7 @@ async def create_team_invite(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedTeamInvite:
+    _require_person(user)
     if user.role == "admin" and payload.role != "member":
         raise HTTPException(status_code=403, detail="Only owners can invite admins")
     tenant_id = _tenant_id(user)
@@ -1259,6 +1260,7 @@ async def accept_team_invite(
     previous_tenant_id = _tenant_id(user)
     changing_tenant = previous_tenant_id != invite.organization_id
     secrets_to_delete: list[tuple[str, str]] = []
+    budget_targets: list[dict[str, str]] = []
     if changing_tenant:
         try:
             moved = await move_user_from_bootstrap(
@@ -1279,7 +1281,7 @@ async def accept_team_invite(
                 status_code=409,
                 detail="Leave or empty the current organization before accepting",
             )
-        user, secrets_to_delete = moved
+        user, secrets_to_delete, budget_targets = moved
     else:
         user.role = invite.role
         user.is_active = True
@@ -1288,6 +1290,7 @@ async def accept_team_invite(
     await session.commit()
     for reference, purpose in secrets_to_delete:
         await _delete_secret_best_effort(previous_tenant_id, reference, purpose)
+    await _delete_budget_targets(previous_tenant_id, budget_targets)
     await session.refresh(user)
     return user
 
@@ -1326,17 +1329,13 @@ async def remove_team_member(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> None:
+    _require_person(user)
     member = await _owned_member(session, user, member_id)
     if user.role == "admin" and member.role != "member":
         raise HTTPException(status_code=403, detail="Only owners can remove admins")
     if member.role == "owner":
         await _protect_last_owner(session, _tenant_id(user))
-    member.is_active = False
-    await session.execute(
-        update(ApiKey)
-        .where(ApiKey.user_id == member.id, ApiKey.is_active.is_(True))
-        .values(is_active=False)
-    )
+    await _deactivate(session, member)
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
     await session.commit()
 
@@ -1383,7 +1382,9 @@ async def create_service_account(
         },
     )
     await session.commit()
-    return await _created_service_account(session, account, credential, plaintext)
+    return CreatedServiceAccount(
+        **_service_account_row(account, credential).model_dump(), plaintext=plaintext
+    )
 
 
 @router.get("/service-accounts", response_model=list[ServiceAccountView])
@@ -1398,7 +1399,6 @@ async def list_service_accounts(
         .join(
             ServiceAccountCredential,
             (ServiceAccountCredential.user_id == User.id)
-            & (ServiceAccountCredential.organization_id == User.organization_id)
             & ServiceAccountCredential.revoked_at.is_(None),
         )
         .where(
@@ -1420,22 +1420,29 @@ async def rotate_service_account(
     session: AsyncSession = Depends(get_db),
 ) -> CreatedServiceAccount:
     account = await _owned_service_account(session, user, account_id)
-    expires_at = await session.scalar(
-        select(func.max(ServiceAccountCredential.expires_at)).where(
+    current = await session.scalar(
+        select(ServiceAccountCredential).where(
             ServiceAccountCredential.user_id == account.id,
             ServiceAccountCredential.revoked_at.is_(None),
         )
     )
-    if expires_at is None:
+    if current is None:
         raise HTTPException(status_code=404, detail="Service account not found")
+    if current.expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=409,
+            detail="The service account's key has expired; create a new service account",
+        )
     await _revoke_service_account_keys(session, account)
     plaintext, credential = issue_service_account_key(
-        session, account, created_by=user.id, expires_at=expires_at
+        session, account, created_by=user.id, expires_at=current.expires_at
     )
     await session.flush()
     await _audit(session, user, "tenant.service_account_rotated", str(account.id))
     await session.commit()
-    return await _created_service_account(session, account, credential, plaintext)
+    return CreatedServiceAccount(
+        **_service_account_row(account, credential).model_dump(), plaintext=plaintext
+    )
 
 
 @router.delete(
@@ -1449,13 +1456,8 @@ async def delete_service_account(
     session: AsyncSession = Depends(get_db),
 ) -> None:
     account = await _owned_service_account(session, user, account_id)
-    account.is_active = False
     await _revoke_service_account_keys(session, account)
-    await session.execute(
-        update(ApiKey)
-        .where(ApiKey.user_id == account.id, ApiKey.is_active.is_(True))
-        .values(is_active=False)
-    )
+    await _deactivate(session, account)
     await _audit(session, user, "tenant.service_account_deleted", str(account.id))
     await session.commit()
 
@@ -1572,6 +1574,7 @@ async def set_membership(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> TeamMembership:
+    _require_person(user)
     await require_team(session, user, team_id, administer=True)
     member = await _owned_member(session, user, member_id)
     existing = await session.scalar(
@@ -1633,6 +1636,7 @@ async def remove_membership(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> None:
+    _require_person(user)
     await require_team(session, user, team_id, administer=True)
     membership = await session.scalar(
         select(TeamMembership)
@@ -3644,6 +3648,16 @@ async def _owned_service_account(
     return account
 
 
+async def _deactivate(session: AsyncSession, member: User) -> None:
+    """Deactivate a user and the gateway keys it owns."""
+    member.is_active = False
+    await session.execute(
+        update(ApiKey)
+        .where(ApiKey.user_id == member.id, ApiKey.is_active.is_(True))
+        .values(is_active=False)
+    )
+
+
 async def _revoke_service_account_keys(session: AsyncSession, account: User) -> None:
     await session.execute(
         update(ServiceAccountCredential)
@@ -3652,18 +3666,6 @@ async def _revoke_service_account_keys(session: AsyncSession, account: User) -> 
             ServiceAccountCredential.revoked_at.is_(None),
         )
         .values(revoked_at=datetime.now(timezone.utc))
-    )
-
-
-async def _created_service_account(
-    session: AsyncSession,
-    account: User,
-    credential: ServiceAccountCredential,
-    plaintext: str,
-) -> CreatedServiceAccount:
-    await session.refresh(credential)
-    return CreatedServiceAccount(
-        **_service_account_row(account, credential).model_dump(), plaintext=plaintext
     )
 
 
@@ -3728,6 +3730,13 @@ async def _protect_last_owner(session: AsyncSession, tenant_id: UUID) -> None:
     )
     if owners <= 1:
         raise HTTPException(status_code=409, detail="Organization needs an owner")
+
+
+def _require_person(user: User) -> None:
+    if user.kind == "service":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot change team access"
+        )
 
 
 def _require_role(user: User, *roles: str) -> None:
