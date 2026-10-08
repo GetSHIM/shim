@@ -6770,6 +6770,16 @@
             ],
             "title": "Placeholder Mode",
             "type": "string"
+          },
+          "response_scan": {
+            "default": "off",
+            "description": "Left unchanged when absent.",
+            "enum": [
+              "off",
+              "count"
+            ],
+            "title": "Response Scan",
+            "type": "string"
           }
         },
         "title": "PrivacyPatch",
@@ -6848,6 +6858,15 @@
             ],
             "title": "Placeholder Mode",
             "type": "string"
+          },
+          "response_scan": {
+            "description": "count: after an answer is delivered, count personal data in it that the request did not carry. The answer is never changed or delayed.",
+            "enum": [
+              "off",
+              "count"
+            ],
+            "title": "Response Scan",
+            "type": "string"
           }
         },
         "required": [
@@ -6858,6 +6877,7 @@
           "block_pii_tr",
           "entity_actions",
           "bulk_threshold",
+          "response_scan",
           "placeholder_mode",
           "effective_actions"
         ],
@@ -7772,6 +7792,21 @@
           "request_id": {
             "title": "Request Id",
             "type": "string"
+          },
+          "response_entities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
+            "title": "Response Entities"
           },
           "shim_latency_ms": {
             "anyOf": [

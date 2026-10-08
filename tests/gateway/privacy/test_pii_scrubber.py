@@ -6,12 +6,14 @@ import hmac
 import json
 import re
 import time
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from fastapi import HTTPException
 import pytest
 
-from shim.gateway.pipeline.privacy import scrub_payload
+import shim.gateway.pipeline.privacy as privacy_module
+from shim.gateway.pipeline.privacy import scan_response, scrub_payload
 from shim.privacy.deanonymizer import (
     AnthropicStreamRestorer,
     OpenAIStreamRestorer,
@@ -1585,3 +1587,54 @@ def test_a_stable_placeholder_held_by_another_value_falls_back_to_random(
     assert scrubber.deanonymize(scrubbed, {derived: "bob@example.com", **mapping}) == (
         "alice@example.com"
     )
+
+
+def _answered(**privacy) -> SimpleNamespace:
+    return SimpleNamespace(
+        pii_config=None,
+        entity_actions={"PHONE_NUMBER": "off"},
+        privacy=PrivacyOutcome(
+            action=PrivacyAction.SCRUBBED, pii_detected=True, **privacy
+        ),
+    )
+
+
+def test_a_response_scan_counts_new_values_once_and_never_the_callers_own(
+    scrubber: PIIScrubberService,
+) -> None:
+    iban = "TR33 0006 1005 1978 6457 8413 26"
+    prepared = _answered(
+        verification_map={"<IBAN_CODE_" + "0" * 32 + ">": iban},
+        monitored_values=frozenset({"own@example.com"}),
+    )
+    answer = (
+        f"Your IBAN {iban.replace(' ', '')} and own@example.com. New: TCKN 10000000146, "
+        "new@example.com, again new@example.com, IBAN GB82 WEST 1234 5698 7654 32, "
+        "phone +90 532 000 00 00"
+    )
+
+    assert scan_response(answer, prepared, scrubber) == {
+        "response_entities": {"EMAIL_ADDRESS": 1, "IBAN_CODE": 1, "TR_NATIONAL_ID": 1},
+        "truncated": False,
+    }
+    assert scan_response("", prepared, scrubber) == {
+        "response_entities": {},
+        "truncated": False,
+    }
+
+
+def test_a_response_scan_reads_only_up_to_the_analyzer_limit(
+    scrubber: PIIScrubberService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(privacy_module, "MAX_ANALYZABLE_TEXT_LENGTH", 40)
+    head = "Write to new@example.com."
+
+    assert scan_response(head.ljust(40), _answered(), scrubber)["truncated"] is False
+    assert scan_response(head.ljust(41), _answered(), scrubber) == {
+        "response_entities": {"EMAIL_ADDRESS": 1},
+        "truncated": True,
+    }
+    assert scan_response("x" * 40 + head, _answered(), scrubber) == {
+        "response_entities": {},
+        "truncated": True,
+    }

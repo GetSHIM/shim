@@ -146,6 +146,17 @@ and counts by type; never a value, placeholder or prompt text. Its handler
 queues one delivery per enabled forward target (`kind: "bulk_disclosure"`), and
 none when the tenant has no target.
 
+`response_entities` holds the distinct values a delivered answer carried that
+the request did not, by entity type, when the tenant's `response_scan` is
+`count`. The scan runs after the answer is sent, so the field is written to the
+lifecycle metadata in its own short transaction, with `response_scan`
+(`{"truncated": bool}`, or `{"error": true}` and `response_entities: null` when
+the scan failed). The request list and its CSV read it from the lifecycle row;
+it is null while the scan is off or still running, and it is not in the
+analytics row or the audit completion. The community JSONL writes it as a
+second line per request, `event: "response_privacy"`, next to the
+`event: "request"` line.
+
 The community JSONL v4 event contains `shim_latency_ms` instead of the ambiguous `latency_ms`,
 with `system_prompt_hash: null` because community
 has no configured installation hashing key. It also carries `cost_center` (the

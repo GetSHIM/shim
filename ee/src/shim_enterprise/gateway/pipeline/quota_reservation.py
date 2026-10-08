@@ -918,6 +918,29 @@ class DurableUsageLifecycle:
                 "Rejection audit could not be persisted type=%s", type(error).__name__
             )
 
+    async def record_response_privacy(
+        self, prepared: PreparedInference, result: Mapping[str, Any]
+    ) -> None:
+        async with self.session_factory() as session:
+            await RequestLifecycleRepository.update(
+                session,
+                organization_id=prepared.tenant_id,
+                request_id=prepared.request_id,
+                values={
+                    "lifecycle_metadata": RequestLifecycle.lifecycle_metadata.op("||")(
+                        {
+                            "response_entities": result.get("response_entities"),
+                            "response_scan": {
+                                key: value
+                                for key, value in result.items()
+                                if key != "response_entities"
+                            },
+                        }
+                    )
+                },
+            )
+            await session.commit()
+
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
     ) -> None:

@@ -140,6 +140,11 @@ PRIVACY_DETECTION_TOTAL = Counter(
     "Detected privacy entities by entity type.",
     ("entity_type",),
 )
+PRIVACY_RESPONSE_DETECTION_TOTAL = Counter(
+    "shim_privacy_response_detection_total",
+    "Distinct values the model returned that the request did not carry, by entity type.",
+    ("entity_type",),
+)
 PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "shim_privacy_bulk_disclosures_total",
     "Requests whose distinct detected values reached the bulk threshold.",

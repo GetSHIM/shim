@@ -17,9 +17,11 @@ from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
+    PRIVACY_RESPONSE_DETECTION_TOTAL,
     bounded_label,
 )
 from shim.privacy.pii_scrubber import (
+    MAX_ANALYZABLE_TEXT_LENGTH,
     PIIInputTooLarge,
     PIIScrubberService,
     placeholder_period_key,
@@ -497,3 +499,38 @@ class ScanPrivacyStage:
             entity_counts=counts,
             verdict=policy if counts else "clean",
         )
+
+
+def scan_response(
+    text: str, prepared: PreparedInference, scrubber: PIIScrubberService
+) -> dict[str, Any]:
+    """Count distinct values in a delivered answer that the request did not carry."""
+
+    privacy = prepared.privacy
+    own = (
+        {
+            _compact(value)
+            for value in (*privacy.verification_map.values(), *privacy.monitored_values)
+        }
+        if privacy is not None
+        else set()
+    )
+    scanned = text[:MAX_ANALYZABLE_TEXT_LENGTH]
+    actions = effective_entity_actions(prepared.pii_config, prepared.entity_actions)
+    found = {
+        (item["type"], _compact(scanned[item["start"] : item["end"]]))
+        for item in (scrubber.analyze(scanned, actions) if scanned.strip() else ())
+    }
+    counts = Counter(entity_type for entity_type, value in found if value not in own)
+    for entity_type, count in counts.items():
+        PRIVACY_RESPONSE_DETECTION_TOTAL.labels(
+            entity_type=bounded_label("entity_type", entity_type)
+        ).inc(count)
+    return {
+        "response_entities": dict(sorted(counts.items())),
+        "truncated": len(text) > MAX_ANALYZABLE_TEXT_LENGTH,
+    }
+
+
+def _compact(value: str) -> str:
+    return value.replace(" ", "").replace("-", "")

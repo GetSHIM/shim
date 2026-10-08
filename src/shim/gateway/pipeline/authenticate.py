@@ -104,6 +104,7 @@ class AuthenticateStage:
             entity_actions=policy.entity_actions,
             placeholder_key=policy.placeholder_key,
             bulk_threshold=policy.bulk_threshold,
+            response_scan=policy.response_scan,
             provider=ProviderId(value.provider),
             timing=value.timing,
         )

@@ -228,6 +228,7 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         entity_actions={"EMAIL_ADDRESS": "monitor"},
         placeholder_mode="stable",
         bulk_threshold=None,
+        response_scan="count",
     )
     session = SimpleNamespace(
         execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: row))
@@ -242,8 +243,10 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         "entity_actions": {"EMAIL_ADDRESS": "monitor"},
         "placeholder_mode": "stable",
         "bulk_threshold": None,
+        "response_scan": "count",
     }
     assert resolved.pii_config == _SWITCHES
+    assert resolved.response_scan == "count"
     assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
     assert resolved.placeholder_mode == "stable"
     assert resolved.bulk_threshold is None
@@ -309,6 +312,7 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
         hashlib.sha256,
     ).digest()
     assert resolved.bulk_threshold == 50
+    assert resolved.response_scan == "off"
     if mode == "random":
         assert resolved.placeholder_key is None
         return

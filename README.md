@@ -65,7 +65,8 @@ request it:
   default), `monitor` (sent unchanged and counted), `block` (the request is
   refused with 400 before any provider call, naming the type, never the
   value) or `off` (not looked for). Community sets them in `PII_ENTITY_ACTIONS`;
-  enterprise per tenant.
+  enterprise per tenant. The answer can also be scanned after it is delivered,
+  counting personal data the request did not carry; it is never changed.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request

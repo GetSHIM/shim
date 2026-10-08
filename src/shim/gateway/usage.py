@@ -8,7 +8,8 @@ import logging
 from decimal import Decimal
 from queue import Full, Queue, ShutDown
 from threading import Thread
-from typing import Literal, Protocol, TextIO, TypeAlias
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol, TextIO, TypeAlias
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
 from shim.gateway.kernel.result import AdmissionState, PreparedInference
@@ -44,6 +45,10 @@ class UsageLifecycle(Protocol):
     ) -> None: ...
 
     async def record_privacy(self, prepared: PreparedInference) -> None: ...
+
+    async def record_response_privacy(
+        self, prepared: PreparedInference, result: Mapping[str, Any]
+    ) -> None: ...
 
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
@@ -132,6 +137,18 @@ class LocalUsageLifecycle:
 
     async def record_privacy(self, prepared: PreparedInference) -> None:
         pass
+
+    async def record_response_privacy(
+        self, prepared: PreparedInference, result: Mapping[str, Any]
+    ) -> None:
+        self._emit(
+            {
+                "version": 4,
+                "event": "response_privacy",
+                "request_id": str(prepared.request_id),
+                **result,
+            }
+        )
 
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
@@ -236,6 +253,7 @@ class LocalUsageLifecycle:
         privacy = prepared.privacy
         event = {
             "version": 4,
+            "event": "request",
             "request_id": str(prepared.request_id),
             "provider": str(prepared.provider),
             "model": model,
@@ -265,6 +283,9 @@ class LocalUsageLifecycle:
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
             ],
         }
+        self._emit(event)
+
+    def _emit(self, event: Mapping[str, Any]) -> None:
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         try:
             self._queue.put_nowait(line)

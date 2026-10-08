@@ -41,7 +41,12 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
-from shim_enterprise.billing.models import AuditIntent, CostBudget, UsageLedger
+from shim_enterprise.billing.models import (
+    AuditIntent,
+    CostBudget,
+    RequestLifecycle,
+    UsageLedger,
+)
 from shim_enterprise.billing.read_models import (
     MAX_BILLING_DAILY_ROWS,
     MAX_BILLING_BREAKDOWN_ROWS,
@@ -314,6 +319,12 @@ class PrivacySettings(BaseModel):
             "alert; null turns the alarm off."
         )
     )
+    response_scan: Literal["off", "count"] = Field(
+        description=(
+            "count: after an answer is delivered, count personal data in it that "
+            "the request did not carry. The answer is never changed or delayed."
+        )
+    )
     placeholder_mode: Literal["random", "stable"] = Field(
         description=(
             "random: a new placeholder per request. stable: the same value keeps "
@@ -354,6 +365,9 @@ class PrivacyPatch(BaseModel):
     )
     placeholder_mode: Literal["random", "stable"] = Field(
         default="random", description="Left unchanged when absent."
+    )
+    response_scan: Literal["off", "count"] = Field(
+        default="off", description="Left unchanged when absent."
     )
     bulk_threshold: int | None = Field(
         default=None,
@@ -681,6 +695,13 @@ class RequestActivityView(BaseModel):
         description=(
             "distinct_values and threshold when the request carried at least the "
             "tenant's bulk threshold of distinct detected values; null otherwise."
+        ),
+    )
+    response_entities: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Distinct values the answer carried that the request did not, by "
+            "entity type; null when the response scan was off or has not finished."
         ),
     )
 
@@ -1736,6 +1757,8 @@ async def update_privacy_settings(
         or after["bulk_threshold"] > before["bulk_threshold"]
     ):
         relaxed.append("bulk_threshold")
+    if before["response_scan"] == "count" and after["response_scan"] == "off":
+        relaxed.append("response_scan")
     relaxed += [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
@@ -2197,8 +2220,9 @@ async def list_requests(
                         "bulk_disclosure",
                     )
                 },
+                response_entities=response_entities,
             )
-            for row, cost_usd in rows
+            for row, cost_usd, response_entities in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -2319,10 +2343,11 @@ async def export_requests(
                 "monitored_entities",
                 "blocked_entities",
                 "bulk_disclosure",
+                "response_entities",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd in rows:
+        for row, cost_usd, response_entities in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -2365,6 +2390,9 @@ async def export_requests(
                             "bulk_disclosure",
                         )
                     ),
+                    json.dumps(response_entities, sort_keys=True)
+                    if response_entities is not None
+                    else None,
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -2772,6 +2800,15 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
                 (_request_unpriced_spend(tenant_id), None),
                 else_=func.coalesce(spend, Decimal("0")),
             ).label("cost_usd"),
+            # The response scan finishes after the analytics row is projected.
+            RequestLifecycle.lifecycle_metadata["response_entities"].label(
+                "response_entities"
+            ),
+        )
+        .outerjoin(
+            RequestLifecycle,
+            (RequestLifecycle.organization_id == RequestLog.organization_id)
+            & (RequestLifecycle.request_id == RequestLog.request_id),
         )
         .where(*filters)
         .order_by(RequestLog.timestamp.desc(), RequestLog.id.desc())

@@ -125,7 +125,7 @@ Attribute each request's tokens and cost to a feature, team or customer.
    authentication and request validation, admitted or refused: one JSON line on
    the gateway's **stderr**. Token counting writes none unless it is refused.
    Structured logs go to stdout. Uvicorn's start-up lines also go to stderr, so
-   keep only lines whose `version` is 4.
+   keep only lines whose `version` is 4 and whose `event` is `request`.
 
 Tag rules, from `src/shim/billing/attribution.py`:
 
@@ -147,10 +147,11 @@ client.chat.completions.create(
 ```console
 docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
   -e OPENAI_API_KEY ghcr.io/getshim/shim:latest 2>> shim-usage.log
-jq -cR 'fromjson? | select(.version == 4) | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
+jq -cR 'fromjson? | select(.version == 4 and .event == "request") | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
 ```
 
-Each event has `version`, `request_id`, `provider`, `model`, `outcome`,
+Each event has `version`, `event` (`request`), `request_id`, `provider`,
+`model`, `outcome`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
@@ -259,9 +260,25 @@ otherwise at least 2), the usage event carries
 its actions decide. A repeated value counts once, and a Responses continuation
 does not count the values it inherits.
 
+To learn when a model answers with personal data the request did not carry, set
+`PII_RESPONSE_SCAN=count`. After the answer has been delivered (after the last
+chunk of a stream) shim scans its text and tool-call arguments with the same
+actions and writes a second line for the request:
+
+```json
+{"version":4,"event":"response_privacy","request_id":"req_…","response_entities":{"TR_NATIONAL_ID":1},"truncated":false}
+```
+
+`response_entities` counts distinct values by type. A value the request itself
+carried, masked or monitored, is the caller's own and is not counted, also when
+the model reformats it without spaces or hyphens. Only the first 1,000,000
+characters are scanned (`truncated: true` beyond); a scan that fails writes
+`"response_entities": null, "error": true`. The answer, its first token and its
+timing are unchanged.
+
 Notes: an unknown type or action, `mask_last4` on another type, `stable`
-without a key, or an invalid bulk threshold, stops the gateway at start-up with
-the setting named. A tailed placeholder is restored
+without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than
+`off` or `count`, stops the gateway at start-up with the setting named. A tailed placeholder is restored
 whether the model writes it back with or without its tail; with a different
 tail it is left as written. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
@@ -419,6 +436,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `stream_terminal_state_total` | `terminal_state` |
 | `privacy_detection_total` | `entity_type` |
 | `shim_privacy_bulk_disclosures_total` | `provider` |
+| `shim_privacy_response_detection_total` | `entity_type` |
 | `shim_completion_outcomes_total` | `provider`, `outcome` |
 | `shim_local_usage_dropped_total` | `reason` |
 

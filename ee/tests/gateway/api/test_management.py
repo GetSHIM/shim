@@ -314,7 +314,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         execute=AsyncMock(
             side_effect=(
                 SimpleNamespace(one=lambda: summary_row),
-                SimpleNamespace(all=lambda: [(row, Decimal("0.12500000"))]),
+                SimpleNamespace(
+                    all=lambda: [(row, Decimal("0.12500000"), {"TR_NATIONAL_ID": 1})]
+                ),
             )
         ),
     )
@@ -382,7 +384,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "monitored_entities",
         "blocked_entities",
         "bulk_disclosure",
+        "response_entities",
     }
+    assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
     assert page.items[0].repeat_chain_length is None
@@ -414,6 +418,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         assert tenant_id in compiled.params.values()
         assert "research" in compiled.params.values()
         assert "gpt-5-nano" in compiled.params.values()
+    assert "LEFT OUTER JOIN request_lifecycle ON request_lifecycle.organization_id" in (
+        str(rows_statement.compile(dialect=postgresql.dialect()))
+    )
     summary_compiled = summary_statement.compile(dialect=postgresql.dialect())
     summary_sql = str(summary_compiled)
     assert "percentile_cont" in summary_sql
@@ -612,7 +619,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=1),
         execute=AsyncMock(
-            return_value=SimpleNamespace(all=lambda: [(row, Decimal("0.000001"))])
+            return_value=SimpleNamespace(all=lambda: [(row, Decimal("0.000001"), None)])
         ),
         commit=AsyncMock(),
     )
@@ -653,6 +660,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["pii_entities"] == "{}"
     assert exported["monitored_entities"] == ""
     assert exported["blocked_entities"] == '{"SECRET": 1}'
+    assert exported["response_entities"] == ""
     assert audit.await_args.args[2] == "tenant.requests_exported"
     assert audit.await_args.kwargs["details"]["rows"] == 1
     session.commit.assert_awaited_once()
@@ -1580,3 +1588,42 @@ async def test_raising_or_clearing_the_bulk_threshold_is_a_relaxation(
 def test_privacy_patch_rejects_a_bulk_threshold_below_two(threshold) -> None:
     with pytest.raises(ValidationError):
         management.PrivacyPatch.model_validate({"bulk_threshold": threshold})
+
+
+@pytest.mark.asyncio
+async def test_turning_the_response_scan_off_is_a_relaxation_and_on_is_not(
+    db, test_user_with_org, audit_events
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    defaults = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(test_user_with_org, db)
+    )
+
+    modes = [
+        management.PrivacySettings.model_validate(
+            await management.update_privacy_settings(
+                management.PrivacyPatch(response_scan=mode),
+                request,
+                test_user_with_org,
+                db,
+            )
+        ).response_scan
+        for mode in ("count", "off")
+    ]
+
+    events = await audit_events(tenant_id)
+    assert defaults.response_scan == "off" and modes == ["count", "off"]
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["response_scan"]]
+    assert [
+        event["extra"]["after"]["response_scan"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_policy_updated"
+    ] == ["count", "off"]
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate({"response_scan": "mask"})

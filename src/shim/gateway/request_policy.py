@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import SecretBytes
 
@@ -36,6 +36,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     # Stable-placeholder root key; None keeps placeholders random.
     placeholder_key: SecretBytes | None = None
     bulk_threshold: int | None = None
+    response_scan: Literal["off", "count"] = "off"
 
 
 class RequestPolicyResolver(Protocol):
@@ -54,6 +55,7 @@ class LocalRequestPolicyResolver:
         "_placeholder_key",
         "_rate_limit_rpm",
         "_rate_limit_tpm",
+        "_response_scan",
     )
 
     def __init__(
@@ -64,12 +66,14 @@ class LocalRequestPolicyResolver:
         entity_actions: Mapping[str, EntityAction] | None = None,
         placeholder_key: SecretBytes | None = None,
         bulk_threshold: int | None = None,
+        response_scan: Literal["off", "count"] = "off",
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
         self._entity_actions = entity_actions
         self._placeholder_key = placeholder_key
         self._bulk_threshold = bulk_threshold
+        self._response_scan: Literal["off", "count"] = response_scan
 
     async def resolve(
         self,
@@ -99,4 +103,5 @@ class LocalRequestPolicyResolver:
             entity_actions=self._entity_actions,
             placeholder_key=self._placeholder_key,
             bulk_threshold=self._bulk_threshold,
+            response_scan=self._response_scan,
         )

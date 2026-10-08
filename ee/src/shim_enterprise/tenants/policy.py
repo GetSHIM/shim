@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -105,6 +105,7 @@ class ResolvedTenantSettings:
     entity_actions: dict[str, EntityAction] | None = None
     placeholder_mode: str = "random"
     bulk_threshold: int | None = 50
+    response_scan: Literal["off", "count"] = "off"
 
 
 class TenantPolicyService:
@@ -128,6 +129,7 @@ class TenantPolicyService:
         entity_actions = switches.pop("entity_actions", None)
         placeholder_mode = switches.pop("placeholder_mode", "random")
         bulk_threshold = switches.pop("bulk_threshold", 50)
+        response_scan = switches.pop("response_scan", "off")
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
             pii_config=None
@@ -137,6 +139,7 @@ class TenantPolicyService:
             entity_actions=dict(entity_actions) if entity_actions else None,
             placeholder_mode=placeholder_mode,
             bulk_threshold=bulk_threshold,
+            response_scan=response_scan,
         )
 
     async def _pii_config(
@@ -166,6 +169,7 @@ class TenantPolicyService:
             "entity_actions": dict(row.entity_actions),
             "placeholder_mode": row.placeholder_mode,
             "bulk_threshold": row.bulk_threshold,
+            "response_scan": row.response_scan,
         }
         await self.cache.set_pii_config(cache_key, value)
         return value
@@ -265,5 +269,6 @@ class TenantRequestPolicyResolver:
                 if tenant_settings.placeholder_mode == "stable"
                 else None,
                 bulk_threshold=tenant_settings.bulk_threshold,
+                response_scan=tenant_settings.response_scan,
             )
         return resolved

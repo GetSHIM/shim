@@ -133,6 +133,7 @@ def create_community_app(
                     and configured.PII_PLACEHOLDER_KEY is not None
                     else None,
                     bulk_threshold=configured.PII_BULK_THRESHOLD or None,
+                    response_scan=configured.PII_RESPONSE_SCAN,
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

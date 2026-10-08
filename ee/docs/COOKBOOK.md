@@ -177,6 +177,11 @@ days, so the provider's prompt cache works on prompts that carry a masked value,
 and the provider can tell that two requests carry the same value. The key is
 derived from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder.
 
+`response_scan` is `off` (default) or `count`: after an answer is delivered,
+shim counts the personal data in it that the request did not carry, and the
+request list shows those counts as `response_entities`. The answer is never
+changed or delayed.
+
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
 action; `null` turns it off. The request still goes on as its actions decide.
@@ -186,13 +191,14 @@ type, the API key and the time, never a value.
 
 Notes: an unknown type or action, `mask_last4` on a type other than
 `CREDIT_CARD` or `IBAN_CODE`, `"entity_actions": null`, a `placeholder_mode`
-other than `random` or `stable`, or a `bulk_threshold` below 2, is 422. A blocked
+other than `random` or `stable`, a `bulk_threshold` below 2, or a
+`response_scan` other than `off` or `count`, is 422. A blocked
 request is listed under `/requests` as `rejected` with its `blocked_entities`.
 Every change records a `tenant.privacy_policy_updated` audit event.
 Turning a switch off, or moving a type down the order `block`, `mask`,
 `mask_last4`, `monitor`, `off` through `entity_actions`, turning
-`placeholder_mode` from `random` to `stable`, or raising or clearing
-`bulk_threshold`, also records
+`placeholder_mode` from `random` to `stable`, raising or clearing
+`bulk_threshold`, or turning `response_scan` from `count` to `off`, also records
 `tenant.privacy_protection_relaxed` and queues
 one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the

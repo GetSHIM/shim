@@ -74,6 +74,7 @@ class StreamMeter:
         started_at_monotonic: float | None = None,
         monotonic_clock: Callable[[], float] = perf_counter,
         unpriced: bool = False,
+        answer_text_limit: int = 0,
     ) -> None:
         if prompt_tokens_estimated < 0:
             raise ValueError("stream token estimates must be nonnegative")
@@ -89,6 +90,10 @@ class StreamMeter:
         self.response_model: str | None = None
         self.emitted_output_characters = 0
         self.emitted_answer_characters = 0
+        # Answer text is kept only for the opt-in response scan, up to this many characters.
+        self.answer_text_limit = answer_text_limit
+        self.answer_text: list[str] = []
+        self._answer_text_characters = 0
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
@@ -227,14 +232,18 @@ class StreamMeter:
         refusal, tool_call = answer_markers(payload, event_type=payload_type)
         self.refusal_seen |= refusal
         self.tool_call_seen |= tool_call
-        output_characters = self._output_delta_characters(
-            payload_type,
-            payload,
-        )
+        fragments = self._output_delta_fragments(payload_type, payload)
+        output_characters = sum(len(fragment) for fragment in fragments)
+        reasoning_characters = _reasoning_characters(payload_type, payload)
         self.emitted_output_characters += output_characters
-        self.emitted_answer_characters += output_characters - _reasoning_characters(
-            payload_type, payload
-        )
+        self.emitted_answer_characters += output_characters - reasoning_characters
+        if not reasoning_characters:
+            for fragment in fragments:
+                room = self.answer_text_limit - self._answer_text_characters
+                if room <= 0:
+                    break
+                self.answer_text.append(fragment[:room])
+                self._answer_text_characters += min(len(fragment), room)
         if (
             self.ttft_ms is None
             and self.started_at_monotonic is not None
@@ -375,10 +384,10 @@ class StreamMeter:
                 self.completion_tokens_actual = completion
 
     @staticmethod
-    def _output_delta_characters(
+    def _output_delta_fragments(
         event_type: str,
         payload: dict[str, Any],
-    ) -> int:
+    ) -> list[str]:
         fragments: list[str] = []
         choices = payload.get("choices")
         if isinstance(choices, list):
@@ -432,7 +441,7 @@ class StreamMeter:
                     continue
                 for part in parts:
                     fragments.extend(_google_content_strings(part))
-        return sum(len(fragment) for fragment in fragments)
+        return fragments
 
     def _all_google_candidates_finished(self, payload: dict[str, Any]) -> bool:
         candidates = payload.get("candidates")
@@ -755,6 +764,14 @@ def answer_markers(
 def answer_characters(payload: Mapping[str, Any]) -> int:
     """Count the answer text of one native JSON response."""
 
+    return sum(len(text) for text in answer_texts(payload))
+
+
+def answer_texts(
+    payload: Mapping[str, Any], *, tool_arguments: bool = False
+) -> list[str]:
+    """The answer text of one native JSON response, optionally with tool-call arguments."""
+
     texts: list[str] = []
     for choice in _mappings(payload.get("choices")):
         message = choice.get("message")
@@ -764,9 +781,22 @@ def answer_characters(payload: Mapping[str, Any]) -> int:
                 for value in (message.get("content"), message.get("refusal"))
                 if isinstance(value, str)
             ]
+            if tool_arguments:
+                calls = [
+                    call.get("function")
+                    for call in _mappings(message.get("tool_calls"))
+                ] + [message.get("function_call")]
+                texts += [
+                    call["arguments"]
+                    for call in calls
+                    if isinstance(call, Mapping)
+                    and isinstance(call.get("arguments"), str)
+                ]
     for item in _mappings(payload.get("output")):
         if item.get("type") == "reasoning":
             continue
+        if tool_arguments and isinstance(item.get("arguments"), str):
+            texts.append(item["arguments"])
         for part in _mappings(item.get("content")):
             texts += [
                 value
@@ -776,12 +806,14 @@ def answer_characters(payload: Mapping[str, Any]) -> int:
     for block in _mappings(payload.get("content")):
         if isinstance(block.get("text"), str):
             texts.append(block["text"])
+        if tool_arguments and block.get("type") == "tool_use":
+            texts.append(json.dumps(block.get("input"), ensure_ascii=False))
     for candidate in _mappings(payload.get("candidates")):
         content = candidate.get("content")
         if isinstance(content, Mapping):
             for part in content.get("parts") or ():
                 texts += _google_content_strings(part)
-    return sum(len(text) for text in texts)
+    return texts
 
 
 def _mappings(value: object) -> list[Mapping[str, Any]]:

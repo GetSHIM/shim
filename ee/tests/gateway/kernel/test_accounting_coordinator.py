@@ -88,6 +88,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         pricing_model="gpt-5.6-luna",
         target=None,
         deployment_kind="unknown",
+        response_scan="off",
         unpriced=False,
         stream=False,
         context=SimpleNamespace(
@@ -2579,6 +2580,9 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
     for _ in range(2):
         await usage.record_privacy(prepared)
     await usage.fail(prepared, reason="request_aborted")
+    await usage.record_response_privacy(
+        prepared, {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
+    )
 
     lifecycle = (
         await db.execute(
@@ -2654,3 +2658,54 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
     )
     assert page.items[0].bulk_disclosure == bulk
     assert json.loads(rows[0]["bulk_disclosure"]) == bulk
+    assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert json.loads(rows[0]["response_entities"]) == {"TR_NATIONAL_ID": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_response_scan_updates_only_its_own_tenants_lifecycle(
+    db, test_api_key
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    stranger = _prepared()
+    stranger.request_id = prepared.request_id
+    await usage.record_response_privacy(
+        prepared, {"response_entities": None, "error": True}
+    )
+    await usage.record_response_privacy(
+        stranger, {"response_entities": {"EMAIL_ADDRESS": 9}, "truncated": False}
+    )
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata["response_entities"] is None
+    assert lifecycle.lifecycle_metadata["response_scan"] == {"error": True}

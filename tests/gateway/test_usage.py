@@ -37,6 +37,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             tags=("risk", "batch"),
         ),
         deployment_kind="unknown",
+        response_scan="off",
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -91,6 +92,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
     event = json.loads(lines[0])
     assert set(event) == {
         "version",
+        "event",
         "request_id",
         "provider",
         "model",
@@ -117,6 +119,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
     latency_ms = event.pop("shim_latency_ms")
     assert event == {
         "version": 4,
+        "event": "request",
         "request_id": "req_local",
         "provider": "openai",
         "model": "gpt-5.6-luna",
@@ -353,3 +356,176 @@ async def test_a_json_outcome_is_settled_only_for_an_answer(provider, payload, o
     assert usage.finalize.await_args.args[1].usage.completion_outcome == outcome
     # A failure is not counted, not even as "other".
     assert counted(outcome) == before + (outcome is not None)
+
+
+def _scan_processor(monkeypatch, scan):
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+
+    monkeypatch.setattr(module, "scan_response", scan)
+    usage = SimpleNamespace(
+        finalize=AsyncMock(),
+        record_response_privacy=AsyncMock(),
+        mark_stream_started=AsyncMock(),
+        heartbeat_stream=AsyncMock(),
+    )
+    prepared = _prepared()
+    prepared.protocol = "chat"
+    prepared.stream = False
+    prepared.admission.maximum_output_tokens = 10
+    processor = module.ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    )
+    return processor, prepared, usage
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_a_json_answer_is_sent_before_its_response_scan_runs(monkeypatch, fails):
+    from fastapi.responses import JSONResponse
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    order: list[str] = []
+
+    def scan(text, _prepared, _scrubber):
+        order.append(f"scan:{text}")
+        if fails:
+            raise RuntimeError("analyzer down")
+        return {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
+
+    processor, prepared, usage = _scan_processor(monkeypatch, scan)
+    prepared.response_scan = "count"
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": "TCKN 10000000146",
+                    "tool_calls": [
+                        {"function": {"arguments": '{"to": "x@example.com"}'}}
+                    ],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+    }
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(payload, None), stream_session=None
+    )
+
+    async def send(message):
+        order.append(message["type"])
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    assert order == [] and "x-shim-latency-ms" in response.headers
+    usage.finalize.assert_awaited_once()
+    await response({"type": "http", "method": "POST"}, receive, send)
+    assert response.body == JSONResponse(payload).body
+    assert order == [
+        "http.response.start",
+        "http.response.body",
+        'scan:TCKN 10000000146\n{"to": "x@example.com"}',
+    ]
+    usage.record_response_privacy.assert_awaited_once_with(
+        prepared,
+        {"response_entities": None, "error": True}
+        if fails
+        else {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False},
+    )
+    assert not processor._finalization_tasks
+
+
+@pytest.mark.asyncio
+async def test_a_json_answer_has_no_response_scan_when_it_is_off(monkeypatch):
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    processor, prepared, usage = _scan_processor(monkeypatch, None)
+
+    response = await processor.finalize(
+        prepared,
+        ProviderNonStream({"choices": [], "usage": {}}, None),
+        stream_session=None,
+    )
+
+    assert response.background is None
+
+
+@pytest.mark.asyncio
+async def test_a_stream_is_neither_held_nor_changed_by_its_response_scan(monkeypatch):
+    import threading
+    from unittest.mock import AsyncMock
+    from shim.gateway.pipeline.provider_execution import ProviderStream
+
+    started, release = threading.Event(), threading.Event()
+    scanned: list[str] = []
+
+    def scan(text, _prepared, _scrubber):
+        started.set()
+        release.wait(5)
+        scanned.append(text)
+        return {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
+
+    processor, prepared, usage = _scan_processor(monkeypatch, scan)
+    prepared.stream = True
+    chunks = [
+        b'data: {"choices":[{"index":0,"delta":{"content":"TCKN 1000"}}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"content":"0000146"},'
+        b'"finish_reason":"stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def events():
+        for chunk in chunks:
+            yield chunk
+
+    received: dict[str, list[bytes]] = {}
+    for setting in ("off", "count"):
+        prepared.response_scan = setting
+        session = processor.create_stream_session(prepared)
+        await processor.finalize(
+            prepared,
+            ProviderStream(events(), None, AsyncMock()),
+            stream_session=session,
+        )
+        received[setting] = []
+        async for chunk in session:
+            if not received[setting]:
+                assert not started.is_set()
+            received[setting].append(chunk)
+        if setting == "off":
+            assert session.meter.answer_text == []
+            assert not processor._finalization_tasks
+
+    assert received["off"] == received["count"] == chunks
+    assert processor._finalization_tasks and not scanned
+    release.set()
+    await processor.drain()
+    assert scanned == ["TCKN 10000000146"]
+    usage.record_response_privacy.assert_awaited_once_with(
+        prepared, {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_response_scan_writes_a_second_jsonl_line() -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+
+    await usage.finalize(_prepared(), _terminal())
+    await usage.record_response_privacy(
+        _prepared(), {"response_entities": {"TR_NATIONAL_ID": 1}, "truncated": False}
+    )
+    await usage.aclose()
+
+    request, response = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert (request["version"], request["event"]) == (4, "request")
+    assert response == {
+        "version": 4,
+        "event": "response_privacy",
+        "request_id": "req_local",
+        "response_entities": {"TR_NATIONAL_ID": 1},
+        "truncated": False,
+    }

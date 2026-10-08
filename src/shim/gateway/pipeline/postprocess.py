@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import logging
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import JSONResponse, StreamingResponse
 from opentelemetry import trace
+from starlette.background import BackgroundTask
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.pipeline.admission import candidate_count
+from shim.gateway.pipeline.privacy import scan_response
 from shim.gateway.pipeline.provider_execution import ProviderNonStream, ProviderStream
 from shim.gateway.streaming import (
     StreamFinalization,
@@ -25,6 +28,7 @@ from shim.gateway.streaming.meter import (
     StreamUsageSnapshot,
     answer_characters,
     answer_markers,
+    answer_texts,
     completion_outcome,
     native_finish_reasons,
     settled_outcome,
@@ -38,9 +42,12 @@ from shim.observability.metrics import (
 )
 from shim.observability.tracing import safe_attributes
 from shim.privacy.classification import content_ref
+from shim.privacy.pii_scrubber import MAX_ANALYZABLE_TEXT_LENGTH, PIIScrubberService
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.stage import TraceValue
+
+logger = logging.getLogger(__name__)
 
 
 class _ManagedStreamingResponse(StreamingResponse):
@@ -75,6 +82,27 @@ class ResponsePostprocessor:
             )
             for task in pending:
                 task.cancel()
+
+    def _start_response_scan(
+        self, prepared: PreparedInference, text: str
+    ) -> asyncio.Task[None]:
+        task = asyncio.create_task(self._scan_response(prepared, text))
+        self._finalization_tasks.add(task)
+        task.add_done_callback(self._finalization_tasks.discard)
+        return task
+
+    async def _scan_response(self, prepared: PreparedInference, text: str) -> None:
+        try:
+            result = await asyncio.to_thread(
+                scan_response, text, prepared, PIIScrubberService()
+            )
+        except Exception as exc:
+            logger.warning("Response privacy scan failed type=%s", type(exc).__name__)
+            result = {"response_entities": None, "error": True}
+        try:
+            await self.usage.record_response_privacy(prepared, result)
+        except Exception as exc:
+            logger.error("Response privacy record failed type=%s", type(exc).__name__)
 
     async def finalize(
         self,
@@ -202,6 +230,14 @@ class ResponsePostprocessor:
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
         record_settled_usage(prepared, terminal.usage)
         await self.usage.finalize(prepared, terminal)
+        if prepared.response_scan == "count":
+            text = "\n".join(answer_texts(response.payload, tool_arguments=True))
+
+            async def scan_after_send() -> None:
+                await self._start_response_scan(prepared, text)
+
+            # Starlette runs this after the body is sent.
+            gateway_response.background = BackgroundTask(scan_after_send)
         return gateway_response
 
     def create_stream_session(
@@ -211,6 +247,16 @@ class ResponsePostprocessor:
         if prepared.admission is None:
             raise ValueError("admission state is required")
         provider_started_at = perf_counter()
+        scan = prepared.response_scan == "count"
+        meter = StreamMeter(
+            provider=str(prepared.provider),
+            requested_model=prepared.pricing_model,
+            unpriced=prepared.unpriced,
+            prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
+            expected_candidates=candidate_count(prepared),
+            output_hash_salt=self.output_hash_salt,
+            answer_text_limit=MAX_ANALYZABLE_TEXT_LENGTH + 1 if scan else 0,
+        )
 
         async def record_stream_start() -> None:
             await self.usage.mark_stream_started(prepared)
@@ -221,6 +267,9 @@ class ResponsePostprocessor:
         async def finalize_stream(terminal: StreamFinalization) -> None:
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
+            if scan:
+                # Detached: the stream body ends only after this finalizer returns.
+                self._start_response_scan(prepared, "".join(meter.answer_text))
 
         def observe_terminal(terminal_status: str) -> None:
             status = {
@@ -240,14 +289,7 @@ class ResponsePostprocessor:
             ).observe((perf_counter() - provider_started_at) * 1000)
 
         return StreamSession(
-            meter=StreamMeter(
-                provider=str(prepared.provider),
-                requested_model=prepared.pricing_model,
-                unpriced=prepared.unpriced,
-                prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
-                expected_candidates=candidate_count(prepared),
-                output_hash_salt=self.output_hash_salt,
-            ),
+            meter=meter,
             finalizer=finalize_stream,
             stream_start_recorder=record_stream_start,
             stream_heartbeat_recorder=record_stream_heartbeat,

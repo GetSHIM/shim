@@ -189,3 +189,12 @@ def test_the_bulk_threshold_defaults_to_50_and_0_is_accepted() -> None:
     assert (
         CommunitySettings(_env_file=None, PII_BULK_THRESHOLD=0).PII_BULK_THRESHOLD == 0
     )
+
+
+def test_the_response_scan_is_off_unless_count_is_chosen() -> None:
+    assert CommunitySettings(_env_file=None).PII_RESPONSE_SCAN == "off"
+    assert CommunitySettings(
+        _env_file=None, PII_RESPONSE_SCAN="count"
+    ).PII_RESPONSE_SCAN == ("count")
+    with pytest.raises(ValueError, match="'off' or 'count'"):
+        CommunitySettings(_env_file=None, PII_RESPONSE_SCAN="mask")
