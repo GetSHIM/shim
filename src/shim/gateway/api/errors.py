@@ -14,6 +14,7 @@ from pydantic import BaseModel, JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.pipeline.provider_execution import (
     ERROR_HINTS,
     ProviderCallError,
@@ -100,12 +101,18 @@ async def gateway_exception_handler(
         return response or await request_validation_exception_handler(request, exc)
 
     assert isinstance(exc, StarletteHTTPException)
+    headers = dict(exc.headers or {})
+    # Refusals raised after the request was admitted, such as an enterprise
+    # quota or ledger failure, reach here without the id the kernel assigned.
+    request_id = CURRENT_REQUEST_ID.get()
+    if request_id is not None:
+        headers.setdefault("X-Shim-Request-Id", request_id)
     response = native_gateway_error_response(
         path=request.url.path,
         request_headers=request.headers,
         status_code=exc.status_code,
         detail=exc.detail,
-        headers=exc.headers,
+        headers=headers or None,
     )
     return response or await http_exception_handler(request, exc)
 

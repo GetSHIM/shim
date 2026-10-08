@@ -273,6 +273,7 @@ class ApiKeyInput(BaseModel):
     team: str | None = None
     team_id: UUID | None = None
     allowed_models: list[str] | None = Field(default=None, max_length=200)
+    expires_in_days: int | None = Field(default=None, ge=1, le=365)
 
     validate_models = field_validator("allowed_models")(_validate_allowed_models)
     validate_attribution = field_validator("cost_center", "team")(_validate_attribution)
@@ -1732,6 +1733,11 @@ async def create_api_key(
         team=payload.team,
         team_id=payload.team_id,
         allowed_models=payload.allowed_models,
+        expires_at=(
+            datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
+            if payload.expires_in_days is not None
+            else None
+        ),
     )
     await _audit(session, user, "tenant.api_key_created", str(api_key.id))
     await session.commit()
@@ -2468,6 +2474,7 @@ async def list_requests(
         description="Case-insensitive model substring.",
     ),
     request_id: str | None = Query(default=None, min_length=1, max_length=255),
+    api_key_id: Annotated[UUID | None, Query()] = None,
     pii_detected: bool | None = Query(default=None),
     tag: str | None = Query(
         default=None,
@@ -2502,6 +2509,7 @@ async def list_requests(
         status_filter=status_filter,
         model=model,
         request_id=request_id,
+        api_key_id=api_key_id,
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
@@ -2834,6 +2842,7 @@ async def export_requests(
         description="Case-insensitive model substring.",
     ),
     request_id: str | None = Query(default=None, min_length=1, max_length=255),
+    api_key_id: Annotated[UUID | None, Query()] = None,
     pii_detected: bool | None = Query(default=None),
     tag: str | None = Query(
         default=None,
@@ -2868,6 +2877,7 @@ async def export_requests(
         status_filter=status_filter,
         model=model,
         request_id=request_id,
+        api_key_id=api_key_id,
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
@@ -3273,6 +3283,7 @@ def _request_filters(
     cost_center: str | None,
     warning: ResponseWarning | None = None,
     system_prompt_hash: str | None = None,
+    api_key_id: UUID | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -3323,6 +3334,8 @@ def _request_filters(
         filters.append(RequestLog.model.icontains(model, autoescape=True))
     if request_id is not None:
         filters.append(RequestLog.request_id == request_id)
+    if api_key_id is not None:
+        filters.append(RequestLog.api_key_id == api_key_id)
     if pii_detected is not None:
         filters.append(RequestLog.pii_detected == pii_detected)
     if system_prompt_hash is not None:

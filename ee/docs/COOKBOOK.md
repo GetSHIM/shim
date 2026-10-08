@@ -503,7 +503,9 @@ Notes:
   accounts, invite, remove members or change roles and team memberships. An
   auditor service account is read-only.
 - Gateway keys a service account creates outlive its key's expiry. Delete the
-  account to revoke them.
+  account to revoke them, or give each key its own `expires_in_days` (1 to 365)
+  when you create it; an expired key answers 401 `INVALID_API_KEY` and drops out
+  of `GET /api/v1/management/api-keys`.
 - Any key failure answers 401 `INVALID_API_KEY`. The key is not a gateway key:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in

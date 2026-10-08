@@ -73,7 +73,12 @@ class EnterpriseGatewayService(GatewayService):
                 principal=principal,
                 request_metadata=request_metadata,
             )
-        except AccountingPersistenceError:
+        except AccountingPersistenceError as exc:
+            logger.error(
+                "Gateway accounting failed step=%s cause=%s",
+                exc,
+                type(exc.__cause__).__name__ if exc.__cause__ else None,
+            )
             raise_persistence_error()
         except AuditIntentPersistenceError:
             raise_audit_intent_error()

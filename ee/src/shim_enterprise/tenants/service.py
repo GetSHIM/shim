@@ -138,6 +138,7 @@ async def create_api_key(
     team: str | None = None,
     team_id: UUID | None = None,
     allowed_models: list[str] | None = None,
+    expires_at: datetime | None = None,
 ) -> tuple[str, ApiKey]:
     tenant_id = await session.scalar(
         select(User.organization_id).where(User.id == user_id)
@@ -173,6 +174,7 @@ async def create_api_key(
         team=team,
         team_id=team_id,
         allowed_models=allowed_models,
+        expires_at=expires_at,
     )
     session.add(api_key)
     await session.flush()

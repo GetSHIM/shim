@@ -377,6 +377,19 @@
             ],
             "title": "Cost Center"
           },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "maximum": 365.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days"
+          },
           "name": {
             "maxLength": 50,
             "minLength": 1,
@@ -2873,6 +2886,17 @@
       },
       "EntityFound": {
         "properties": {
+          "action": {
+            "enum": [
+              "off",
+              "monitor",
+              "mask_last4",
+              "mask",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
           "end": {
             "title": "End",
             "type": "integer"
@@ -2894,7 +2918,8 @@
           "type",
           "score",
           "start",
-          "end"
+          "end",
+          "action"
         ],
         "title": "EntityFound",
         "type": "object"
@@ -15319,6 +15344,23 @@
           },
           {
             "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          },
+          {
+            "in": "query",
             "name": "pii_detected",
             "required": false,
             "schema": {
@@ -15572,6 +15614,23 @@
                 }
               ],
               "title": "Request Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
             }
           },
           {

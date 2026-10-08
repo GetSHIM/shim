@@ -17,7 +17,12 @@ from openai import AsyncOpenAI
 
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
+from fastapi import HTTPException
+from starlette.requests import Request
+
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.api.errors import (
+    gateway_exception_handler,
     native_gateway_error_response,
     provider_error_response,
 )
@@ -624,3 +629,32 @@ async def test_a_stream_error_event_carries_the_code_and_hint(path: str) -> None
     )
     assert response.headers["x-shim-request-id"].startswith("req_")
     assert (code, hint) == ("PROVIDER_UNAVAILABLE", ERROR_HINTS["PROVIDER_UNAVAILABLE"])
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_after_admission_names_the_request_it_refused() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+        }
+    )
+    refusal = {"code": "MONTHLY_QUOTA_EXCEEDED", "message": "Over the limit."}
+
+    unadmitted = await gateway_exception_handler(request, HTTPException(429, refusal))
+    token = CURRENT_REQUEST_ID.set("req_admitted")
+    try:
+        admitted = await gateway_exception_handler(request, HTTPException(429, refusal))
+        named = await gateway_exception_handler(
+            request,
+            HTTPException(429, refusal, headers={"X-Shim-Request-Id": "req_named"}),
+        )
+    finally:
+        CURRENT_REQUEST_ID.reset(token)
+
+    assert "x-shim-request-id" not in unadmitted.headers
+    assert admitted.headers["x-shim-request-id"] == "req_admitted"
+    assert admitted.headers["x-shim-error-code"] == "MONTHLY_QUOTA_EXCEEDED"
+    assert named.headers["x-shim-request-id"] == "req_named"

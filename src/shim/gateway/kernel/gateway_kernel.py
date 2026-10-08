@@ -11,6 +11,7 @@ from starlette.responses import Response, JSONResponse
 
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import LoopDetector
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.pipeline.admission import AdmissionStage
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
 from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
@@ -86,6 +87,7 @@ class GatewayKernel:
             nonlocal tenant_tier, request_id
             tenant_tier = bounded_label("tenant_tier", prepared.policy.tier)
             request_id = str(prepared.request_id)
+            CURRENT_REQUEST_ID.set(request_id)
 
         with start_span(
             "gateway.request",

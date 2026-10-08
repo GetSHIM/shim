@@ -120,7 +120,13 @@ async def test_scan_endpoint_renders_canonical_result() -> None:
                 request_id="scan_test_correlation",
                 verdict="warn",
                 entities_found=[
-                    SimpleNamespace(type="EMAIL_ADDRESS", score=0.99, start=0, end=18)
+                    SimpleNamespace(
+                        type="EMAIL_ADDRESS",
+                        score=0.99,
+                        start=0,
+                        end=18,
+                        action="mask",
+                    )
                 ],
                 entity_types=["EMAIL_ADDRESS"],
                 scan_count=4,
@@ -143,7 +149,13 @@ async def test_scan_endpoint_renders_canonical_result() -> None:
     assert response.model_dump() == {
         "verdict": "warn",
         "entities_found": [
-            {"type": "EMAIL_ADDRESS", "score": 0.99, "start": 0, "end": 18}
+            {
+                "type": "EMAIL_ADDRESS",
+                "score": 0.99,
+                "start": 0,
+                "end": 18,
+                "action": "mask",
+            }
         ],
         "entity_types": ["EMAIL_ADDRESS"],
         "scan_count": 4,
