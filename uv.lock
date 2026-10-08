@@ -10,6 +10,15 @@ members = [
 ]
 
 [[package]]
+name = "adaptix"
+version = "3.0.0b12"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/82/aa17eb2968cf7c78caf4915ca62397214f196dc1bef07e4d81bfb4c4abc5/adaptix-3.0.0b12.tar.gz", hash = "sha256:906053a39ff509f0aa4ca9faa07dffa205bd90fa41d9774cd849d3454565b0ea", size = 128634, upload-time = "2026-04-04T17:31:01.084Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/11/66/abcca849b17e4a3adf5116e58c51471f37264a190cee2c67f1ba57782a7f/adaptix-3.0.0b12-py3-none-any.whl", hash = "sha256:8156f0549b96fcd193d13efca7bfbda39b3d6389085556d930e204c09f9ae6ed", size = 188651, upload-time = "2026-04-04T17:30:59.17Z" },
+]
+
+[[package]]
 name = "alembic"
 version = "1.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -774,15 +783,6 @@ wheels = [
 ]
 
 [[package]]
-name = "jsonpath-python"
-version = "1.1.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/98/18/4ca8742534a5993ff383f7602e325ce2d5d7cc93d72ac5e1cdedbea8a458/jsonpath_python-1.1.6.tar.gz", hash = "sha256:dded9932b4ec41fb8726e09c83afa4e6be618f938c2db287cc2a81723c639671", size = 88178, upload-time = "2026-05-07T01:26:34.482Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/55/8a/1270a6803bd821cbfcdda387eaa13cb41a7b1f7b9bd145979b3bfb9d6cb7/jsonpath_python-1.1.6-py3-none-any.whl", hash = "sha256:a1c50afd8d3fbbaf47a4873bc890dcb3c15da96f5c020327977d844d8731a2d4", size = 14453, upload-time = "2026-05-07T01:26:33.306Z" },
-]
-
-[[package]]
 name = "mako"
 version = "1.3.12"
 source = { registry = "https://pypi.org/simple" }
@@ -1148,18 +1148,16 @@ wheels = [
 
 [[package]]
 name = "polar-sdk"
-version = "0.32.0"
+version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpcore" },
+    { name = "adaptix" },
     { name = "httpx" },
-    { name = "jsonpath-python" },
-    { name = "pydantic" },
-    { name = "standardwebhooks" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/d3/23a2aa90331a3788a965d470ae788022ca1e4b4ea5bee22fcccdce55bbc6/polar_sdk-0.32.0.tar.gz", hash = "sha256:2be16af1070d4dedd32db296e88596ead3264df6d61d5a9ef5c5c4b827c4ce72", size = 326393, upload-time = "2026-07-20T08:12:49.094Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/b4/6ff182038bd8d133c84061ed2d8c907f9f53f3ca3a25cf1726bee2dbec42/polar_sdk-1.0.2.tar.gz", hash = "sha256:9df91d57f7b9cb62162c1e64274e8b3cf556e4db711ac9c49b928f6bef9aeada", size = 327581, upload-time = "2026-10-02T07:00:30.008Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/cb/b5b1bd64bf9ec1f41665bc6edfb9b115c0943a11b0ce54b740cc0f738988/polar_sdk-0.32.0-py3-none-any.whl", hash = "sha256:cf75825c944820a9f90d93eecae0fb5fbb2a29110bc34ae9aa4e93dc250f489b", size = 909811, upload-time = "2026-07-20T08:12:47.726Z" },
+    { url = "https://files.pythonhosted.org/packages/92/e2/abec9d0e022b0cde10333fd937dba2b7057cacd3fe0a90b2c3340a02cc22/polar_sdk-1.0.2-py3-none-any.whl", hash = "sha256:170379262decb1c390e5e3c69b819cff1e3866045d08069bd49097e89760963a", size = 458808, upload-time = "2026-10-02T07:00:28.451Z" },
 ]
 
 [[package]]
@@ -1675,7 +1673,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "polar-sdk", specifier = "==0.32.0" },
+    { name = "polar-sdk", specifier = "==1.0.2" },
     { name = "shim-enterprise", specifier = "==0.3.0" },
     { name = "standardwebhooks", specifier = "==1.1.0" },
 ]
