@@ -433,7 +433,25 @@ async def test_a_blocked_secret_stops_every_protocol_before_the_provider(route):
     assert _privacy_verdict(event)[:2] == ("deny", "SECRET_BLOCKED")
 
 
+_IDENTIFIER_ROUTES = {
+    "chat": lambda name: {
+        "model": "gpt-5-nano",
+        "messages": [{"role": "user", "name": name, "content": "hi"}],
+    },
+    "chat_stream": lambda name: {
+        "model": "gpt-5-nano",
+        "stream": True,
+        "messages": [{"role": "user", "name": name, "content": "hi"}],
+    },
+    "responses": lambda name: {
+        "model": "gpt-5-nano",
+        "input": [{"role": "user", "name": name, "content": "hi"}],
+    },
+}
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_IDENTIFIER_ROUTES))
 @pytest.mark.parametrize(
     ("actions", "name", "code", "entity_type"),
     [
@@ -447,14 +465,11 @@ async def test_a_blocked_secret_stops_every_protocol_before_the_provider(route):
     ],
 )
 async def test_a_blocked_type_in_a_protocol_identifier_uses_the_block_code(
-    actions, name, code, entity_type
+    route, actions, name, code, entity_type
 ):
-    payload = {
-        "model": "gpt-5-nano",
-        "messages": [{"role": "user", "name": name, "content": "hi"}],
-    }
-
-    response, calls, [event] = await _send(actions, "chat", payload)
+    response, calls, [event] = await _send(
+        actions, route, _IDENTIFIER_ROUTES[route](name)
+    )
 
     assert (response.status_code, calls) == (400, [])
     assert response.headers["x-shim-error-code"] == code
