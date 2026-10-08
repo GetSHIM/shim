@@ -379,6 +379,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "repeat_chain_length",
         "ttft_ms",
         "cached_input_tokens",
+        "warnings",
         "system_prompt_hash",
         "deployment_kind",
         "pii_entities",
@@ -608,6 +609,8 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "deployment_kind": "internal",
             "pii_entities": {},
             "blocked_entities": {"SECRET": 1},
+            "cached_input_tokens": 10,
+            "warnings": ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"],
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -662,6 +665,8 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["monitored_entities"] == ""
     assert exported["blocked_entities"] == '{"SECRET": 1}'
     assert exported["response_entities"] == ""
+    assert exported["cached_input_tokens"] == "10"
+    assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
     assert audit.await_args.kwargs["details"]["rows"] == 1
     session.commit.assert_awaited_once()
@@ -1628,3 +1633,22 @@ async def test_turning_the_response_scan_off_is_a_relaxation_and_on_is_not(
     ] == ["count", "off"]
     with pytest.raises(ValidationError):
         management.PrivacyPatch.model_validate({"response_scan": "mask"})
+
+
+def test_the_request_list_filters_on_one_warning_code() -> None:
+    filters = management._request_filters(
+        SimpleNamespace(role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        warning="CACHE_NOT_APPLIED",
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"warnings": ["CACHE_NOT_APPLIED"]} in compiled.params.values()

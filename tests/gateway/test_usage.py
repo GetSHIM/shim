@@ -4,12 +4,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 import json
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
 from shim.gateway.streaming import StreamFinalization
-from shim.gateway.kernel.result import InferenceTiming
+from shim.gateway.kernel.result import InferenceTiming, PreparedInference
 from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
@@ -17,8 +17,9 @@ from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 
 def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
     started_at = datetime.now(timezone.utc) - timedelta(milliseconds=12)
-    return SimpleNamespace(
+    prepared = SimpleNamespace(
         policy_verdicts=[],
+        warnings=[],
         timing=InferenceTiming(),
         request_id="req_local",
         provider="openai",
@@ -45,6 +46,8 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             verification_map={"<EMAIL_ADDRESS_a1>": "private@example.com"},
         ),
     )
+    prepared.warn = MethodType(PreparedInference.warn, prepared)
+    return prepared
 
 
 def _terminal(*, model: str = "gpt-5.6-luna") -> StreamFinalization:
@@ -116,6 +119,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "tags",
         "system_prompt_hash",
         "deployment_kind",
+        "warnings",
         "policy_verdicts",
     }
     latency_ms = event.pop("shim_latency_ms")
@@ -144,6 +148,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
+        "warnings": [],
         "policy_verdicts": [],
     }
     assert latency_ms >= 0
@@ -638,3 +643,138 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
     assert snapshot.cache_split == (6_000, 4_000, 0)
     assert snapshot.settlement_cost_usd == Decimal("0.0058")
     assert snapshot.pricing_metadata["cache_read_tokens"] == 6_000
+
+
+@pytest.mark.parametrize(
+    ("model", "prompt_tokens", "split", "payload", "warnings"),
+    [
+        ("gpt-5.4", 272_001, None, {}, ["LARGE_CONTEXT_PRICE"]),
+        ("gpt-5.4", 272_000, None, {}, []),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {"cache_control": {"type": "ephemeral"}},
+            ["CACHE_NOT_APPLIED"],
+        ),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "system": [
+                    {
+                        "type": "text",
+                        "text": "x",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            },
+            ["CACHE_NOT_APPLIED"],
+        ),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 1_024, 0),
+            {"cache_control": {"type": "ephemeral"}},
+            [],
+        ),
+        ("claude-haiku-4-5", 900, None, {"cache_control": {"type": "ephemeral"}}, []),
+        ("claude-haiku-4-5", 900, (0, 0, 0), {"messages": []}, []),
+    ],
+)
+def test_warnings_known_only_after_the_answer(
+    model, prompt_tokens, split, payload, warnings
+):
+    from shim.gateway.pipeline.postprocess import warn_after_answer
+
+    prepared = _prepared(model=model)
+    prepared.provider = "anthropic" if model.startswith("claude") else "openai"
+    prepared.payload = payload
+
+    warn_after_answer(prepared, prompt_tokens, split)
+
+    assert prepared.warnings == warnings
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_the_warnings_header_carries_what_is_known_when_headers_are_sent(stream):
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import (
+        ProviderNonStream,
+        ProviderStream,
+    )
+
+    prepared = _prepared(model="claude-haiku-4-5")
+    prepared.provider = "anthropic"
+    prepared.protocol = "messages"
+    prepared.stream = stream
+    prepared.admission.maximum_output_tokens = 10
+    prepared.payload = {
+        "system": [
+            {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}}
+        ]
+    }
+    prepared.warn("MODEL_DEPRECATED")
+    usage = {
+        "input_tokens": 900,
+        "output_tokens": 2,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+    recorder = SimpleNamespace(
+        finalize=AsyncMock(),
+        mark_stream_started=AsyncMock(),
+        heartbeat_stream=AsyncMock(),
+    )
+    processor = module.ResponsePostprocessor(
+        recorder, heartbeat_interval_seconds=30, output_hash_salt=None
+    )
+
+    if not stream:
+        response = await processor.finalize(
+            prepared,
+            ProviderNonStream(
+                {"content": [], "stop_reason": "end_turn", "usage": usage}, None
+            ),
+            stream_session=None,
+        )
+        assert (
+            response.headers["x-shim-warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
+        )
+        return
+
+    async def events():
+        yield (
+            b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
+            + json.dumps(usage).encode()
+            + b"}}\n\n"
+        )
+        yield (
+            b'event: message_delta\ndata: {"type":"message_delta",'
+            b'"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+        )
+        yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+
+    session = processor.create_stream_session(prepared)
+    response = await processor.finalize(
+        prepared, ProviderStream(events(), None, AsyncMock()), stream_session=session
+    )
+    assert response.headers["x-shim-warnings"] == "MODEL_DEPRECATED"
+    [chunk async for chunk in session]
+    assert prepared.warnings == ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"]
+
+
+@pytest.mark.asyncio
+async def test_the_jsonl_event_lists_the_requests_warnings() -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.warn("MODEL_DEPRECATED")
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    assert json.loads(stream.getvalue())["warnings"] == ["MODEL_DEPRECATED"]

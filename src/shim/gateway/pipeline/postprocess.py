@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from opentelemetry import trace
 from starlette.background import BackgroundTask
 
-from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
+from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.pipeline.admission import candidate_count
 from shim.gateway.pipeline.privacy import scan_response
@@ -186,6 +186,7 @@ class ResponsePostprocessor:
                 ),
             ).inc()
             PROVIDER_LATENCY_MS.labels(**labels).observe(response.latency_ms)
+        warn_after_answer(prepared, prompt_tokens, split)
         gateway_response = JSONResponse(
             content=response.payload,
             headers=_gateway_headers(prepared, response.request_id),
@@ -277,6 +278,9 @@ class ResponsePostprocessor:
             await self.usage.heartbeat_stream(prepared)
 
         async def finalize_stream(terminal: StreamFinalization) -> None:
+            warn_after_answer(
+                prepared, terminal.usage.prompt_tokens, terminal.usage.cache_split
+            )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
             if scan:
@@ -310,6 +314,37 @@ class ResponsePostprocessor:
             finalization_tasks=self._finalization_tasks,
             timing=prepared.timing,
         )
+
+
+def warn_after_answer(
+    prepared: PreparedInference, prompt_tokens: int, split: CacheSplit | None
+) -> None:
+    threshold = (
+        None
+        if prepared.target is not None
+        else DEFAULT_PRICE_BOOK.resolve(
+            prepared.pricing_model, str(prepared.provider)
+        ).large_context_threshold
+    )
+    if threshold is not None and prompt_tokens > threshold:
+        prepared.warn("LARGE_CONTEXT_PRICE")
+    # Anthropic returns no error for a cache_control it did not apply.
+    if (
+        prepared.provider == "anthropic"
+        and split == (0, 0, 0)
+        and _has_cache_control(prepared.payload)
+    ):
+        prepared.warn("CACHE_NOT_APPLIED")
+
+
+def _has_cache_control(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return "cache_control" in value or any(
+            _has_cache_control(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_has_cache_control(item) for item in value)
+    return False
 
 
 def record_settled_usage(
@@ -468,6 +503,8 @@ def _gateway_headers(
     upstream_request_id: str | None,
 ) -> dict[str, str]:
     headers = {"X-Shim-Request-Id": str(prepared.request_id)}
+    if prepared.warnings:
+        headers["X-Shim-Warnings"] = ",".join(prepared.warnings)
     if upstream_request_id:
         header = {
             "anthropic": "request-id",

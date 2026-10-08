@@ -14,6 +14,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Scan text before you send it](#scan-text-before-you-send-it)
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
+- [Read warnings](#read-warnings)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 
@@ -156,7 +157,7 @@ Each event has `version`, `event` (`request`), `request_id`, `provider`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
-`bulk_disclosure` and `policy_verdicts`. The three count maps give values by
+`bulk_disclosure`, `warnings` and `policy_verdicts`. The three count maps give values by
 entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
@@ -341,6 +342,8 @@ except openai.APIStatusError as error:
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
+| The input certainly does not fit the model's context window or input limit | 400 `MODEL_CONTEXT_EXCEEDED` | none: shorten the input or lower the output limit |
+| The catalog says the model lacks tools, structured output or an input modality the request uses | 400 `MODEL_CAPABILITY_UNSUPPORTED` | none: remove what the message names or change model |
 
 In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 `tokens` or `repeated_requests`.
@@ -365,6 +368,30 @@ Notes:
   proxy's IP addresses (not ranges) in `TRUSTED_PROXIES`, comma-separated or as a
   JSON list. shim then takes the client from `cf-connecting-ip`, `x-real-ip`, or
   the right-most untrusted `x-forwarded-for` entry.
+
+## Read warnings
+
+Learn when a request costs more than it seems, or may not fit, without being refused.
+
+1. Read `X-Shim-Warnings`, a comma-separated list of codes, on the response.
+   Browsers may read it. A stream carries only the codes known before it
+   starts; the usage event's `warnings` lists them all.
+2. Decide from the table.
+
+| Code | When | What to do |
+| --- | --- | --- |
+| `MODEL_DEPRECATED` | The catalog marks the model deprecated. It is still served. | Move to a current model before the provider retires it. |
+| `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit) is above the context window, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
+| `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
+| `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
+
+shim refuses before the provider only what certainly fails. It counts the
+whitespace-separated words of the prompt text; no tokenizer produces fewer
+tokens than that, so `MODEL_CONTEXT_EXCEEDED` means the request could not fit.
+Tool definitions, protocol fields and JSON keys are not counted, so the real
+size is usually much larger. Gemini's output limit does not count against its
+input window. A capability is refused only when the catalog says the model
+lacks it; an unknown capability is never refused.
 
 ## Stream long generations and read usage
 

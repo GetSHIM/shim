@@ -125,6 +125,8 @@ ERROR_HINTS = {
     "REQUEST_TOO_LARGE": "Send a smaller request body.",
     "MODEL_NOT_FOUND": "List the available models with GET /v1/models.",
     "MODEL_NOT_PRICED": "Use a model listed by GET /v1/models.",
+    "MODEL_CONTEXT_EXCEEDED": "Shorten the input or lower the output limit; this model's context window cannot hold the request.",
+    "MODEL_CAPABILITY_UNSUPPORTED": "Remove the feature the message names or use a model that supports it.",
     "PROVIDER_NOT_ALLOWED": "Use a provider your tenant policy allows, or ask an administrator to allow this one.",
     "ZERO_RETENTION_REQUIRED": "Send a request the provider enforces zero retention for, as your tenant policy requires.",
     "RATE_LIMIT_EXCEEDED": "Wait the number of seconds in Retry-After, then retry.",

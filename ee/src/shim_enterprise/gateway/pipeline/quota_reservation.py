@@ -1028,6 +1028,7 @@ class DurableUsageLifecycle:
                         cached_input_tokens=None
                         if usage.cache_split is None
                         else sum(usage.cache_split),
+                        warnings=tuple(prepared.warnings),
                         shim_latency_ms=terminal.shim_latency_ms,
                         completed_at=terminal.completed_at,
                     ),

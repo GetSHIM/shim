@@ -107,6 +107,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
     )
 
     prepared.record_verdict = MethodType(PreparedInference.record_verdict, prepared)
+    prepared.warnings = []
+    prepared.warn = MethodType(PreparedInference.warn, prepared)
     return prepared
 
 
@@ -259,6 +261,8 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         completion_outcome="truncated",
         ttft_ms=125.5,
         shim_latency_ms=0,
+        cached_input_tokens=10_000,
+        warnings=("MODEL_DEPRECATED", "CACHE_NOT_APPLIED"),
     )
     await repository.finalize(db, command)
     assert (
@@ -278,6 +282,8 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         "completion_outcome": "truncated",
         "ttft_ms": 125.5,
         "shim_latency_ms": 0,
+        "cached_input_tokens": 10_000,
+        "warnings": ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"],
     }
     assert all(
         lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()

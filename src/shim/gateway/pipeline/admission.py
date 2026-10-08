@@ -12,7 +12,7 @@ import unicodedata
 from fastapi import HTTPException
 
 from shim.billing.attribution import CostAttribution
-from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import LoopDetectionResult, LoopDetector
 
@@ -22,6 +22,7 @@ from shim.gateway.kernel.result import (
     UNSPECIFIED_PROVIDER_MODEL,
 )
 from shim.gateway.kernel.stage import TraceValue
+from shim.gateway.pipeline.privacy import _is_protocol_field
 
 if TYPE_CHECKING:
     from shim.gateway.pipeline.authenticate import GatewayInvocation
@@ -30,6 +31,26 @@ if TYPE_CHECKING:
 
 _WHITESPACE = re.compile(r"\s+")
 _MAX_CANDIDATES = 10_000
+# A word never shares a token with its neighbour in a whitespace-splitting tokenizer.
+_WORD = re.compile(r"[^ \t\r\n]+")
+_PROMPT_FIELDS = (
+    "messages",
+    "input",
+    "instructions",
+    "system",
+    "contents",
+    "systemInstruction",
+    "prompt",
+)
+_MEDIA_PART_TYPES = {
+    "image": "image",
+    "image_url": "image",
+    "input_image": "image",
+    "input_audio": "audio",
+    "file": "pdf",
+    "input_file": "pdf",
+    "document": "pdf",
+}
 
 
 class AdmissionStage:
@@ -155,6 +176,15 @@ class AdmissionStage:
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
+        if value.target is None and value.protocol != "count_tokens":
+            _check_catalog_limits(
+                value,
+                DEFAULT_PRICE_BOOK.resolve(value.pricing_model, str(value.provider)),
+                approximate_tokens=approximate_tokens,
+                requested_output=0
+                if output_token_field == "provider_default"
+                else per_candidate_output_tokens,
+            )
         token_limit = tier.rate_limit_tpm
         if token_limit is not None and approximate_tokens > token_limit:
             value.record_verdict(
@@ -276,6 +306,151 @@ class AdmissionStage:
             "repeat_status": self.loop_result.status.casefold(),
             "repeat_chain_length": self.loop_result.chain_length,
         }
+
+
+def _check_catalog_limits(
+    value: PreparedInference,
+    entry: ModelPrice,
+    *,
+    approximate_tokens: int,
+    requested_output: int,
+) -> None:
+    if entry.status == "deprecated":
+        value.warn("MODEL_DEPRECATED")
+    missing = _missing_capability(value.payload, entry)
+    if missing is not None:
+        _refuse(
+            value,
+            "admission.capability",
+            "MODEL_CAPABILITY_UNSUPPORTED",
+            f"The model does not support {missing}.",
+        )
+    window = entry.context_window
+    # Gemini's output limit does not count against its input window.
+    output = 0 if value.provider == "google" else requested_output
+    words = _lower_bound_input(value.payload)
+    if entry.input_limit is not None and words > entry.input_limit:
+        _refuse(
+            value,
+            "admission.context",
+            "MODEL_CONTEXT_EXCEEDED",
+            f"The input is at least {words} tokens; the model accepts at most "
+            f"{entry.input_limit} input tokens.",
+        )
+    if window is not None and words + output > window:
+        _refuse(
+            value,
+            "admission.context",
+            "MODEL_CONTEXT_EXCEEDED",
+            f"The input is at least {words} tokens"
+            + (f" plus {output} output tokens" if output else "")
+            + f"; the model's context window is {window} tokens.",
+        )
+    if window is not None and approximate_tokens + output > window:
+        value.warn("CONTEXT_MAY_EXCEED")
+
+
+def _refuse(value: PreparedInference, rule_id: str, code: str, message: str) -> None:
+    value.record_verdict(
+        rule_id,
+        stage="admission",
+        outcome="deny",
+        reason_code=code,
+        policy_version=DEFAULT_PRICE_BOOK.version,
+    )
+    raise HTTPException(status_code=400, detail={"code": code, "message": message})
+
+
+def _missing_capability(payload: Mapping[str, object], entry: ModelPrice) -> str | None:
+    if entry.tools is False and payload.get("tools"):
+        return "tools"
+    response_format = payload.get("response_format")
+    text = payload.get("text")
+    text_format = text.get("format") if isinstance(text, Mapping) else None
+    generation_config = payload.get("generationConfig")
+    structured = (
+        (
+            isinstance(response_format, Mapping)
+            and response_format.get("type") == "json_schema"
+        )
+        or (
+            isinstance(text_format, Mapping)
+            and text_format.get("type") == "json_schema"
+        )
+        or (
+            isinstance(generation_config, Mapping)
+            and any(
+                generation_config.get(key) is not None
+                for key in ("responseSchema", "responseJsonSchema")
+            )
+        )
+    )
+    if entry.structured_output is False and structured:
+        return "structured_output"
+    if entry.input_modalities is not None:
+        missing = _input_media([payload.get(field) for field in _PROMPT_FIELDS]) - set(
+            entry.input_modalities
+        )
+        if missing:
+            return min(missing)
+    return None
+
+
+def _input_media(value: object) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            found |= _input_media(item)
+    elif isinstance(value, Mapping):
+        part_type = value.get("type")
+        source = value.get("source")
+        if (
+            isinstance(part_type, str)
+            and part_type in _MEDIA_PART_TYPES
+            and not (
+                part_type == "document"
+                and isinstance(source, Mapping)
+                and source.get("type") in {"text", "content"}
+            )
+        ):
+            found.add(_MEDIA_PART_TYPES[part_type])
+        for key in ("inlineData", "inline_data", "fileData", "file_data"):
+            blob = value.get(key)
+            mime = (
+                blob.get("mimeType", blob.get("mime_type"))
+                if isinstance(blob, Mapping)
+                else None
+            )
+            if isinstance(mime, str):
+                found |= {
+                    modality
+                    for prefix, modality in (
+                        ("image/", "image"),
+                        ("audio/", "audio"),
+                        ("application/pdf", "pdf"),
+                    )
+                    if mime.startswith(prefix)
+                }
+        for item in value.values():
+            found |= _input_media(item)
+    return found
+
+
+def _lower_bound_input(payload: Mapping[str, object]) -> int:
+    def words(value: object) -> int:
+        if isinstance(value, str):
+            return len(_WORD.findall(value))
+        if isinstance(value, list):
+            return sum(words(item) for item in value)
+        if isinstance(value, Mapping):
+            return sum(
+                words(item)
+                for key, item in value.items()
+                if key != "cache_control" and not _is_protocol_field(key)
+            )
+        return 0
+
+    return sum(words(payload.get(field)) for field in _PROMPT_FIELDS)
 
 
 def _estimate_input_tokens(payload: Mapping[str, object]) -> int:

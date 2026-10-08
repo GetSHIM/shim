@@ -63,7 +63,7 @@ forbidden_noncloud_import_roots = [
   "validate_actor_identity",
 ]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
-"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "UNSPECIFIED_PROVIDER_MODEL"]
+"shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "ResponseWarning", "UNSPECIFIED_PROVIDER_MODEL"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
 "shim.gateway.pipeline.authenticate" = ["GatewayRequestMetadata"]
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]

@@ -110,6 +110,14 @@ LABEL_VALUES: Final = MappingProxyType(
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
+        "warning": frozenset(
+            {
+                "CONTEXT_MAY_EXCEED",
+                "MODEL_DEPRECATED",
+                "LARGE_CONTEXT_PRICE",
+                "CACHE_NOT_APPLIED",
+            }
+        ),
     }
 )
 
@@ -144,6 +152,11 @@ PRIVACY_RESPONSE_DETECTION_TOTAL = Counter(
     "shim_privacy_response_detection_total",
     "Distinct values the model returned that the request did not carry, by entity type.",
     ("entity_type",),
+)
+WARNINGS_TOTAL = Counter(
+    "shim_warnings_total",
+    "Requests that carried an X-Shim-Warnings code, by code.",
+    ("code",),
 )
 PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "shim_privacy_bulk_disclosures_total",

@@ -481,7 +481,9 @@ async def test_browsers_can_read_the_gateway_error_code() -> None:
     assert response.status_code == 401
     assert response.headers["x-shim-error-code"] == "MISSING_API_KEY"
     exposed = response.headers["access-control-expose-headers"].lower().split(",")
-    assert "x-shim-error-code" in [name.strip() for name in exposed]
+    assert {"x-shim-error-code", "x-shim-warnings"} <= {
+        name.strip() for name in exposed
+    }
 
 
 def test_global_rate_limit_comes_from_the_setting() -> None:

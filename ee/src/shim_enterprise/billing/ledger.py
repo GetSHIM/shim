@@ -272,6 +272,7 @@ class FinalizationCommand:
     completion_outcome: str | None = None
     ttft_ms: float | None = None
     cached_input_tokens: int | None = None
+    warnings: tuple[str, ...] = ()
     shim_latency_ms: int | None = None
     policy_verdicts: tuple[dict[str, Any], ...] | None = None
 
@@ -615,6 +616,7 @@ class DurableAccountingRepository:
                 "completion_outcome": command.completion_outcome,
                 "ttft_ms": command.ttft_ms,
                 "cached_input_tokens": command.cached_input_tokens,
+                "warnings": list(command.warnings),
                 "shim_latency_ms": command.shim_latency_ms,
             }
         if command.policy_verdicts is not None and not all_replayed:

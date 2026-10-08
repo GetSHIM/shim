@@ -193,6 +193,17 @@ The catalog keeps each model's `context_window`, `input_limit`, `tools`,
 source has them. A deprecated model stays in the catalog with
 `status: "deprecated"` and is still priced.
 
+## Warnings
+
+`warnings` lists the `X-Shim-Warnings` codes a request carried
+(`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
+`CACHE_NOT_APPLIED`), `[]` when none. It is in the lifecycle metadata at
+finalization, the analytics row, the request list and its CSV (comma-separated),
+and the community JSONL event. `GET /api/v1/management/requests?warning=<code>`
+and the export filter on one code. Rows written before it existed read as null.
+A stream's header carries only the codes known before it started; the record
+carries all of them. `shim_warnings_total{code}` counts them.
+
 ## Unpriced deployment costs
 
 An unknown deployment price is not a free request. A terminal spend settlement

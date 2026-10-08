@@ -7893,6 +7893,27 @@
           "usage_estimated": {
             "title": "Usage Estimated",
             "type": "boolean"
+          },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "CONTEXT_MAY_EXCEED",
+                    "MODEL_DEPRECATED",
+                    "LARGE_CONTEXT_PRICE",
+                    "CACHE_NOT_APPLIED"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "X-Shim-Warnings codes the request carried; null on older rows.",
+            "title": "Warnings"
           }
         },
         "required": [
@@ -13821,6 +13842,30 @@
             }
           },
           {
+            "description": "Only requests that carried this warning code.",
+            "in": "query",
+            "name": "warning",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "CONTEXT_MAY_EXCEED",
+                    "MODEL_DEPRECATED",
+                    "LARGE_CONTEXT_PRICE",
+                    "CACHE_NOT_APPLIED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests that carried this warning code.",
+              "title": "Warning"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -14034,6 +14079,30 @@
               ],
               "description": "Case-insensitive cost center substring.",
               "title": "Cost Center"
+            }
+          },
+          {
+            "description": "Only requests that carried this warning code.",
+            "in": "query",
+            "name": "warning",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "CONTEXT_MAY_EXCEED",
+                    "MODEL_DEPRECATED",
+                    "LARGE_CONTEXT_PRICE",
+                    "CACHE_NOT_APPLIED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests that carried this warning code.",
+              "title": "Warning"
             }
           }
         ],

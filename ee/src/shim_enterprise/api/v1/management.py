@@ -12,7 +12,7 @@ import io
 import json
 import logging
 import secrets
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -41,6 +41,7 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
+from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
     AuditIntent,
     CostBudget,
@@ -677,6 +678,10 @@ class RequestActivityView(BaseModel):
     ) = None
     repeat_chain_length: int | None = Field(default=None, ge=1)
     ttft_ms: float | None = Field(default=None, ge=0)
+    warnings: list[ResponseWarning] | None = Field(
+        default=None,
+        description="X-Shim-Warnings codes the request carried; null on older rows.",
+    )
     cached_input_tokens: int | None = Field(
         default=None,
         ge=0,
@@ -2165,6 +2170,10 @@ async def list_requests(
         max_length=settings.COST_TAG_MAX_LENGTH,
         description="Case-insensitive cost center substring.",
     ),
+    warning: Annotated[
+        ResponseWarning | None,
+        Query(description="Only requests that carried this warning code."),
+    ] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -2182,6 +2191,7 @@ async def list_requests(
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
+        warning=warning,
     )
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
@@ -2220,6 +2230,7 @@ async def list_requests(
                         "repeat_chain_length",
                         "ttft_ms",
                         "cached_input_tokens",
+                        "warnings",
                         "shim_latency_ms",
                         "system_prompt_hash",
                         "deployment_kind",
@@ -2268,6 +2279,10 @@ async def export_requests(
         max_length=settings.COST_TAG_MAX_LENGTH,
         description="Case-insensitive cost center substring.",
     ),
+    warning: Annotated[
+        ResponseWarning | None,
+        Query(description="Only requests that carried this warning code."),
+    ] = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -2285,6 +2300,7 @@ async def export_requests(
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
+        warning=warning,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
@@ -2346,6 +2362,7 @@ async def export_requests(
                 "repeat_chain_length",
                 "ttft_ms",
                 "cached_input_tokens",
+                "warnings",
                 "system_prompt_hash",
                 "deployment_kind",
                 "cost_complete",
@@ -2387,6 +2404,7 @@ async def export_requests(
                     details.get("repeat_chain_length"),
                     details.get("ttft_ms"),
                     details.get("cached_input_tokens"),
+                    ",".join(details.get("warnings") or []),
                     details.get("system_prompt_hash"),
                     details.get("deployment_kind"),
                     cost_usd is not None,
@@ -2602,6 +2620,7 @@ def _request_filters(
     pii_detected: bool | None,
     tag: str | None,
     cost_center: str | None,
+    warning: ResponseWarning | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -2672,6 +2691,8 @@ def _request_filters(
                 autoescape=True,
             )
         )
+    if warning is not None:
+        filters.append(RequestLog.details.contains({"warnings": [warning]}))
     return filters
 
 

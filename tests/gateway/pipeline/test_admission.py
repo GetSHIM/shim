@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from hashlib import sha256
 import json
 from types import SimpleNamespace
@@ -450,3 +451,242 @@ async def test_every_admission_refusal_says_when_to_retry(
     assert error.value.status_code == 429
     assert error.value.detail["dimension"] == dimension
     assert error.value.headers == {"Retry-After": retry_after}
+
+
+def _catalog(monkeypatch, **facts) -> None:
+    import shim.gateway.pipeline.admission as admission_module
+    from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
+
+    entry = ModelPrice(Decimal("1"), Decimal("2"), max_output_tokens=1_000, **facts)
+    monkeypatch.setattr(
+        admission_module,
+        "DEFAULT_PRICE_BOOK",
+        SimpleNamespace(
+            version=DEFAULT_PRICE_BOOK.version,
+            supports=lambda *_: True,
+            maximum_output_tokens=lambda *_: 1_000,
+            resolve=lambda *_: entry,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        ("Summarise the invoice dispute", 4),
+        ("Fatura itirazını özetle, lütfen", 4),
+        ("a,b 12.5! (x)", 3),
+        (" \t\r\n   ", 0),
+        ("日本語のテキストを要約してください", 1),
+        ("ab\x1ccd ef\x1fgh\x85ij", 2),
+    ],
+)
+def test_the_lower_bound_counts_whitespace_separated_words(text, words) -> None:
+    from shim.gateway.pipeline.admission import _lower_bound_input
+
+    assert (
+        _lower_bound_input({"messages": [{"role": "user", "content": text}]}) == words
+    )
+
+
+def test_the_lower_bound_skips_keys_and_protocol_fields() -> None:
+    from shim.gateway.pipeline.admission import _lower_bound_input
+
+    payload = {
+        "model": "m o d e l",
+        "system": [
+            {
+                "type": "text",
+                "text": "Be brief.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "id x",
+                        "content": "rows 1 2",
+                    }
+                ],
+            }
+        ],
+        "tools": [{"name": "lookup", "description": "many words here"}],
+    }
+
+    assert _lower_bound_input(payload) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "words", "output", "facts", "refused"),
+    [
+        ("openai", 100, None, {"context_window": 100}, False),
+        ("openai", 101, None, {"context_window": 100}, True),
+        ("openai", 90, 10, {"context_window": 100}, False),
+        ("openai", 91, 10, {"context_window": 100}, True),
+        ("google", 100, 500, {"context_window": 100}, False),
+        ("google", 101, 1, {"context_window": 100}, True),
+        ("openai", 51, None, {"context_window": 1_000, "input_limit": 50}, True),
+        ("openai", 50, None, {"context_window": 1_000, "input_limit": 50}, False),
+    ],
+)
+async def test_only_a_certain_overflow_is_refused_before_any_rate_capacity(
+    monkeypatch, provider, words, output, facts, refused
+) -> None:
+    _catalog(monkeypatch, **facts)
+    prepared = _prepared(" ".join(["w"] * words), provider=provider)
+    if output is not None:
+        key = "maxOutputTokens" if provider == "google" else "max_tokens"
+        prepared.payload.update(
+            {"generationConfig": {key: output}}
+            if provider == "google"
+            else {key: output}
+        )
+    limiter = SimpleNamespace(allow=AsyncMock(return_value=True))
+
+    if not refused:
+        await _stage(limiter).run(prepared)
+        limiter.allow.assert_awaited()
+        return
+    with pytest.raises(HTTPException) as error:
+        await _stage(limiter).run(prepared)
+    assert error.value.status_code == 400
+    assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"
+    assert str(words) in error.value.detail["message"]
+    limiter.allow.assert_not_awaited()
+    assert [(v.rule_id, v.outcome) for v in prepared.policy_verdicts][-1] == (
+        "admission.context",
+        "deny",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_uncertain_overflow_warns_and_token_counting_is_never_refused(
+    monkeypatch,
+) -> None:
+    _catalog(monkeypatch, context_window=100)
+    padded = _prepared("x" * 2_000)
+    counted = _prepared(" ".join(["w"] * 500), protocol="count_tokens")
+
+    admitted = await _stage(InMemoryRateLimiter()).run(padded)
+    await _stage(InMemoryRateLimiter()).run(counted)
+
+    assert admitted.warnings == ["CONTEXT_MAY_EXCEED"]
+    assert counted.warnings == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("facts", "extra", "missing"),
+    [
+        (
+            {"tools": False},
+            {"tools": [{"type": "function", "function": {"name": "f"}}]},
+            "tools",
+        ),
+        (
+            {"tools": None},
+            {"tools": [{"type": "function", "function": {"name": "f"}}]},
+            None,
+        ),
+        (
+            {"structured_output": False},
+            {"response_format": {"type": "json_schema"}},
+            "structured_output",
+        ),
+        (
+            {"structured_output": False},
+            {"response_format": {"type": "json_object"}},
+            None,
+        ),
+        (
+            {"structured_output": False},
+            {"text": {"format": {"type": "json_schema"}}},
+            "structured_output",
+        ),
+        (
+            {"structured_output": False},
+            {"generationConfig": {"responseSchema": {}}},
+            "structured_output",
+        ),
+        (
+            {"input_modalities": ("text",)},
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": "x"}}],
+                    }
+                ]
+            },
+            "image",
+        ),
+        (
+            {"input_modalities": ("text", "image")},
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "document", "source": {"type": "base64"}}],
+                    }
+                ]
+            },
+            "pdf",
+        ),
+        (
+            {"input_modalities": ("text",)},
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "document", "source": {"type": "text"}}],
+                    }
+                ]
+            },
+            None,
+        ),
+        (
+            {"input_modalities": ("text", "image", "pdf")},
+            {
+                "contents": [
+                    {"parts": [{"inlineData": {"mimeType": "audio/wav", "data": "AA"}}]}
+                ]
+            },
+            "audio",
+        ),
+        (
+            {"input_modalities": None},
+            {"messages": [{"role": "user", "content": [{"type": "input_audio"}]}]},
+            None,
+        ),
+    ],
+)
+async def test_a_capability_is_refused_only_when_the_catalog_says_it_is_missing(
+    monkeypatch, facts, extra, missing
+) -> None:
+    _catalog(monkeypatch, **facts)
+    prepared = _prepared("hello")
+    prepared.payload.update(extra)
+
+    if missing is None:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+        return
+    with pytest.raises(HTTPException) as error:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+    assert error.value.detail == {
+        "code": "MODEL_CAPABILITY_UNSUPPORTED",
+        "message": f"The model does not support {missing}.",
+    }
+    assert prepared.policy_verdicts[-1].rule_id == "admission.capability"
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_catalog_model_is_served_with_a_warning() -> None:
+    prepared = _prepared("hello", model="gpt-3.5-turbo")
+
+    admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+
+    assert admitted.warnings == ["MODEL_DEPRECATED"]

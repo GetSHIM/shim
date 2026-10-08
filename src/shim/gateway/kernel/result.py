@@ -21,6 +21,7 @@ from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
+from shim.observability.metrics import WARNINGS_TOTAL, bounded_label
 from shim.privacy.policies import EntityAction, PrivacyOutcome
 
 
@@ -112,6 +113,11 @@ class AdmissionState:
     repeat_chain_length: int | None = None
 
 
+ResponseWarning = Literal[
+    "CONTEXT_MAY_EXCEED", "MODEL_DEPRECATED", "LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED"
+]
+
+
 @dataclass(frozen=True)
 class PreparedInference:
     """One validated native provider request plus trusted gateway state."""
@@ -135,7 +141,14 @@ class PreparedInference:
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None
     policy_verdicts: list[PolicyVerdict] = field(default_factory=list)
+    warnings: list[ResponseWarning] = field(default_factory=list)
     timing: InferenceTiming = field(default_factory=InferenceTiming, compare=False)
+
+    def warn(self, code: ResponseWarning) -> None:
+        # Shared like policy_verdicts, so stage replacements keep earlier warnings.
+        if code not in self.warnings:
+            self.warnings.append(code)
+            WARNINGS_TOTAL.labels(code=bounded_label("warning", code)).inc()
 
     def record_verdict(
         self,

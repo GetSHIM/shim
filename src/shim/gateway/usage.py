@@ -285,6 +285,7 @@ class LocalUsageLifecycle:
             "bulk_disclosure": dict(privacy.bulk_disclosure)
             if privacy and privacy.bulk_disclosure
             else None,
+            "warnings": list(prepared.warnings),
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
             ],
