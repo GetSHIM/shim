@@ -384,17 +384,23 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | Code | When | What to do |
 | --- | --- | --- |
 | `MODEL_DEPRECATED` | The catalog marks the model deprecated. It is still served. | Move to a current model before the provider retires it. |
-| `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit) is above the context window, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
+| `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit where it counts against the window) is above the context window of the model's own catalog entry, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
 | `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
 
 shim refuses before the provider only what certainly fails. It counts the
-whitespace-separated words of the prompt text; no tokenizer produces fewer
-tokens than that, so `MODEL_CONTEXT_EXCEEDED` means the request could not fit.
-Tool definitions, protocol fields and JSON keys are not counted, so the real
-size is usually much larger. Gemini's output limit does not count against its
-input window. A capability is refused only when the catalog says the model
-lacks it; an unknown capability is never refused.
+whitespace-separated words of the prompt text, a lower bound for the public
+tokenizers (OpenAI's and the open-weight families), which split on whitespace
+before merging; for Claude and Gemini, whose tokenizers are not published, the
+same bound is assumed, not proven. Tool definitions, protocol fields, JSON keys
+and earlier turns' thinking or reasoning are not counted, so the real size is
+usually much larger. The output limit counts against the window only for OpenAI
+models and deployments: Gemini's is separate, and Claude stops at the window. A
+request with Responses `truncation: "auto"`, `context_management`, `compaction`
+or a compaction block is never refused for size. Refusals use only a model's own
+catalog entry, never a longer model name matched by prefix. A capability is
+refused only when the catalog says the model lacks it; an unknown capability is
+never refused, and an OpenAI file part is never refused as a PDF.
 
 ## Stream long generations and read usage
 

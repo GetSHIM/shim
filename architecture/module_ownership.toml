@@ -211,6 +211,7 @@ public = [
   "tests/gateway/contracts/test_identity_context.py",
   "tests/gateway/kernel/test_gateway_kernel.py",
   "tests/gateway/pipeline/test_admission.py",
+  "tests/gateway/pipeline/test_admission_catalog.py",
   "tests/gateway/pipeline/test_authenticate.py",
   "tests/gateway/privacy/test_boundary_types.py",
   "tests/gateway/privacy/test_continuation.py",

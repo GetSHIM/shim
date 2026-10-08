@@ -196,6 +196,11 @@ class PriceBook:
             candidates, key=lambda item: len(item[0]), default=("", self.fallback)
         )[1]
 
+    def exact(self, model: str, provider: str = "openai") -> ModelPrice | None:
+        """The model's own entry, never a prefix match that describes another model."""
+
+        return self.provider_prices.get(provider, {}).get(model.strip().casefold())
+
     def supports(self, model: str | None, provider: str = "openai") -> bool:
         if model is None or not model.strip():
             return False

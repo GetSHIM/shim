@@ -465,7 +465,7 @@ def _catalog(monkeypatch, **facts) -> None:
             version=DEFAULT_PRICE_BOOK.version,
             supports=lambda *_: True,
             maximum_output_tokens=lambda *_: 1_000,
-            resolve=lambda *_: entry,
+            exact=lambda *_: entry,
         ),
     )
 
@@ -561,6 +561,21 @@ async def test_only_a_certain_overflow_is_refused_before_any_rate_capacity(
         "admission.context",
         "deny",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_request_too_small_to_overflow_skips_the_word_count(
+    monkeypatch,
+) -> None:
+    import shim.gateway.pipeline.admission as admission_module
+
+    def never(_payload) -> int:
+        raise AssertionError("counted words of a request that cannot overflow")
+
+    _catalog(monkeypatch, context_window=1_000)
+    monkeypatch.setattr(admission_module, "_lower_bound_input", never)
+
+    await _stage(InMemoryRateLimiter()).run(_prepared("w " * 400))
 
 
 @pytest.mark.asyncio

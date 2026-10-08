@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from decimal import Decimal
 import json
 import re
 from typing import TYPE_CHECKING
@@ -43,15 +42,21 @@ _PROMPT_FIELDS = (
     "systemInstruction",
     "prompt",
 )
+# OpenAI file parts are absent: they need not be PDFs, and the catalog's OpenAI pdf flag is unreliable.
 _MEDIA_PART_TYPES = {
     "image": "image",
     "image_url": "image",
     "input_image": "image",
     "input_audio": "audio",
-    "file": "pdf",
-    "input_file": "pdf",
     "document": "pdf",
 }
+_MEDIA_MIME_TYPES = (
+    ("image/", "image"),
+    ("audio/", "audio"),
+    ("application/pdf", "pdf"),
+)
+# Earlier turns' reasoning, which a provider may drop from the window.
+_UNCOUNTED_BLOCKS = frozenset({"thinking", "redacted_thinking", "reasoning"})
 
 
 class AdmissionStage:
@@ -177,15 +182,12 @@ class AdmissionStage:
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
-        if value.protocol != "count_tokens":
+        if value.protocol != "count_tokens" and (
+            value.target is None or value.target.context_window
+        ):
             _check_catalog_limits(
                 value,
-                DEFAULT_PRICE_BOOK.resolve(value.pricing_model, str(value.provider))
-                if value.target is None
-                # A deployment is checked against its own window only, never the catalog.
-                else ModelPrice(
-                    Decimal(0), Decimal(0), context_window=value.target.context_window
-                ),
+                input_bytes=input_tokens,
                 approximate_tokens=approximate_tokens,
                 requested_output=0
                 if output_token_field == "provider_default"
@@ -316,44 +318,73 @@ class AdmissionStage:
 
 def _check_catalog_limits(
     value: PreparedInference,
-    entry: ModelPrice,
     *,
+    input_bytes: int,
     approximate_tokens: int,
     requested_output: int,
 ) -> None:
-    if entry.status == "deprecated":
-        value.warn("MODEL_DEPRECATED")
-    missing = _missing_capability(value.payload, entry)
-    if missing is not None:
-        _refuse(
-            value,
-            "admission.capability",
-            "MODEL_CAPABILITY_UNSUPPORTED",
-            f"The model does not support {missing}.",
-        )
-    window = entry.context_window
-    # Gemini's output limit does not count against its input window.
-    output = 0 if value.provider == "google" else requested_output
-    words = _lower_bound_input(value.payload)
-    if entry.input_limit is not None and words > entry.input_limit:
-        _refuse(
-            value,
-            "admission.context",
-            "MODEL_CONTEXT_EXCEEDED",
-            f"The input is at least {words} tokens; the model accepts at most "
-            f"{entry.input_limit} input tokens.",
-        )
-    if window is not None and words + output > window:
-        _refuse(
-            value,
-            "admission.context",
-            "MODEL_CONTEXT_EXCEEDED",
-            f"The input is at least {words} tokens"
-            + (f" plus {output} output tokens" if output else "")
-            + f"; the model's context window is {window} tokens.",
-        )
-    if window is not None and approximate_tokens + output > window:
+    payload = value.payload
+    if value.target is None:
+        # A prefix match describes another model, so only the model's own entry counts.
+        entry = DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+        if entry is None:
+            return
+        if entry.status == "deprecated":
+            value.warn("MODEL_DEPRECATED")
+        missing = _missing_capability(payload, entry)
+        if missing is not None:
+            _refuse(
+                value,
+                "admission.capability",
+                "MODEL_CAPABILITY_UNSUPPORTED",
+                f"The model does not support {missing}.",
+            )
+        window, input_limit = entry.context_window, entry.input_limit
+        # Gemini's output limit is separate; Claude 4.5 and later accept input plus
+        # max_tokens above the window and stop at it.
+        output = requested_output if value.provider == "openai" else 0
+    else:
+        # A deployment is checked against its own window only, never the catalog.
+        window, input_limit = value.target.context_window, None
+        output = requested_output
+    if window is None:
+        return
+    limit = min(input_limit or window, window - output)
+    # A word takes at least two bytes, so a small request skips the count.
+    if input_bytes // 2 > limit and not _overflow_is_managed(payload):
+        words = _lower_bound_input(payload)
+        if words > limit:
+            _refuse(
+                value,
+                "admission.context",
+                "MODEL_CONTEXT_EXCEEDED",
+                f"The input is at least {words} tokens; with a context window of "
+                f"{window} tokens the model accepts at most {limit} input tokens"
+                + (f" when {output} output tokens are requested." if output else "."),
+            )
+    if approximate_tokens + output > window:
         value.warn("CONTEXT_MAY_EXCEED")
+
+
+def _overflow_is_managed(payload: Mapping[str, object]) -> bool:
+    """The provider truncates or compacts the context itself, so overflow is not certain."""
+
+    return (
+        payload.get("truncation") == "auto"
+        or "context_management" in payload
+        or "compaction" in payload
+        or any(_has_compaction(payload.get(field)) for field in ("messages", "input"))
+    )
+
+
+def _has_compaction(value: object) -> bool:
+    if isinstance(value, list):
+        return any(_has_compaction(item) for item in value)
+    if isinstance(value, Mapping):
+        return value.get("type") == "compaction" or any(
+            _has_compaction(item) for item in value.values()
+        )
+    return False
 
 
 def _refuse(value: PreparedInference, rule_id: str, code: str, message: str) -> None:
@@ -430,11 +461,7 @@ def _input_media(value: object) -> set[str]:
             if isinstance(mime, str):
                 found |= {
                     modality
-                    for prefix, modality in (
-                        ("image/", "image"),
-                        ("audio/", "audio"),
-                        ("application/pdf", "pdf"),
-                    )
+                    for prefix, modality in _MEDIA_MIME_TYPES
                     if mime.startswith(prefix)
                 }
         for item in value.values():
@@ -449,6 +476,8 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
         if isinstance(value, list):
             return sum(words(item) for item in value)
         if isinstance(value, Mapping):
+            if value.get("type") in _UNCOUNTED_BLOCKS:
+                return 0
             return sum(
                 words(item)
                 for key, item in value.items()

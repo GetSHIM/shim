@@ -646,6 +646,35 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
     assert snapshot.pricing_metadata["cache_read_tokens"] == 6_000
 
 
+@pytest.mark.asyncio
+async def test_an_estimated_input_never_claims_the_large_context_price():
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    # gpt-5.4's tier starts above 272,000 input tokens; the byte estimate is not usage.
+    prepared = _prepared(model="gpt-5.4")
+    prepared.protocol = "chat"
+    prepared.admission.estimated_input_tokens = 300_000
+    prepared.admission.maximum_output_tokens = 10
+    prepared.payload = {}
+
+    await module.ResponsePostprocessor(
+        SimpleNamespace(finalize=AsyncMock()),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+    ).finalize(
+        prepared,
+        ProviderNonStream(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
+            None,
+        ),
+        stream_session=None,
+    )
+
+    assert prepared.warnings == []
+
+
 @pytest.mark.parametrize(
     ("model", "prompt_tokens", "split", "payload", "warnings"),
     [
@@ -682,6 +711,50 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
         ),
         ("claude-haiku-4-5", 900, None, {"cache_control": {"type": "ephemeral"}}, []),
         ("claude-haiku-4-5", 900, (0, 0, 0), {"messages": []}, []),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {"tools": [{"name": "t", "cache_control": {"type": "ephemeral"}}]},
+            ["CACHE_NOT_APPLIED"],
+        ),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "x",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            ["CACHE_NOT_APPLIED"],
+        ),
+        # A tool's schema may name a property cache_control; that is not caching.
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "tools": [
+                    {
+                        "name": "t",
+                        "input_schema": {
+                            "properties": {"cache_control": {"type": "string"}}
+                        },
+                    }
+                ]
+            },
+            [],
+        ),
     ],
 )
 def test_warnings_known_only_after_the_answer(

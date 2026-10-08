@@ -23,7 +23,7 @@ from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
-from shim.observability.metrics import WARNINGS_TOTAL, bounded_label
+from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
 
 
@@ -165,7 +165,8 @@ class PreparedInference:
         # Shared like policy_verdicts, so stage replacements keep earlier warnings.
         if code not in self.warnings:
             self.warnings.append(code)
-            WARNINGS_TOTAL.labels(code=bounded_label("warning", code)).inc()
+            # ResponseWarning is a closed set, so the label is bounded.
+            WARNINGS_TOTAL.labels(code=code).inc()
 
     def record_verdict(
         self,
