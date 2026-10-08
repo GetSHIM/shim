@@ -3297,6 +3297,33 @@ class ModelDeploymentInput(BaseModel):
     declared_version: str = Field(min_length=1, max_length=200)
     owner: str = Field(min_length=1, max_length=200)
     enabled: bool = True
+    input_price_per_million: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=8,
+        description="USD per million input tokens; set both prices or neither.",
+    )
+    output_price_per_million: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=8,
+        description="USD per million output tokens; set both prices or neither.",
+    )
+    context_window: int | None = Field(
+        default=None,
+        ge=1,
+        description="Tokens the served model accepts; a request that certainly exceeds it is refused.",
+    )
+
+    @model_validator(mode="after")
+    def price_pair(self) -> ModelDeploymentInput:
+        if (self.input_price_per_million is None) != (
+            self.output_price_per_million is None
+        ):
+            raise ValueError("Set both input and output prices, or neither")
+        return self
 
     @field_validator("upstream_model", "declared_version", "owner")
     @classmethod

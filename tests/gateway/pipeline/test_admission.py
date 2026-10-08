@@ -690,3 +690,80 @@ async def test_a_deprecated_catalog_model_is_served_with_a_warning() -> None:
     admitted = await _stage(InMemoryRateLimiter()).run(prepared)
 
     assert admitted.warnings == ["MODEL_DEPRECATED"]
+
+
+def _target(**fields) -> object:
+    from shim.gateway.kernel.result import ProviderTarget
+
+    return ProviderTarget(
+        deployment_id="dep",
+        base_url="https://llm.internal/v1",
+        upstream_model="gpt-4",
+        credential_reference="secret",
+        timeout_seconds=5,
+        declared_version="v1",
+        **fields,
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input_per_million": Decimal("1")},
+        {"output_per_million": Decimal("1")},
+        {"context_window": 0},
+    ],
+)
+def test_a_target_refuses_a_lone_price_and_a_zero_window(fields) -> None:
+    with pytest.raises(ValueError):
+        _target(**fields)
+
+
+def test_a_target_price_wins_over_the_catalog_and_none_stays_unknown() -> None:
+    from dataclasses import replace
+
+    from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
+
+    priced = replace(
+        _prepared("hi"),
+        target=_target(
+            input_per_million=Decimal("0.5"), output_per_million=Decimal("1.5")
+        ),
+    )
+    unknown = replace(
+        _prepared("hi"), target=replace(_target(), upstream_model="custom-llama")
+    )
+    price = priced.deployment_price
+
+    assert not priced.unpriced and unknown.unpriced and unknown.deployment_price is None
+    assert compute_cost_usd("gpt-4", 1_000_000, 1_000_000, price=price) == Decimal("2")
+    assert compute_cost_usd("gpt-4", 1_000_000, 1_000_000) != Decimal("2")
+    metadata = DEFAULT_PRICE_BOOK.resolved_price_metadata(
+        "gpt-4", input_tokens=1, output_tokens=1, price=price
+    )
+    assert (metadata["pricing_resolution"], metadata["input_per_million"]) == (
+        "deployment",
+        "0.5",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("window", "refused"), [(None, False), (100, True), (10_000, False)]
+)
+async def test_a_target_is_checked_against_its_own_window_only(window, refused) -> None:
+    from dataclasses import replace
+
+    # gpt-4's catalog window is 8,192; a deployment named after it is not held to it.
+    prepared = replace(
+        _prepared(" ".join(["w"] * 9_000), model="gpt-4"),
+        target=_target(context_window=window),
+    )
+
+    if not refused:
+        admitted = await _stage(InMemoryRateLimiter()).run(prepared)
+        assert "MODEL_DEPRECATED" not in admitted.warnings
+        return
+    with pytest.raises(HTTPException) as error:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+    assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"

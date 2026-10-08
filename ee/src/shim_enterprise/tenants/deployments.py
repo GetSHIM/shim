@@ -282,6 +282,9 @@ class DeploymentResolver:
                 credential_reference=str(deployment.provider_secret_id),
                 timeout_seconds=deployment.timeout_seconds,
                 declared_version=deployment.declared_version,
+                input_per_million=deployment.input_price_per_million,
+                output_per_million=deployment.output_price_per_million,
+                context_window=deployment.context_window,
             ),
         )
 

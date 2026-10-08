@@ -498,6 +498,7 @@ class DurableAccountingCoordinator:
                 prepared.admission.maximum_output_tokens,
                 str(prepared.provider),
                 unpriced=prepared.unpriced,
+                price=prepared.deployment_price,
             )
             input_hash = content_ref(
                 settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY,
@@ -518,6 +519,7 @@ class DurableAccountingCoordinator:
                     input_tokens=prepared.admission.estimated_input_tokens,
                     output_tokens=prepared.admission.maximum_output_tokens,
                     unpriced=prepared.unpriced,
+                    price=prepared.deployment_price,
                 ),
                 cache_status="bypass",
                 audit_policy_mode=prepared.context.audit_policy.mode,

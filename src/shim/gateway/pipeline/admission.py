@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from decimal import Decimal
 import json
 import re
 from typing import TYPE_CHECKING
@@ -176,10 +177,15 @@ class AdmissionStage:
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
-        if value.target is None and value.protocol != "count_tokens":
+        if value.protocol != "count_tokens":
             _check_catalog_limits(
                 value,
-                DEFAULT_PRICE_BOOK.resolve(value.pricing_model, str(value.provider)),
+                DEFAULT_PRICE_BOOK.resolve(value.pricing_model, str(value.provider))
+                if value.target is None
+                # A deployment is checked against its own window only, never the catalog.
+                else ModelPrice(
+                    Decimal(0), Decimal(0), context_window=value.target.context_window
+                ),
                 approximate_tokens=approximate_tokens,
                 requested_output=0
                 if output_token_field == "provider_default"

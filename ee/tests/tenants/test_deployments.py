@@ -1098,3 +1098,124 @@ async def test_customer_provider_keys_default_to_allowed_for_existing_rows(db):
             Organization.id == organization_id
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_priced_deployments_settle_at_their_price_and_stop_hiding_totals(
+    db, test_api_key, origins
+):
+    rows = await _deployments(db, test_api_key)
+    for row in rows:
+        row.input_price_per_million = Decimal("0.5")
+        row.output_price_per_million = Decimal("1.5")
+    rows[0].context_window = 50
+    secret = await db.get(ProviderSecret, rows[0].provider_secret_id)
+    secret.monthly_limit_usd = Decimal("1")
+    await db.flush()
+    calls = []
+
+    def upstream(request):
+        calls.append(request)
+        return _success(request, False, "chat")
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        for row in rows:
+            response = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": row.alias,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+            assert response.status_code == 200, response.text
+        overflow = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "internal-a",
+                "messages": [{"role": "user", "content": " ".join(["w"] * 51)}],
+            },
+        )
+    assert overflow.status_code == 400
+    assert overflow.json()["error"]["code"] == "MODEL_CONTEXT_EXCEEDED"
+    assert len(calls) == 2
+    settlements = (
+        (
+            await db.execute(
+                select(UsageLedger).where(
+                    UsageLedger.organization_id == test_api_key.organization_id,
+                    UsageLedger.event_type == "spend_settlement",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # 4 input tokens at $0.50 and 2 output tokens at $1.50, also for the catalog model.
+    assert [settlement.cost_usd for settlement in settlements] == [
+        Decimal("0.000005")
+    ] * 2
+    assert {
+        settlement.event_metadata["pricing"]["pricing_resolution"]
+        for settlement in settlements
+    } == {"deployment"}
+    now = datetime.now(timezone.utc)
+    window = {
+        "tenant_id": test_api_key.organization_id,
+        "start_at": now - timedelta(days=1),
+        "end_at": now + timedelta(days=1),
+    }
+    daily = await BillingReadModels().daily_usage(db, **window)
+    providers = await BillingReadModels().breakdown(
+        db, **window, group_by="provider", limit=None
+    )
+    assert all(row.as_public_record()["cost_complete"] for row in daily)
+    assert [row.as_public_record()["cost_usd"] for row in providers] == [
+        Decimal("0.00001")
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input_price_per_million": "0.5"},
+        {"output_price_per_million": "1.5"},
+        {"input_price_per_million": "-1", "output_price_per_million": "1"},
+        {"input_price_per_million": "0.123456789", "output_price_per_million": "1"},
+        {"context_window": 0},
+    ],
+)
+def test_deployment_input_refuses_a_lone_or_invalid_price_and_a_zero_window(fields):
+    with pytest.raises(ValidationError):
+        ModelDeploymentInput(
+            alias="internal-x",
+            provider="openai",
+            upstream_model="custom-model-v1",
+            base_url="https://a.internal/v1",
+            provider_secret_id=uuid4(),
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+            **fields,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input_price_per_million": Decimal("0.5")},
+        {"output_price_per_million": Decimal("0.5")},
+        {"context_window": 0},
+    ],
+)
+async def test_the_database_refuses_a_lone_price_and_a_zero_window(
+    db, test_api_key, origins, fields
+):
+    from sqlalchemy.exc import IntegrityError
+
+    [row, _] = await _deployments(db, test_api_key)
+    for field, value in fields.items():
+        setattr(row, field, value)
+
+    with pytest.raises(IntegrityError):
+        await db.flush()

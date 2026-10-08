@@ -257,6 +257,7 @@ class PriceBook:
         output_tokens: int,
         unpriced: bool = False,
         cache: CacheSplit | None = None,
+        price: ModelPrice | None = None,
     ) -> dict[str, str | int]:
         metadata: dict[str, str | int] = {
             "catalog_version": self.version,
@@ -268,7 +269,10 @@ class PriceBook:
                 "provider_model": model or "",
                 "pricing_resolution": "unknown",
             }
-        if model == UNSPECIFIED_PROVIDER_MODEL and provider == "openai":
+        if price is not None:
+            metadata["pricing_resolution"] = "deployment"
+            resolved_model = model or ""
+        elif model == UNSPECIFIED_PROVIDER_MODEL and provider == "openai":
             metadata["pricing_resolution"] = "conservative_max"
             resolved_model, price = max(
                 self.provider_prices[provider].items(),
@@ -507,12 +511,15 @@ def compute_cost_usd(
     *,
     unpriced: bool = False,
     cache: CacheSplit | None = None,
+    price: ModelPrice | None = None,
 ) -> Decimal:
     """Return the deterministic provider cost for a token pair."""
 
     if unpriced:
         # Ledger arithmetic needs a numeric placeholder; metadata must mark it unknown.
         return Decimal("0")
+    if price is not None:
+        return price.cost(prompt_tokens, completion_tokens, cache)
     return DEFAULT_PRICE_BOOK.compute(
         model, prompt_tokens, completion_tokens, provider, cache
     )

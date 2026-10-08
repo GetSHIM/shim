@@ -90,6 +90,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         deployment_kind="unknown",
         response_scan="off",
         unpriced=False,
+        deployment_price=None,
         stream=False,
         context=SimpleNamespace(
             audit_policy=SimpleNamespace(mode=audit_mode),

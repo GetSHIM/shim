@@ -462,6 +462,16 @@ class ModelDeployment(Base, TimestampMixin):
         CheckConstraint(
             "timeout_seconds BETWEEN 1 AND 300", name="ck_model_deployments_timeout"
         ),
+        CheckConstraint(
+            "(input_price_per_million IS NULL AND output_price_per_million IS NULL) "
+            "OR (input_price_per_million IS NOT NULL AND output_price_per_million "
+            "IS NOT NULL AND input_price_per_million >= 0 AND output_price_per_million >= 0)",
+            name="ck_model_deployments_price_pair",
+        ),
+        CheckConstraint(
+            "context_window IS NULL OR context_window > 0",
+            name="ck_model_deployments_context_window",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -488,3 +498,6 @@ class ModelDeployment(Base, TimestampMixin):
         String(16), nullable=False, default="unknown", server_default="unknown"
     )
     health_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    input_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    output_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    context_window: Mapped[int | None] = mapped_column(Integer)

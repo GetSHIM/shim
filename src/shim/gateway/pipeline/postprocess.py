@@ -173,6 +173,7 @@ class ResponsePostprocessor:
             provider=provider,
             unpriced=prepared.unpriced,
             cache=split,
+            price=prepared.deployment_price,
         )
         if response.latency_ms is not None:
             labels = {
@@ -214,6 +215,7 @@ class ResponsePostprocessor:
                     output_tokens=completion_tokens,
                     unpriced=prepared.unpriced,
                     cache=split,
+                    price=prepared.deployment_price,
                 ),
                 estimated=not fully_actual,
                 cache_split=split,
@@ -265,6 +267,7 @@ class ResponsePostprocessor:
             provider=str(prepared.provider),
             requested_model=prepared.pricing_model,
             unpriced=prepared.unpriced,
+            price=prepared.deployment_price,
             prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,

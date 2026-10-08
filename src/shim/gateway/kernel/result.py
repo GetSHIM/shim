@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from hashlib import sha256
 import json
 from time import perf_counter
@@ -15,6 +16,7 @@ from pydantic import AwareDatetime, Field, SecretBytes
 
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
+    ModelPrice,
     UNSPECIFIED_PROVIDER_MODEL as UNSPECIFIED_PROVIDER_MODEL,
 )
 from shim.gateway.contracts.context import GatewayContext
@@ -102,6 +104,21 @@ class ProviderTarget:
     credential_reference: str
     timeout_seconds: float
     declared_version: str
+    input_per_million: Decimal | None = None
+    output_per_million: Decimal | None = None
+    context_window: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.input_per_million is None) != (self.output_per_million is None):
+            raise ValueError("a deployment price needs both input and output")
+        if self.context_window is not None and self.context_window < 1:
+            raise ValueError("a deployment context window must be positive")
+
+    @property
+    def price(self) -> ModelPrice | None:
+        if self.input_per_million is None or self.output_per_million is None:
+            return None
+        return ModelPrice(self.input_per_million, self.output_per_million)
 
 
 @dataclass(frozen=True)
@@ -183,9 +200,16 @@ class PreparedInference:
         return self.target.upstream_model if self.target is not None else self.model
 
     @property
+    def deployment_price(self) -> ModelPrice | None:
+        # The operator's stated price wins over a catalog match for the upstream model.
+        return self.target.price if self.target is not None else None
+
+    @property
     def unpriced(self) -> bool:
-        return self.target is not None and not DEFAULT_PRICE_BOOK.supports(
-            self.pricing_model, str(self.provider)
+        return (
+            self.target is not None
+            and self.deployment_price is None
+            and not DEFAULT_PRICE_BOOK.supports(self.pricing_model, str(self.provider))
         )
 
     @property

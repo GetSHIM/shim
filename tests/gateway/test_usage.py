@@ -27,6 +27,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         pricing_model=model,
         target=None,
         unpriced=False,
+        deployment_price=None,
         tenant_id="tenant-private",
         api_key_id="key-private",
         headers={"authorization": "credential-private"},

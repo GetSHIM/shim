@@ -5111,6 +5111,19 @@
             "title": "Base Url",
             "type": "string"
           },
+          "context_window": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tokens the served model accepts; a request that certainly exceeds it is refused.",
+            "title": "Context Window"
+          },
           "declared_version": {
             "maxLength": 200,
             "minLength": 1,
@@ -5129,6 +5142,40 @@
             "default": true,
             "title": "Enabled",
             "type": "boolean"
+          },
+          "input_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens; set both prices or neither.",
+            "title": "Input Price Per Million"
+          },
+          "output_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million output tokens; set both prices or neither.",
+            "title": "Output Price Per Million"
           },
           "owner": {
             "maxLength": 200,
@@ -5192,6 +5239,19 @@
             "title": "Base Url",
             "type": "string"
           },
+          "context_window": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tokens the served model accepts; a request that certainly exceeds it is refused.",
+            "title": "Context Window"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -5241,6 +5301,32 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "input_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens; set both prices or neither.",
+            "title": "Input Price Per Million"
+          },
+          "output_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million output tokens; set both prices or neither.",
+            "title": "Output Price Per Million"
           },
           "owner": {
             "maxLength": 200,

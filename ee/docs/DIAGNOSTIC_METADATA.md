@@ -206,7 +206,9 @@ carries all of them. `shim_warnings_total{code}` counts them.
 
 ## Unpriced deployment costs
 
-An unknown deployment price is not a free request. A terminal spend settlement
+A deployment with a stated price settles at it, with
+`pricing_resolution = "deployment"`, and is counted like any priced request. An
+unknown deployment price is not a free request. A terminal spend settlement
 marked `event_metadata.pricing.pricing_resolution = "unknown"` is exposed by the
 request API as `cost_usd: null` and `cost_complete: false`; CSV exports use an
 empty cost cell and `cost_complete: False`. The request summary reports

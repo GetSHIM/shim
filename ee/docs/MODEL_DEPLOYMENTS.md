@@ -44,11 +44,22 @@ The declared version/hash/digest is operator supplied and included in the
 registry policy evidence. Pin the actual serving image and model revision at
 the model server; shim does not independently attest which weights it serves.
 
-Public catalog prices apply to recognized upstream model names. Custom models
-are explicitly unpriced: ledger arithmetic uses a zero placeholder with
-`pricing_resolution=unknown`, and usage reports carry completeness counters.
-A monetary provider limit rejects unpriced inference instead of treating it as
-free. Token and request quotas still apply.
+A deployment may state its own price, `input_price_per_million` and
+`output_price_per_million` (both or neither), and its `context_window`. A
+stated price wins over a catalog match for the upstream model name, because the
+operator knows what the deployment costs; settlements and spend reservations use
+it with `pricing_resolution=deployment`, with no tier and no cache prices. A
+stated window is checked before the call: a request whose prompt certainly does
+not fit is refused with 400 `MODEL_CONTEXT_EXCEEDED`, which matters most where a
+server would truncate it silently. Without a window a deployment is not checked,
+even when its upstream name is in the catalog, and deployments get no capability
+check.
+
+Without a stated price, public catalog prices apply to recognized upstream model
+names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero
+placeholder with `pricing_resolution=unknown`, and usage reports carry
+completeness counters. A monetary provider limit rejects unpriced inference
+instead of treating it as free. Token and request quotas still apply.
 
 ## Verified compatibility
 

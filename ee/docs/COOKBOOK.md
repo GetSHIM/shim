@@ -354,7 +354,11 @@ Route a gateway alias to your own OpenAI- or Anthropic-compatible model server.
    `alias`, `provider` (`openai` or `anthropic`), `upstream_model`, `base_url`,
    `provider_secret_id`, `deployment_kind` (`internal` or `external`),
    `declared_version`, `owner`, and optionally `timeout_seconds` (default 60, at
-   most 300) and `enabled`. An OpenAI-compatible `base_url` includes `/v1`; an
+   most 300), `enabled`, `input_price_per_million` and `output_price_per_million`
+   (decimal strings in USD, both or neither) and `context_window`. With a price,
+   the deployment's requests are costed and counted in totals instead of
+   hiding them, and a provider spend limit admits it; with a window, a request
+   that certainly does not fit is refused with 400 `MODEL_CONTEXT_EXCEEDED`. An OpenAI-compatible `base_url` includes `/v1`; an
    Anthropic one is the server root. It answers 201, 422 for an origin that is
    not approved or a credential of another provider, and 409 for an alias that
    exists.
@@ -378,7 +382,8 @@ SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
 DEPLOYMENT_ID=$(jq -n --arg secret "$SECRET_ID" '{
     alias: "support-llm", provider: "openai", upstream_model: "llama-3.3-70b-instruct",
     base_url: "https://models.internal:8443/v1", provider_secret_id: $secret,
-    deployment_kind: "internal", declared_version: "2026-09-30", owner: "platform-team"}' |
+    deployment_kind: "internal", declared_version: "2026-09-30", owner: "platform-team",
+    input_price_per_million: "0.50", output_price_per_million: "1.50", context_window: 131072}' |
   curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
     -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @- |
   jq -r .id)

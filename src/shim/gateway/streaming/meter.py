@@ -15,6 +15,7 @@ from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
     UNSPECIFIED_PROVIDER_MODEL,
     CacheSplit,
+    ModelPrice,
     compute_cost_usd,
 )
 from shim.gateway.streaming.sse import data_payload, pop_event
@@ -78,6 +79,7 @@ class StreamMeter:
         monotonic_clock: Callable[[], float] = perf_counter,
         unpriced: bool = False,
         answer_text_limit: int = 0,
+        price: ModelPrice | None = None,
     ) -> None:
         if prompt_tokens_estimated < 0:
             raise ValueError("stream token estimates must be nonnegative")
@@ -85,6 +87,7 @@ class StreamMeter:
             raise ValueError("expected stream candidates must be positive")
         self.provider = provider
         self.unpriced = unpriced
+        self.price = price
         self.requested_model = requested_model
         self.prompt_tokens_estimated = prompt_tokens_estimated
         self.expected_candidates = expected_candidates
@@ -175,6 +178,7 @@ class StreamMeter:
             provider=self.provider,
             unpriced=self.unpriced,
             cache=split,
+            price=self.price,
         )
         return StreamUsageSnapshot(
             prompt_tokens=prompt,
@@ -188,6 +192,7 @@ class StreamMeter:
                 output_tokens=completion,
                 unpriced=self.unpriced,
                 cache=split,
+                price=self.price,
             ),
             estimated=estimated,
             output_hash=(
