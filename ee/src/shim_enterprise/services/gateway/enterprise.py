@@ -75,7 +75,7 @@ class EnterpriseGatewayService(GatewayService):
             )
         except AccountingPersistenceError as exc:
             logger.error(
-                "Gateway accounting failed step=%s cause=%s",
+                "Gateway accounting failed: %s (cause %s)",
                 exc,
                 type(exc.__cause__).__name__ if exc.__cause__ else None,
             )
