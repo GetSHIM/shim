@@ -531,7 +531,7 @@ async def test_daily_usage_groups_timestamps_in_utc() -> None:
 
     compiled = statements[0].compile(dialect=postgresql.dialect())
     sql = str(compiled)
-    assert "date(timezone(%(timezone_1)s, usage_ledger.created_at))" in sql
+    assert "date(timezone(%(timezone_1)s, request_lifecycle.reconciled_at))" in sql
     assert compiled.params["timezone_1"] == "UTC"
     assert " LIMIT " in sql
     assert 501 in compiled.params.values()

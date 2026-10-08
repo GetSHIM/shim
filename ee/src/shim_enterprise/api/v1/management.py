@@ -3012,7 +3012,10 @@ async def my_usage(
 ) -> MyUsageView:
     end_at = _aware(end or datetime.now(timezone.utc))
     start_at = _aware(
-        start or end_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start
+        or end_at.astimezone(timezone.utc).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
     )
     _validate_sync_window(start_at, end_at)
     keys = {
