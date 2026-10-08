@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -11,7 +11,6 @@ from decimal import Decimal
 from functools import lru_cache
 from importlib import resources
 import io
-from typing import Any, Literal
 from uuid import UUID
 from xml.sax.saxutils import escape
 
@@ -19,35 +18,29 @@ import yaml
 from sqlalchemy import Uuid, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim_enterprise.ai_act.models import (
-    AIActAuditAnchor,
-    AIActAuditLog,
-    ReadinessDeclaration,
-)
-from shim_enterprise.ai_act.retention import (
-    RETENTION_FLOOR_DAYS,
-    effective_retention_days,
-)
-from shim_enterprise.ai_act.verify import AuditVerificationLimitExceeded, verify_chain
+from shim_enterprise.ai_act.models import AIActAuditLog, ReadinessDeclaration
+from shim_enterprise.ai_act.report import collect_evidence
+from shim_enterprise.ai_act.retention import RETENTION_FLOOR_DAYS
+from shim_enterprise.ai_act.verify import AuditVerificationLimitExceeded
 from shim_enterprise.billing.models import (
     REQUEST_LIFECYCLE_TERMINAL_STATUSES,
     RequestLifecycle,
 )
-from shim_enterprise.billing.read_models import BillingBreakdown, BillingReadModels
+from shim_enterprise.billing.read_models import BillingBreakdown
 from shim_enterprise.compliance.classification import classify
 from shim_enterprise.compliance.reporting import (
-    REPORT_FONT,
-    REPORT_FONT_BOLD,
-    ensure_report_fonts,
+    build_pdf,
     evidence_table,
+    lifecycle_window,
+    report_styles,
+    safe_csv,
 )
 from shim_enterprise.compliance.services.monthly_evidence import (
     denial_counts,
     entity_counts,
-    lifecycle_window,
+    usage_breakdowns,
 )
 from shim_enterprise.tenants.models import ModelDeployment, Team
-from shim.gateway.contracts.ids import TenantId
 
 
 FRAMEWORK = "iso42001"
@@ -63,13 +56,9 @@ UNVERIFIED = (
     "Control numbers and titles have not yet been checked against the published "
     "standard."
 )
-_ADMISSION_RULES = (
-    "gateway.admission",
-    "rate.requests",
-    "rate.tokens",
-    "rate.repeated_requests",
-    "quota.requests_and_tokens",
-)
+# reportlab cannot split a table row across pages, so one cell stays well under a
+# page: a long summary or note is cut here and read whole in the CSV.
+_PDF_TEXT_LIMIT = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,36 +143,60 @@ def _share(part: int, whole: int) -> str:
     return f"{part} of {whole}" + (f" ({part / whole:.1%})" if whole else "")
 
 
-async def _requests(session: AsyncSession, scope: tuple[Any, ...]) -> int:
-    return int(await session.scalar(select(func.count()).where(*scope)) or 0)
+@dataclass(frozen=True, slots=True)
+class Traffic:
+    """Window facts several evidence keys read, queried once per report."""
+
+    requests: int
+    providers: Sequence[BillingBreakdown]
+    models: Sequence[BillingBreakdown]
+    personal_data: dict[tuple[str, str], int]
+
+
+async def measure_traffic(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+) -> Traffic:
+    providers, models = await usage_breakdowns(session, tenant_id, start, end)
+    requests = await session.scalar(
+        select(func.count()).where(*lifecycle_window(tenant_id, start, end))
+    )
+    return Traffic(
+        requests=int(requests or 0),
+        providers=providers,
+        models=models,
+        personal_data=await entity_counts(
+            session, tenant_id, start, end, "pii_entities"
+        )
+        or {},
+    )
 
 
 async def _operation(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
     scope = lifecycle_window(tenant_id, start, end)
-    audited = (
-        select(AIActAuditLog.id)
-        .where(
-            AIActAuditLog.organization_id == tenant_id,
-            AIActAuditLog.request_id == RequestLifecycle.request_id,
+    terminal = await session.scalar(
+        select(func.count()).where(
+            *scope,
+            RequestLifecycle.status.in_(tuple(REQUEST_LIFECYCLE_TERMINAL_STATUSES)),
         )
-        .correlate(RequestLifecycle)
-        .exists()
     )
-    requests, with_audit, terminal = (
-        await session.execute(
-            select(
-                func.count(),
-                func.count().filter(audited),
-                func.count().filter(
-                    RequestLifecycle.status.in_(
-                        tuple(REQUEST_LIFECYCLE_TERMINAL_STATUSES)
-                    )
-                ),
-            ).where(*scope)
+    # A semi-join, not an EXISTS probe per lifecycle row.
+    with_audit = await session.scalar(
+        select(func.count()).where(
+            *scope,
+            RequestLifecycle.request_id.in_(
+                select(AIActAuditLog.request_id).where(
+                    AIActAuditLog.organization_id == tenant_id
+                )
+            ),
         )
-    ).one()
+    )
+    requests, with_audit, terminal = traffic.requests, with_audit or 0, terminal or 0
     return Evidence(
         requests > 0 and with_audit > 0,
         f"{requests} request(s); {_share(with_audit, requests)} with an audit row; "
@@ -192,51 +205,38 @@ async def _operation(
 
 
 async def _event_logs(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
-    rows = int(
-        await session.scalar(
-            select(func.count(AIActAuditLog.id)).where(
-                AIActAuditLog.organization_id == tenant_id,
-                AIActAuditLog.created_at >= start,
-                AIActAuditLog.created_at <= end,
-            )
-        )
-        or 0
-    )
-    anchors = int(
-        await session.scalar(
-            select(func.count(AIActAuditAnchor.id)).where(
-                AIActAuditAnchor.organization_id == tenant_id,
-                AIActAuditAnchor.anchor_date >= start.date(),
-                AIActAuditAnchor.anchor_date <= end.date(),
-            )
-        )
-        or 0
-    )
-    retention = effective_retention_days()
     try:
-        chain = await verify_chain(session, tenant_id, start=start, end=end)
+        snapshot = await collect_evidence(
+            session, tenant_id=tenant_id, start=start, end=end, connector_id=None
+        )
     except AuditVerificationLimitExceeded as exc:
-        verified, outcome = False, f"chain verification could not run: {exc}"
-    else:
-        verified = bool(chain["ok"])
-        outcome = "chain verified" if verified else "chain did not verify"
+        return Evidence(False, f"Chain verification could not run: {exc}.")
+    verified = "chain verified" if snapshot.chain_valid else "chain did not verify"
     return Evidence(
-        rows > 0 and verified and retention >= RETENTION_FLOOR_DAYS,
-        f"{rows} audit row(s); {outcome}; {anchors} daily anchor(s); "
-        f"retention {retention} days.",
+        snapshot.audit_rows > 0
+        and snapshot.chain_valid
+        and snapshot.retention_days >= RETENTION_FLOOR_DAYS,
+        f"{snapshot.audit_rows} audit row(s); {verified}; {snapshot.anchors} daily "
+        f"anchor(s); retention {snapshot.retention_days} days.",
     )
 
 
 async def _responsible_use(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
     verdicts = RequestLifecycle.lifecycle_metadata["policy_verdicts"]
     privacy = verdicts.contains([{"rule_id": "privacy.input"}])
-    admission = or_(
-        *(verdicts.contains([{"rule_id": rule}]) for rule in _ADMISSION_RULES)
-    )
+    admission = verdicts.contains([{"stage": "admission"}])
     requests, with_privacy, with_admission, with_both = (
         await session.execute(
             select(
@@ -260,23 +260,7 @@ async def _responsible_use(
     )
 
 
-async def _breakdowns(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
-) -> tuple[list[BillingBreakdown], list[BillingBreakdown]]:
-    async def by(group_by: Literal["provider", "model"]) -> list[BillingBreakdown]:
-        return await BillingReadModels().breakdown(
-            session,
-            tenant_id=TenantId(tenant_id),
-            start_at=start,
-            end_at=end,
-            group_by=group_by,
-            limit=None,
-        )
-
-    return await by("provider"), await by("model")
-
-
-def _usage(rows: list[BillingBreakdown]) -> str:
+def _usage(rows: Sequence[BillingBreakdown]) -> str:
     return (
         ", ".join(
             f"{row.key} {row.request_count} request(s) "
@@ -292,12 +276,15 @@ def _usage(rows: list[BillingBreakdown]) -> str:
 
 
 async def _suppliers(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
-    providers, models = await _breakdowns(session, tenant_id, start, end)
     return Evidence(
-        bool(providers),
-        f"Providers: {_usage(providers)}. Models: {_usage(models)}.",
+        bool(traffic.providers),
+        f"Providers: {_usage(traffic.providers)}. Models: {_usage(traffic.models)}.",
     )
 
 
@@ -323,9 +310,13 @@ async def _deployments_in_use(
 
 
 async def _tooling(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
-    suppliers = await _suppliers(session, tenant_id, start, end)
+    suppliers = await _suppliers(session, tenant_id, start, end, traffic)
     deployments = await _deployments_in_use(session, tenant_id, start, end)
     return Evidence(
         suppliers.present,
@@ -335,7 +326,11 @@ async def _tooling(
 
 
 async def _resource_documentation(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
     deployments = (
         await session.execute(
@@ -380,7 +375,11 @@ async def _resource_documentation(
 
 
 async def _intended_use(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
     metadata = RequestLifecycle.lifecycle_metadata
     tagged = or_(
@@ -404,17 +403,19 @@ async def _intended_use(
 
 
 async def _personal_data(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
-    scope = lifecycle_window(tenant_id, start, end)
-    counts = await entity_counts(session, tenant_id, start, end, "pii_entities") or {}
     return Evidence(
-        await _requests(session, scope) > 0,
+        traffic.requests > 0,
         "Personal data masked, by type and provider: "
         + (
             ", ".join(
                 f"{entity} via {provider} {count}"
-                for (provider, entity), count in sorted(counts.items())
+                for (provider, entity), count in sorted(traffic.personal_data.items())
             )
             or "none"
         )
@@ -423,10 +424,12 @@ async def _personal_data(
 
 
 async def _inventory(
-    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+    session: AsyncSession,
+    tenant_id: UUID,
+    start: datetime,
+    end: datetime,
+    traffic: Traffic,
 ) -> Evidence:
-    scope = lifecycle_window(tenant_id, start, end)
-    providers, models = await _breakdowns(session, tenant_id, start, end)
     team_ids = RequestLifecycle.lifecycle_metadata["team_id"].as_string()
     teams = list(
         await session.scalars(
@@ -434,23 +437,25 @@ async def _inventory(
             .where(
                 Team.organization_id == tenant_id,
                 Team.id.in_(
-                    select(cast(team_ids, Uuid)).where(*scope, team_ids.is_not(None))
+                    select(cast(team_ids, Uuid)).where(
+                        *lifecycle_window(tenant_id, start, end),
+                        team_ids.is_not(None),
+                    )
                 ),
             )
             .order_by(Team.name)
         )
     )
-    counts = await entity_counts(session, tenant_id, start, end, "pii_entities") or {}
     categories = sorted(
         {
             f"{classify(entity).kvkk_category or 'unclassified'} ({entity})"
-            for _, entity in counts
+            for _, entity in traffic.personal_data
         }
     )
     return Evidence(
-        await _requests(session, scope) > 0,
-        f"Models: {', '.join(row.key for row in models) or 'none'}. "
-        f"Providers: {', '.join(row.key for row in providers) or 'none'}. "
+        traffic.requests > 0,
+        f"Models: {', '.join(row.key for row in traffic.models) or 'none'}. "
+        f"Providers: {', '.join(row.key for row in traffic.providers) or 'none'}. "
         f"Teams: {', '.join(teams) or 'none'}. "
         f"Data categories at runtime: {', '.join(categories) or 'none'}.",
     )
@@ -458,7 +463,7 @@ async def _inventory(
 
 EVIDENCE: dict[
     str,
-    Callable[[AsyncSession, UUID, datetime, datetime], Awaitable[Evidence]],
+    Callable[[AsyncSession, UUID, datetime, datetime, Traffic], Awaitable[Evidence]],
 ] = {
     "operation": _operation,
     "event_logs": _event_logs,
@@ -476,11 +481,12 @@ async def collect_readiness(
     session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
 ) -> list[ReadinessRow]:
     mapping = load_mapping()
+    traffic = await measure_traffic(session, tenant_id, start, end)
     measured: dict[str, Evidence] = {}
     for control in mapping.controls:
         if control.evidence is not None and control.evidence not in measured:
             measured[control.evidence] = await EVIDENCE[control.evidence](
-                session, tenant_id, start, end
+                session, tenant_id, start, end, traffic
             )
     declarations = {
         row.control_id: row
@@ -513,9 +519,10 @@ _CSV_FIELDS = (
 )
 
 
-def render_csv(rows: list[ReadinessRow]) -> bytes:
+def render_csv(rows: list[ReadinessRow], *, verified: bool) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
+    writer.writerows([[COVER], *([] if verified else [[UNVERIFIED]]), []])
     writer.writerow(_CSV_FIELDS)
     for row in rows:
         note = row.declaration.note if row.declaration else None
@@ -529,9 +536,7 @@ def render_csv(rows: list[ReadinessRow]) -> bytes:
                 row.control.rule or "",
                 row.declared,
                 # A spreadsheet must not read the organization's note as a formula.
-                f"'{note}"
-                if note and note.lstrip().startswith(("=", "+", "-", "@"))
-                else note or "",
+                safe_csv(note),
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -545,32 +550,28 @@ def render_pdf(
     end: datetime,
     verified: bool,
 ) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    for style_name, font in (
-        ("Title", REPORT_FONT_BOLD),
-        ("Heading2", REPORT_FONT_BOLD),
-        ("Normal", REPORT_FONT),
-    ):
-        styles[style_name].fontName = font
+    styles = report_styles()
     cell = styles["Normal"].clone("cell", fontSize=8, leading=10)
+
+    def bounded(text: str) -> str:
+        if len(text) <= _PDF_TEXT_LIMIT:
+            return text
+        return f"{text[:_PDF_TEXT_LIMIT]}… (truncated, see CSV)"
 
     def detail(row: ReadinessRow) -> str:
         parts = []
         if row.evidence is not None:
             parts.append(
                 ("Evidence present. " if row.evidence.present else "No evidence. ")
-                + row.evidence.summary
+                + bounded(row.evidence.summary)
             )
         if row.declared:
             parts.append(f"Declaration: {row.declared}.")
         if row.declaration is not None and row.declaration.note:
-            parts.append(row.declaration.note)
+            parts.append(bounded(row.declaration.note))
         return escape(" ".join(parts))
 
     story = [
@@ -608,19 +609,11 @@ def render_pdf(
                 for row in rows
             ],
             ["Control", "Title", "Source", "Evidence or declaration"],
+            # Fixed widths: A4 less two 14 mm margins.
+            [18 * mm, 42 * mm, 20 * mm, 102 * mm],
         ),
     ]
-    output = io.BytesIO()
-    SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=14 * mm,
-        rightMargin=14 * mm,
-        title="ISO/IEC 42001 Readiness",
-    ).build(story)
-    return output.getvalue()
+    return build_pdf(story, "ISO/IEC 42001 Readiness", side_margin=14)
 
 
 async def generate_readiness_report(
@@ -633,14 +626,14 @@ async def generate_readiness_report(
 ) -> tuple[bytes, str, str]:
     rows = await collect_readiness(session, tenant_id, start, end)
     suffix = end.strftime("%Y%m%d")
+    verified = load_mapping().verified_against_standard
     if fmt == "csv":
-        return render_csv(rows), "text/csv", f"iso42001_readiness_{suffix}.csv"
+        return (
+            render_csv(rows, verified=verified),
+            "text/csv",
+            f"iso42001_readiness_{suffix}.csv",
+        )
     content = await asyncio.to_thread(
-        render_pdf,
-        rows,
-        tenant_id=tenant_id,
-        start=start,
-        end=end,
-        verified=load_mapping().verified_against_standard,
+        render_pdf, rows, tenant_id=tenant_id, start=start, end=end, verified=verified
     )
     return content, "application/pdf", f"iso42001_readiness_{suffix}.pdf"

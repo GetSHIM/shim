@@ -1,8 +1,9 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -723,3 +724,99 @@ async def test_the_privacy_card_counts_one_local_day(
     assert empty.json()["requests"] == 0 and empty.json()["masked"] == {}
     assert [response.status_code for response in invalid] == [422, 422, 422, 422]
     assert member.status_code == 403
+
+
+def _card_client(db, user) -> httpx.AsyncClient:
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[get_db] = lambda: db
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_privacy_card_defaults_to_yesterday_in_istanbul(
+    db, test_user_with_org, test_api_key
+) -> None:
+    istanbul = ZoneInfo("Europe/Istanbul")
+    before = datetime.now(istanbul).date() - timedelta(days=1)
+    noon = datetime.combine(before, time(12), istanbul)
+    db.add(_card_row(test_user_with_org.organization_id, test_api_key.id, noon))
+    await db.flush()
+    test_user_with_org.role = "auditor"
+
+    async with _card_client(db, test_user_with_org) as client:
+        card = (await client.get("/api/v1/compliance/privacy-card")).json()
+    after = datetime.now(istanbul).date() - timedelta(days=1)
+
+    day = date.fromisoformat(card["date"])
+    assert day in {before, after}
+    assert card["window"]["tz"] == "Europe/Istanbul"
+    assert datetime.fromisoformat(card["window"]["start"]) == datetime.combine(
+        day, time(), istanbul
+    )
+    assert card["requests"] == (1 if day == before else 0)
+
+
+def _last_sunday(year: int, month: int) -> date:
+    last = date(year, month + 1, 1) - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - 6) % 7)
+
+
+@pytest.mark.asyncio
+async def test_the_privacy_card_day_follows_a_daylight_saving_change(
+    db, test_user_with_org, test_api_key
+) -> None:
+    berlin = ZoneInfo("Europe/Berlin")
+    today = datetime.now(berlin).date()
+    switch = max(
+        day
+        for year in (today.year - 1, today.year)
+        for day in (_last_sunday(year, 3), _last_sunday(year, 10))
+        if day < today
+    )
+    start = datetime.combine(switch, time(), berlin)
+    end = datetime.combine(switch + timedelta(days=1), time(), berlin)
+    tenant_id = test_user_with_org.organization_id
+    db.add_all(
+        [
+            _card_row(tenant_id, test_api_key.id, start),
+            _card_row(tenant_id, test_api_key.id, end - timedelta(minutes=30)),
+            _card_row(tenant_id, test_api_key.id, end),
+        ]
+    )
+    await db.flush()
+    test_user_with_org.role = "auditor"
+
+    async with _card_client(db, test_user_with_org) as client:
+        card = (
+            await client.get(
+                "/api/v1/compliance/privacy-card",
+                params={"date": switch.isoformat(), "tz": "Europe/Berlin"},
+            )
+        ).json()
+
+    window_start = datetime.fromisoformat(card["window"]["start"])
+    window_end = datetime.fromisoformat(card["window"]["end"])
+    assert (window_start, window_end) == (start, end)
+    # A spring day has 23 hours and an autumn day 25.
+    assert window_end - window_start == timedelta(hours=23 if switch.month == 3 else 25)
+    assert card["requests"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_privacy_card_is_empty_for_a_user_without_a_tenant() -> None:
+    session = SimpleNamespace(execute=AsyncMock())
+
+    card = await api_module.privacy_card(
+        day=None,
+        tz="Europe/Istanbul",
+        current_user=SimpleNamespace(organization_id=None),
+        session=session,
+    )
+
+    assert card.requests == card.secrets == card.blocked_requests == 0
+    assert card.masked == card.response_detections == {}
+    session.execute.assert_not_awaited()

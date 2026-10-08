@@ -29,10 +29,9 @@ from shim_enterprise.ai_act.retention import (
 from shim_enterprise.ai_act.verify import verify_chain
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.compliance.reporting import (
-    REPORT_FONT,
-    REPORT_FONT_BOLD,
-    ensure_report_fonts,
+    build_pdf,
     evidence_table,
+    report_styles,
 )
 
 
@@ -316,27 +315,11 @@ def _render_csv(report: EvidenceReport) -> bytes:
 
 
 def _render_pdf(report: EvidenceReport) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    styles["Title"].fontName = REPORT_FONT_BOLD
-    styles["Heading2"].fontName = REPORT_FONT_BOLD
-    styles["Normal"].fontName = REPORT_FONT
+    styles = report_styles()
     snapshot = report.snapshot
-    output = io.BytesIO()
-    document = SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        title="Compliance Evidence Assessment",
-    )
     story = [
         Paragraph("Compliance Evidence Assessment", styles["Title"]),
         Paragraph(
@@ -401,8 +384,7 @@ def _render_pdf(report: EvidenceReport) -> bytes:
             Paragraph(_DISCLAIMER, styles["Normal"]),
         ]
     )
-    document.build(story)
-    return output.getvalue()
+    return build_pdf(story, "Compliance Evidence Assessment")
 
 
 async def generate_audit_report(

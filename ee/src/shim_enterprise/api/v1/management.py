@@ -65,6 +65,12 @@ from shim_enterprise.billing.spend import (
     validate_budget_notification_config,
 )
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
+from shim_enterprise.compliance.reporting import (
+    build_pdf,
+    evidence_table,
+    report_styles,
+    safe_csv,
+)
 from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
@@ -2913,7 +2919,7 @@ async def export_requests(
             output.seek(0)
             output.truncate(0)
             writer.writerow(
-                _safe_csv(value)
+                safe_csv(value)
                 for value in (
                     row.request_id,
                     row.timestamp.isoformat(),
@@ -3467,15 +3473,6 @@ def _request_provider(row: RequestLog) -> str | None:
     return provider if isinstance(provider, str) else None
 
 
-def _safe_csv(value: object) -> str:
-    rendered = "" if value is None else str(value)
-    return (
-        f"'{rendered}"
-        if rendered.lstrip().startswith(("=", "+", "-", "@"))
-        else rendered
-    )
-
-
 async def _team_labels(
     session: AsyncSession, user: User, group_by: BillingBreakdownGroup
 ) -> dict[str, str]:
@@ -3504,7 +3501,7 @@ def _billing_breakdown_csv(records: list[Any], labels: dict[str, str]) -> bytes:
     )
     for record in records:
         writer.writerow(
-            _safe_csv(value)
+            safe_csv(value)
             for value in (
                 record.key,
                 record.request_count,
@@ -3526,33 +3523,11 @@ def _billing_breakdown_pdf(
     start: datetime,
     end: datetime,
 ) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    from shim_enterprise.compliance.reporting import (
-        REPORT_FONT,
-        REPORT_FONT_BOLD,
-        ensure_report_fonts,
-        evidence_table,
-    )
-
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    styles["Title"].fontName = REPORT_FONT_BOLD
-    styles["Normal"].fontName = REPORT_FONT
-    output = io.BytesIO()
-    document = SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        title="shim Cost Showback",
-    )
-    document.build(
+    styles = report_styles()
+    return build_pdf(
         [
             Paragraph("shim Cost Showback", styles["Title"]),
             Paragraph(
@@ -3574,9 +3549,9 @@ def _billing_breakdown_pdf(
                 ],
                 ["Group", "Requests", "Tokens", "Cost (USD)"],
             ),
-        ]
+        ],
+        "shim Cost Showback",
     )
-    return output.getvalue()
 
 
 async def _user_view(session: AsyncSession, user: User) -> UserView:

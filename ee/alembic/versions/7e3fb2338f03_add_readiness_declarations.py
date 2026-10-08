@@ -1,4 +1,7 @@
-"""Add readiness declarations and the paid readiness report feature.
+"""Add readiness declarations.
+
+The paid `readiness_report` tier feature is not seeded: it stays off until the
+control numbering is verified, and an operator turns it on (ee/docs/POLICY_DECISIONS.md).
 
 Revision: 7e3fb2338f03
 Parent: a91e5dfc25b8
@@ -59,13 +62,8 @@ def upgrade() -> None:
             name="uq_readiness_declarations_control",
         ),
     )
-    op.execute(
-        "UPDATE tier_definitions SET features = features || "
-        "'{\"readiness_report\": true}'::jsonb WHERE slug = 'enterprise'"
-    )
 
 
 def downgrade() -> None:
     # Downgrades are disposable-only; declarations are lost.
-    op.execute("UPDATE tier_definitions SET features = features - 'readiness_report'")
     op.drop_table("readiness_declarations")

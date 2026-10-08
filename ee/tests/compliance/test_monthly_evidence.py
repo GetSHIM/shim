@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,7 +12,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
@@ -36,6 +37,7 @@ from shim_enterprise.outbox.handlers import (
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.workers.ai_act import AuditMaintenanceWorker
 
 SCRIPT = runpy.run_path(
     str(Path(__file__).parents[2] / "scripts" / "generate_monthly_evidence.py")
@@ -386,7 +388,7 @@ async def test_the_job_writes_the_previous_month_once_per_active_organization(
             )
         )
     ).all()
-    assert (first, second) == (2, 0)
+    assert (first, second) == ((2, 0), (0, 0))
     assert sorted((ids[org], kind) for org, kind in stored) == [
         ("active", "monthly"),
         ("done", "monthly"),
@@ -566,3 +568,87 @@ async def test_script_writes_the_current_month_as_partial_and_refuses_a_second(
             "sha256": stored.sha256,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_organization_turns_the_maintenance_pass_red(
+    db, test_api_key, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    window = evidence.monthly_window(evidence.previous_period(now), now=now)
+    _lifecycle(db, test_api_key, window.start + timedelta(days=1), {})
+    await db.flush()
+
+    def broken(_):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(evidence, "render_monthly_pdf", broken)
+    worker = AuditMaintenanceWorker(session_factory=_savepoints(await db.connection()))
+
+    summary = await worker.run_once()
+
+    # The heartbeat is written only for a pass without errors.
+    assert (summary.monthly_evidence, summary.errors) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_two_workers_store_one_file_and_one_notice(async_engine) -> None:
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    now = datetime(2031, 2, 1, 0, 30, tzinfo=timezone.utc)
+    window = evidence.monthly_window("2031-01", now=now)
+    organization = Organization(
+        id=uuid4(), name="concurrent", slug=f"concurrent-{uuid4().hex}"
+    )
+    async with factory.begin() as setup:
+        setup.add(organization)
+    try:
+        async with factory() as first, factory() as second:
+            await evidence.generate_monthly_evidence(
+                first, organization.id, window, now=now
+            )
+            racing = asyncio.create_task(
+                evidence.generate_monthly_evidence(
+                    second, organization.id, window, now=now
+                )
+            )
+            # The second insert waits on the first worker's uncommitted row.
+            async with factory() as observer:
+                for _ in range(200):
+                    waiting = await observer.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE wait_event_type = 'Lock' "
+                            "AND datname = current_database()"
+                        )
+                    )
+                    if waiting or racing.done():
+                        break
+                    await asyncio.sleep(0.05)
+            assert waiting and not racing.done()
+            await first.commit()
+            with pytest.raises(evidence.EvidenceFileExists):
+                await racing
+            await second.rollback()
+
+        async with factory() as session:
+            files = await session.scalar(
+                select(func.count()).where(
+                    MonthlyEvidenceFile.organization_id == organization.id
+                )
+            )
+            notices = await session.scalar(
+                select(func.count()).where(
+                    OutboxEvent.organization_id == organization.id,
+                    OutboxEvent.event_type == EVIDENCE_MONTHLY_READY,
+                )
+            )
+        assert (files, notices) == (1, 1)
+    finally:
+        async with factory.begin() as cleanup:
+            for model in (OutboxEvent, MonthlyEvidenceFile):
+                await cleanup.execute(
+                    delete(model).where(model.organization_id == organization.id)
+                )
+            await cleanup.execute(
+                delete(Organization).where(Organization.id == organization.id)
+            )

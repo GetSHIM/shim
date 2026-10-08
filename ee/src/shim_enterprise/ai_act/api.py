@@ -26,6 +26,7 @@ from shim_enterprise.ai_act.overview import (
     build_overview,
     build_privacy_card,
     empty_overview,
+    empty_privacy_card,
 )
 from shim_enterprise.ai_act.oversight import (
     OversightStateError,
@@ -114,15 +115,17 @@ async def _tenant_for_write(session: AsyncSession, user: User) -> UUID:
     return tenant.id
 
 
-def _validate_sync_window(start: datetime | None, end: datetime | None) -> None:
+def _validate_sync_window(
+    start: datetime | None, end: datetime | None, limit: timedelta = _MAX_SYNC_WINDOW
+) -> None:
     if start is None or end is None:
         return
     if start > end:
         raise HTTPException(status_code=422, detail="start must not be after end")
-    if end - start > _MAX_SYNC_WINDOW:
+    if end - start > limit:
         raise HTTPException(
             status_code=422,
-            detail="synchronous operations are limited to 31 days",
+            detail=f"synchronous operations are limited to {limit.days} days",
         )
 
 
@@ -213,9 +216,11 @@ async def privacy_card(
     end = datetime.combine(day + timedelta(days=1), time(), zone).astimezone(
         timezone.utc
     )
-    if current_user.organization_id is None:
-        raise HTTPException(status_code=403, detail="A tenant membership is required.")
-    counts = await build_privacy_card(session, current_user.organization_id, start, end)
+    counts = (
+        empty_privacy_card()
+        if current_user.organization_id is None
+        else await build_privacy_card(session, current_user.organization_id, start, end)
+    )
     return PrivacyCard(
         date=day,
         window={"start": start, "end": end, "tz": tz},
@@ -580,12 +585,7 @@ async def generate_readiness_report_endpoint(
     await _require_entitlement(session, tenant_id, "readiness_report")
     end = _aware(payload.end or datetime.now(timezone.utc))
     start = _aware(payload.start or end - timedelta(days=30))
-    if start > end:
-        raise HTTPException(status_code=422, detail="start must not be after end")
-    if end - start > MAX_READINESS_WINDOW:
-        raise HTTPException(
-            status_code=422, detail="readiness reports are limited to 366 days"
-        )
+    _validate_sync_window(start, end, MAX_READINESS_WINDOW)
     content, media_type, filename = await generate_readiness_report(
         session, tenant_id=tenant_id, start=start, end=end, fmt=payload.format
     )

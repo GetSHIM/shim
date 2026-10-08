@@ -197,6 +197,8 @@ started in that month, and has no file for it yet. The file is a PDF stored in
 `evidence_reports` (`kind` `monthly`) with its SHA-256, size, generation time and
 generator version. A row is written once and never changed; a second worker
 racing for the same month inserts nothing. Rendering runs off the event loop.
+An organization whose file fails counts as an error of the pass, so the worker
+writes no heartbeat and the next pass tries again.
 
 The PDF says on its cover that it is a measurement of gateway traffic, not an
 audit, an assessment or a certification. Each section names its source table
@@ -238,9 +240,10 @@ a file of that kind.
 `POST /api/v1/compliance/reports/readiness` with `{"framework": "iso42001",
 "start", "end", "format": "pdf" | "csv"}` lists the 38 Annex A controls, one row
 each, for a window of at most 366 days (default the last 30 days). Owners, admins
-and auditors can produce it; it is a paid report (tier feature
-`readiness_report`, enterprise tier), so other plans get 403
-`PLAN_UPGRADE_REQUIRED` with the eligible plans.
+and auditors can produce it. It is a paid report behind the tier feature
+`readiness_report`; a plan without it gets 403 `PLAN_UPGRADE_REQUIRED` with the
+eligible plans. The feature ships switched off on every tier, see
+[Turning the report on](#turning-the-readiness-report-on).
 
 Each row has a source:
 
@@ -276,3 +279,31 @@ checked against the purchased standard, `verified_against_standard` in
 `shim_enterprise/ai_act/readiness/iso42001.yaml` stays false and the cover adds
 "Control numbers and titles have not yet been checked against the published
 standard." The five-control framework report (`/reports/audit`) is unchanged.
+
+The CSV starts with the same sentences, one per row, then a blank row, then the
+header and the 38 rows. In the PDF a table row cannot span two pages, so an
+evidence summary or a note longer than 900 characters is cut there and marked
+"(truncated, see CSV)"; the CSV always holds the whole text.
+
+### Turning the readiness report on
+
+The migration that adds the declarations does not grant `readiness_report` to
+any tier, so a customer never sees control numbers nobody has checked. The order
+is:
+
+1. Every id and title in `shim_enterprise/ai_act/readiness/iso42001.yaml` is
+   checked against the purchased standard, and a release sets
+   `verified_against_standard: true`.
+2. On an installation running that release, an operator grants the feature to
+   the enterprise tier:
+
+   ```sql
+   UPDATE tier_definitions
+   SET features = features || '{"readiness_report": true}'::jsonb
+   WHERE slug = 'enterprise';
+   ```
+
+   The next request reads it; nothing restarts. To take it away again:
+   `UPDATE tier_definitions SET features = features - 'readiness_report' WHERE slug = 'enterprise';`
+
+Declarations can be recorded before the feature is on.

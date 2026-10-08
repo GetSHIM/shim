@@ -246,7 +246,9 @@ curl "http://localhost:8000/api/v1/compliance/privacy-card?date=2026-10-07&tz=Eu
 
 Notes: the card holds counts only, never a value, placeholder, prompt or user.
 Requests written before a count existed add zero to it. It reads the tenant's
-request lifecycle for one day, so it is cheap to load on every visit.
+request lifecycle for one day, so it is cheap to load on every visit. A user who
+belongs to no organization gets a card of zeros, as the compliance overview
+answers.
 
 ## Send tenant alerts
 
@@ -582,7 +584,10 @@ Notes:
 ## Prepare for ISO/IEC 42001
 
 See which Annex A controls your gateway traffic evidences, and record your own
-statement for the rest. Needs the enterprise plan.
+statement for the rest. The report needs the `readiness_report` plan feature,
+which stays off until the control numbering is verified
+([how an operator turns it on](POLICY_DECISIONS.md#turning-the-readiness-report-on));
+declarations work without it.
 
 1. As an owner or admin, declare the controls shim cannot measure:
    `PUT /api/v1/compliance/readiness/iso42001/declarations/{control_id}` with
@@ -601,8 +606,10 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
   -o iso42001_readiness.csv
 ```
 
-Notes: the CSV has `control_id`, `title`, `source` (`measured`, `input` or
-`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`;
-the PDF holds the same 38 rows. The report is not an audit or a certification.
+Notes: the CSV starts with the cover sentences, one per row, and a blank row;
+then come the columns `control_id`, `title`, `source` (`measured`, `input` or
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`.
+The PDF holds the same 38 rows, with text over 900 characters cut and marked
+"(truncated, see CSV)". The report is not an audit or a certification.
 Sources, rules and the numbering caveat are in
 [decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

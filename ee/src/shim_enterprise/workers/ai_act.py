@@ -64,12 +64,12 @@ class AuditMaintenanceWorker:
                 expired = await expire_pending(session)
             archive = await archive_expired(session)
         # Each organization's file is its own transaction, after the anchors commit.
-        monthly = await generate_due_monthly_evidence(
+        monthly, failed = await generate_due_monthly_evidence(
             self.session_factory, now=datetime.now(timezone.utc)
         )
         return MaintenanceSummary(
             anchored_tenants=anchored,
-            errors=errors,
+            errors=errors + failed,
             oversight_created=int(created["created"]),
             oversight_expired=int(expired["expired"]),
             archive_eligible=int(archive["eligible"]),
