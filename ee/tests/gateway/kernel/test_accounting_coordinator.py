@@ -1382,7 +1382,9 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     start = datetime.now(timezone.utc) - timedelta(days=1)
     end = datetime.now(timezone.utc) + timedelta(days=1)
     user = SimpleNamespace(
-        id=test_api_key.user_id, organization_id=test_api_key.organization_id
+        id=test_api_key.user_id,
+        organization_id=test_api_key.organization_id,
+        kind="human",
     )
     billing = await management.billing_usage(start, end, user, db)
     expected_cost = None if pricing_resolution == "unknown" else 0.00004

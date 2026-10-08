@@ -22,7 +22,7 @@ class AuditLogRead(OrmReadModel):
     request_id: str | None = None
     api_key_id: UUID | None = None
     actor: str | None = None
-    actor_type: Literal["api_key", "user_jwt", "internal"] | None = Field(
+    actor_type: Literal["api_key", "user_jwt", "internal", "service"] | None = Field(
         default=None, validation_alias=AliasPath("extra", "actor_type")
     )
     lifecycle_status: str | None = Field(

@@ -92,6 +92,8 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.api_key_updated` | `before` and `after` of the changed fields (`cost_center`, `team`, `team_id`, `allowed_models`) |
 | `tenant.model_deployment_updated` | `before` and `after` of the changed configuration fields |
 | `tenant.personal_workspace_archived` | `removed`: rows deleted per table when the workspace's only user joined another organization; recorded in the archived workspace's chain |
+| `tenant.service_account_created` | `after`: `name`, `role` and `expires_at` of the new service account |
+| `tenant.service_account_rotated` / `_deleted` | none beyond the account id in `subject_id` |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
 | `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
 | `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |
@@ -103,7 +105,8 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `compliance.audit_anchored` | `anchor_date` and `row_count` of the manually written anchor |
 
 No key, secret reference, masked key, endpoint path or fingerprint is recorded.
-The actor of every event is the signed-in user. For the two OIDC events the actor
+The actor of every event is the signed-in user or service account, and `extra.actor_type`
+says which: `user_jwt` or `service`. For the two OIDC events the actor
 is the user who signed in, and a login that changes nothing records nothing.
 
 Evidence reads are recorded too, once the data is selected, so an export never

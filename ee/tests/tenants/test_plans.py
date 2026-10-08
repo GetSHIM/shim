@@ -221,6 +221,7 @@ async def test_invite_acceptance_locks_destination_before_revalidating_invite(
         organization_id=source_id,
         email="invited@example.com",
         is_verified=True,
+        kind="human",
     )
     invite = SimpleNamespace(
         id=uuid4(),

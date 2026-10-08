@@ -56,6 +56,34 @@ team memberships must select a team when creating a key. Removing membership
 denies subsequent inference through that user's team keys; organization
 owners/admins retain organization-wide authority.
 
+## Service accounts
+
+A service account lets a pipeline, a Terraform run or an agent call the
+management API without a person's sign-in. It is an organization user of kind
+`service` with the role `admin` or `auditor`, a synthetic address
+`<id>@service-accounts.getshim.tech` that is never mailed, and a key
+`sk-shim-svc-` followed by 64 hex characters, sent as `Authorization: Bearer`.
+
+| Route | Who | What |
+| --- | --- | --- |
+| `POST /api/v1/management/service-accounts` | Owner | `{name, role, expires_in_days}` (1 to 365 days); answers 201 with the account and its key, shown once |
+| `GET /api/v1/management/service-accounts` | Owner, admin (people only) | Name, role, key prefix, expiry, last use (to the minute), creator; never the key |
+| `POST /api/v1/management/service-accounts/{id}/rotate` | Owner | A new key with the same expiry; the old key stops working at once |
+| `DELETE /api/v1/management/service-accounts/{id}` | Owner | Deactivates the account, revokes its keys and its gateway keys |
+
+- A service account follows its role's rules: an admin one can, for example,
+  create gateway keys (owned by the service account), an auditor one is read-only
+  like any auditor. It can never be owner, accept an invitation, manage service
+  accounts or change members' roles, and `/team/members` does not list it.
+- A revoked, expired, unknown or malformed key, or one of a deleted account,
+  answers 401 `INVALID_API_KEY` without saying which. A gateway `sk-shim-` key
+  is not accepted on management routes, and a service key is refused at the
+  gateway routes.
+- Every management action of a service account carries `actor_type: service`
+  in the audit log; a person's carries `user_jwt`. Creating, rotating and
+  deleting an account records `tenant.service_account_created`, `_rotated` and
+  `_deleted`.
+
 ## Read scope
 
 Organization-wide reads belong to owners, admins and auditors. A member reads

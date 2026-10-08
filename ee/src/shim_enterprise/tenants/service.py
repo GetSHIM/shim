@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 import secrets
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import AuthApiError
@@ -37,10 +37,14 @@ from shim_enterprise.tenants.models import (
     Organization,
     OrganizationPIIConfig,
     ProviderSecret,
+    ServiceAccountCredential,
     User,
 )
 
 API_KEY_PREFIX = "sk-shim-"
+SERVICE_ACCOUNT_KEY_PREFIX = "sk-shim-svc-"
+SERVICE_ACCOUNT_EMAIL_DOMAIN = "service-accounts.getshim.tech"
+_LAST_USED_RESOLUTION = timedelta(minutes=1)
 _REQUEST_HISTORY = (
     RequestLifecycle,
     UsageLedger,
@@ -167,6 +171,68 @@ async def create_api_key(
     return plaintext, api_key
 
 
+def issue_service_account_key(
+    session: AsyncSession,
+    account: User,
+    *,
+    created_by: UUID,
+    expires_at: datetime,
+) -> tuple[str, ServiceAccountCredential]:
+    plaintext = f"{SERVICE_ACCOUNT_KEY_PREFIX}{secrets.token_hex(32)}"
+    credential = ServiceAccountCredential(
+        organization_id=account.organization_id,
+        user_id=account.id,
+        key_hash=_digest_api_key(plaintext),
+        prefix=plaintext[:20],
+        expires_at=expires_at,
+        created_by=created_by,
+    )
+    session.add(credential)
+    return plaintext, credential
+
+
+async def authenticate_service_account(
+    session: AsyncSession,
+    plaintext: str,
+) -> User | None:
+    now = datetime.now(timezone.utc)
+    row = (
+        await session.execute(
+            select(ServiceAccountCredential, User)
+            .join(
+                User,
+                (User.id == ServiceAccountCredential.user_id)
+                & (User.organization_id == ServiceAccountCredential.organization_id),
+            )
+            .where(
+                ServiceAccountCredential.key_hash == _digest_api_key(plaintext),
+                ServiceAccountCredential.revoked_at.is_(None),
+                ServiceAccountCredential.expires_at > now,
+                User.kind == "service",
+                User.is_active.is_(True),
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    credential, account = row
+    stale = now - _LAST_USED_RESOLUTION
+    if credential.last_used_at is None or credential.last_used_at <= stale:
+        await session.execute(
+            update(ServiceAccountCredential)
+            .where(
+                ServiceAccountCredential.id == credential.id,
+                or_(
+                    ServiceAccountCredential.last_used_at.is_(None),
+                    ServiceAccountCredential.last_used_at <= stale,
+                ),
+            )
+            .values(last_used_at=now)
+        )
+        await session.commit()
+    return account
+
+
 def rotate_api_key(api_key: ApiKey) -> str:
     """Replace the verifier in place, retaining ownership, policy and usage counters."""
     plaintext = f"{API_KEY_PREFIX}{secrets.token_hex(32)}"
@@ -278,6 +344,15 @@ async def _archive_workspace(
         ).all()
         if rows:
             removed[table.name] = len(rows)
+    service_accounts = (
+        await session.execute(
+            delete(User)
+            .where(User.organization_id == tenant_id, User.kind == "service")
+            .returning(User.id)
+        )
+    ).all()
+    if service_accounts:
+        removed["service_accounts"] = len(service_accounts)
     await record_management_action(
         session,
         user,
@@ -335,7 +410,9 @@ async def authenticate_api_key(
     session: AsyncSession,
     plaintext: str,
 ) -> ApiKey | None:
-    if not plaintext.startswith(API_KEY_PREFIX):
+    if not plaintext.startswith(API_KEY_PREFIX) or plaintext.startswith(
+        SERVICE_ACCOUNT_KEY_PREFIX
+    ):
         return None
     statement = (
         select(ApiKey)
@@ -396,7 +473,9 @@ async def _bootstrap_is_empty(
 
 async def _is_personal(session: AsyncSession, organization: Organization) -> bool:
     users = await session.scalar(
-        select(func.count(User.id)).where(User.organization_id == organization.id)
+        select(func.count(User.id)).where(
+            User.organization_id == organization.id, User.kind == "human"
+        )
     )
     receipt = await session.scalar(
         select(BillingWebhookReceipt.id)

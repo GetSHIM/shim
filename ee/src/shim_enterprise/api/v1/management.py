@@ -14,7 +14,7 @@ import logging
 import secrets
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -77,6 +77,7 @@ from shim_enterprise.tenants.models import (
     OrganizationInvite,
     Organization,
     ProviderSecret,
+    ServiceAccountCredential,
     TierDefinition,
     Team,
     TeamMembership,
@@ -95,7 +96,9 @@ from shim_enterprise.tenants.teams import (
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import (
+    SERVICE_ACCOUNT_EMAIL_DOMAIN,
     WorkspaceHasRequestHistory,
+    issue_service_account_key,
     move_user_from_bootstrap,
 )
 
@@ -333,6 +336,27 @@ class SubscriptionView(BaseModel):
     status: str
     source: str | None
     entitlements: dict[str, bool]
+
+
+class ServiceAccountInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    role: Literal["admin", "auditor"]
+    expires_in_days: int = Field(ge=1, le=365)
+
+
+class ServiceAccountView(BaseModel):
+    id: UUID
+    name: str | None
+    role: Literal["admin", "auditor"]
+    prefix: str
+    expires_at: datetime
+    last_used_at: datetime | None
+    created_by: UUID
+    created_at: datetime
+
+
+class CreatedServiceAccount(ServiceAccountView):
+    plaintext: str
 
 
 class TeamMemberView(BaseModel):
@@ -836,6 +860,7 @@ async def list_team_members(
                 .where(
                     User.organization_id == _tenant_id(user),
                     User.is_active.is_(True),
+                    User.kind == "human",
                 )
                 .order_by(User.created_at, User.id)
             )
@@ -1005,6 +1030,10 @@ async def accept_team_invite(
         raise HTTPException(status_code=400, detail="Invitation is invalid or expired")
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
+    if user.kind == "service":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot accept invitations"
+        )
     await _require_entitlement(session, invite.organization_id, "team_rbac")
     previous_tenant_id = _tenant_id(user)
     changing_tenant = previous_tenant_id != invite.organization_id
@@ -1088,6 +1117,125 @@ async def remove_team_member(
         .values(is_active=False)
     )
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
+    await session.commit()
+
+
+@router.post(
+    "/service-accounts",
+    response_model=CreatedServiceAccount,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_service_account(
+    payload: ServiceAccountInput,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> CreatedServiceAccount:
+    account_id = uuid4()
+    account = User(
+        id=account_id,
+        organization_id=_tenant_id(user),
+        email=f"{account_id}@{SERVICE_ACCOUNT_EMAIL_DOMAIN}",
+        full_name=payload.name,
+        role=payload.role,
+        kind="service",
+        is_active=True,
+        is_verified=True,
+    )
+    session.add(account)
+    await session.flush()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
+    plaintext, credential = issue_service_account_key(
+        session, account, created_by=user.id, expires_at=expires_at
+    )
+    await session.flush()
+    await _audit(
+        session,
+        user,
+        "tenant.service_account_created",
+        str(account.id),
+        details={
+            "after": {
+                "name": payload.name,
+                "role": payload.role,
+                "expires_at": expires_at.isoformat(),
+            }
+        },
+    )
+    await session.commit()
+    return await _created_service_account(session, account, credential, plaintext)
+
+
+@router.get("/service-accounts", response_model=list[ServiceAccountView])
+async def list_service_accounts(
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> list[ServiceAccountView]:
+    if user.kind == "service":
+        raise HTTPException(403, "Service accounts cannot manage service accounts")
+    rows = await session.execute(
+        select(User, ServiceAccountCredential)
+        .join(
+            ServiceAccountCredential,
+            (ServiceAccountCredential.user_id == User.id)
+            & (ServiceAccountCredential.organization_id == User.organization_id)
+            & ServiceAccountCredential.revoked_at.is_(None),
+        )
+        .where(
+            User.organization_id == _tenant_id(user),
+            User.kind == "service",
+            User.is_active.is_(True),
+        )
+        .order_by(User.created_at, User.id)
+    )
+    return [_service_account_row(account, credential) for account, credential in rows]
+
+
+@router.post(
+    "/service-accounts/{account_id}/rotate", response_model=CreatedServiceAccount
+)
+async def rotate_service_account(
+    account_id: UUID,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> CreatedServiceAccount:
+    account = await _owned_service_account(session, user, account_id)
+    expires_at = await session.scalar(
+        select(func.max(ServiceAccountCredential.expires_at)).where(
+            ServiceAccountCredential.user_id == account.id,
+            ServiceAccountCredential.revoked_at.is_(None),
+        )
+    )
+    if expires_at is None:
+        raise HTTPException(status_code=404, detail="Service account not found")
+    await _revoke_service_account_keys(session, account)
+    plaintext, credential = issue_service_account_key(
+        session, account, created_by=user.id, expires_at=expires_at
+    )
+    await session.flush()
+    await _audit(session, user, "tenant.service_account_rotated", str(account.id))
+    await session.commit()
+    return await _created_service_account(session, account, credential, plaintext)
+
+
+@router.delete(
+    "/service-accounts/{account_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_service_account(
+    account_id: UUID,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    account = await _owned_service_account(session, user, account_id)
+    account.is_active = False
+    await _revoke_service_account_keys(session, account)
+    await session.execute(
+        update(ApiKey)
+        .where(ApiKey.user_id == account.id, ApiKey.is_active.is_(True))
+        .values(is_active=False)
+    )
+    await _audit(session, user, "tenant.service_account_deleted", str(account.id))
     await session.commit()
 
 
@@ -2848,6 +2996,62 @@ async def _owned_api_key(
     return row
 
 
+async def _owned_service_account(
+    session: AsyncSession, user: User, account_id: UUID
+) -> User:
+    account = await session.scalar(
+        select(User)
+        .where(
+            User.id == account_id,
+            User.organization_id == _tenant_id(user),
+            User.kind == "service",
+            User.is_active.is_(True),
+        )
+        .with_for_update(of=User)
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="Service account not found")
+    return account
+
+
+async def _revoke_service_account_keys(session: AsyncSession, account: User) -> None:
+    await session.execute(
+        update(ServiceAccountCredential)
+        .where(
+            ServiceAccountCredential.user_id == account.id,
+            ServiceAccountCredential.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
+
+
+async def _created_service_account(
+    session: AsyncSession,
+    account: User,
+    credential: ServiceAccountCredential,
+    plaintext: str,
+) -> CreatedServiceAccount:
+    await session.refresh(credential)
+    return CreatedServiceAccount(
+        **_service_account_row(account, credential).model_dump(), plaintext=plaintext
+    )
+
+
+def _service_account_row(
+    account: User, credential: ServiceAccountCredential
+) -> ServiceAccountView:
+    return ServiceAccountView(
+        id=account.id,
+        name=account.full_name,
+        role=cast(Literal["admin", "auditor"], account.role),
+        prefix=credential.prefix,
+        expires_at=credential.expires_at,
+        last_used_at=credential.last_used_at,
+        created_by=credential.created_by,
+        created_at=credential.created_at,
+    )
+
+
 async def _owned_member(
     session: AsyncSession,
     user: User,
@@ -2866,6 +3070,7 @@ async def _owned_member(
                 User.id == member_id,
                 User.organization_id == tenant_id,
                 User.is_active.is_(True),
+                User.kind == "human",
             )
             .with_for_update(of=User)
         )

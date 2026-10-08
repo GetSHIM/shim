@@ -27,8 +27,10 @@ from shim_enterprise.services.gateway.enterprise import EnterpriseGatewayService
 from shim_enterprise.tenants.models import ApiKey, User
 from shim_enterprise.tenants.service import (
     API_KEY_PREFIX,
+    SERVICE_ACCOUNT_KEY_PREFIX,
     JwtIdentityVerifier,
     authenticate_api_key,
+    authenticate_service_account,
     delete_empty_bootstrap_identity_conflict,
     ensure_privacy_defaults,
     get_or_create_organization,
@@ -266,11 +268,15 @@ async def get_invite_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    if settings.AUTH_MODE == "oidc" and "/invites" in request.url.path:
+        raise HTTPException(403, "OIDC membership is managed by your identity provider")
+    if bearer is not None and bearer.credentials.startswith(SERVICE_ACCOUNT_KEY_PREFIX):
+        account = await authenticate_service_account(session, bearer.credentials)
+        if account is None:
+            logger.warning("Invalid service account key attempt (key redacted)")
+            raise authentication_error("Invalid API Key", code="INVALID_API_KEY")
+        return account
     if settings.AUTH_MODE == "oidc":
-        if "/invites" in request.url.path:
-            raise HTTPException(
-                403, "OIDC membership is managed by your identity provider"
-            )
         return await current_oidc_user(
             request, session, bearer.credentials if bearer else None
         )

@@ -404,6 +404,7 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
     ]
     assert after_plain_login[0]["extra"] == {
         "subject_id": str(user.id),
+        "actor_type": "user_jwt",
         "source": "oidc",
         "after": {"role": "member", "oidc_teams": {}},
     }

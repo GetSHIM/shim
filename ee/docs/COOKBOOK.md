@@ -20,6 +20,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
+- [Automate management with a service account](#automate-management-with-a-service-account)
 
 ## Attribute spend to teams
 
@@ -372,3 +373,33 @@ Notes:
   public price catalog is unpriced, so a provider spending limit refuses it with
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
+
+## Automate management with a service account
+
+Give a CI pipeline or an agent its own management key instead of a person's token.
+
+1. As the owner, `POST /api/v1/management/service-accounts` with `name`, `role`
+   (`admin` or `auditor`) and `expires_in_days` (1 to 365). It answers 201 with
+   the account's `id` and the key in `plaintext`, shown once.
+2. Call any management route the role allows with `Authorization: Bearer <key>`.
+3. Rotate with `POST /api/v1/management/service-accounts/{id}/rotate`; the old key
+   stops at once. Delete with `DELETE /api/v1/management/service-accounts/{id}`.
+
+```console
+SERVICE_KEY=$(curl -s -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "terraform", "role": "admin", "expires_in_days": 90}' | jq -r .plaintext)
+
+curl -X POST http://localhost:8000/api/v1/management/api-keys \
+  -H "Authorization: Bearer $SERVICE_KEY" -H 'Content-Type: application/json' \
+  -d '{"name": "payments-service"}'
+```
+
+Notes:
+
+- A service account cannot become owner, accept invitations, manage service
+  accounts or change members' roles. An auditor service account is read-only.
+- Any key failure answers 401 `INVALID_API_KEY`. The key is not a gateway key:
+  model routes refuse it, and gateway keys do not open management routes.
+- The audit log marks its actions `actor_type: service`. Details are in
+  [team access](team-access.md#service-accounts).

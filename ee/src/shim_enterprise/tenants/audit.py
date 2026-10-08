@@ -36,7 +36,11 @@ async def record_management_action(
                 "event_type": "management_action",
                 "actor": str(user.id),
                 "endpoint": action,
-                "extra": {"subject_id": subject_id, **(details or {})},
+                "extra": {
+                    "subject_id": subject_id,
+                    "actor_type": "service" if user.kind == "service" else "user_jwt",
+                    **(details or {}),
+                },
             },
             "status": "pending",
             "next_attempt_at": datetime.now(timezone.utc),

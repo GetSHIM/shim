@@ -23,6 +23,7 @@ from shim_enterprise.tenants.models import (
     Organization,
     OrganizationPIIConfig,
     ProviderSecret,
+    ServiceAccountCredential,
     User,
 )
 from shim_enterprise.tenants.plans import (
@@ -174,6 +175,7 @@ async def test_unused_personal_workspace_is_archived_when_its_user_joins(
     assert events[1]["actor"] == str(analyst.id)
     assert events[1]["extra"] == {
         "subject_id": str(workspace_id),
+        "actor_type": "user_jwt",
         "removed": {
             "api_keys": 1,
             "compliance_forward_target": 1,
@@ -195,6 +197,30 @@ async def test_unused_personal_workspace_is_archived_when_its_user_joins(
             expected_purpose="compliance-forward-target-delivery",
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_archiving_deletes_the_workspace_service_accounts(
+    db, monkeypatch: pytest.MonkeyPatch, audit_events
+) -> None:
+    _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    service = await management.create_service_account(
+        management.ServiceAccountInput(name="ci", role="admin", expires_in_days=30),
+        analyst,
+        db,
+    )
+    token = await _invite(db, owner, analyst.email)
+
+    await _accept(db, token, analyst)
+
+    assert await db.get(User, service.id) is None
+    assert await _count(db, ServiceAccountCredential, workspace_id) == 0
+    removed = (await audit_events(workspace_id))[-1]["extra"]["removed"]
+    assert removed["service_accounts"] == 1
+    assert removed["service_account_credentials"] == 1
 
 
 @pytest.mark.asyncio
@@ -414,4 +440,4 @@ def test_every_foreign_key_into_an_archived_workspace_is_accounted_for() -> None
             if (table.name, referred) not in _KEPT_ON_PURPOSE:
                 unaccounted.append(f"{table.name}.{foreign_key.name} -> {referred}")
     assert unaccounted == []
-    assert history <= deleted
+    assert history | {"service_account_credentials"} <= deleted
