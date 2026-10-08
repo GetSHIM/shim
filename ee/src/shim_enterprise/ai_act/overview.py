@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Integer, Select, case, cast as sql_cast, func, literal, or_
-from sqlalchemy import select, true, union_all
+from sqlalchemy import Select, case, cast as sql_cast, func, literal, or_
+from sqlalchemy import select, union_all
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from shim_enterprise.ai_act.retention import (
 )
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
+from shim_enterprise.compliance.reporting import entity_sums, lifecycle_object
 from shim_enterprise.observability.analytics_projection import RequestLog
 
 
@@ -239,14 +240,6 @@ _CARD_MAPS = {
 }
 
 
-def _metadata_object(key: str) -> Any:
-    # Older rows lack the key and a failed scan stores null; both count as empty.
-    value = RequestLifecycle.lifecycle_metadata[key]
-    return case(
-        (func.jsonb_typeof(value) == "object", value), else_=sql_cast({}, JSONB)
-    )
-
-
 async def build_privacy_card(
     session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
 ) -> dict[str, Any]:
@@ -266,7 +259,7 @@ async def build_privacy_card(
                 func.count().filter(
                     or_(
                         *(
-                            _metadata_object(key) != empty
+                            lifecycle_object(key) != empty
                             for key in (
                                 "pii_entities",
                                 "monitored_entities",
@@ -300,26 +293,12 @@ async def build_privacy_card(
             ).where(*window)
         )
     ).one()
-    families = []
-    for family, key in _CARD_MAPS.items():
-        entries = (
-            func.jsonb_each_text(_metadata_object(key))
-            .table_valued("key", "value")
-            .lateral()
-        )
-        families.append(
-            select(
-                literal(family).label("family"),
-                entries.c.key,
-                func.sum(sql_cast(entries.c.value, Integer)).label("count"),
-            )
-            .select_from(RequestLifecycle)
-            .join(entries, true())
-            .where(*window)
-            .group_by(entries.c.key)
-        )
+    families = [
+        entity_sums(key, window).add_columns(literal(family))
+        for family, key in _CARD_MAPS.items()
+    ]
     card: dict[str, Any] = {family: {} for family in _CARD_MAPS}
-    for family, entity_type, count in await session.execute(union_all(*families)):
+    for entity_type, count, family in await session.execute(union_all(*families)):
         card[family][entity_type] = int(count)
     return {
         **{family: dict(sorted(counts.items())) for family, counts in card.items()},

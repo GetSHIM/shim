@@ -11,17 +11,18 @@ import io
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import Integer, cast as sql_cast, func, select, true
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.compliance.classification import classify, severity_rank
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.compliance.reporting import (
-    REPORT_FONT,
-    REPORT_FONT_BOLD,
-    ensure_report_fonts,
+    build_pdf,
+    entity_sums,
     evidence_table,
+    lifecycle_window,
+    report_styles,
+    safe_csv,
 )
 
 
@@ -139,22 +140,10 @@ async def collect_exposure_evidence(
     )
     if connector_id is not None or not with_gateway:
         return ExposureEvidence(tenant_id, connector_id, start, end, findings)
-    entities = (
-        func.jsonb_each_text(RequestLifecycle.lifecycle_metadata["pii_entities"])
-        .table_valued("key", "value")
-        .lateral()
-    )
     detections = await session.execute(
-        select(entities.c.key, func.sum(sql_cast(entities.c.value, Integer)))
-        .select_from(RequestLifecycle)
-        .join(entities, true())
-        .where(
-            RequestLifecycle.organization_id == tenant_id,
-            RequestLifecycle.started_at >= start,
-            RequestLifecycle.started_at <= end,
+        entity_sums("pii_entities", lifecycle_window(tenant_id, start, end)).order_by(
+            "entity_type"
         )
-        .group_by(entities.c.key)
-        .order_by(entities.c.key)
     )
     return ExposureEvidence(
         tenant_id,
@@ -169,23 +158,12 @@ async def collect_exposure_evidence(
     )
 
 
-def _safe_csv(value: object | None) -> str:
-    if isinstance(value, datetime):
-        value = value.isoformat()
-    rendered = "" if value is None else str(value)
-    return (
-        f"'{rendered}"
-        if rendered.lstrip().startswith(("=", "+", "-", "@"))
-        else rendered
-    )
-
-
 def _render_csv(evidence: ExposureEvidence) -> bytes:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(_CSV_FIELDS)
     for finding in evidence.findings:
-        writer.writerow(_safe_csv(getattr(finding, field)) for field in _CSV_FIELDS)
+        writer.writerow(safe_csv(getattr(finding, field)) for field in _CSV_FIELDS)
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -194,30 +172,10 @@ def _count_rows(counts: dict[str, int]) -> list[list[str]]:
 
 
 def _render_pdf(evidence: ExposureEvidence) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    for style_name, font in (
-        ("Title", REPORT_FONT_BOLD),
-        ("Heading2", REPORT_FONT_BOLD),
-        ("Normal", REPORT_FONT),
-    ):
-        styles[style_name].fontName = font
-
-    output = io.BytesIO()
-    document = SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        title="KVKK Exposure Evidence",
-    )
+    styles = report_styles()
     scope = (
         f"connector {evidence.connector_id}"
         if evidence.connector_id is not None
@@ -291,8 +249,7 @@ def _render_pdf(evidence: ExposureEvidence) -> bytes:
         Paragraph("Evidence boundary", styles["Heading2"]),
         Paragraph(_METHODOLOGY, styles["Normal"]),
     ]
-    document.build(story)
-    return output.getvalue()
+    return build_pdf(story, "KVKK Exposure Evidence")
 
 
 async def generate_report(

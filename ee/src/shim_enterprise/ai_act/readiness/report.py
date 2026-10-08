@@ -36,15 +36,15 @@ from shim_enterprise.billing.models import (
 from shim_enterprise.billing.read_models import BillingBreakdown, BillingReadModels
 from shim_enterprise.compliance.classification import classify
 from shim_enterprise.compliance.reporting import (
-    REPORT_FONT,
-    REPORT_FONT_BOLD,
-    ensure_report_fonts,
+    build_pdf,
     evidence_table,
+    lifecycle_window,
+    report_styles,
+    safe_csv,
 )
 from shim_enterprise.compliance.services.monthly_evidence import (
     denial_counts,
     entity_counts,
-    lifecycle_window,
 )
 from shim_enterprise.tenants.models import ModelDeployment, Team
 from shim.gateway.contracts.ids import TenantId
@@ -529,9 +529,7 @@ def render_csv(rows: list[ReadinessRow]) -> bytes:
                 row.control.rule or "",
                 row.declared,
                 # A spreadsheet must not read the organization's note as a formula.
-                f"'{note}"
-                if note and note.lstrip().startswith(("=", "+", "-", "@"))
-                else note or "",
+                safe_csv(note),
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -545,19 +543,10 @@ def render_pdf(
     end: datetime,
     verified: bool,
 ) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    for style_name, font in (
-        ("Title", REPORT_FONT_BOLD),
-        ("Heading2", REPORT_FONT_BOLD),
-        ("Normal", REPORT_FONT),
-    ):
-        styles[style_name].fontName = font
+    styles = report_styles()
     cell = styles["Normal"].clone("cell", fontSize=8, leading=10)
 
     def detail(row: ReadinessRow) -> str:
@@ -610,17 +599,7 @@ def render_pdf(
             ["Control", "Title", "Source", "Evidence or declaration"],
         ),
     ]
-    output = io.BytesIO()
-    SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=14 * mm,
-        rightMargin=14 * mm,
-        title="ISO/IEC 42001 Readiness",
-    ).build(story)
-    return output.getvalue()
+    return build_pdf(story, "ISO/IEC 42001 Readiness", side_margin=14)
 
 
 async def generate_readiness_report(

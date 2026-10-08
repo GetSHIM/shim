@@ -8,12 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
-import io
 import logging
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import Integer, cast, func, select, true
+from sqlalchemy import func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,10 +23,11 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.billing.read_models import BillingBreakdown, BillingReadModels
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.compliance.reporting import (
-    REPORT_FONT,
-    REPORT_FONT_BOLD,
-    ensure_report_fonts,
+    build_pdf,
+    entity_sums,
     evidence_table,
+    lifecycle_window,
+    report_styles,
 )
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.outbox.handlers import EVIDENCE_MONTHLY_READY
@@ -103,16 +103,6 @@ def previous_period(now: datetime) -> str:
     return f"{first - timedelta(days=1):%Y-%m}"
 
 
-def lifecycle_window(
-    tenant_id: UUID, start: datetime, end: datetime
-) -> tuple[Any, ...]:
-    return (
-        RequestLifecycle.organization_id == tenant_id,
-        RequestLifecycle.started_at >= start,
-        RequestLifecycle.started_at <= end,
-    )
-
-
 async def entity_counts(
     session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime, key: str
 ) -> dict[tuple[str, str], int] | None:
@@ -123,17 +113,8 @@ async def entity_counts(
         select(RequestLifecycle.id).where(*in_window, metadata.has_key(key)).limit(1)
     ):
         return None
-    entities = (
-        func.jsonb_each_text(metadata[key]).table_valued("key", "value").lateral()
-    )
     provider = func.coalesce(RequestLifecycle.provider, "unknown")
-    rows = await session.execute(
-        select(provider, entities.c.key, func.sum(cast(entities.c.value, Integer)))
-        .select_from(RequestLifecycle)
-        .join(entities, true())
-        .where(*in_window, func.jsonb_typeof(metadata[key]) == "object")
-        .group_by(provider, entities.c.key)
-    )
+    rows = await session.execute(entity_sums(key, in_window, provider))
     return {(row[0], row[1]): int(row[2]) for row in rows}
 
 
@@ -282,19 +263,10 @@ def _traffic_rows(rows: tuple[BillingBreakdown, ...]) -> list[list[str]]:
 
 
 def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import Paragraph, Spacer
 
-    ensure_report_fonts()
-    styles = getSampleStyleSheet()
-    for style_name, font in (
-        ("Title", REPORT_FONT_BOLD),
-        ("Heading2", REPORT_FONT_BOLD),
-        ("Normal", REPORT_FONT),
-    ):
-        styles[style_name].fontName = font
+    styles = report_styles()
     window = evidence.window
     lifecycle_source = (
         f"Source: request_lifecycle, requests started {window.describe()}."
@@ -448,17 +420,7 @@ def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
             ),
         ),
     ]
-    output = io.BytesIO()
-    SimpleDocTemplate(
-        output,
-        pagesize=A4,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        title="Monthly Evidence File",
-    ).build(story)
-    return output.getvalue()
+    return build_pdf(story, "Monthly Evidence File")
 
 
 async def generate_monthly_evidence(
