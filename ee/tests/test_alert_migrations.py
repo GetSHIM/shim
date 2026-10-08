@@ -5,7 +5,8 @@ from uuid import uuid4
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import insert, select, text
+from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.billing.models import CostBudget
 from shim_enterprise.compliance.models import ComplianceForwardTarget
@@ -110,3 +111,28 @@ async def test_budget_scopes_are_lowercased_only_where_ingest_could_match(
     assert [stored[budget.id] for budget in budgets] == [
         expected for _, _, expected in scopes
     ]
+
+
+@pytest.mark.asyncio
+async def test_budget_scope_check_takes_team_ids_and_still_refuses_unknown_scopes(
+    db, test_org
+) -> None:
+    async def insert_budget(scope_type: str) -> None:
+        async with db.begin_nested():
+            await db.execute(
+                insert(CostBudget).values(
+                    organization_id=test_org.id,
+                    scope_type=scope_type,
+                    scope_value=str(uuid4()),
+                    limit_usd=1,
+                )
+            )
+
+    await _run(db, "1ad1ca2101a5_add_team_id_budget_scope", "downgrade")
+    with pytest.raises(IntegrityError, match="ck_cost_budget_scope_type"):
+        await insert_budget("team_id")
+
+    await _run(db, "1ad1ca2101a5_add_team_id_budget_scope", "upgrade")
+    await insert_budget("team_id")
+    with pytest.raises(IntegrityError, match="ck_cost_budget_scope_type"):
+        await insert_budget("cost_center")

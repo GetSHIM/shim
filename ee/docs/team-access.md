@@ -114,6 +114,9 @@ records its key's `team_id`; `GET /api/v1/management/billing/breakdown?group_by=
 groups by it (`unassigned` for keys without a team and older requests), and each
 row's `label` carries the team's current name (`null` for `unassigned` and for a
 team that no longer exists), while `group_by=team` keeps grouping by the label.
+Budgets follow the same split: scope `team_id` counts the requests of the
+team's keys, labelled or not, and scope `team` matches the label
+([alert on a budget](COOKBOOK.md#alert-on-a-budget)).
 
 ## Rotation and model policies
 

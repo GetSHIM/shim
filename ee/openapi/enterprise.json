@@ -1685,6 +1685,7 @@
             "enum": [
               "tag",
               "team",
+              "team_id",
               "org"
             ],
             "title": "Scope Type",
@@ -1857,10 +1858,22 @@
             "title": "Period",
             "type": "string"
           },
+          "scope_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Label"
+          },
           "scope_type": {
             "enum": [
               "tag",
               "team",
+              "team_id",
               "org"
             ],
             "title": "Scope Type",

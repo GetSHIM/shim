@@ -235,6 +235,7 @@ public = [
 enterprise = [
   "ee/alembic/env.py",
   "ee/alembic/versions/195c95f5e798_add_customer_provider_key_policy.py",
+  "ee/alembic/versions/1ad1ca2101a5_add_team_id_budget_scope.py",
   "ee/alembic/versions/41f1a2ff58a9_archive_personal_workspaces.py",
   "ee/alembic/versions/4d4e8c6b975a_add_organization_quota_limits.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",

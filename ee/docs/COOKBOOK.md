@@ -81,12 +81,14 @@ Notes:
 Get a Slack message or a webhook call when spend or tokens cross a share of a monthly limit.
 
 1. `POST /api/v1/management/cost/budgets` (owner or admin) with:
-   - `scope_type`: `org`, `tag` or `team`, and `scope_value` for the last two.
-     `tag` matches requests carrying that `X-Shim-Tag` tag; `team` matches the
-     key's billing label `team`, not its `team_id`. `scope_value` is normalized
-     the way those labels are: `Payments` is stored and matched as `payments`,
-     and a value outside letters, digits, `.`, `_`, `:` and `-` (at most
-     `COST_TAG_MAX_LENGTH`) answers 422.
+   - `scope_type`: `org`, `tag`, `team` or `team_id`, and `scope_value` for the
+     last three. `tag` matches requests carrying that `X-Shim-Tag` tag; `team`
+     matches the key's billing label `team`; `team_id` matches the key's team,
+     whatever its label, and takes the team's `id` (422 "Unknown team" for a
+     malformed id or one outside your organization). For `tag` and `team`,
+     `scope_value` is normalized the way those labels are: `Payments` is stored
+     and matched as `payments`, and a value outside letters, digits, `.`, `_`,
+     `:` and `-` (at most `COST_TAG_MAX_LENGTH`) answers 422.
    - `limit_usd`, `limit_tokens`, or both, each greater than 0.
    - `alert_thresholds`: one to 10 unique fractions greater than 0 and at most
      5; `0.8` means 80 percent and `1.5` means 150 percent. Default
@@ -116,6 +118,8 @@ curl -X POST http://localhost:8000/api/v1/management/cost/budgets/evaluate \
 
 The evaluate call answers `period` (`YYYY-MM`) and one result per enabled budget
 with `budget_id`, `fraction`, `fired` (thresholds crossed now) and `enqueued`.
+A budget's `scope_label` is the team's current name for a `team_id` scope, and
+`null` otherwise or when the team no longer exists.
 
 Notes:
 
@@ -128,6 +132,9 @@ Notes:
   sha256=<hex HMAC-SHA256 of the raw body with the secret>`, the same scheme as
   compliance forward targets. `payload.percent_used` keeps full precision;
   Slack receives a text message with the percentage rounded to a whole number.
+- A `team_id` budget counts requests that recorded the key's team, which every
+  request does since team ids were added to request records; older requests do
+  not count. Renaming the team changes only `scope_label`.
 - Budgets stored before these checks, with a zero limit, no threshold or no
   target, still evaluate and simply never alert; a `PATCH` that sends one of
   those values answers 422.

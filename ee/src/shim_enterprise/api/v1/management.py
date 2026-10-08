@@ -430,7 +430,7 @@ class NotificationTargetView(BaseModel):
 
 
 class BudgetInput(BaseModel):
-    scope_type: Literal["tag", "team", "org"]
+    scope_type: Literal["tag", "team", "team_id", "org"]
     scope_value: str | None = None
     limit_usd: Decimal | None = Field(default=None, gt=0)
     limit_tokens: int | None = Field(default=None, gt=0)
@@ -479,7 +479,8 @@ class BudgetInput(BaseModel):
         if self.scope_type != "org":
             if not self.scope_value:
                 raise ValueError("scoped budgets require scope_value")
-            self.scope_value = _validate_attribution(self.scope_value)
+            if self.scope_type != "team_id":
+                self.scope_value = _validate_attribution(self.scope_value)
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
@@ -531,8 +532,9 @@ class BudgetView(BaseModel):
 
     id: UUID
     organization_id: UUID
-    scope_type: Literal["tag", "team", "org"]
+    scope_type: Literal["tag", "team", "team_id", "org"]
     scope_value: str | None
+    scope_label: str | None = None
     period: str
     limit_usd: Decimal | None
     limit_tokens: int | None
@@ -1906,7 +1908,7 @@ async def list_budgets(
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> list[CostBudget]:
+) -> list[BudgetView]:
     statement = (
         select(CostBudget)
         .where(CostBudget.organization_id == _tenant_id(user))
@@ -1920,7 +1922,7 @@ async def list_budgets(
             validate_budget_notification_config(budget)
     except BudgetConfigurationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return budgets
+    return await _budget_views(session, budgets)
 
 
 @router.post("/cost/budgets", response_model=BudgetView)
@@ -1928,7 +1930,19 @@ async def create_budget(
     payload: BudgetInput,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> CostBudget:
+) -> BudgetView:
+    if payload.scope_type == "team_id":
+        try:
+            team_id = UUID(payload.scope_value or "")
+        except ValueError:
+            team_id = None
+        if team_id is None or not await session.scalar(
+            select(Team.id).where(
+                Team.id == team_id, Team.organization_id == _tenant_id(user)
+            )
+        ):
+            raise HTTPException(status_code=422, detail="Unknown team")
+        payload.scope_value = str(team_id)
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(
         _tenant_id(user), payload.notify_targets
@@ -1960,7 +1974,7 @@ async def create_budget(
         await _delete_budget_targets(_tenant_id(user), stored_targets)
         raise
     await session.refresh(row)
-    return row
+    return (await _budget_views(session, [row]))[0]
 
 
 @router.patch("/cost/budgets/{budget_id}", response_model=BudgetView)
@@ -1969,7 +1983,7 @@ async def update_budget(
     patch: BudgetPatch,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> CostBudget:
+) -> BudgetView:
     row = await _owned_budget(session, user, budget_id)
     fields_set = patch.model_fields_set
     limit_usd = patch.limit_usd if "limit_usd" in fields_set else row.limit_usd
@@ -2012,7 +2026,7 @@ async def update_budget(
     if replacement_targets is not None:
         await _delete_budget_targets(_tenant_id(user), previous_targets)
     await session.refresh(row)
-    return row
+    return (await _budget_views(session, [row]))[0]
 
 
 @router.delete(
@@ -3168,6 +3182,39 @@ async def _owned_budget(
     if row is None:
         raise HTTPException(status_code=404, detail="Budget not found")
     return row
+
+
+async def _budget_views(
+    session: AsyncSession, budgets: list[CostBudget]
+) -> list[BudgetView]:
+    team_ids = {
+        UUID(budget.scope_value)
+        for budget in budgets
+        if budget.scope_type == "team_id" and budget.scope_value
+    }
+    names = (
+        {
+            str(team_id): name
+            for team_id, name in await session.execute(
+                select(Team.id, Team.name).where(
+                    Team.organization_id == budgets[0].organization_id,
+                    Team.id.in_(team_ids),
+                )
+            )
+        }
+        if team_ids
+        else {}
+    )
+    return [
+        BudgetView.model_validate(budget).model_copy(
+            update={
+                "scope_label": names.get(budget.scope_value or "")
+                if budget.scope_type == "team_id"
+                else None
+            }
+        )
+        for budget in budgets
+    ]
 
 
 async def _validate_targets(targets: list[NotificationTargetInput]) -> None:
