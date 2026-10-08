@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from shim.billing.pricing import _MODALITIES, _STATUSES, _positive_int
+
 
 SOURCE_URL = "https://models.dev/api.json"
 TARGET = Path(__file__).parents[1] / "src" / "shim" / "billing" / "model_catalog.json"
@@ -29,8 +31,6 @@ UNSUPPORTED_MARKERS = (
     "customtools",
 )
 _CACHE_COST_KEYS = frozenset({"cache_read", "cache_write"})
-_MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
-_STATUSES = frozenset({"alpha", "beta", "deprecated"})
 
 
 def _decimal(value: object) -> Decimal | None:
@@ -164,10 +164,6 @@ def _tier(cost: dict[str, object]) -> dict[str, str | int]:
         "large_context_output_per_million": _decimal_text(output_price),
         **_cache_prices(candidate, "large_context_"),
     }
-
-
-def _positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 def _entry(model_id: str, model: dict[str, object]) -> dict[str, Any]:

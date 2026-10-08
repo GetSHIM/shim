@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 import json
@@ -17,6 +17,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 200_000
 UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 _MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
+_STATUSES = frozenset({"alpha", "beta", "deprecated"})
 # Anthropic documents 1.25x base input for 5-minute cache writes and 2x for 1-hour ones.
 _ANTHROPIC_CACHE_WRITE = Decimal("1.25")
 _ANTHROPIC_ONE_HOUR_WRITE = Decimal("2")
@@ -63,9 +64,8 @@ class ModelPrice:
             value is not None for value in large_context
         ):
             raise ValueError("large-context pricing requires a complete tier")
-        if (
-            self.large_context_threshold is not None
-            and self.large_context_threshold < 1
+        if self.large_context_threshold is not None and not _positive_int(
+            self.large_context_threshold
         ):
             raise ValueError("large-context threshold must be positive")
         large_prices = (
@@ -87,10 +87,8 @@ class ModelPrice:
             for value in cache_prices
         ):
             raise ValueError("cache prices must be finite and nonnegative")
-        if self.max_output_tokens is not None and (
-            isinstance(self.max_output_tokens, bool)
-            or not isinstance(self.max_output_tokens, int)
-            or self.max_output_tokens < 1
+        if self.max_output_tokens is not None and not _positive_int(
+            self.max_output_tokens
         ):
             raise ValueError("maximum output tokens must be positive")
 
@@ -139,8 +137,6 @@ class ModelPrice:
             input_cost = Decimal(input_tokens) * max(input_price, write, one_hour)
         else:
             read_tokens, write_tokens, one_hour_tokens = cache
-            if min(cache) < 0:
-                raise ValueError("token counts cannot be negative")
             input_cost = (
                 Decimal(max(0, input_tokens - sum(cache))) * input_price
                 + Decimal(read_tokens) * read
@@ -276,7 +272,7 @@ class PriceBook:
             metadata["pricing_resolution"] = "conservative_max"
             resolved_model, price = max(
                 self.provider_prices[provider].items(),
-                key=lambda item: item[1].cost(input_tokens, output_tokens),
+                key=lambda item: item[1].cost(input_tokens, output_tokens, cache),
                 default=("", self.fallback),
             )
         else:
@@ -324,6 +320,10 @@ class PriceBook:
         return metadata
 
 
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def _normalize_model(model: str) -> str:
     normalized = model.strip().casefold()
     if not normalized:
@@ -349,7 +349,7 @@ def _catalog_facts(raw: Mapping[str, object]) -> dict[str, Any]:
     for key in ("context_window", "input_limit"):
         value = raw.get(key)
         if value is not None:
-            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            if not _positive_int(value):
                 raise ValueError(f"catalog {key} must be a positive integer")
             facts[key] = value
     for key in ("tools", "structured_output"):
@@ -365,7 +365,7 @@ def _catalog_facts(raw: Mapping[str, object]) -> dict[str, Any]:
         facts["input_modalities"] = tuple(modalities)
     status = raw.get("status")
     if status is not None:
-        if status not in {"alpha", "beta", "deprecated"}:
+        if status not in _STATUSES:
             raise ValueError("catalog status is invalid")
         facts["status"] = status
     return facts
@@ -378,19 +378,12 @@ def _catalog_price(raw: object, provider: str = "openai") -> ModelPrice:
     output_price = raw.get("output_per_million")
     if not isinstance(input_price, str) or not isinstance(output_price, str):
         raise ValueError("catalog model prices must be decimal strings")
-    max_output_tokens = raw.get("max_output_tokens")
-    if max_output_tokens is not None and (
-        isinstance(max_output_tokens, bool)
-        or not isinstance(max_output_tokens, int)
-        or max_output_tokens < 1
-    ):
-        raise ValueError("catalog maximum output tokens must be positive")
     anthropic = provider == "anthropic"
     cache_write = _catalog_decimal(raw, "cache_write_per_million")
     if cache_write is None and anthropic:
         cache_write = Decimal(input_price) * _ANTHROPIC_CACHE_WRITE
     extras: dict[str, Any] = {
-        "max_output_tokens": max_output_tokens,
+        "max_output_tokens": raw.get("max_output_tokens"),
         "cache_read_per_million": _catalog_decimal(raw, "cache_read_per_million"),
         "cache_write_per_million": cache_write,
         "large_context_cache_read_per_million": _catalog_decimal(
@@ -409,24 +402,33 @@ def _catalog_price(raw: object, provider: str = "openai") -> ModelPrice:
         raw.get("large_context_input_per_million"),
         raw.get("large_context_output_per_million"),
     )
+    tier: tuple[Any, ...] = ()
     if any(value is not None for value in tier_values):
         threshold, large_input, large_output = tier_values
-        if (
-            isinstance(threshold, bool)
-            or not isinstance(threshold, int)
-            or not isinstance(large_input, str)
-            or not isinstance(large_output, str)
-        ):
+        if not isinstance(large_input, str) or not isinstance(large_output, str):
             raise ValueError("catalog large-context pricing is incomplete")
-        return ModelPrice(
-            Decimal(input_price),
-            Decimal(output_price),
-            threshold,
-            Decimal(large_input),
-            Decimal(large_output),
-            **extras,
-        )
-    return ModelPrice(Decimal(input_price), Decimal(output_price), **extras)
+        tier = (threshold, Decimal(large_input), Decimal(large_output))
+    price = ModelPrice(Decimal(input_price), Decimal(output_price), *tier, **extras)
+    if provider != "openai":
+        return price
+    # OpenAI reports no cache-write count, so a written token arrives as uncached
+    # input: bill uncached input at the higher of the input and write prices.
+    return replace(
+        price,
+        input_per_million=max(
+            price.input_per_million,
+            price.cache_write_per_million or price.input_per_million,
+        ),
+        cache_write_per_million=None,
+        large_context_input_per_million=None
+        if price.large_context_input_per_million is None
+        else max(
+            price.large_context_input_per_million,
+            price.large_context_cache_write_per_million
+            or price.large_context_input_per_million,
+        ),
+        large_context_cache_write_per_million=None,
+    )
 
 
 def _load_catalog() -> tuple[

@@ -216,7 +216,7 @@ def test_an_unknown_split_is_priced_at_the_highest_input_rate(provider, raw, exp
 )
 def test_the_large_context_tier_keys_on_total_input(tier_cache, expected):
     price = _priced(
-        "openai",
+        "google",
         cache_read_per_million="0.4",
         cache_write_per_million="5",
         large_context_threshold=100_000,
@@ -227,6 +227,47 @@ def test_the_large_context_tier_keys_on_total_input(tier_cache, expected):
 
     assert price.cost(100_000, 0, (50_000, 50_000, 0)) == Decimal("0.27")
     assert price.cost(100_001, 0, (50_000, 50_000, 1)) == expected + Decimal("0.000008")
+
+
+def test_openai_writes_are_billed_as_uncached_input_at_the_write_price():
+    # OpenAI reports no cache-write count, so a written token arrives as uncached input.
+    price = _priced(
+        "openai",
+        cache_read_per_million="0.4",
+        cache_write_per_million="5",
+        large_context_threshold=100_000,
+        large_context_input_per_million="8",
+        large_context_output_per_million="30",
+        large_context_cache_write_per_million="10",
+    )
+
+    assert price.cache_write_per_million is None
+    # 5,000 uncached at 5 (not the base 4), 6,000 read at 0.4, 20 out at 20.
+    assert price.cost(11_000, 20, (6_000, 0, 0)) == Decimal("0.0278")
+    assert price.cost(100_001, 0, (0, 0, 0)) == Decimal("1.00001")
+    assert price.cost(11_000, 20) == price.cost(11_000, 20, (0, 0, 0))
+
+
+def test_the_charged_model_is_named_in_unspecified_model_metadata():
+    # Uncached, "cached-cheap" costs more; read from the cache, "uncached-only" does.
+    book = PriceBook(
+        version="test",
+        prices={
+            "cached-cheap": ModelPrice(
+                Decimal("10"), Decimal("1"), cache_read_per_million=Decimal("0.1")
+            ),
+            "uncached-only": ModelPrice(Decimal("5"), Decimal("1")),
+        },
+        fallback=ModelPrice(Decimal("1"), Decimal("1")),
+    )
+    cache = (1_000_000, 0, 0)
+
+    metadata = book.resolved_price_metadata(
+        UNSPECIFIED_PROVIDER_MODEL, input_tokens=1_000_000, output_tokens=0, cache=cache
+    )
+
+    assert metadata["provider_model"] == "uncached-only"
+    assert book.compute(UNSPECIFIED_PROVIDER_MODEL, 1_000_000, 0, cache=cache) == 5
 
 
 def test_a_free_tier_cache_price_is_not_mistaken_for_a_missing_one():

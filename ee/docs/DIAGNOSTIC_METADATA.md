@@ -197,7 +197,10 @@ split: uncached input at the input price, cache reads at the cache-read price,
 cache writes at the cache-write price and Anthropic one-hour writes at twice the
 input price. A catalog entry without a cache-read price uses the input price;
 without a cache-write price, 1.25 times input for Anthropic and the input price
-elsewhere. The reservation, estimated usage, provider usage without cache fields
+elsewhere. OpenAI reports no cache-write count, so a token it writes to the cache
+arrives as uncached input: an OpenAI model's uncached input is priced at the
+higher of its input and cache-write prices, and no write is charged separately.
+The reservation, estimated usage, provider usage without cache fields
 and failure estimates price every input token at the highest of input, cache
 write and, for Anthropic, the one-hour write price. The ledger's pricing
 metadata records the three cache prices used and, when reported,

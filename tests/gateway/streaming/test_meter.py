@@ -162,6 +162,40 @@ def test_anthropic_beta_cache_details_and_compaction_are_not_double_counted() ->
     assert snapshot.estimated is False
 
 
+def test_a_cumulative_message_delta_keeps_the_one_hour_split_of_message_start() -> None:
+    stream_meter = meter("anthropic", "claude-haiku-4-5")
+    start = {
+        "input_tokens": 100,
+        "output_tokens": 1,
+        "cache_creation_input_tokens": 4_000,
+        "cache_read_input_tokens": 0,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 4_000,
+        },
+    }
+    # Anthropic's message_delta usage is cumulative and has no cache_creation breakdown.
+    delta = {
+        "input_tokens": 100,
+        "cache_creation_input_tokens": 4_000,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 20,
+    }
+    stream_meter.observe_sse(
+        b"event: message_start\ndata: "
+        + json.dumps({"type": "message_start", "message": {"usage": start}}).encode()
+        + b"\n\nevent: message_delta\ndata: "
+        + json.dumps({"type": "message_delta", "usage": delta}).encode()
+        + b"\n\n"
+    )
+
+    snapshot = stream_meter.snapshot()
+
+    # 100 uncached at $1, 4,000 written for an hour at $2, 20 out at $5.
+    assert snapshot.cache_split == (0, 0, 4_000)
+    assert snapshot.settlement_cost_usd == Decimal("0.0082")
+
+
 @pytest.mark.parametrize(
     "usage",
     [
