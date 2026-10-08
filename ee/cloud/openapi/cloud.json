@@ -5578,6 +5578,50 @@
         "title": "ModelSelectionConfig",
         "type": "object"
       },
+      "MonthlyEvidenceRead": {
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "monthly",
+              "monthly_partial"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "kind",
+          "format",
+          "size_bytes",
+          "sha256",
+          "generated_at"
+        ],
+        "title": "MonthlyEvidenceRead",
+        "type": "object"
+      },
       "MultiSpeakerVoiceConfig": {
         "additionalProperties": false,
         "description": "Configuration for a multi-speaker text-to-speech request.",
@@ -11794,6 +11838,97 @@
         "summary": "Run Connector",
         "tags": [
           "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/evidence/monthly": {
+      "get": {
+        "operationId": "list_monthly_evidence_api_v1_compliance_evidence_monthly_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MonthlyEvidenceRead"
+                  },
+                  "title": "Response List Monthly Evidence Api V1 Compliance Evidence Monthly Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Monthly Evidence",
+        "tags": [
+          "ai-act-control-plane"
+        ]
+      }
+    },
+    "/api/v1/compliance/evidence/monthly/{period}": {
+      "get": {
+        "operationId": "download_monthly_evidence_api_v1_compliance_evidence_monthly__period__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "monthly",
+              "enum": [
+                "monthly",
+                "monthly_partial"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/pdf": {}
+            },
+            "description": "The PDF."
+          },
+          "404": {
+            "description": "No file of this kind for this period."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Monthly Evidence",
+        "tags": [
+          "ai-act-control-plane"
         ]
       }
     },

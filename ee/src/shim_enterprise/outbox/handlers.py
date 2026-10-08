@@ -25,6 +25,7 @@ AUDIT_CHAIN_APPEND = "audit.chain_append_requested"
 GATEWAY_RECONCILIATION = "gateway.reconciliation"
 BUDGET_THRESHOLD = "budget.threshold_crossed"
 COMPLIANCE_DELIVERY = "compliance.connector_delivery_requested"
+EVIDENCE_MONTHLY_READY = "evidence.monthly_ready"
 _DELIVERY_TIMEOUT_SECONDS = 10.0
 _COMPLIANCE_DELIVERY_PURPOSE = "compliance-forward-target-delivery"
 
@@ -63,6 +64,7 @@ def build_publisher() -> OutboxPublisher:
     publisher.register(GATEWAY_RECONCILIATION, report_reconciliation)
     publisher.register(BUDGET_THRESHOLD, deliver_budget_alert)
     publisher.register(COMPLIANCE_DELIVERY, deliver_compliance_event)
+    publisher.register(EVIDENCE_MONTHLY_READY, announce_monthly_evidence)
     register_analytics_handlers(publisher)
     return publisher
 
@@ -128,6 +130,36 @@ async def deliver_budget_alert(message: OutboxMessage) -> None:
         raise ValueError("budget alert endpoint is unsafe") from exc
 
 
+async def announce_monthly_evidence(message: OutboxMessage) -> None:
+    from shim_enterprise.compliance.services.forwarder import (
+        ComplianceForwarderService,
+    )
+    from shim_enterprise.core.database import AsyncSessionLocal
+
+    payload = _tenant_payload(message, aggregate_type="organization")
+    if payload["organization_id"] != message.aggregate_id:
+        raise ValueError("evidence notice identity mismatch")
+    kind, period = payload.get("kind"), payload.get("period")
+    if kind not in {"monthly", "monthly_partial"} or not isinstance(period, str):
+        raise ValueError("evidence notice requires a kind and a period")
+    async with AsyncSessionLocal.begin() as session:
+        await ComplianceForwarderService().send_tenant_alert(
+            session,
+            TenantId(message.organization_id),
+            body={
+                "source": "shim",
+                "event_type": "tenant_evidence",
+                "kind": "evidence_monthly_ready",
+                "report_kind": kind,
+                "period": period,
+                "sha256": payload.get("sha256"),
+                "download": f"/api/v1/compliance/evidence/monthly/{period}?kind={kind}",
+                "occurred_at": payload.get("generated_at"),
+            },
+            delivery_key=f"evidence_{kind}:{period}",
+        )
+
+
 async def deliver_compliance_event(message: OutboxMessage) -> None:
     tenant_level = message.aggregate_type == "organization"
     payload = _tenant_payload(
@@ -155,14 +187,13 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
     if bundle_kind != target_kind:
         raise ValueError("compliance delivery target kind mismatch")
     if target_kind == "email":
-        relaxed = body.get("kind") == "privacy_protection_relaxed"
+        subjects = {
+            "privacy_protection_relaxed": "shim privacy protection turned off",
+            "evidence_monthly_ready": "shim monthly evidence file ready",
+        }
         await _send_compliance_email(
             endpoint,
-            subject=(
-                "shim privacy protection turned off"
-                if relaxed
-                else "shim compliance finding summary"
-            ),
+            subject=subjects.get(body.get("kind"), "shim compliance finding summary"),
             text=_compliance_text(body),
             idempotency_key=message.idempotency_key,
         )
@@ -233,6 +264,11 @@ def _compliance_text(body: dict) -> str:
         fields = ", ".join(map(str, body.get("fields", [])))
         actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
         return f"shim privacy protection turned off: {fields} (by {actor})"
+    if body.get("kind") == "evidence_monthly_ready":
+        return (
+            f"shim monthly evidence file for {body.get('period')} is ready: "
+            f"GET {body.get('download')}"
+        )
     return f"shim compliance alert: {body.get('message', body.get('kind', 'event'))}"
 
 

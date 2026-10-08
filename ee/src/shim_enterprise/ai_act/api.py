@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from shim_enterprise.ai_act.schemas import (
     AuditLogPage,
     AuditLogRead,
     AuditReportRequest,
+    MonthlyEvidenceRead,
     OversightDecision,
     OversightPolicyCreate,
     OversightPolicyRead,
@@ -47,6 +48,7 @@ from shim_enterprise.ai_act.verify import (
     verify_chain,
 )
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
+from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import change_details, export_details
@@ -258,6 +260,70 @@ async def export_audit_bundle(
             "Content-Disposition": (
                 f'attachment; filename="shim-audit-bundle-{tenant_id}.json"'
             )
+        },
+    )
+
+
+@router.get("/evidence/monthly", response_model=list[MonthlyEvidenceRead])
+async def list_monthly_evidence(
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> list[MonthlyEvidenceRead]:
+    # The listing never loads the files themselves.
+    rows = await session.execute(
+        select(
+            MonthlyEvidenceFile.period,
+            MonthlyEvidenceFile.kind,
+            MonthlyEvidenceFile.format,
+            MonthlyEvidenceFile.size_bytes,
+            MonthlyEvidenceFile.sha256,
+            MonthlyEvidenceFile.generated_at,
+        )
+        .where(MonthlyEvidenceFile.organization_id == current_user.organization_id)
+        .order_by(MonthlyEvidenceFile.period.desc(), MonthlyEvidenceFile.kind)
+    )
+    return [MonthlyEvidenceRead.model_validate(row) for row in rows]
+
+
+@router.get(
+    "/evidence/monthly/{period}",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/pdf": {}}, "description": "The PDF."},
+        404: {"description": "No file of this kind for this period."},
+    },
+)
+async def download_monthly_evidence(
+    period: str = Path(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
+    kind: Literal["monthly", "monthly_partial"] = Query(default="monthly"),
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    stored = await session.scalar(
+        select(MonthlyEvidenceFile).where(
+            MonthlyEvidenceFile.organization_id == current_user.organization_id,
+            MonthlyEvidenceFile.kind == kind,
+            MonthlyEvidenceFile.period == period,
+        )
+    )
+    if stored is None:
+        raise HTTPException(status_code=404, detail="No evidence file for this period")
+    await _audit(
+        session,
+        current_user,
+        "tenant.evidence_downloaded",
+        str(stored.id),
+        details={"kind": kind, "period": period, "sha256": stored.sha256},
+    )
+    await session.commit()
+    return Response(
+        stored.content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="shim-evidence-{kind}-{period}.pdf"'
+            ),
+            "X-Content-SHA256": stored.sha256,
         },
     )
 

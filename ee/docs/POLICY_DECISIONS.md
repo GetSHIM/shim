@@ -112,8 +112,9 @@ is the user who signed in, and a login that changes nothing records nothing.
 Evidence reads are recorded too, once the data is selected, so an export never
 contains its own event: `compliance.audit_bundle_exported`,
 `compliance.audit_verified` (with `ok`), `compliance.audit_report_generated`,
-`compliance.kvkk_report_generated`, `tenant.requests_exported` and
-`tenant.billing_exported`. Each carries the window `start` and `end` and, where it
+`compliance.kvkk_report_generated`, `tenant.requests_exported`,
+`tenant.billing_exported` and `tenant.evidence_downloaded` (with `kind`,
+`period` and `sha256` of the file). Each carries the window `start` and `end` and, where it
 applies, the row count, format, frameworks, connector or grouping. List views
 (`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
@@ -182,3 +183,47 @@ window. The scope line then reads "all tenant connectors and the gateway". The
 section holds entity names, categories and counts only, and the header names the
 organization by its id. A connector-scoped report and the CSV keep their
 connector-only content.
+
+## Monthly evidence file
+
+On each pass the ai_act worker writes the previous calendar month's evidence
+file (UTC) for every organization that is not archived, had at least one request
+started in that month, and has no file for it yet. The file is a PDF stored in
+`evidence_reports` (`kind` `monthly`) with its SHA-256, size, generation time and
+generator version. A row is written once and never changed; a second worker
+racing for the same month inserts nothing. Rendering runs off the event loop.
+
+The PDF says on its cover that it is a measurement of gateway traffic, not an
+audit, an assessment or a certification. Each section names its source table
+and window:
+
+1. Traffic: requests and cost per provider and per model, from the spend and
+   quota settlements, with unknown prices shown as unknown, never as zero.
+2. What left: per provider and entity type, the values masked, monitored and
+   blocked, the count of bulk disclosures and the entity types found in
+   answers, from `request_lifecycle` metadata. A field the gateway version did
+   not record reads "not recorded in this version".
+3. What was stopped: policy verdicts with outcome `deny`, by rule and reason code.
+4. Who changed what: management actions by action and actor type.
+5. Audit chain: the [server-side check](#audit-evidence-bundle) for the month,
+   from the latest daily anchor before it, or the reason it could not run.
+6. Findings: per rule, the [findings](FINDINGS.md) opened, open at the end and
+   resolved in the month.
+
+The file holds counts and names only: no prompt, answer, detected value or key.
+
+The same transaction queues one `evidence.monthly_ready` intent (idempotency key
+`evidence:<kind>:<period>`). The outbox worker turns it into one
+`compliance.connector_delivery_requested` delivery per enabled
+[forward target](COOKBOOK.md#send-tenant-alerts) of the tenant, with the body
+`{"source": "shim", "event_type": "tenant_evidence", "kind":
+"evidence_monthly_ready", "report_kind": ..., "period": ..., "sha256": ...,
+"download": "/api/v1/compliance/evidence/monthly/<period>?kind=<kind>",
+"occurred_at": ...}`; Slack and e-mail get one sentence with the period and
+the download route. The file itself is never sent.
+
+An operator can write one file with `ee/scripts/generate_monthly_evidence.py
+--organization <uuid> --period YYYY-MM`: a closed month is written as `monthly`,
+the current month as `monthly_partial` (so a test never takes the closed
+month's place), a future month is refused, and so is a period that already has
+a file of that kind.

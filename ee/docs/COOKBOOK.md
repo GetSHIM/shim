@@ -23,6 +23,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 
 ## Attribute spend to teams
 
@@ -460,3 +461,36 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Collect the monthly evidence file
+
+Hand an auditor last month's gateway evidence without generating anything by hand.
+
+1. Run the ai_act worker (`python -m shim_enterprise.workers.ai_act`). On the
+   first pass of each month it writes the previous month's PDF for every
+   organization with traffic in that month.
+2. Optionally add a [forward target](#send-tenant-alerts): it is told when the
+   file is ready.
+3. As an owner, admin or auditor, list the files with
+   `GET /api/v1/compliance/evidence/monthly` and download one with
+   `GET /api/v1/compliance/evidence/monthly/{YYYY-MM}`.
+
+```console
+curl http://localhost:8000/api/v1/compliance/evidence/monthly \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -OJ http://localhost:8000/api/v1/compliance/evidence/monthly/2026-09 \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes:
+
+- Each list item has `period`, `kind`, `format`, `size_bytes`, `sha256` and
+  `generated_at`. The download carries `X-Content-SHA256`; compare it with the
+  list. Every download is recorded as `tenant.evidence_downloaded`.
+- To see the month so far, an operator runs
+  `python ee/scripts/generate_monthly_evidence.py --organization <uuid> --period <current YYYY-MM>`
+  in the enterprise image, then downloads it with `?kind=monthly_partial`. Each
+  kind and month is written once; the script refuses a second run.
+- What the file contains and does not contain is in
+  [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).

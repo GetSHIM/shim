@@ -191,3 +191,12 @@ class OversightRequestRead(OrmReadModel):
 class OversightDecision(BaseModel):
     decision: Literal["approve", "reject"]
     note: str | None = Field(default=None, max_length=2_000)
+
+
+class MonthlyEvidenceRead(OrmReadModel):
+    period: str
+    kind: Literal["monthly", "monthly_partial"]
+    format: str
+    size_bytes: int = Field(ge=0)
+    sha256: str
+    generated_at: datetime
