@@ -240,6 +240,23 @@ _CARD_MAPS = {
 }
 
 
+def empty_privacy_card() -> dict[str, Any]:
+    """The card of a user without a tenant, as the overview answers one."""
+    return {
+        **{family: {} for family in _CARD_MAPS},
+        **dict.fromkeys(
+            (
+                "requests",
+                "requests_with_personal_data",
+                "blocked_requests",
+                "bulk_disclosures",
+                "secrets",
+            ),
+            0,
+        ),
+    }
+
+
 async def build_privacy_card(
     session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
 ) -> dict[str, Any]:

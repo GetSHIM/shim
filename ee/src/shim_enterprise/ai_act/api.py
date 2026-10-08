@@ -26,6 +26,7 @@ from shim_enterprise.ai_act.overview import (
     build_overview,
     build_privacy_card,
     empty_overview,
+    empty_privacy_card,
 )
 from shim_enterprise.ai_act.oversight import (
     OversightStateError,
@@ -215,9 +216,11 @@ async def privacy_card(
     end = datetime.combine(day + timedelta(days=1), time(), zone).astimezone(
         timezone.utc
     )
-    if current_user.organization_id is None:
-        raise HTTPException(status_code=403, detail="A tenant membership is required.")
-    counts = await build_privacy_card(session, current_user.organization_id, start, end)
+    counts = (
+        empty_privacy_card()
+        if current_user.organization_id is None
+        else await build_privacy_card(session, current_user.organization_id, start, end)
+    )
     return PrivacyCard(
         date=day,
         window={"start": start, "end": end, "tz": tz},

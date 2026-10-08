@@ -246,7 +246,9 @@ curl "http://localhost:8000/api/v1/compliance/privacy-card?date=2026-10-07&tz=Eu
 
 Notes: the card holds counts only, never a value, placeholder, prompt or user.
 Requests written before a count existed add zero to it. It reads the tenant's
-request lifecycle for one day, so it is cheap to load on every visit.
+request lifecycle for one day, so it is cheap to load on every visit. A user who
+belongs to no organization gets a card of zeros, as the compliance overview
+answers.
 
 ## Send tenant alerts
 
