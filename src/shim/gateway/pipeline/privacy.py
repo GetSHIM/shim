@@ -280,7 +280,9 @@ def scrub_payload(
         return dict(payload), verification_map
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten.
-    protects = any(action in {"mask", "block"} for action in actions.values())
+    protects = any(
+        action in {"mask", "mask_last4", "block"} for action in actions.values()
+    )
     unmasked = {} if unmasked is None else unmasked
 
     placeholders_by_value = {

@@ -1220,6 +1220,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         {"entity_actions": {"PERSON": "mask"}},
         {"entity_actions": {"SECRET": "warn"}},
         {"entity_actions": {"SECRET": "mask_last4"}},
+        {"entity_actions": {"EMAIL_ADDRESS": "mask_last4"}},
     ],
 )
 def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
@@ -1235,6 +1236,13 @@ def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
         ({}, {"EMAIL_ADDRESS": "monitor"}, ["entity_actions.EMAIL_ADDRESS"]),
         ({"SECRET": "monitor"}, {"SECRET": "block"}, None),
         ({}, {"IBAN_CODE": "mask"}, None),
+        ({}, {"CREDIT_CARD": "mask_last4"}, ["entity_actions.CREDIT_CARD"]),
+        ({"IBAN_CODE": "mask_last4"}, {"IBAN_CODE": "mask"}, None),
+        (
+            {"IBAN_CODE": "mask_last4"},
+            {"IBAN_CODE": "monitor"},
+            ["entity_actions.IBAN_CODE"],
+        ),
     ],
 )
 async def test_lowering_an_entity_action_is_a_relaxation(

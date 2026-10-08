@@ -148,7 +148,10 @@ client = genai.Client(
 The provider receives placeholders in place of the detected values, in the
 form `<EMAIL_ADDRESS_75344f3b9ce7dabdf18cb32cabf22e43>`.
 They are generated per request, so the same value gets a different placeholder
-next time, and the reply is restored before it reaches your caller.
+next time, and the reply is restored before it reaches your caller. A card or
+IBAN set to `mask_last4` keeps its last four characters after the hex, as in
+`<CREDIT_CARD_75344f3b9ce7dabdf18cb32cabf22e43~1111>`, so the model can say
+"the card ending in 1111".
 
 Provider credentials come from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or
 `GOOGLE_API_KEY`, or per request through `x-provider-key`. The shim key

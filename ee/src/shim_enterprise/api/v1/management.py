@@ -294,7 +294,7 @@ _PRIVACY_SWITCHES = (
     "block_secrets",
     "block_pii_tr",
 )
-_ACTION_RANK = {"off": 0, "monitor": 1, "mask": 2, "block": 3}
+_ACTION_RANK = {"off": 0, "monitor": 1, "mask_last4": 2, "mask": 3, "block": 4}
 
 
 class PrivacySettings(BaseModel):

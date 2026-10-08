@@ -212,6 +212,7 @@ Mask most types, watch some, and refuse a request that carries a pasted key.
    | Action | What shim does |
    | --- | --- |
    | `mask` | Replaces the value with a placeholder and restores it in the answer. |
+   | `mask_last4` | `CREDIT_CARD` and `IBAN_CODE` only: masks like `mask`, with the last four digits (card) or characters (IBAN, upper-cased) after the placeholder's hex, `<CREDIT_CARD_…~1111>`. |
    | `monitor` | Sends the value unchanged and counts it in `monitored_entities`. |
    | `block` | Refuses the request with 400 before any provider call, `count_tokens` included. |
    | `off` | Does not look for the type. |
@@ -239,8 +240,11 @@ except openai.BadRequestError as error:
     print(error.body["message"])  # Request blocked by privacy policy: SECRET.
 ```
 
-Notes: an unknown type or action stops the gateway at start-up with the setting
-named. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
+Notes: an unknown type or action, or `mask_last4` on another type, stops the
+gateway at start-up with the setting named. A tailed placeholder is restored
+whether the model writes it back with or without its tail; with a different
+tail it is left as written. The tail reaches only the provider: events and
+metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
 A type set to `monitor` or `off` is not checked in provider protocol
 identifiers, and a gateway where no type is `mask` or `block` also accepts
 images and files it cannot inspect. Enterprise sets the same actions per tenant;

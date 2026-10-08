@@ -6739,6 +6739,7 @@
                 "off",
                 "monitor",
                 "mask",
+                "mask_last4",
                 "block"
               ],
               "type": "string"
@@ -6779,6 +6780,7 @@
                 "off",
                 "monitor",
                 "mask",
+                "mask_last4",
                 "block"
               ],
               "type": "string"
@@ -6794,6 +6796,7 @@
                 "off",
                 "monitor",
                 "mask",
+                "mask_last4",
                 "block"
               ],
               "type": "string"

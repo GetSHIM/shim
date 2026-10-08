@@ -152,6 +152,7 @@ switches are on by default, so every type is masked.
 | Action | What shim does |
 | --- | --- |
 | `mask` | Replaces the value with a placeholder and restores it in the answer. |
+| `mask_last4` | `CREDIT_CARD` and `IBAN_CODE` only: masks, keeping the last four digits (card) or characters (IBAN) after the placeholder's hex, `<CREDIT_CARD_…~1111>`. |
 | `monitor` | Sends the value unchanged and counts it in the request's `monitored_entities`. |
 | `block` | Refuses the request with 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` before any provider call. |
 | `off` | Does not look for the type. |
@@ -170,11 +171,12 @@ curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
   -d '{"block_pii_tr": false, "entity_actions": {"SECRET": "block", "EMAIL_ADDRESS": "monitor"}}'
 ```
 
-Notes: an unknown type or action, or `"entity_actions": null`, is 422. A blocked
+Notes: an unknown type or action, `mask_last4` on a type other than
+`CREDIT_CARD` or `IBAN_CODE`, or `"entity_actions": null`, is 422. A blocked
 request is listed under `/requests` as `rejected` with its `blocked_entities`.
 Every change records a `tenant.privacy_policy_updated` audit event.
 Turning a switch off, or moving a type down the order `block`, `mask`,
-`monitor`, `off` through `entity_actions`, also records
+`mask_last4`, `monitor`, `off` through `entity_actions`, also records
 `tenant.privacy_protection_relaxed` and queues
 one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the

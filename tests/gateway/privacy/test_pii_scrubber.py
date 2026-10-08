@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from unittest.mock import Mock
 
@@ -17,7 +18,11 @@ from shim.privacy.deanonymizer import (
 )
 from shim.privacy import pii_scrubber as pii_scrubber_module
 from shim.privacy.pii_scrubber import PIIInputTooLarge, PIIScrubberService
-from shim.privacy.policies import effective_entity_actions
+from shim.privacy.policies import (
+    PrivacyAction,
+    PrivacyOutcome,
+    effective_entity_actions,
+)
 
 
 @pytest.fixture
@@ -1323,6 +1328,7 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
     [
         ({"PERSON": "mask"}, "unknown entity type: PERSON"),
         ({"SECRET": "warn"}, "unknown entity action: warn"),
+        ({"EMAIL_ADDRESS": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
     ],
 )
 def test_entity_actions_reject_unknown_types_and_actions(overrides, message) -> None:
@@ -1379,3 +1385,130 @@ def test_analyze_reports_each_entity_action(scrubber: PIIScrubberService) -> Non
     assert [(item["type"], item["action"]) for item in findings] == [
         ("EMAIL_ADDRESS", "monitor")
     ]
+
+
+_LAST4 = effective_entity_actions(
+    None, {"CREDIT_CARD": "mask_last4", "IBAN_CODE": "mask_last4"}
+)
+
+
+@pytest.mark.parametrize(
+    ("value", "entity_type", "tail"),
+    [
+        ("4111 1111 1111 1111", "CREDIT_CARD", "1111"),
+        ("5555-5555-5555-4444", "CREDIT_CARD", "4444"),
+        ("TR33 0006 1005 1978 6457 8413 26", "IBAN_CODE", "1326"),
+        ("mt84 malt 0110 0001 2345 mtlc ast0 01s", "IBAN_CODE", "001S"),
+    ],
+)
+def test_mask_last4_keeps_the_last_four_after_the_hex(
+    scrubber: PIIScrubberService, value: str, entity_type: str, tail: str
+) -> None:
+    scrubbed, mapping = scrubber.scrub(f"Pay with {value} today", _LAST4)
+
+    [placeholder] = mapping
+    assert re.fullmatch(rf"<{entity_type}_[0-9a-f]{{32}}~{tail}>", placeholder)
+    assert scrubbed == f"Pay with {placeholder} today"
+    assert mapping[placeholder] == value
+    assert scrubber.deanonymize(scrubbed, mapping) == f"Pay with {value} today"
+    assert "~" not in next(iter(scrubber.scrub(value)[1]))
+
+
+def test_a_tail_too_short_to_show_keeps_the_value_masked_whole() -> None:
+    assert pii_scrubber_module._tail("IBAN_CODE", "T-R-3") == ""
+    assert (
+        pii_scrubber_module._tail("CREDIT_CARD", "４１１１ １１１１ １１１１ ４３２１")
+        == "~4321"
+    )
+
+
+def test_a_tailed_placeholder_restores_with_or_without_its_tail_only(
+    scrubber: PIIScrubberService,
+) -> None:
+    _, mapping = scrubber.scrub("4111 1111 1111 1111", _LAST4)
+    [placeholder] = mapping
+    bare = placeholder.partition("~")[0] + ">"
+    wrong = placeholder.partition("~")[0] + "~9999>"
+
+    assert scrubber.deanonymize(f"{placeholder} {bare}", mapping) == (
+        "4111 1111 1111 1111 4111 1111 1111 1111"
+    )
+    assert scrubber.deanonymize(wrong, mapping) == wrong
+    assert scrubber.deanonymize("<CREDIT_CARD_" + "0" * 32 + ">", mapping) == (
+        "<CREDIT_CARD_" + "0" * 32 + ">"
+    )
+
+
+def test_pii_entities_counts_a_tailed_placeholder_once(
+    scrubber: PIIScrubberService,
+) -> None:
+    _, mapping = scrubber.scrub("4111 1111 1111 1111 and 4111 1111 1111 1111", _LAST4)
+    outcome = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED, pii_detected=True, verification_map=mapping
+    )
+
+    assert dict(outcome.pii_entities) == {"CREDIT_CARD": 1}
+
+
+def test_a_tailed_placeholder_survives_every_stream_split(
+    scrubber: PIIScrubberService,
+) -> None:
+    from shim.privacy.deanonymizer import restore_fragment
+
+    _, mapping = scrubber.scrub("TR33 0006 1005 1978 6457 8413 26", _LAST4)
+    [placeholder] = mapping
+    value = mapping[placeholder]
+    bare = placeholder.partition("~")[0] + ">"
+    for token, expected in ((placeholder, value), (bare, value)):
+        for split in range(len(token) + 1):
+            buffers: dict[tuple[object, ...], str] = {}
+            output = restore_fragment(buffers, (0,), token[:split], mapping, scrubber)
+            output += restore_fragment(buffers, (0,), token[split:], mapping, scrubber)
+            assert output == expected
+            assert not buffers
+
+
+def test_chat_stream_restores_a_tail_split_across_chunks(
+    scrubber: PIIScrubberService,
+) -> None:
+    _, mapping = scrubber.scrub("4111 1111 1111 1111", _LAST4)
+    [placeholder] = mapping
+    restorer = OpenAIStreamRestorer(mapping, scrubber)
+    split = placeholder.index("~") + 2
+
+    chunks = [
+        restorer.restore_chat_chunk(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": part}, "finish_reason": end}
+                ]
+            }
+        )
+        for part, end in (
+            ("Card " + placeholder[:split], None),
+            (placeholder[split:] + ".", "stop"),
+        )
+    ]
+
+    assert "".join(chunk["choices"][0]["delta"]["content"] for chunk in chunks) == (
+        "Card 4111 1111 1111 1111."
+    )
+
+
+def test_json_restoration_resolves_tailed_placeholders(
+    scrubber: PIIScrubberService,
+) -> None:
+    _, mapping = scrubber.scrub("TR33 0006 1005 1978 6457 8413 26", _LAST4)
+    [placeholder] = mapping
+    bare = placeholder.partition("~")[0] + ">"
+    payload = {
+        "id": placeholder,
+        "content": [{"type": "text", "text": f"{placeholder} {bare}"}],
+    }
+
+    restored = restore_anthropic_payload(payload, mapping, scrubber)
+
+    assert restored["id"] == placeholder
+    assert restored["content"][0]["text"] == (
+        "TR33 0006 1005 1978 6457 8413 26 TR33 0006 1005 1978 6457 8413 26"
+    )

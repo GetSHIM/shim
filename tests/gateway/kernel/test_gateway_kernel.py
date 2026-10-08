@@ -538,3 +538,20 @@ async def test_an_all_monitor_tenant_is_not_refused_for_media_or_identifiers(
     assert refused.headers["x-shim-error-code"] == "PRIVACY_POLICY_BLOCKED"
     assert sent.status_code == 200
     assert json.loads(sent_calls[0].content)["messages"] == [message]
+
+
+@pytest.mark.asyncio
+async def test_mask_last4_shows_the_tail_to_the_provider_and_counts_only_elsewhere():
+    response, calls, events = await _send(
+        {"CREDIT_CARD": "mask_last4"},
+        "chat",
+        _ROUTES["chat"][2]("Refund card 4111 1111 1111 1111 please"),
+    )
+
+    sent = json.loads(calls[0].content)["messages"][0]["content"]
+    assert response.status_code == 200
+    assert "4111 1111 1111 1111" not in sent
+    assert sent.startswith("Refund card <CREDIT_CARD_") and "~1111> please" in sent
+    [event] = events
+    assert event["privacy_counts"] == {"CREDIT_CARD": 1}
+    assert "~1111" not in json.dumps(event)

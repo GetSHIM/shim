@@ -50,7 +50,7 @@ def effective_pii_config(config: Mapping[str, Any] | None = None) -> dict[str, b
     }
 
 
-EntityAction = Literal["off", "monitor", "mask", "block"]
+EntityAction = Literal["off", "monitor", "mask", "mask_last4", "block"]
 
 
 def effective_entity_actions(
@@ -68,6 +68,13 @@ def effective_entity_actions(
             raise ValueError(f"unknown entity type: {entity_type}")
         if action not in get_args(EntityAction):
             raise ValueError(f"unknown entity action: {action}")
+        if action == "mask_last4" and entity_type not in {
+            "CREDIT_CARD",
+            "IBAN_CODE",
+        }:
+            raise ValueError(
+                f"mask_last4 is only for CREDIT_CARD and IBAN_CODE: {entity_type}"
+            )
         actions[entity_type] = cast(EntityAction, action)
     return dict(sorted(actions.items()))
 
@@ -136,7 +143,7 @@ class PrivacyOutcome:
 
         counts: Counter[str] = Counter()
         for placeholder in self.verification_map.keys() - self.inherited_placeholders:
-            name = str(placeholder).strip("<>")
+            name = str(placeholder).strip("<>").partition("~")[0]
             entity_type, _, _suffix = name.rpartition("_")
             counts[entity_type or name] += 1
         return MappingProxyType(dict(counts))

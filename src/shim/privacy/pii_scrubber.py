@@ -16,7 +16,9 @@ from shim.privacy.presidio_analyzer import PresidioAnalyzer
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
-_PLACEHOLDER = re.compile(r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))\s*>")
+_PLACEHOLDER = re.compile(
+    r"<\s*([A-Z][A-Z0-9_]*_(?:[0-9a-f]{8}|[0-9a-f]{32}))(~[0-9A-Z]{4})?\s*>"
+)
 _PERCENT_BYTE = re.compile(r"%([0-9A-Fa-f]{2})")
 _SourceSpan = tuple[int, int]
 MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
@@ -207,18 +209,20 @@ class PIIScrubberService:
         cursor = 0
         for item in detections:
             value = text[item.start : item.end]
-            if actions[item.entity_type] != "mask":
+            action = actions[item.entity_type]
+            if action not in {"mask", "mask_last4"}:
                 if unmasked is not None:
                     unmasked[value] = item.entity_type
                 continue
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
-                placeholder = self._placeholder(item.entity_type)
+                tail = _tail(item.entity_type, value) if action == "mask_last4" else ""
+                placeholder = self._placeholder(item.entity_type, tail)
                 while (
                     placeholder in (known_placeholders or {})
                     or placeholder in verification_map
                 ):
-                    placeholder = self._placeholder(item.entity_type)
+                    placeholder = self._placeholder(item.entity_type, tail)
                 placeholders_by_value[value] = placeholder
             verification_map[placeholder] = value
             scrubbed.append(text[cursor : item.start])
@@ -230,10 +234,26 @@ class PIIScrubberService:
     def deanonymize(self, text: str, verification_map: Mapping[str, str]) -> str:
         if not text or not verification_map:
             return text
-        return _PLACEHOLDER.sub(
-            lambda match: verification_map.get(f"<{match.group(1)}>", match.group()),
-            text,
-        )
+
+        def restore(match: re.Match[str]) -> str:
+            identifier, tail = match.groups()
+            if tail:
+                return verification_map.get(f"<{identifier}{tail}>", match.group())
+            value = verification_map.get(f"<{identifier}>")
+            if value is None:
+                # A model may write a tailed placeholder back without its tail.
+                prefix = f"<{identifier}~"
+                value = next(
+                    (
+                        original
+                        for placeholder, original in verification_map.items()
+                        if placeholder.startswith(prefix)
+                    ),
+                    None,
+                )
+            return match.group() if value is None else value
+
+        return _PLACEHOLDER.sub(restore, text)
 
     def _detections(
         self,
@@ -330,5 +350,18 @@ class PIIScrubberService:
         return selected
 
     @staticmethod
-    def _placeholder(entity_type: str) -> str:
-        return f"<{entity_type}_{secrets.token_hex(16)}>"
+    def _placeholder(entity_type: str, tail: str = "") -> str:
+        return f"<{entity_type}_{secrets.token_hex(16)}{tail}>"
+
+
+def _tail(entity_type: str, value: str) -> str:
+    kept = [
+        character
+        for character in _preprocess_with_spans(value)[0].upper()
+        if character.isascii()
+        and (
+            character.isdigit() if entity_type == "CREDIT_CARD" else character.isalnum()
+        )
+    ]
+    # Fewer than four usable characters keeps the whole value masked.
+    return "~" + "".join(kept[-4:]) if len(kept) >= 4 else ""

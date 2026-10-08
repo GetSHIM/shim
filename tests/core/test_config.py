@@ -91,7 +91,14 @@ def test_pii_entity_actions_are_parsed_from_json_and_default_to_none() -> None:
     [
         ("{not json", "Expecting property name"),
         ('{"PERSON": "mask"}', "unknown entity type: PERSON"),
-        ('{"SECRET": "warn"}', "Input should be 'off', 'monitor', 'mask' or 'block'"),
+        (
+            '{"SECRET": "warn"}',
+            "Input should be 'off', 'monitor', 'mask', 'mask_last4' or 'block'",
+        ),
+        (
+            '{"EMAIL_ADDRESS": "mask_last4"}',
+            "mask_last4 is only for CREDIT_CARD and IBAN_CODE: EMAIL_ADDRESS",
+        ),
         ('["SECRET"]', "Input should be a valid dictionary"),
     ],
 )
