@@ -915,16 +915,14 @@ async def test_team_breakdown_rows_carry_the_tenant_team_name(
         )
     await db.flush()
 
-    from shim_enterprise.compliance import reporting
-
     pdf_rows = []
 
     def evidence_table(rows, headers):
         pdf_rows.extend(rows)
         return real_evidence_table(rows, headers)
 
-    real_evidence_table = reporting.evidence_table
-    monkeypatch.setattr(reporting, "evidence_table", evidence_table)
+    real_evidence_table = management.evidence_table
+    monkeypatch.setattr(management, "evidence_table", evidence_table)
     owner = await db.get(User, test_api_key.user_id)
     owner.role = "owner"
     app = FastAPI()
