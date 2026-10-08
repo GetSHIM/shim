@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
@@ -50,6 +51,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Response scans queue here, not on the loop's default executor that the
+# request-path scrub and secret fetches share, so a burst of large answers
+# cannot delay another request's privacy stage.
+# ponytail: the GIL still costs event-loop time while a scan runs; a process
+# pool is the upgrade path. One idle worker, joined at interpreter exit.
+_RESPONSE_SCAN_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="response-scan"
+)
+
 
 class _ManagedStreamingResponse(StreamingResponse):
     def __init__(self, session: StreamSession, **kwargs: Any) -> None:
@@ -94,8 +104,12 @@ class ResponsePostprocessor:
 
     async def _scan_response(self, prepared: PreparedInference, text: str) -> None:
         try:
-            result = await asyncio.to_thread(
-                scan_response, text, prepared, PIIScrubberService()
+            result = await asyncio.get_running_loop().run_in_executor(
+                _RESPONSE_SCAN_EXECUTOR,
+                scan_response,
+                text,
+                prepared,
+                PIIScrubberService(),
             )
         except Exception as exc:
             logger.warning("Response privacy scan failed type=%s", type(exc).__name__)
