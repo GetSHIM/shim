@@ -102,6 +102,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "completion_tokens",
         "estimated_cost_usd",
         "estimated",
+        "cache_read_tokens",
+        "cache_write_tokens",
         "privacy_counts",
         "monitored_entities",
         "blocked_entities",
@@ -128,6 +130,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "completion_tokens": 7,
         "estimated_cost_usd": "0.0000106",
         "estimated": False,
+        "cache_read_tokens": None,
+        "cache_write_tokens": None,
         "privacy_counts": {"EMAIL_ADDRESS": 1},
         "monitored_entities": {},
         "blocked_entities": {},
@@ -529,3 +533,108 @@ async def test_a_response_scan_writes_a_second_jsonl_line() -> None:
         "response_entities": {"TR_NATIONAL_ID": 1},
         "truncated": False,
     }
+
+
+@pytest.mark.parametrize(
+    ("provider", "usage", "split"),
+    [
+        (
+            "anthropic",
+            {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 4_000,
+                "cache_read_input_tokens": 6_000,
+            },
+            (6_000, 4_000, 0),
+        ),
+        (
+            "anthropic",
+            {
+                "input_tokens": 100,
+                "cache_creation_input_tokens": 4_000,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 1_000,
+                    "ephemeral_1h_input_tokens": 3_000,
+                },
+            },
+            (0, 1_000, 3_000),
+        ),
+        ("anthropic", {"input_tokens": 100}, None),
+        (
+            "openai",
+            {"prompt_tokens": 5_000, "prompt_tokens_details": {"cached_tokens": 4_096}},
+            (4_096, 0, 0),
+        ),
+        (
+            "openai",
+            {"input_tokens": 5_000, "input_tokens_details": {"cached_tokens": 1_024}},
+            (1_024, 0, 0),
+        ),
+        ("openai", {"prompt_tokens": 5_000}, None),
+        (
+            "google",
+            {"promptTokenCount": 5_000, "cachedContentTokenCount": 2_048},
+            (2_048, 0, 0),
+        ),
+        ("google", {"promptTokenCount": 5_000}, None),
+        ("openai", {"prompt_tokens_details": {"cached_tokens": -1}}, None),
+    ],
+)
+def test_the_cache_split_is_read_from_each_providers_usage(provider, usage, split):
+    from shim.gateway.streaming.meter import cache_split
+
+    assert cache_split(usage, provider) == split
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream):
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+    from shim.gateway.streaming import StreamMeter
+
+    usage = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_creation_input_tokens": 4_000,
+        "cache_read_input_tokens": 6_000,
+    }
+    if stream:
+        meter = StreamMeter(
+            provider="anthropic",
+            requested_model="claude-haiku-4-5",
+            prompt_tokens_estimated=1,
+        )
+        meter.observe_sse(
+            b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
+            + json.dumps({**usage, "output_tokens": 1}).encode()
+            + b"}}\n\n"
+        )
+        meter.observe_sse(
+            b'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":20}}\n\n'
+        )
+        snapshot = meter.snapshot()
+    else:
+        prepared = _prepared(model="claude-haiku-4-5")
+        prepared.provider = "anthropic"
+        prepared.protocol = "messages"
+        prepared.admission.maximum_output_tokens = 10
+        recorder = SimpleNamespace(finalize=AsyncMock())
+        await module.ResponsePostprocessor(
+            recorder, heartbeat_interval_seconds=30, output_hash_salt=None
+        ).finalize(
+            prepared,
+            ProviderNonStream(
+                {"content": [], "stop_reason": "end_turn", "usage": usage}, None
+            ),
+            stream_session=None,
+        )
+        snapshot = recorder.finalize.await_args.args[1].usage
+
+    # 100 uncached at $1, 6,000 read at $0.10, 4,000 written at $1.25, 20 out at $5.
+    assert snapshot.prompt_tokens == 10_100
+    assert snapshot.cache_split == (6_000, 4_000, 0)
+    assert snapshot.settlement_cost_usd == Decimal("0.0058")
+    assert snapshot.pricing_metadata["cache_read_tokens"] == 6_000

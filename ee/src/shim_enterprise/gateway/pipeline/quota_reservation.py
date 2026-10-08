@@ -1025,6 +1025,9 @@ class DurableUsageLifecycle:
                         provider_finish_reasons=usage.provider_finish_reasons,
                         completion_outcome=usage.completion_outcome,
                         ttft_ms=usage.ttft_ms,
+                        cached_input_tokens=None
+                        if usage.cache_split is None
+                        else sum(usage.cache_split),
                         shim_latency_ms=terminal.shim_latency_ms,
                         completed_at=terminal.completed_at,
                     ),

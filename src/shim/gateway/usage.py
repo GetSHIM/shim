@@ -11,7 +11,7 @@ from threading import Thread
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol, TextIO, TypeAlias
 
-from shim.billing.pricing import DEFAULT_PRICE_BOOK, compute_cost_usd
+from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.kernel.result import AdmissionState, PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
 from shim.observability.metrics import LOCAL_USAGE_DROPPED_TOTAL
@@ -197,6 +197,7 @@ class LocalUsageLifecycle:
             ttft_ms=usage.ttft_ms,
             completion_outcome=usage.completion_outcome,
             shim_latency_ms=terminal.shim_latency_ms,
+            cache_split=usage.cache_split,
         )
 
     async def fail(
@@ -248,6 +249,7 @@ class LocalUsageLifecycle:
         provider_finish_reasons: dict[str, str] | None = None,
         ttft_ms: float | None = None,
         completion_outcome: str | None = None,
+        cache_split: CacheSplit | None = None,
     ) -> None:
         admission = prepared.admission
         privacy = prepared.privacy
@@ -263,6 +265,10 @@ class LocalUsageLifecycle:
             "completion_tokens": completion_tokens,
             "estimated_cost_usd": str(cost_usd) if cost_usd is not None else None,
             "estimated": estimated,
+            "cache_read_tokens": None if cache_split is None else cache_split[0],
+            "cache_write_tokens": None
+            if cache_split is None
+            else cache_split[1] + cache_split[2],
             "provider_finish_reasons": provider_finish_reasons,
             "completion_outcome": completion_outcome,
             "ttft_ms": ttft_ms,

@@ -2709,3 +2709,30 @@ async def test_a_response_scan_updates_only_its_own_tenants_lifecycle(
     ).scalar_one()
     assert lifecycle.lifecycle_metadata["response_entities"] is None
     assert lifecycle.lifecycle_metadata["response_scan"] == {"error": True}
+
+
+@pytest.mark.asyncio
+async def test_an_anthropic_reservation_prices_input_at_the_one_hour_write_rate() -> (
+    None
+):
+    repository = SimpleNamespace(
+        reserve_provider_spend=AsyncMock(return_value=SimpleNamespace())
+    )
+    policy_loader = SimpleNamespace(
+        spend=AsyncMock(
+            return_value=SpendPolicySnapshot(version="spend-v1", monthly_limit_usd=None)
+        )
+    )
+    session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+    prepared = _prepared()
+    prepared.provider = "anthropic"
+    prepared.model = prepared.pricing_model = "claude-haiku-4-5"
+
+    await DurableAccountingCoordinator(
+        repository=repository, policy_loader=policy_loader
+    ).reserve_spend(prepared, False, session)
+
+    command = repository.reserve_provider_spend.await_args.args[1]
+    # 20 input tokens at 2x the $1 base, 30 output tokens at $5.
+    assert command.estimated_cost_usd == Decimal("0.00019")
+    assert command.pricing_metadata["cache_write_1h_per_million"] == "2"

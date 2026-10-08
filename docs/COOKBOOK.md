@@ -164,7 +164,15 @@ refused at admission or by a privacy block; other values name a failure.
 
 Notes: `estimated_cost_usd` is a decimal string that can use exponent form
 (`6.5E-7`), so parse it as a decimal; it is `null` for a model without a catalog
-price. `estimated` is `true` when token counts were estimated rather than
+price. When the provider reports its prompt-cache split (Anthropic
+`cache_read_input_tokens` and `cache_creation_input_tokens`, OpenAI
+`cached_tokens`, Gemini `cachedContentTokenCount`), cached reads and cache writes
+are priced at the catalog's cache prices, an Anthropic one-hour write at twice
+the input price, and the event carries `cache_read_tokens` and
+`cache_write_tokens`; `prompt_tokens` stays the total. Without that split both
+are `null` and every input token is priced at the model's highest input rate
+(for Anthropic the one-hour write price), so the figure can only be above the
+provider's bill. `estimated` is `true` when token counts were estimated rather than
 reported by the provider. The writer queue is bounded and drops the newest event
 when full, counted by `shim_local_usage_dropped_total`. Community keeps no request
 history; durable per-team reports are enterprise.

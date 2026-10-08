@@ -14,6 +14,7 @@ from typing import Any, Literal
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
     UNSPECIFIED_PROVIDER_MODEL,
+    CacheSplit,
     compute_cost_usd,
 )
 from shim.gateway.streaming.sse import data_payload, pop_event
@@ -53,6 +54,8 @@ class StreamUsageSnapshot:
     provider_finish_reasons: dict[str, str] | None = None
     ttft_ms: float | None = None
     completion_outcome: CompletionOutcome | None = None
+    # Present only when the provider reported the cache split and usage is actual.
+    cache_split: CacheSplit | None = None
 
 
 class StreamMeter:
@@ -88,6 +91,7 @@ class StreamMeter:
         self.prompt_tokens_actual: int | None = None
         self.completion_tokens_actual: int | None = None
         self.response_model: str | None = None
+        self.cache_split: CacheSplit | None = None
         self.emitted_output_characters = 0
         self.emitted_answer_characters = 0
         # Answer text is kept only for the opt-in response scan, up to this many characters.
@@ -163,12 +167,14 @@ class StreamMeter:
             and DEFAULT_PRICE_BOOK.supports(self.response_model, self.provider)
             else self.requested_model
         )
+        split = None if estimated else self.cache_split
         settlement_cost = compute_cost_usd(
             settlement_model,
             prompt,
             completion,
             provider=self.provider,
             unpriced=self.unpriced,
+            cache=split,
         )
         return StreamUsageSnapshot(
             prompt_tokens=prompt,
@@ -181,6 +187,7 @@ class StreamMeter:
                 input_tokens=prompt,
                 output_tokens=completion,
                 unpriced=self.unpriced,
+                cache=split,
             ),
             estimated=estimated,
             output_hash=(
@@ -196,6 +203,7 @@ class StreamMeter:
                 refusal=self.refusal_seen,
                 tool_call=self.tool_call_seen,
             ),
+            cache_split=split,
         )
 
     def _observe_sse_event(self, event_text: str) -> None:
@@ -382,6 +390,9 @@ class StreamMeter:
                 self.prompt_tokens_actual = prompt
             if completion is not None:
                 self.completion_tokens_actual = completion
+            split = cache_split(usage, self.provider)
+            if split is not None:
+                self.cache_split = split
 
     @staticmethod
     def _output_delta_fragments(
@@ -490,6 +501,35 @@ class StreamMeter:
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0
             else None
         )
+
+
+def cache_split(usage: Mapping[str, Any], provider: str) -> CacheSplit | None:
+    """Cache-read, cache-write and one-hour-write tokens a provider reported, if any."""
+
+    count = StreamMeter._nonnegative_int
+    if provider == "anthropic":
+        read = count(usage.get("cache_read_input_tokens"))
+        created = count(usage.get("cache_creation_input_tokens"))
+        if read is None and created is None:
+            return None
+        breakdown = usage.get("cache_creation")
+        if isinstance(breakdown, Mapping):
+            return (
+                read or 0,
+                count(breakdown.get("ephemeral_5m_input_tokens")) or 0,
+                count(breakdown.get("ephemeral_1h_input_tokens")) or 0,
+            )
+        return (read or 0, created or 0, 0)
+    if provider == "google":
+        read = count(usage.get("cachedContentTokenCount"))
+    else:
+        details = usage.get("prompt_tokens_details", usage.get("input_tokens_details"))
+        read = (
+            count(details.get("cached_tokens"))
+            if isinstance(details, Mapping)
+            else None
+        )
+    return None if read is None else (read, 0, 0)
 
 
 def _sum_optional_counts(*values: int | None) -> int | None:

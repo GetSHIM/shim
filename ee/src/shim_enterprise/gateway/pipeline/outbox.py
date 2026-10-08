@@ -203,6 +203,7 @@ _DIAGNOSTIC_FIELDS = (
     "completion_outcome",
     "repeat_chain_length",
     "ttft_ms",
+    "cached_input_tokens",
     "shim_latency_ms",
     "system_prompt_hash",
     "deployment_kind",

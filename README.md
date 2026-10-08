@@ -77,7 +77,9 @@ request it:
   Enterprise monthly quota and spend-limit refusals carry no `Retry-After`; they
   clear when the period or the limit changes.
 - **Accounts usage and cost per request**, from that same catalog, attributed
-  by the `X-Shim-Tag` header. In enterprise an API key's assigned cost center
+  by the `X-Shim-Tag` header. Prompt-cache reads and writes the provider reports
+  are priced at their own rates; input whose cache split is unknown is priced at
+  the highest input rate, so an estimate is never lower than the bill. In enterprise an API key's assigned cost center
   takes precedence, and header tags remain breakdown dimensions.
 - **Sanitizes provider errors**, so a provider error body does not reach your
   caller unchanged. A provider's message is passed on only when it says how to

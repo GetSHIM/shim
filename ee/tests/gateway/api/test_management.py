@@ -378,6 +378,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "completion_outcome",
         "repeat_chain_length",
         "ttft_ms",
+        "cached_input_tokens",
         "system_prompt_hash",
         "deployment_kind",
         "pii_entities",

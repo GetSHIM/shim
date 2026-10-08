@@ -29,6 +29,7 @@ from shim.gateway.streaming.meter import (
     answer_characters,
     answer_markers,
     answer_texts,
+    cache_split,
     completion_outcome,
     native_finish_reasons,
     settled_outcome,
@@ -142,6 +143,14 @@ class ResponsePostprocessor:
             else completion_actual
         )
         fully_actual = prompt_actual is not None and completion_actual is not None
+        raw_usage = response.payload.get(
+            "usageMetadata" if str(prepared.provider) == "google" else "usage"
+        )
+        split = (
+            cache_split(raw_usage, str(prepared.provider))
+            if fully_actual and isinstance(raw_usage, Mapping)
+            else None
+        )
         provider = str(prepared.provider)
         lifecycle_status = _lifecycle_status(
             response.payload,
@@ -163,6 +172,7 @@ class ResponsePostprocessor:
             completion_tokens,
             provider=provider,
             unpriced=prepared.unpriced,
+            cache=split,
         )
         if response.latency_ms is not None:
             labels = {
@@ -202,8 +212,10 @@ class ResponsePostprocessor:
                     input_tokens=prompt_tokens,
                     output_tokens=completion_tokens,
                     unpriced=prepared.unpriced,
+                    cache=split,
                 ),
                 estimated=not fully_actual,
+                cache_split=split,
                 provider_finish_reasons=finish_reasons,
                 completion_outcome=settled_outcome(
                     outcome, completed=lifecycle_status == "completed"

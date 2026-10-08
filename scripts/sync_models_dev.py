@@ -29,6 +29,8 @@ UNSUPPORTED_MARKERS = (
     "customtools",
 )
 _CACHE_COST_KEYS = frozenset({"cache_read", "cache_write"})
+_MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
+_STATUSES = frozenset({"alpha", "beta", "deprecated"})
 
 
 def _decimal(value: object) -> Decimal | None:
@@ -66,7 +68,7 @@ def fetch_catalog() -> dict[str, Any]:
 
 
 def _eligible(model_id: str, model: object) -> bool:
-    if not isinstance(model, dict) or model.get("status") == "deprecated":
+    if not isinstance(model, dict):
         return False
     modalities = model.get("modalities")
     cost = model.get("cost")
@@ -113,14 +115,14 @@ def _cost_dimensions_are_safe(cost: dict[str, object]) -> bool:
     return not isinstance(legacy_tier, dict) or _cost_dimensions_are_safe(legacy_tier)
 
 
-def _gross_input_price(cost: dict[str, object]) -> Decimal:
-    """Conservatively price unclassified gross input at its highest cache rate."""
-
-    prices = [_decimal(cost.get("input"))]
-    prices.extend(_decimal(cost[key]) for key in _CACHE_COST_KEYS if key in cost)
-    if any(price is None for price in prices):
-        raise ValueError("input and cache prices must be nonnegative numbers")
-    return max(price for price in prices if price is not None)
+def _cache_prices(cost: dict[str, object], prefix: str = "") -> dict[str, str]:
+    prices = {}
+    for key in sorted(_CACHE_COST_KEYS & cost.keys()):
+        price = _decimal(cost[key])
+        if price is None:
+            raise ValueError("cache prices must be nonnegative numbers")
+        prices[f"{prefix}{key}_per_million"] = _decimal_text(price)
+    return prices
 
 
 def _tier(cost: dict[str, object]) -> dict[str, str | int]:
@@ -158,14 +160,17 @@ def _tier(cost: dict[str, object]) -> dict[str, str | int]:
         raise ValueError("large-context pricing is incomplete")
     return {
         "large_context_threshold": threshold,
-        "large_context_input_per_million": _decimal_text(
-            max(_gross_input_price(cost), _gross_input_price(candidate))
-        ),
+        "large_context_input_per_million": _decimal_text(input_price),
         "large_context_output_per_million": _decimal_text(output_price),
+        **_cache_prices(candidate, "large_context_"),
     }
 
 
-def _entry(model_id: str, model: dict[str, object]) -> dict[str, str | int]:
+def _positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _entry(model_id: str, model: dict[str, object]) -> dict[str, Any]:
     if (
         not model_id.strip()
         or len(model_id) > 200
@@ -195,23 +200,48 @@ def _entry(model_id: str, model: dict[str, object]) -> dict[str, str | int]:
     output_price = _decimal(cost.get("output"))
     if input_price is None or output_price is None:
         raise ValueError(f"model prices are invalid: {model_id}")
-    entry: dict[str, str | int] = {
+    entry: dict[str, Any] = {
         "name": name.strip(),
-        "input_per_million": _decimal_text(_gross_input_price(cost)),
+        "input_per_million": _decimal_text(input_price),
         "output_per_million": _decimal_text(output_price),
+        **_cache_prices(cost),
     }
     limits = model.get("limit")
     if limits is not None:
         if not isinstance(limits, dict):
             raise ValueError(f"model limits are invalid: {model_id}")
-        max_output_tokens = limits.get("output")
-        if (
-            isinstance(max_output_tokens, bool)
-            or not isinstance(max_output_tokens, int)
-            or max_output_tokens < 1
-        ):
+        if not _positive_int(limits.get("output")):
             raise ValueError(f"model output limit is invalid: {model_id}")
-        entry["max_output_tokens"] = max_output_tokens
+        entry["max_output_tokens"] = limits["output"]
+        for source_key, key in (
+            ("context", "context_window"),
+            ("input", "input_limit"),
+        ):
+            if source_key in limits:
+                if not _positive_int(limits[source_key]):
+                    raise ValueError(f"model {source_key} limit is invalid: {model_id}")
+                entry[key] = limits[source_key]
+    for source_key, key in (
+        ("tool_call", "tools"),
+        ("structured_output", "structured_output"),
+    ):
+        if source_key in model:
+            if not isinstance(model[source_key], bool):
+                raise ValueError(f"model {source_key} flag is invalid: {model_id}")
+            entry[key] = model[source_key]
+    modalities = model.get("modalities")
+    input_modalities = modalities.get("input") if isinstance(modalities, dict) else None
+    if (
+        not isinstance(input_modalities, list)
+        or not set(input_modalities) <= _MODALITIES
+    ):
+        raise ValueError(f"model input modalities are invalid: {model_id}")
+    entry["input_modalities"] = sorted(set(input_modalities))
+    status = model.get("status")
+    if status is not None:
+        if status not in _STATUSES:
+            raise ValueError(f"model status is invalid: {model_id}")
+        entry["status"] = status
     if release_date is not None:
         entry["release_date"] = release_date
     entry.update(_tier(cost))
@@ -219,7 +249,7 @@ def _entry(model_id: str, model: dict[str, object]) -> dict[str, str | int]:
 
 
 def build_catalog(source: dict[str, Any]) -> dict[str, object]:
-    providers: dict[str, dict[str, dict[str, str | int]]] = {}
+    providers: dict[str, dict[str, dict[str, Any]]] = {}
     for provider in PROVIDERS:
         provider_catalog = source.get(provider)
         models = (

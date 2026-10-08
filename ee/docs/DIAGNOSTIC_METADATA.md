@@ -173,6 +173,26 @@ without personal data is empty and best-effort: if Redis cannot store it, the
 turn still succeeds. A missing marker still reads as a turn without personal
 data; a later release will make it fail closed.
 
+## Cost basis
+
+Settlement prices input exactly when the provider reported its prompt-cache
+split: uncached input at the input price, cache reads at the cache-read price,
+cache writes at the cache-write price and Anthropic one-hour writes at twice the
+input price. A catalog entry without a cache-read price uses the input price;
+without a cache-write price, 1.25 times input for Anthropic and the input price
+elsewhere. The reservation, estimated usage, provider usage without cache fields
+and failure estimates price every input token at the highest of input, cache
+write and, for Anthropic, the one-hour write price. The ledger's pricing
+metadata records the three cache prices used and, when reported,
+`cache_read_tokens`, `cache_write_tokens` and `cache_write_1h_tokens`.
+`cached_input_tokens`, their sum, is in the lifecycle metadata, the analytics
+row, the request list and its CSV; it is null when the split was not reported.
+
+The catalog keeps each model's `context_window`, `input_limit`, `tools`,
+`structured_output`, `input_modalities` and `status` from models.dev when the
+source has them. A deprecated model stays in the catalog with
+`status: "deprecated"` and is still priced.
+
 ## Unpriced deployment costs
 
 An unknown deployment price is not a free request. A terminal spend settlement

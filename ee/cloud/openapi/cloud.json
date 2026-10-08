@@ -7620,6 +7620,19 @@
             "description": "distinct_values and threshold when the request carried at least the tenant's bulk threshold of distinct detected values; null otherwise.",
             "title": "Bulk Disclosure"
           },
+          "cached_input_tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Input tokens read from or written to the provider's prompt cache; null when the provider did not report the split.",
+            "title": "Cached Input Tokens"
+          },
           "completion_outcome": {
             "anyOf": [
               {

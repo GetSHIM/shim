@@ -677,6 +677,14 @@ class RequestActivityView(BaseModel):
     ) = None
     repeat_chain_length: int | None = Field(default=None, ge=1)
     ttft_ms: float | None = Field(default=None, ge=0)
+    cached_input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Input tokens read from or written to the provider's prompt cache; "
+            "null when the provider did not report the split."
+        ),
+    )
     system_prompt_hash: str | None = None
     deployment_kind: Literal["internal", "external", "unknown"] | None = None
     pii_entities: dict[str, int] | None = Field(
@@ -2211,6 +2219,7 @@ async def list_requests(
                         "completion_outcome",
                         "repeat_chain_length",
                         "ttft_ms",
+                        "cached_input_tokens",
                         "shim_latency_ms",
                         "system_prompt_hash",
                         "deployment_kind",
@@ -2336,6 +2345,7 @@ async def export_requests(
                 "completion_outcome",
                 "repeat_chain_length",
                 "ttft_ms",
+                "cached_input_tokens",
                 "system_prompt_hash",
                 "deployment_kind",
                 "cost_complete",
@@ -2376,6 +2386,7 @@ async def export_requests(
                     details.get("completion_outcome"),
                     details.get("repeat_chain_length"),
                     details.get("ttft_ms"),
+                    details.get("cached_input_tokens"),
                     details.get("system_prompt_hash"),
                     details.get("deployment_kind"),
                     cost_usd is not None,

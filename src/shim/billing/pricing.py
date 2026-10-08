@@ -16,11 +16,17 @@ TOKENS_PER_MILLION = Decimal("1000000")
 DEFAULT_MAX_OUTPUT_TOKENS = 200_000
 UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
+_MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
+# Anthropic documents 1.25x base input for 5-minute cache writes and 2x for 1-hour ones.
+_ANTHROPIC_CACHE_WRITE = Decimal("1.25")
+_ANTHROPIC_ONE_HOUR_WRITE = Decimal("2")
+# Cache-read, cache-write and one-hour cache-write input tokens.
+CacheSplit = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
 class ModelPrice:
-    """USD prices per million provider tokens."""
+    """USD prices per million provider tokens, and the catalog's limits for the model."""
 
     input_per_million: Decimal
     output_per_million: Decimal
@@ -28,6 +34,17 @@ class ModelPrice:
     large_context_input_per_million: Decimal | None = None
     large_context_output_per_million: Decimal | None = None
     max_output_tokens: int | None = None
+    cache_read_per_million: Decimal | None = None
+    cache_write_per_million: Decimal | None = None
+    large_context_cache_read_per_million: Decimal | None = None
+    large_context_cache_write_per_million: Decimal | None = None
+    one_hour_write_multiplier: Decimal = Decimal("1")
+    context_window: int | None = None
+    input_limit: int | None = None
+    tools: bool | None = None
+    structured_output: bool | None = None
+    input_modalities: tuple[str, ...] | None = None
+    status: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -59,6 +76,17 @@ class ModelPrice:
             raise ValueError("large-context prices must be finite")
         if any(value is not None and value < 0 for value in large_prices):
             raise ValueError("large-context prices cannot be negative")
+        cache_prices = (
+            self.cache_read_per_million,
+            self.cache_write_per_million,
+            self.large_context_cache_read_per_million,
+            self.large_context_cache_write_per_million,
+        )
+        if any(
+            value is not None and (not value.is_finite() or value < 0)
+            for value in cache_prices
+        ):
+            raise ValueError("cache prices must be finite and nonnegative")
         if self.max_output_tokens is not None and (
             isinstance(self.max_output_tokens, bool)
             or not isinstance(self.max_output_tokens, int)
@@ -66,22 +94,60 @@ class ModelPrice:
         ):
             raise ValueError("maximum output tokens must be positive")
 
-    def cost(self, input_tokens: int, output_tokens: int) -> Decimal:
-        if input_tokens < 0 or output_tokens < 0:
-            raise ValueError("token counts cannot be negative")
-        input_price = self.input_per_million
-        output_price = self.output_per_million
-        if (
+    def rates(
+        self, input_tokens: int
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal]:
+        """Input, output, cache-read, cache-write and one-hour-write prices per million."""
+
+        tier = (
             self.large_context_threshold is not None
             and input_tokens > self.large_context_threshold
-        ):
+        )
+        input_price = self.input_per_million
+        output_price = self.output_per_million
+        read = self.cache_read_per_million
+        write = self.cache_write_per_million
+        if tier:
             assert self.large_context_input_per_million is not None
             assert self.large_context_output_per_million is not None
             input_price = self.large_context_input_per_million
             output_price = self.large_context_output_per_million
+            if self.large_context_cache_read_per_million is not None:
+                read = self.large_context_cache_read_per_million
+            if self.large_context_cache_write_per_million is not None:
+                write = self.large_context_cache_write_per_million
         return (
-            Decimal(input_tokens) * input_price + Decimal(output_tokens) * output_price
-        ) / TOKENS_PER_MILLION
+            input_price,
+            output_price,
+            input_price if read is None else read,
+            input_price if write is None else write,
+            input_price * self.one_hour_write_multiplier,
+        )
+
+    def cost(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache: CacheSplit | None = None,
+    ) -> Decimal:
+        """Price input exactly when the cache split is known, else at its highest rate."""
+
+        if input_tokens < 0 or output_tokens < 0:
+            raise ValueError("token counts cannot be negative")
+        input_price, output_price, read, write, one_hour = self.rates(input_tokens)
+        if cache is None:
+            input_cost = Decimal(input_tokens) * max(input_price, write, one_hour)
+        else:
+            read_tokens, write_tokens, one_hour_tokens = cache
+            if min(cache) < 0:
+                raise ValueError("token counts cannot be negative")
+            input_cost = (
+                Decimal(max(0, input_tokens - sum(cache))) * input_price
+                + Decimal(read_tokens) * read
+                + Decimal(write_tokens) * write
+                + Decimal(one_hour_tokens) * one_hour
+            )
+        return (input_cost + Decimal(output_tokens) * output_price) / TOKENS_PER_MILLION
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,16 +216,17 @@ class PriceBook:
         input_tokens: int,
         output_tokens: int,
         provider: str = "openai",
+        cache: CacheSplit | None = None,
     ) -> Decimal:
         if model == UNSPECIFIED_PROVIDER_MODEL and provider == "openai":
             return max(
                 (
-                    price.cost(input_tokens, output_tokens)
+                    price.cost(input_tokens, output_tokens, cache)
                     for price in self.provider_prices[provider].values()
                 ),
-                default=self.fallback.cost(input_tokens, output_tokens),
+                default=self.fallback.cost(input_tokens, output_tokens, cache),
             )
-        return self.resolve(model, provider).cost(input_tokens, output_tokens)
+        return self.resolve(model, provider).cost(input_tokens, output_tokens, cache)
 
     def models(self, provider: str) -> tuple[str, ...]:
         return tuple(self.provider_prices.get(provider, ()))
@@ -189,6 +256,7 @@ class PriceBook:
         input_tokens: int,
         output_tokens: int,
         unpriced: bool = False,
+        cache: CacheSplit | None = None,
     ) -> dict[str, str | int]:
         metadata: dict[str, str | int] = {
             "catalog_version": self.version,
@@ -213,13 +281,28 @@ class PriceBook:
             metadata["pricing_resolution"] = (
                 "catalog" if self.supports(model, provider) else "fallback"
             )
+        _, _, read, write, one_hour = price.rates(input_tokens)
         metadata.update(
             {
                 "provider_model": resolved_model,
                 "input_per_million": str(price.input_per_million),
                 "output_per_million": str(price.output_per_million),
+                "cache_read_per_million": str(read),
+                "cache_write_per_million": str(write),
+                "cache_write_1h_per_million": str(one_hour),
             }
         )
+        if cache is not None:
+            metadata.update(
+                zip(
+                    (
+                        "cache_read_tokens",
+                        "cache_write_tokens",
+                        "cache_write_1h_tokens",
+                    ),
+                    cache,
+                )
+            )
         if price.large_context_threshold is not None:
             assert price.large_context_input_per_million is not None
             assert price.large_context_output_per_million is not None
@@ -248,7 +331,43 @@ def _price(input_usd: str, output_usd: str) -> ModelPrice:
     return ModelPrice(Decimal(input_usd), Decimal(output_usd))
 
 
-def _catalog_price(raw: object) -> ModelPrice:
+def _catalog_decimal(raw: Mapping[str, object], key: str) -> Decimal | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"catalog {key} must be a decimal string")
+    return Decimal(value)
+
+
+def _catalog_facts(raw: Mapping[str, object]) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    for key in ("context_window", "input_limit"):
+        value = raw.get(key)
+        if value is not None:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"catalog {key} must be a positive integer")
+            facts[key] = value
+    for key in ("tools", "structured_output"):
+        value = raw.get(key)
+        if value is not None:
+            if not isinstance(value, bool):
+                raise ValueError(f"catalog {key} must be a boolean")
+            facts[key] = value
+    modalities = raw.get("input_modalities")
+    if modalities is not None:
+        if not isinstance(modalities, list) or not set(modalities) <= _MODALITIES:
+            raise ValueError("catalog input modalities are invalid")
+        facts["input_modalities"] = tuple(modalities)
+    status = raw.get("status")
+    if status is not None:
+        if status not in {"alpha", "beta", "deprecated"}:
+            raise ValueError("catalog status is invalid")
+        facts["status"] = status
+    return facts
+
+
+def _catalog_price(raw: object, provider: str = "openai") -> ModelPrice:
     if not isinstance(raw, Mapping):
         raise ValueError("catalog model must be an object")
     input_price = raw.get("input_per_million")
@@ -262,6 +381,25 @@ def _catalog_price(raw: object) -> ModelPrice:
         or max_output_tokens < 1
     ):
         raise ValueError("catalog maximum output tokens must be positive")
+    anthropic = provider == "anthropic"
+    cache_write = _catalog_decimal(raw, "cache_write_per_million")
+    if cache_write is None and anthropic:
+        cache_write = Decimal(input_price) * _ANTHROPIC_CACHE_WRITE
+    extras: dict[str, Any] = {
+        "max_output_tokens": max_output_tokens,
+        "cache_read_per_million": _catalog_decimal(raw, "cache_read_per_million"),
+        "cache_write_per_million": cache_write,
+        "large_context_cache_read_per_million": _catalog_decimal(
+            raw, "large_context_cache_read_per_million"
+        ),
+        "large_context_cache_write_per_million": _catalog_decimal(
+            raw, "large_context_cache_write_per_million"
+        ),
+        "one_hour_write_multiplier": _ANTHROPIC_ONE_HOUR_WRITE
+        if anthropic
+        else Decimal("1"),
+        **_catalog_facts(raw),
+    }
     tier_values = (
         raw.get("large_context_threshold"),
         raw.get("large_context_input_per_million"),
@@ -282,13 +420,9 @@ def _catalog_price(raw: object) -> ModelPrice:
             threshold,
             Decimal(large_input),
             Decimal(large_output),
-            max_output_tokens,
+            **extras,
         )
-    return ModelPrice(
-        Decimal(input_price),
-        Decimal(output_price),
-        max_output_tokens=max_output_tokens,
-    )
+    return ModelPrice(Decimal(input_price), Decimal(output_price), **extras)
 
 
 def _load_catalog() -> tuple[
@@ -326,7 +460,7 @@ def _load_catalog() -> tuple[
                 if not isinstance(release_date, str):
                     raise ValueError(f"catalog release date is invalid: {model_id}")
                 date.fromisoformat(release_date)
-            prices[provider][model_id] = _catalog_price(model)
+            prices[provider][model_id] = _catalog_price(model, provider)
             details[provider][_normalize_model(model_id)] = {
                 key: value
                 for key, value in {
@@ -372,10 +506,13 @@ def compute_cost_usd(
     provider: str = "openai",
     *,
     unpriced: bool = False,
+    cache: CacheSplit | None = None,
 ) -> Decimal:
     """Return the deterministic provider cost for a token pair."""
 
     if unpriced:
         # Ledger arithmetic needs a numeric placeholder; metadata must mark it unknown.
         return Decimal("0")
-    return DEFAULT_PRICE_BOOK.compute(model, prompt_tokens, completion_tokens, provider)
+    return DEFAULT_PRICE_BOOK.compute(
+        model, prompt_tokens, completion_tokens, provider, cache
+    )

@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+import shim.billing.pricing as pricing_module
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
     ModelPrice,
@@ -40,7 +41,8 @@ def test_reviewed_openai_model_prices(
 @pytest.mark.parametrize(
     ("provider", "model", "cost"),
     [
-        ("anthropic", "claude-opus-5", Decimal("31.25")),
+        # Unknown cache split: input at Anthropic's one-hour write price, 2x base.
+        ("anthropic", "claude-opus-5", Decimal("35")),
         ("google", "gemini-2.5-pro", Decimal("17.5")),
         ("google", "gemini-3.5-flash", Decimal("10.5")),
     ],
@@ -126,7 +128,7 @@ def test_gpt_5_6_large_context_tier(
 def test_claude_opus_4_5_versioned_alias_is_priced() -> None:
     assert compute_cost_usd(
         "claude-opus-4-5-20251101", 1_000_000, 1_000_000, "anthropic"
-    ) == Decimal("31.25")
+    ) == Decimal("35")
 
 
 def test_negative_usage_is_rejected() -> None:
@@ -144,3 +146,155 @@ def test_catalog_exposes_source_name_and_pricing_version() -> None:
     assert model_display_name("gpt-5-nano") == "GPT-5 Nano"
     assert metadata["catalog_version"] == DEFAULT_PRICE_BOOK.version
     assert metadata["input_per_million"] == "0.05"
+
+
+def _priced(provider: str, **raw: object) -> ModelPrice:
+    return pricing_module._catalog_price(
+        {"input_per_million": "4", "output_per_million": "20", **raw}, provider
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "raw", "cache", "expected"),
+    [
+        # 1,000 uncached at 4, 6,000 read at 0.4, 4,000 written at 5, 20 out at 20.
+        (
+            "anthropic",
+            {"cache_read_per_million": "0.4", "cache_write_per_million": "5"},
+            (6_000, 4_000, 0),
+            Decimal("0.0268"),
+        ),
+        # The same 4,000 written for one hour cost 2x input, 8.
+        (
+            "anthropic",
+            {"cache_read_per_million": "0.4", "cache_write_per_million": "5"},
+            (6_000, 0, 4_000),
+            Decimal("0.0388"),
+        ),
+        # No source cache prices: read at input, Anthropic write at 1.25x input.
+        ("anthropic", {}, (6_000, 4_000, 0), Decimal("0.0484")),
+        # OpenAI and Gemini report reads only; a missing read price is the input price.
+        ("openai", {"cache_read_per_million": "0.4"}, (6_000, 0, 0), Decimal("0.0228")),
+        ("google", {}, (6_000, 0, 0), Decimal("0.0444")),
+    ],
+)
+def test_a_reported_cache_split_prices_each_part(provider, raw, cache, expected):
+    assert _priced(provider, **raw).cost(11_000, 20, cache) == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "raw", "expected"),
+    [
+        # Anthropic's bound is the one-hour write price, 2x input.
+        ("anthropic", {"cache_write_per_million": "5"}, Decimal("0.0884")),
+        ("openai", {"cache_write_per_million": "5"}, Decimal("0.0554")),
+        ("openai", {"cache_read_per_million": "0.4"}, Decimal("0.0444")),
+    ],
+)
+def test_an_unknown_split_is_priced_at_the_highest_input_rate(provider, raw, expected):
+    price = _priced(provider, **raw)
+
+    assert price.cost(11_000, 20) == expected
+    assert price.cost(11_000, 20) >= price.cost(11_000, 20, (0, 11_000, 0))
+    assert price.cost(11_000, 20) >= price.cost(11_000, 20, (0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    ("tier_cache", "expected"),
+    [
+        # Tier input 8: read 0.8 and write 10 from the tier; one token written for an hour at 8.
+        (
+            {
+                "large_context_cache_read_per_million": "0.8",
+                "large_context_cache_write_per_million": "10",
+            },
+            Decimal("0.54"),
+        ),
+        # No tier cache prices: the base entry's 0.4 and 5.
+        ({}, Decimal("0.27")),
+    ],
+)
+def test_the_large_context_tier_keys_on_total_input(tier_cache, expected):
+    price = _priced(
+        "openai",
+        cache_read_per_million="0.4",
+        cache_write_per_million="5",
+        large_context_threshold=100_000,
+        large_context_input_per_million="8",
+        large_context_output_per_million="30",
+        **tier_cache,
+    )
+
+    assert price.cost(100_000, 0, (50_000, 50_000, 0)) == Decimal("0.27")
+    assert price.cost(100_001, 0, (50_000, 50_000, 1)) == expected + Decimal("0.000008")
+
+
+def test_a_free_tier_cache_price_is_not_mistaken_for_a_missing_one():
+    price = _priced(
+        "openai",
+        cache_read_per_million="0.4",
+        large_context_threshold=10,
+        large_context_input_per_million="8",
+        large_context_output_per_million="30",
+        large_context_cache_read_per_million="0",
+    )
+
+    assert price.cost(1_000_000, 0, (1_000_000, 0, 0)) == Decimal("0")
+
+
+def test_catalog_entries_carry_limits_capabilities_and_status():
+    entry = pricing_module._catalog_price(
+        {
+            "input_per_million": "1",
+            "output_per_million": "2",
+            "context_window": 200_000,
+            "tools": True,
+            "input_modalities": ["image", "text"],
+            "status": "deprecated",
+        }
+    )
+
+    assert (entry.context_window, entry.input_limit) == (200_000, None)
+    assert (entry.tools, entry.structured_output) == (True, None)
+    assert entry.input_modalities == ("image", "text")
+    assert entry.status == "deprecated"
+    haiku = DEFAULT_PRICE_BOOK.resolve("claude-haiku-4-5-20251001", "anthropic")
+    assert haiku.context_window and haiku.tools is True
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"context_window": 0},
+        {"input_limit": True},
+        {"tools": "yes"},
+        {"input_modalities": ["text", "smell"]},
+        {"status": "retired"},
+        {"cache_read_per_million": 0.1},
+        {"cache_write_per_million": "-1"},
+    ],
+)
+def test_catalog_refuses_malformed_entries(raw):
+    with pytest.raises(ValueError):
+        pricing_module._catalog_price(
+            {"input_per_million": "1", "output_per_million": "2", **raw}
+        )
+
+
+def test_price_metadata_carries_cache_prices_and_the_reported_split():
+    metadata = DEFAULT_PRICE_BOOK.resolved_price_metadata(
+        "claude-haiku-4-5",
+        "anthropic",
+        input_tokens=10,
+        output_tokens=1,
+        cache=(3, 2, 1),
+    )
+
+    assert metadata["cache_read_per_million"] == "0.1"
+    assert metadata["cache_write_per_million"] == "1.25"
+    assert metadata["cache_write_1h_per_million"] == "2"
+    assert (
+        metadata["cache_read_tokens"],
+        metadata["cache_write_tokens"],
+        metadata["cache_write_1h_tokens"],
+    ) == (3, 2, 1)
