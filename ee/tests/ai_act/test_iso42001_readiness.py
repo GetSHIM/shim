@@ -1,7 +1,7 @@
 import base64
 import csv
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import io
 from importlib import resources
@@ -13,6 +13,7 @@ import httpx
 import pytest
 import yaml
 from fastapi import FastAPI, HTTPException
+from sqlalchemy import text
 from starlette.requests import Request
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
@@ -20,7 +21,9 @@ from shim_enterprise.ai_act.api import router as compliance_router
 from shim_enterprise.ai_act.audit_writer import write_audit_row
 from shim_enterprise.ai_act.readiness import report as readiness
 from shim_enterprise.ai_act.report import load_frameworks
+from shim_enterprise.ai_act.models import AIActAuditAnchor, ReadinessDeclaration
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.billing.read_models import BillingBreakdown
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -229,6 +232,65 @@ def _request(db, key, started_at, metadata, *, model="gpt-5-mini", cost=None) ->
     return request_id
 
 
+async def _evidence(db, name: str, organization_id, start, end):
+    traffic = await readiness.measure_traffic(db, organization_id, start, end)
+    return await readiness.EVIDENCE[name](db, organization_id, start, end, traffic)
+
+
+@pytest.mark.asyncio
+async def test_anchors_are_counted_by_their_utc_date(db) -> None:
+    organization, _, _ = await _tenant(db)
+    db.add(
+        AIActAuditAnchor(
+            organization_id=organization.id,
+            anchor_date=date(2026, 9, 9),
+            root_hash="0" * 64,
+            row_count=0,
+        )
+    )
+    await db.flush()
+    istanbul = timezone(timedelta(hours=3))
+
+    # 01:00 to 02:00 in Istanbul on 10 September is the evening of the 9th in UTC.
+    event_logs = await _evidence(
+        db,
+        "event_logs",
+        organization.id,
+        datetime(2026, 9, 10, 1, tzinfo=istanbul),
+        datetime(2026, 9, 10, 2, tzinfo=istanbul),
+    )
+
+    assert "1 daily anchor(s)" in event_logs.summary
+
+
+@pytest.mark.asyncio
+async def test_every_admission_rule_counts_as_an_admission_verdict(db) -> None:
+    organization, _, key = await _tenant(db)
+    now = datetime.now(timezone.utc)
+    _request(
+        db,
+        key,
+        now - timedelta(hours=1),
+        {
+            "policy_verdicts": [
+                {
+                    "rule_id": "api_key.access",
+                    "stage": "admission",
+                    "outcome": "deny",
+                    "reason_code": "API_KEY_ACCESS_DENIED",
+                }
+            ]
+        },
+    )
+    await db.flush()
+
+    use = await _evidence(
+        db, "responsible_use", organization.id, now - timedelta(days=1), now
+    )
+
+    assert "1 of 1 (100.0%) with an admission verdict" in use.summary
+
+
 @pytest.mark.asyncio
 async def test_every_evidence_function_reads_only_its_tenant_and_window(db) -> None:
     organization, owner, key = await _tenant(db)
@@ -264,8 +326,12 @@ async def test_every_evidence_function_reads_only_its_tenant_and_window(db) -> N
         )
     )
     verdicts = [
-        {"rule_id": "privacy.input", "outcome": "mask"},
-        {"rule_id": "quota.requests_and_tokens", "outcome": "allow"},
+        {"rule_id": "privacy.input", "stage": "privacy", "outcome": "mask"},
+        {
+            "rule_id": "quota.requests_and_tokens",
+            "stage": "admission",
+            "outcome": "allow",
+        },
     ]
     audited = _request(
         db,
@@ -319,8 +385,12 @@ async def test_every_evidence_function_reads_only_its_tenant_and_window(db) -> N
     )
 
     async def run(name: str, window_start=start, window_end=None):
-        return await readiness.EVIDENCE[name](
-            db, organization.id, window_start, window_end or datetime.now(timezone.utc)
+        return await _evidence(
+            db,
+            name,
+            organization.id,
+            window_start,
+            window_end or datetime.now(timezone.utc),
         )
 
     operation = await run("operation")
@@ -453,6 +523,14 @@ async def test_the_report_has_38_rows_its_cover_and_is_paid(
             json={"status": "implemented", "note": "=HYPERLINK(1)"},
         )
         owner.role = "auditor"
+        # Shipped off until the control numbering is verified; an operator grants it.
+        not_yet = await client.post(url, json=body("csv"))
+        await db.execute(
+            text(
+                "UPDATE tier_definitions SET features = features || "
+                "'{\"readiness_report\": true}'::jsonb WHERE slug = 'enterprise'"
+            )
+        )
         csv_report = await client.post(url, json=body("csv"))
         pdf_report = await client.post(url, json=body("pdf"))
         too_long = await client.post(
@@ -470,8 +548,15 @@ async def test_the_report_has_38_rows_its_cover_and_is_paid(
         await activate_organization_plan(db, organization.id, "free")
         unpaid = await client.post(url, json=body("csv"))
 
+    assert not_yet.status_code == 403
+    assert not_yet.json()["detail"]["eligible_plans"] == []
     assert csv_report.status_code == 200
-    rows = list(csv.DictReader(io.StringIO(csv_report.content.decode("utf-8-sig"))))
+    preamble, table = csv_report.content.decode("utf-8-sig").split("\r\n\r\n", 1)
+    assert list(csv.reader(io.StringIO(preamble))) == [
+        [readiness.COVER],
+        [readiness.UNVERIFIED],
+    ]
+    rows = list(csv.DictReader(io.StringIO(table)))
     assert len(rows) == 38
     by_id = {row["control_id"]: row for row in rows}
     assert by_id["A.3.2"]["declaration"] == "implemented"
@@ -480,9 +565,9 @@ async def test_the_report_has_38_rows_its_cover_and_is_paid(
     assert by_id["A.9.4"]["source"] == "input"
     assert "1 of 1" in by_id["A.9.4"]["evidence"]
     assert by_id["A.6.2.6"]["evidence_present"] in {"true", "false"}
-    text = _pdf_text(pdf_report.content)
-    assert readiness.COVER in text
-    assert readiness.UNVERIFIED in text
+    pdf_text = _pdf_text(pdf_report.content)
+    assert readiness.COVER in pdf_text
+    assert readiness.UNVERIFIED in pdf_text
     assert readiness.UNVERIFIED not in _pdf_text(verified_pdf.content)
     assert (too_long.status_code, other_framework.status_code) == (422, 422)
     assert unpaid.status_code == 403
@@ -512,3 +597,64 @@ async def test_an_auditor_may_post_the_readiness_report(
     with pytest.raises(HTTPException) as refused:
         await resolve("PUT", "/api/v1/compliance/readiness/iso42001/declarations/A.3.2")
     assert refused.value.status_code == 403
+
+
+def _long_rows(note: str) -> list:
+    usage = readiness._usage(
+        [
+            BillingBreakdown(f"provider-model-{index:03d}", 1, 0, 0, Decimal("0.5"))
+            for index in range(200)
+        ]
+    )
+    summary = f"Providers: {usage}. Models: {usage}."
+    return [
+        readiness.ReadinessRow(
+            control,
+            None if control.evidence is None else readiness.Evidence(True, summary),
+            ReadinessDeclaration(status="partial", note=note),
+        )
+        for control in readiness.load_mapping().controls
+    ]
+
+
+@pytest.mark.parametrize("note", [("Wide words " * 200)[:2000], "W" * 2000])
+def test_a_2000_character_note_and_a_200_entry_inventory_render(note: str) -> None:
+    rows = _long_rows(note)
+    now = datetime.now(timezone.utc)
+
+    pdf = readiness.render_pdf(
+        rows, tenant_id=uuid4(), start=now - timedelta(days=30), end=now, verified=False
+    )
+    table = list(
+        csv.reader(
+            io.StringIO(readiness.render_csv(rows, verified=False).decode("utf-8-sig"))
+        )
+    )
+
+    text = _pdf_text(pdf)
+    assert readiness.COVER in text
+    assert "(truncated, see CSV)" in text
+    assert "provider-model-199" not in text
+    # The CSV keeps every word.
+    assert table[-1][-1] == note
+    assert all("provider-model-199" in row[4] for row in table[4:] if row[4])
+
+
+def test_the_csv_leads_with_the_cover_and_the_unverified_sentence() -> None:
+    rows = _long_rows("short")
+
+    unverified = list(
+        csv.reader(
+            io.StringIO(readiness.render_csv(rows, verified=False).decode("utf-8-sig"))
+        )
+    )
+    verified = list(
+        csv.reader(
+            io.StringIO(readiness.render_csv(rows, verified=True).decode("utf-8-sig"))
+        )
+    )
+
+    assert unverified[:3] == [[readiness.COVER], [readiness.UNVERIFIED], []]
+    assert unverified[3][0] == "control_id" and len(unverified) == 3 + 1 + 38
+    assert verified[:2] == [[readiness.COVER], []]
+    assert verified[2][0] == "control_id" and len(verified) == 2 + 1 + 38

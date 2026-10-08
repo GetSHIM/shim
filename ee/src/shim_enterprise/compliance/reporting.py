@@ -80,11 +80,12 @@ def build_pdf(story: list[Any], title: str, *, side_margin: float = 18) -> bytes
 def evidence_table(
     rows: Sequence[Sequence[Any]],
     headings: Sequence[Any],
+    col_widths: Sequence[float] | None = None,
 ) -> Any:
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
-    table = Table([headings, *rows], hAlign="LEFT")
+    table = Table([headings, *rows], colWidths=col_widths, hAlign="LEFT")
     table.setStyle(
         TableStyle(
             (

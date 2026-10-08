@@ -118,23 +118,31 @@ async def entity_counts(
     return {(row[0], row[1]): int(row[2]) for row in rows}
 
 
-async def collect_monthly_evidence(
-    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow, *, now: datetime
-) -> MonthlyEvidence:
-    async def breakdown(
+async def usage_breakdowns(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+) -> tuple[tuple[BillingBreakdown, ...], tuple[BillingBreakdown, ...]]:
+    """Settled requests and cost in the window, by provider and by model."""
+
+    async def by(
         group_by: Literal["provider", "model"],
     ) -> tuple[BillingBreakdown, ...]:
         return tuple(
             await BillingReadModels().breakdown(
                 session,
                 tenant_id=TenantId(tenant_id),
-                start_at=window.start,
-                end_at=window.end,
+                start_at=start,
+                end_at=end,
                 group_by=group_by,
                 limit=None,
             )
         )
 
+    return await by("provider"), await by("model")
+
+
+async def collect_monthly_evidence(
+    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow, *, now: datetime
+) -> MonthlyEvidence:
     metadata = RequestLifecycle.lifecycle_metadata
     in_window = lifecycle_window(tenant_id, window.start, window.end)
     bulk = None
@@ -198,12 +206,15 @@ async def collect_monthly_evidence(
         .group_by(Finding.rule_id)
         .order_by(Finding.rule_id)
     )
+    by_provider, by_model = await usage_breakdowns(
+        session, tenant_id, window.start, window.end
+    )
     return MonthlyEvidence(
         tenant_id=tenant_id,
         window=window,
         generated_at=now,
-        by_provider=await breakdown("provider"),
-        by_model=await breakdown("model"),
+        by_provider=by_provider,
+        by_model=by_model,
         entities={
             key: await entity_counts(session, tenant_id, window.start, window.end, key)
             for key, _ in _MASK_KEYS

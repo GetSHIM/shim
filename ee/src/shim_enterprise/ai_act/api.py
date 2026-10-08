@@ -114,15 +114,17 @@ async def _tenant_for_write(session: AsyncSession, user: User) -> UUID:
     return tenant.id
 
 
-def _validate_sync_window(start: datetime | None, end: datetime | None) -> None:
+def _validate_sync_window(
+    start: datetime | None, end: datetime | None, limit: timedelta = _MAX_SYNC_WINDOW
+) -> None:
     if start is None or end is None:
         return
     if start > end:
         raise HTTPException(status_code=422, detail="start must not be after end")
-    if end - start > _MAX_SYNC_WINDOW:
+    if end - start > limit:
         raise HTTPException(
             status_code=422,
-            detail="synchronous operations are limited to 31 days",
+            detail=f"synchronous operations are limited to {limit.days} days",
         )
 
 
@@ -580,12 +582,7 @@ async def generate_readiness_report_endpoint(
     await _require_entitlement(session, tenant_id, "readiness_report")
     end = _aware(payload.end or datetime.now(timezone.utc))
     start = _aware(payload.start or end - timedelta(days=30))
-    if start > end:
-        raise HTTPException(status_code=422, detail="start must not be after end")
-    if end - start > MAX_READINESS_WINDOW:
-        raise HTTPException(
-            status_code=422, detail="readiness reports are limited to 366 days"
-        )
+    _validate_sync_window(start, end, MAX_READINESS_WINDOW)
     content, media_type, filename = await generate_readiness_report(
         session, tenant_id=tenant_id, start=start, end=end, fmt=payload.format
     )
