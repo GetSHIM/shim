@@ -71,6 +71,12 @@ from shim_enterprise.compliance.url_guard import (
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.findings.models import Finding
+from shim_enterprise.findings.service import (
+    STATUS_IDS,
+    STATUS_RESOLVED,
+    ocsf_detection_finding,
+)
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.overview import OverviewReadModel
@@ -621,6 +627,48 @@ class PromptVersionPage(BaseModel):
     period: BillingPeriodView
     items: list[PromptVersionView]
     truncated: bool
+
+
+FindingStatus = Literal["new", "in_progress", "suppressed", "resolved"]
+_FINDING_STATUSES = {value: name for name, value in STATUS_IDS.items()}
+
+
+class FindingView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    source: str
+    rule_id: str
+    rule_version: int
+    subject: dict[str, Any]
+    title: str
+    summary: str
+    severity_id: int
+    status_id: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    occurrences: int
+    evidence: dict[str, Any]
+    impact: dict[str, Any] | None
+    remediation: dict[str, Any]
+    resolved_at: datetime | None
+    resolved_by: str | None
+
+    @computed_field
+    @property
+    def status(self) -> FindingStatus:
+        return cast(FindingStatus, _FINDING_STATUSES[self.status_id])
+
+
+class FindingPage(BaseModel):
+    items: list[FindingView]
+    total: int
+    limit: int
+    offset: int
+
+
+class FindingPatch(BaseModel):
+    status: FindingStatus
 
 
 class UsageTotalsView(BaseModel):
@@ -2440,6 +2488,157 @@ async def list_prompt_versions(
         ],
         truncated=len(rows) > _MAX_PROMPT_VERSIONS,
     )
+
+
+def _finding_filters(
+    user: User,
+    status_filter: FindingStatus | None,
+    rule_id: str | None,
+    severity_id: int | None,
+) -> list[Any]:
+    filters = [Finding.organization_id == _tenant_id(user)]
+    if status_filter is not None:
+        filters.append(Finding.status_id == STATUS_IDS[status_filter])
+    if rule_id is not None:
+        filters.append(Finding.rule_id == rule_id)
+    if severity_id is not None:
+        filters.append(Finding.severity_id == severity_id)
+    return filters
+
+
+@router.get("/findings", response_model=FindingPage)
+async def list_findings(
+    status_filter: FindingStatus | None = Query(default=None, alias="status"),
+    rule_id: str | None = Query(default=None, min_length=1, max_length=64),
+    severity_id: int | None = Query(default=None, ge=1, le=5),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> FindingPage:
+    filters = _finding_filters(user, status_filter, rule_id, severity_id)
+    total = await session.scalar(select(func.count(Finding.id)).where(*filters))
+    rows = await session.scalars(
+        select(Finding)
+        .where(*filters)
+        .order_by(Finding.last_seen_at.desc(), Finding.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return FindingPage(
+        items=[FindingView.model_validate(row) for row in rows],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/findings/export",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {"application/x-ndjson": {}},
+            "description": "One OCSF Detection Finding per line.",
+        }
+    },
+)
+async def export_findings(
+    status_filter: FindingStatus | None = Query(default=None, alias="status"),
+    rule_id: str | None = Query(default=None, min_length=1, max_length=64),
+    severity_id: int | None = Query(default=None, ge=1, le=5),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    rows = (
+        await session.scalars(
+            select(Finding)
+            .where(*_finding_filters(user, status_filter, rule_id, severity_id))
+            .order_by(Finding.last_seen_at.desc(), Finding.id)
+            .limit(_MAX_SYNC_REQUEST_EXPORT_ROWS + 1)
+        )
+    ).all()
+    if len(rows) > _MAX_SYNC_REQUEST_EXPORT_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "synchronous finding exports are limited to "
+                f"{_MAX_SYNC_REQUEST_EXPORT_ROWS} rows"
+            ),
+        )
+    body = "".join(
+        json.dumps(ocsf_detection_finding(row), separators=(",", ":")) + "\n"
+        for row in rows
+    )
+    return StreamingResponse(iter([body]), media_type="application/x-ndjson")
+
+
+@router.get("/findings/{finding_id}", response_model=FindingView)
+async def get_finding(
+    finding_id: UUID,
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> FindingView:
+    return FindingView.model_validate(
+        await _owned_finding(session, user, finding_id, lock=False)
+    )
+
+
+@router.patch("/findings/{finding_id}", response_model=FindingView)
+async def update_finding(
+    finding_id: UUID,
+    patch: FindingPatch,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> FindingView:
+    finding = await _owned_finding(session, user, finding_id, lock=True)
+    before = _FINDING_STATUSES[finding.status_id]
+    target = STATUS_IDS[patch.status]
+    if finding.status_id == STATUS_RESOLVED and target != STATUS_RESOLVED:
+        if await session.scalar(
+            select(Finding.id).where(
+                Finding.organization_id == finding.organization_id,
+                Finding.rule_id == finding.rule_id,
+                Finding.subject_key == finding.subject_key,
+                Finding.status_id != STATUS_RESOLVED,
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Another open finding exists for this subject",
+            )
+    if target != finding.status_id:
+        finding.status_id = target
+        resolved = target == STATUS_RESOLVED
+        finding.resolved_at = datetime.now(timezone.utc) if resolved else None
+        finding.resolved_by = str(user.id) if resolved else None
+        await _audit(
+            session,
+            user,
+            "tenant.finding_status_changed",
+            str(finding.id),
+            details={
+                "rule_id": finding.rule_id,
+                **change_details({"status": before}, {"status": patch.status}),
+            },
+        )
+        await session.commit()
+        await session.refresh(finding)
+    return FindingView.model_validate(finding)
+
+
+async def _owned_finding(
+    session: AsyncSession, user: User, finding_id: UUID, *, lock: bool
+) -> Finding:
+    statement = select(Finding).where(
+        Finding.id == finding_id, Finding.organization_id == _tenant_id(user)
+    )
+    finding = await session.scalar(
+        statement.with_for_update(of=Finding) if lock else statement
+    )
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return finding
 
 
 @router.get(

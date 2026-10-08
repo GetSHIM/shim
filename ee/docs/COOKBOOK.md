@@ -22,6 +22,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
+- [Read and export findings](#read-and-export-findings)
 
 ## Attribute spend to teams
 
@@ -433,3 +434,29 @@ Notes: the hash is keyed per installation and tenant and never reveals the
 prompt; prompt text is not stored. Requests without system instructions are one
 item with `system_prompt_hash: null`. Details are in
 [diagnostic metadata](DIAGNOSTIC_METADATA.md#system-instruction-hashing).
+
+## Read and export findings
+
+Let shim tell you about retry storms, repeated spend, unused deployments and
+models that truncate or refuse answers.
+
+1. As an owner, admin or auditor, list open findings:
+   `GET /api/v1/management/findings?status=new`. Each one has a summary,
+   evidence, impact and the fix.
+2. Acknowledge or close one as an owner or admin:
+   `PATCH /api/v1/management/findings/{id}` with `{"status": "in_progress"}`,
+   `"suppressed"` or `"resolved"`.
+3. Feed your SIEM or data lake from `GET /api/v1/management/findings/export`,
+   one OCSF Detection Finding per line.
+
+```console
+curl 'http://localhost:8000/api/v1/management/findings?status=new' \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl http://localhost:8000/api/v1/management/findings/export \
+  -H "Authorization: Bearer $USER_TOKEN" -o findings.ndjson
+```
+
+Notes: the reconciliation worker evaluates the rules every
+`FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
+thresholds and the OCSF mapping are in [findings](FINDINGS.md).

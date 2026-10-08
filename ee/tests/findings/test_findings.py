@@ -1,0 +1,507 @@
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+import json
+import logging
+from types import SimpleNamespace
+from uuid import uuid4
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+import shim_enterprise.api.enterprise_deps as enterprise_deps
+from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.core.database import get_db
+from shim_enterprise.findings import service
+from shim_enterprise.findings.models import Finding
+from shim_enterprise.tenants.models import ModelDeployment, Organization, ProviderSecret
+
+NOW = datetime(2026, 10, 8, 12, 7, tzinfo=timezone.utc)
+BUCKET = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+
+def _request(
+    db,
+    key,
+    started_at: datetime,
+    *,
+    repeat: int = 1,
+    status: str = "completed",
+    outcome: str | None = "complete",
+    model: str = "gpt-5-mini",
+    cost: str | None = None,
+) -> str:
+    request_id = f"req_finding_{uuid4().hex}"
+    db.add(
+        RequestLifecycle(
+            request_id=request_id,
+            organization_id=key.organization_id,
+            actor_type="api_key",
+            api_key_id=key.id,
+            source_endpoint="chat.completions",
+            status=status,
+            provider="openai",
+            provider_model=model,
+            requested_model=model,
+            stream=False,
+            started_at=started_at,
+            lifecycle_metadata={
+                "repeat_chain_length": repeat,
+                "completion_outcome": outcome,
+            },
+        )
+    )
+    if cost is not None:
+        ledger = {
+            "request_id": request_id,
+            "organization_id": key.organization_id,
+            "api_key_id": key.id,
+            "requested_model": model,
+            "provider": "openai",
+            "provider_model": model,
+            "cost_usd": Decimal(cost),
+            "created_at": started_at,
+        }
+        reservation = uuid4()
+        db.add_all(
+            [
+                UsageLedger(
+                    id=reservation,
+                    event_type="spend_reservation",
+                    idempotency_key=f"{request_id}:spend:reservation",
+                    **ledger,
+                ),
+                UsageLedger(
+                    event_type="spend_settlement",
+                    idempotency_key=f"{request_id}:spend:settlement",
+                    reservation_event_id=reservation,
+                    **ledger,
+                ),
+            ]
+        )
+    return request_id
+
+
+async def _evaluate(db, key, now: datetime = NOW) -> list[service.Detection]:
+    await db.flush()
+    detections = await service.evaluate_organization(db, key.organization_id, now=now)
+    await db.flush()
+    return detections
+
+
+async def _findings(db, key) -> list[Finding]:
+    return list(
+        (
+            await db.scalars(
+                select(Finding)
+                .where(Finding.organization_id == key.organization_id)
+                .order_by(Finding.first_seen_at, Finding.rule_id)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+
+
+@pytest.mark.parametrize("repeated", [20, 19])
+@pytest.mark.asyncio
+async def test_retry_storm_fires_at_twenty_repeats_in_one_quarter_hour(
+    db, test_api_key, repeated: int
+) -> None:
+    ids = [
+        _request(
+            db,
+            test_api_key,
+            BUCKET + timedelta(seconds=index),
+            repeat=index + 2,
+            cost="0.01",
+        )
+        for index in range(repeated)
+    ]
+    for status in ("client_disconnected", "timeout"):
+        _request(db, test_api_key, BUCKET, status=status, outcome=None)
+    # Earlier buckets and outside the hour never add up to the threshold.
+    for started_at in (BUCKET - timedelta(minutes=15), BUCKET - timedelta(hours=1)):
+        for index in range(19):
+            _request(db, test_api_key, started_at, repeat=2)
+
+    detections = await _evaluate(db, test_api_key)
+
+    storms = [d for d in detections if d.rule_id == service.RETRY_STORM]
+    if repeated < 20:
+        assert storms == []
+        return
+    (storm,) = storms
+    assert storm.subject_key == f"api_key:{test_api_key.id}"
+    assert storm.subject == {"api_key_id": str(test_api_key.id)}
+    assert storm.severity_id == 3
+    assert storm.evidence == {
+        "window_start": BUCKET.isoformat(),
+        "window_minutes": 15,
+        "repeated_requests": 20,
+        "threshold": 20,
+        "abandoned_requests": 2,
+        "request_ids": ids,
+    }
+    assert storm.impact == {"cost_usd": "0.20000000", "requests": 20}
+
+
+@pytest.mark.parametrize(
+    ("repeated_cost", "other_cost", "fires"),
+    [("1.00", "9.00", True), ("0.99", "1.00", False), ("1.50", "18.00", False)],
+)
+@pytest.mark.asyncio
+async def test_repeat_spend_needs_a_dollar_and_a_tenth_of_known_spend(
+    db, test_api_key, repeated_cost: str, other_cost: str, fires: bool
+) -> None:
+    start = datetime(2026, 10, 1, 1, tzinfo=timezone.utc)
+    repeated_id = _request(db, test_api_key, start, repeat=3, cost=repeated_cost)
+    _request(db, test_api_key, start, cost=other_cost)
+    _request(db, test_api_key, start - timedelta(days=2), repeat=5, cost="50")
+
+    detections = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.REPEAT_SPEND
+    ]
+
+    if not fires:
+        assert detections == []
+        return
+    (finding,) = detections
+    assert finding.subject_key == f"api_key:{test_api_key.id}"
+    assert finding.evidence["repeated_cost_usd"] == "1.00000000"
+    assert finding.evidence["known_spend_usd"] == "10.00000000"
+    assert finding.evidence["share"] == "0.1000"
+    assert finding.evidence["request_ids"] == [repeated_id]
+    assert finding.impact == {"cost_usd": "1.00000000", "requests": 1}
+
+
+async def _deployment(db, key, *, age: timedelta, enabled: bool = True) -> str:
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=key.organization_id,
+        provider="openai",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(secret)
+    await db.flush()
+    alias = f"internal-{uuid4().hex[:8]}"
+    db.add(
+        ModelDeployment(
+            organization_id=key.organization_id,
+            alias=alias,
+            provider="openai",
+            upstream_model="custom-model",
+            base_url="https://a.internal/v1",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+            enabled=enabled,
+            created_at=NOW - age,
+        )
+    )
+    await db.flush()
+    return alias
+
+
+@pytest.mark.asyncio
+async def test_unused_deployment_fires_after_thirty_quiet_days(
+    db, test_api_key
+) -> None:
+    unused = await _deployment(db, test_api_key, age=timedelta(days=30))
+    await _deployment(db, test_api_key, age=timedelta(days=29, hours=23))
+    await _deployment(db, test_api_key, age=timedelta(days=60), enabled=False)
+    used = await _deployment(db, test_api_key, age=timedelta(days=60))
+    _request(db, test_api_key, NOW - timedelta(days=29), model=used)
+    _request(db, test_api_key, NOW - timedelta(days=31), model=unused)
+
+    detections = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.UNUSED_DEPLOYMENT
+    ]
+
+    assert [(d.subject_key, d.subject["alias"], d.severity_id) for d in detections] == [
+        (f"deployment:{unused}", unused, 2)
+    ]
+    assert detections[0].impact is None
+
+
+@pytest.mark.parametrize(
+    ("settled", "bad", "fires"),
+    [
+        (60, {"truncated": 3}, True),
+        (60, {"empty": 2, "refused": 1}, True),
+        (60, {"truncated": 2, "empty": 2}, False),
+        (49, {"truncated": 49}, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_answer_quality_needs_fifty_answers_and_five_percent(
+    db, test_api_key, settled: int, bad: dict[str, int], fires: bool
+) -> None:
+    started = NOW - timedelta(hours=1)
+    outcomes = [name for name, count in bad.items() for _ in range(count)]
+    outcomes += ["complete"] * (settled - len(outcomes))
+    for outcome in outcomes:
+        _request(db, test_api_key, started, outcome=outcome)
+    for _ in range(10):
+        _request(db, test_api_key, started, status="rejected", outcome=None)
+        _request(db, test_api_key, NOW - timedelta(hours=25), outcome="truncated")
+
+    detections = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.ANSWER_QUALITY
+    ]
+
+    if not fires:
+        assert detections == []
+        return
+    (finding,) = detections
+    assert finding.subject == {"model": "gpt-5-mini"}
+    assert finding.evidence["settled_requests"] == settled
+    assert finding.evidence["truncated"] == bad.get("truncated", 0)
+    assert len(finding.evidence["request_ids"]) == len(outcomes) - outcomes.count(
+        "complete"
+    )
+
+
+async def _storm(db, key, start: datetime = BUCKET) -> None:
+    for index in range(20):
+        _request(db, key, start + timedelta(seconds=index), repeat=2)
+
+
+@pytest.mark.asyncio
+async def test_findings_update_resolve_reopen_and_stay_suppressed(
+    db, test_api_key
+) -> None:
+    await _storm(db, test_api_key)
+    await _evaluate(db, test_api_key)
+    await _evaluate(db, test_api_key, NOW + timedelta(minutes=1))
+
+    (finding,) = await _findings(db, test_api_key)
+    assert (finding.occurrences, finding.status_id) == (2, 1)
+    assert finding.first_seen_at == NOW
+    assert finding.last_seen_at == NOW + timedelta(minutes=1)
+
+    await db.execute(update(Finding).values(status_id=3))
+    await _evaluate(db, test_api_key, NOW + timedelta(minutes=2))
+    (suppressed,) = await _findings(db, test_api_key)
+    assert (suppressed.status_id, suppressed.occurrences) == (3, 3)
+
+    later = NOW + timedelta(days=8)
+    await _evaluate(db, test_api_key, later)
+    (resolved,) = await _findings(db, test_api_key)
+    assert (resolved.status_id, resolved.resolved_by) == (4, "system")
+    assert resolved.resolved_at == later
+
+    await _storm(db, test_api_key, BUCKET + timedelta(days=8))
+    await _evaluate(db, test_api_key, later + timedelta(minutes=1))
+    old, new = await _findings(db, test_api_key)
+    assert (old.id, old.status_id) == (finding.id, 4)
+    assert (new.status_id, new.occurrences) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_one_failing_organization_does_not_stop_the_others(
+    db, test_api_key, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    archived = Organization(
+        id=uuid4(),
+        name="Archived",
+        slug=f"archived-{uuid4().hex}",
+        archived_at=NOW,
+        archived_reason="joined_organization",
+    )
+    failing = Organization(id=uuid4(), name="Failing", slug=f"failing-{uuid4().hex}")
+    db.add_all([archived, failing])
+    await db.flush()
+    seen = []
+
+    async def evaluate(session, tenant_id, *, now):
+        seen.append(tenant_id)
+        if tenant_id == failing.id:
+            raise RuntimeError("synthetic failure")
+        return []
+
+    monkeypatch.setattr(service, "evaluate_organization", evaluate)
+    factory = async_sessionmaker(
+        await db.connection(),
+        class_=AsyncSession,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+
+    with caplog.at_level(logging.ERROR, logger=service.__name__):
+        await service.evaluate_findings(factory, now=NOW)
+
+    assert {failing.id, test_api_key.organization_id} <= set(seen)
+    assert archived.id not in seen
+    assert f"organization_id={failing.id} type=RuntimeError" in caplog.text
+    assert "synthetic failure" not in caplog.text
+
+
+def _client(db, user) -> httpx.AsyncClient:
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    )
+
+
+@pytest.mark.asyncio
+async def test_findings_api_filters_audits_and_exports_ocsf(
+    db, test_api_key, test_user_with_org, audit_events
+) -> None:
+    user = test_user_with_org
+    await _storm(db, test_api_key)
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _evaluate(db, test_api_key)
+    storm, unused = await _findings(db, test_api_key)
+    other = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    db.add(Finding(**{**_copy(storm), "id": uuid4(), "organization_id": other.id}))
+    await db.flush()
+    url = "/api/v1/management/findings"
+
+    async with _client(db, user) as client:
+        user.role = "member"
+        member = [
+            (await client.get(path)).status_code
+            for path in (url, f"{url}/export", f"{url}/{storm.id}")
+        ]
+        user.role = "auditor"
+        listed = (await client.get(url)).json()
+        by_rule = (
+            await client.get(url, params={"rule_id": service.RETRY_STORM})
+        ).json()
+        by_severity = (await client.get(url, params={"severity_id": 2})).json()
+        by_status = (await client.get(url, params={"status": "resolved"})).json()
+        exported = await client.get(f"{url}/export")
+        auditor_patch = await client.patch(
+            f"{url}/{storm.id}", json={"status": "resolved"}
+        )
+        user.role = "admin"
+        detail = await client.get(f"{url}/{storm.id}")
+        foreign = await client.get(f"{url}/{uuid4()}")
+        resolved = await client.patch(f"{url}/{storm.id}", json={"status": "resolved"})
+        await _storm(db, test_api_key, BUCKET + timedelta(minutes=1))
+        await _evaluate(db, test_api_key, NOW + timedelta(minutes=1))
+        conflict = await client.patch(f"{url}/{storm.id}", json={"status": "new"})
+        bad_status = await client.patch(f"{url}/{storm.id}", json={"status": "closed"})
+
+    assert member == [403, 403, 403]
+    assert listed["total"] == 2
+    assert {item["id"] for item in listed["items"]} == {str(storm.id), str(unused.id)}
+    assert [item["rule_id"] for item in by_rule["items"]] == [service.RETRY_STORM]
+    assert [item["rule_id"] for item in by_severity["items"]] == [
+        service.UNUSED_DEPLOYMENT
+    ]
+    assert by_status["items"] == []
+    assert exported.status_code == 200
+    assert exported.headers["content-type"] == "application/x-ndjson"
+    records = [json.loads(line) for line in exported.text.splitlines()]
+    assert len(records) == 2
+    record = next(r for r in records if r["finding_info"]["uid"] == str(storm.id))
+    assert {
+        key: record[key]
+        for key in (
+            "class_uid",
+            "category_uid",
+            "activity_id",
+            "type_uid",
+            "severity_id",
+            "status_id",
+        )
+    } == {
+        "class_uid": 2004,
+        "category_uid": 2,
+        "activity_id": 1,
+        "type_uid": 200401,
+        "severity_id": 3,
+        "status_id": 1,
+    }
+    assert record["time"] == int(NOW.timestamp() * 1000)
+    assert record["metadata"] == {
+        "version": service.OCSF_VERSION,
+        "product": {"name": "shim", "vendor_name": "shim"},
+    }
+    assert record["finding_info"] == {
+        "uid": str(storm.id),
+        "title": storm.title,
+        "desc": storm.summary,
+        "first_seen_time": int(NOW.timestamp() * 1000),
+        "last_seen_time": int(NOW.timestamp() * 1000),
+    }
+    assert record["unmapped"]["evidence"]["repeated_requests"] == 20
+    assert record["unmapped"]["remediation"]["doc"].startswith("ee/docs/FINDINGS.md#")
+    assert auditor_patch.status_code == 403
+    assert detail.json()["status"] == "new"
+    assert foreign.status_code == 404
+    assert resolved.status_code == 200
+    assert (resolved.json()["status"], resolved.json()["resolved_by"]) == (
+        "resolved",
+        str(user.id),
+    )
+    assert conflict.status_code == 409
+    assert bad_status.status_code == 422
+    events = [
+        event
+        for event in await audit_events(user.organization_id)
+        if event["endpoint"] == "tenant.finding_status_changed"
+    ]
+    assert [event["extra"] for event in events] == [
+        {
+            "subject_id": str(storm.id),
+            "actor_type": "user_jwt",
+            "rule_id": service.RETRY_STORM,
+            "before": {"status": "new"},
+            "after": {"status": "resolved"},
+        }
+    ]
+
+
+def _copy(finding: Finding) -> dict:
+    return {
+        column.key: getattr(finding, column.key) for column in Finding.__table__.columns
+    }
+
+
+def test_ocsf_activity_follows_the_finding_lifecycle() -> None:
+    def activity(**values) -> tuple[int, int]:
+        record = service.ocsf_detection_finding(
+            SimpleNamespace(
+                id=uuid4(),
+                title="t",
+                summary="s",
+                severity_id=2,
+                rule_id=service.ANSWER_QUALITY,
+                rule_version=1,
+                subject={},
+                evidence={},
+                impact=None,
+                remediation={},
+                first_seen_at=NOW,
+                last_seen_at=NOW,
+                resolved_at=None,
+                **values,
+            )
+        )
+        return record["activity_id"], record["type_uid"]
+
+    assert activity(status_id=1, occurrences=1) == (1, 200401)
+    assert activity(status_id=1, occurrences=2) == (2, 200402)
+    assert activity(status_id=3, occurrences=1) == (2, 200402)
+    assert activity(status_id=4, occurrences=1) == (3, 200403)

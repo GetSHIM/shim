@@ -86,6 +86,7 @@ class Settings(CommunitySettings):
     GATEWAY_RECONCILIATION_INTERVAL_SECONDS: int = Field(default=30, ge=5, le=3_600)
     GATEWAY_RECONCILIATION_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
     BUDGET_EVALUATION_INTERVAL_SECONDS: int = Field(default=300, ge=30, le=86_400)
+    FINDINGS_EVALUATION_INTERVAL_SECONDS: int = Field(default=900, ge=60, le=86_400)
 
     GATEWAY_OUTBOX_INTERVAL_SECONDS: int = Field(default=5, ge=1, le=3_600)
     GATEWAY_OUTBOX_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)

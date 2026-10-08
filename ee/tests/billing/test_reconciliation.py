@@ -346,7 +346,7 @@ async def test_worker_repeats_reconciliation_until_stopped(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_evaluates_budgets_first_and_then_on_their_interval(
+async def test_worker_evaluates_budgets_and_findings_first_and_then_on_their_intervals(
     monkeypatch,
 ) -> None:
     worker = ReconciliationWorker(
@@ -370,13 +370,19 @@ async def test_worker_evaluates_budgets_first_and_then_on_their_interval(
         waitable.close()
         raise TimeoutError
 
-    clock = iter([1000.0, 1000.0, 1100.0, 1300.0, 1350.0])
+    # Start, then one budgets and one findings reading per pass.
+    clock = iter([1000.0, 1000.0, 1000.0, 1100.0, 1100.0, 1300.0, 1300.0, 1350, 1950])
     evaluate = AsyncMock(side_effect=[RuntimeError("budgets unavailable"), None])
+    findings = AsyncMock(side_effect=[RuntimeError("findings unavailable"), None])
     monkeypatch.setattr(worker, "run_once", run_once)
     monkeypatch.setattr(worker_module, "monotonic", lambda: next(clock))
     monkeypatch.setattr(worker_module, "evaluate_enabled_budgets", evaluate)
+    monkeypatch.setattr(worker_module, "evaluate_findings", findings)
     monkeypatch.setattr(
         worker_module.settings, "BUDGET_EVALUATION_INTERVAL_SECONDS", 300
+    )
+    monkeypatch.setattr(
+        worker_module.settings, "FINDINGS_EVALUATION_INTERVAL_SECONDS", 900
     )
     monkeypatch.setattr(worker_module.asyncio, "wait_for", wait_for)
 
@@ -384,8 +390,10 @@ async def test_worker_evaluates_budgets_first_and_then_on_their_interval(
 
     assert passes == 4
     assert evaluate.await_count == 2
+    assert findings.await_count == 2
     assert all(
-        call.args == (worker.session_factory,) for call in evaluate.await_args_list
+        call.args == (worker.session_factory,)
+        for call in evaluate.await_args_list + findings.await_args_list
     )
 
 
