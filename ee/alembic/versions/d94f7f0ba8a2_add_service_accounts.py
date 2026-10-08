@@ -62,13 +62,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Downgrades are disposable-only; service accounts and their keys are lost.
+    # Downgrades are disposable-only; service account keys are lost. Their users
+    # stay, inactive, because gateway keys and request history may reference them.
     op.drop_index(
         "ix_service_account_credentials_user_id",
         table_name="service_account_credentials",
     )
     op.drop_table("service_account_credentials")
-    op.execute("DELETE FROM users WHERE kind = 'service'")
+    op.execute("UPDATE users SET is_active = false WHERE kind = 'service'")
     op.drop_constraint("ck_users_service_role", "users", type_="check")
     op.drop_constraint("ck_users_kind", "users", type_="check")
     op.drop_column("users", "kind")

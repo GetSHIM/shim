@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.billing.models import CostBudget
 from shim_enterprise.compliance.models import ComplianceForwardTarget
+from shim_enterprise.tenants.models import User
 
 
 _VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
@@ -136,3 +137,47 @@ async def test_budget_scope_check_takes_team_ids_and_still_refuses_unknown_scope
     await insert_budget("team_id")
     with pytest.raises(IntegrityError, match="ck_cost_budget_scope_type"):
         await insert_budget("cost_center")
+
+
+@pytest.mark.asyncio
+async def test_service_account_downgrade_survives_their_request_history(
+    db, test_org, test_user_with_org
+) -> None:
+    from datetime import datetime, timezone
+
+    from shim_enterprise.api.v1 import management
+    from shim_enterprise.billing.models import RequestLifecycle
+
+    test_user_with_org.role = "owner"
+    created = await management.create_service_account(
+        management.ServiceAccountInput(name="ci", role="admin", expires_in_days=30),
+        test_user_with_org,
+        db,
+    )
+    account = await db.get(User, created.id)
+    key = await management.create_api_key(
+        management.ApiKeyInput(name="pipeline"), account, db
+    )
+    now = datetime.now(timezone.utc)
+    db.add(
+        RequestLifecycle(
+            request_id=f"req_downgrade_{uuid4().hex}",
+            organization_id=test_org.id,
+            actor_type="api_key",
+            api_key_id=key.id,
+            source_endpoint="chat.completions",
+            status="completed",
+            started_at=now,
+            completed_at=now,
+        )
+    )
+    await db.flush()
+
+    await _run(db, "d94f7f0ba8a2_add_service_accounts", "downgrade")
+
+    assert (
+        await db.scalar(
+            text("SELECT is_active FROM users WHERE id = :id"), {"id": created.id}
+        )
+        is False
+    )

@@ -38,8 +38,8 @@ async def record_management_action(
                 "endpoint": action,
                 "extra": {
                     "subject_id": subject_id,
-                    "actor_type": "service" if user.kind == "service" else "user_jwt",
                     **(details or {}),
+                    "actor_type": "service" if user.kind == "service" else "user_jwt",
                 },
             },
             "status": "pending",

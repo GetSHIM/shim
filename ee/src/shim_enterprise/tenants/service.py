@@ -207,11 +207,7 @@ async def authenticate_service_account(
     row = (
         await session.execute(
             select(ServiceAccountCredential, User)
-            .join(
-                User,
-                (User.id == ServiceAccountCredential.user_id)
-                & (User.organization_id == ServiceAccountCredential.organization_id),
-            )
+            .join(User, User.id == ServiceAccountCredential.user_id)
             .where(
                 ServiceAccountCredential.key_hash == _digest_api_key(plaintext),
                 ServiceAccountCredential.revoked_at.is_(None),

@@ -472,7 +472,9 @@ Give a CI pipeline or an agent its own management key instead of a person's toke
    the account's `id` and the key in `plaintext`, shown once.
 2. Call any management route the role allows with `Authorization: Bearer <key>`.
 3. Rotate with `POST /api/v1/management/service-accounts/{id}/rotate`; the old key
-   stops at once. Delete with `DELETE /api/v1/management/service-accounts/{id}`.
+   stops at once and the new one keeps its expiry. An expired key cannot be
+   rotated (409): create a new account. Delete with
+   `DELETE /api/v1/management/service-accounts/{id}`.
 
 ```console
 SERVICE_KEY=$(curl -s -X POST http://localhost:8000/api/v1/management/service-accounts \
@@ -487,7 +489,10 @@ curl -X POST http://localhost:8000/api/v1/management/api-keys \
 Notes:
 
 - A service account cannot become owner, accept invitations, manage service
-  accounts or change members' roles. An auditor service account is read-only.
+  accounts, invite, remove members or change roles and team memberships. An
+  auditor service account is read-only.
+- Gateway keys a service account creates outlive its key's expiry. Delete the
+  account to revoke them.
 - Any key failure answers 401 `INVALID_API_KEY`. The key is not a gateway key:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in

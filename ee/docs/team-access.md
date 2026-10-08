@@ -71,13 +71,16 @@ management API without a person's sign-in. It is an organization user of kind
 | --- | --- | --- |
 | `POST /api/v1/management/service-accounts` | Owner | `{name, role, expires_in_days}` (1 to 365 days); answers 201 with the account and its key, shown once |
 | `GET /api/v1/management/service-accounts` | Owner, admin (people only) | Name, role, key prefix, expiry, last use (to the minute), creator; never the key |
-| `POST /api/v1/management/service-accounts/{id}/rotate` | Owner | A new key with the same expiry; the old key stops working at once |
+| `POST /api/v1/management/service-accounts/{id}/rotate` | Owner | A new key with the same expiry; the old key stops working at once. An expired key answers 409: create a new account |
 | `DELETE /api/v1/management/service-accounts/{id}` | Owner | Deactivates the account, revokes its keys and its gateway keys |
 
 - A service account follows its role's rules: an admin one can, for example,
   create gateway keys (owned by the service account), an auditor one is read-only
   like any auditor. It can never be owner, accept an invitation, manage service
-  accounts or change members' roles, and `/team/members` does not list it.
+  accounts, invite, remove members or change roles and team memberships (403),
+  and `/team/members` does not list it.
+- The gateway keys a service account creates belong to it and keep working after
+  its own key expires. Deleting the account is what revokes them.
 - A revoked, expired, unknown or malformed key, or one of a deleted account,
   answers 401 `INVALID_API_KEY` without saying which. A gateway `sk-shim-` key
   is not accepted on management routes, and a service key is refused at the
