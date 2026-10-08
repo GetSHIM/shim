@@ -343,7 +343,8 @@ class PrivacySettings(BaseModel):
         description=(
             "random: a new placeholder per request. stable: the same value keeps "
             "its placeholder for up to 30 days, so provider prompt caching works "
-            "and the provider can link the value across requests."
+            "and the provider can link the value across requests; that linkage "
+            "can stay in provider logs after the window ends."
         )
     )
 
@@ -377,17 +378,25 @@ class PrivacyPatch(BaseModel):
         default_factory=dict,
         description="Replaces the stored overrides whole; {} removes them all.",
     )
-    placeholder_mode: Literal["random", "stable"] = Field(
-        default="random", description="Left unchanged when absent."
+    placeholder_mode: Literal["random", "stable"] | None = Field(
+        default=None, description="Left unchanged when absent; never null."
     )
-    response_scan: Literal["off", "count"] = Field(
-        default="off", description="Left unchanged when absent."
+    response_scan: Literal["off", "count"] | None = Field(
+        default=None, description="Left unchanged when absent; never null."
     )
     bulk_threshold: int | None = Field(
         default=None,
         ge=2,
         description="null turns the alarm off; left unchanged when absent.",
     )
+
+    @field_validator("placeholder_mode", "response_scan")
+    @classmethod
+    def reject_null(cls, value: str | None) -> str:
+        # None is only the absent default; the columns are NOT NULL.
+        if value is None:
+            raise ValueError("must not be null")
+        return value
 
     @field_validator("entity_actions")
     @classmethod

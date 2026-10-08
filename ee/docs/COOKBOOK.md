@@ -187,8 +187,13 @@ curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
 `placeholder_mode` is `random` (default: a new placeholder per request) or
 `stable`: the same value keeps its placeholder within the tenant for up to 30
 days, so the provider's prompt cache works on prompts that carry a masked value,
-and the provider can tell that two requests carry the same value. The key is
-derived from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder.
+and the provider can tell that two requests carry the same value; that linkage
+can stay in the provider's logs after the window ends, and anyone who can read
+those logs and send requests can confirm a guessed value. The key is derived
+from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder. A leaked
+`SECRET_KEY` lets its holder recompute the placeholders of low-entropy values
+(phone numbers, national IDs) already in provider logs, and rotating afterwards
+does not undo that.
 
 `response_scan` is `off` (default) or `count`: after an answer is delivered,
 shim counts the personal data in it that the request did not carry, and the

@@ -267,8 +267,13 @@ such as a system prompt with a support address, set `PII_PLACEHOLDER_MODE=stable
 and `PII_PLACEHOLDER_KEY` to a secret of at least 32 characters. The same value
 then gets the same placeholder for up to 30 days (fixed UTC windows), derived
 from the key with HMAC-SHA256; the provider can tell that two requests carry the
-same value, never the value itself. Two spellings of a value are two values.
-Changing the key changes every placeholder.
+same value, never the value itself; that linkage can stay in the provider's
+logs after the window ends, and anyone who can read those logs and send
+requests through shim can confirm a guessed value. Two spellings of a value are
+two values. Changing the key changes every placeholder. Generate the key with
+`openssl rand -hex 32` and never share it between installs: every community
+install uses the same public tenant id, so two installs with one key give the
+provider the same placeholders.
 
 A pasted customer list is masked like any other text, so shim also counts the
 distinct values it found in one request, across every type and action. When

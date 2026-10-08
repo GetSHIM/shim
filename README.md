@@ -155,7 +155,9 @@ placeholder next time, and the reply is restored before it reaches your caller.
 In stable mode (`PII_PLACEHOLDER_MODE=stable`) the same value keeps its
 placeholder within a tenant for up to 30 days. That lets the provider's prompt
 cache work, and it lets the provider see that two requests mention the same
-value. A card or
+value; that linkage can stay in the provider's logs after the window ends, and
+anyone who can read those logs and send requests through shim can confirm a
+guessed value. A card or
 IBAN set to `mask_last4` keeps its last four characters after the hex, as in
 `<CREDIT_CARD_75344f3b9ce7dabdf18cb32cabf22e43~1111>`, so the model can say
 "the card ending in 1111".

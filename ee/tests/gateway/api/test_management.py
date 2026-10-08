@@ -1552,6 +1552,18 @@ def test_privacy_patch_rejects_an_unknown_placeholder_mode(mode) -> None:
         management.PrivacyPatch.model_validate({"placeholder_mode": mode})
 
 
+@pytest.mark.parametrize("field", ["placeholder_mode", "response_scan"])
+def test_the_privacy_patch_contract_advertises_no_value_for_an_absent_mode(
+    field,
+) -> None:
+    schema = management.PrivacyPatch.model_json_schema()["properties"][field]
+
+    # A generated client sends an advertised default on every PUT.
+    assert schema.get("default") is None
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate({field: None})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("before", "after", "relaxed"),

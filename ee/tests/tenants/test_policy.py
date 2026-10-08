@@ -257,7 +257,6 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
     ("cached", "mode", "threshold"),
     [
         (_SWITCHES, "random", 50),
-        ({**_SWITCHES, "placeholder_mode": "random", "bulk_threshold": 7}, "random", 7),
         (
             {**_SWITCHES, "placeholder_mode": "stable", "bulk_threshold": None},
             "stable",

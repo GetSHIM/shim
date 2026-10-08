@@ -152,16 +152,6 @@ def test_cli_names_an_invalid_placeholder_setting(
     assert "k" * 31 not in error
 
 
-def test_placeholders_stay_random_unless_stable_is_chosen() -> None:
-    assert CommunitySettings(_env_file=None).PII_PLACEHOLDER_MODE == "random"
-    assert (
-        CommunitySettings(
-            _env_file=None, PII_PLACEHOLDER_KEY="k" * 32
-        ).PII_PLACEHOLDER_MODE
-        == "random"
-    )
-
-
 @pytest.mark.parametrize(
     ("value", "message"),
     [

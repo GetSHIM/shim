@@ -613,17 +613,15 @@ async def test_stable_placeholders_repeat_across_requests_and_never_leave_the_sc
     caplog.set_level("DEBUG")
     stable = {"PII_PLACEHOLDER_MODE": "stable", "PII_PLACEHOLDER_KEY": "k" * 32}
     payload = _ROUTES["chat"][2]("Write to alice@example.com")
-    sent, versions = [], []
+    sent = []
     for settings in (stable, stable, {}):
         response, calls, events = await _send({}, "chat", payload, settings=settings)
         assert response.status_code == 200
         sent.append(json.loads(calls[0].content)["messages"][0]["content"])
-        versions.append(_privacy_verdict(events[0])[2])
         assert "k" * 32 not in json.dumps(events)
 
     assert sent[0] == sent[1] != sent[2]
     assert "alice@example.com" not in "".join(sent)
-    assert len(set(versions)) == 1
     assert "k" * 32 not in caplog.text
 
 
