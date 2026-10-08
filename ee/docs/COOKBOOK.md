@@ -137,6 +137,9 @@ Notes:
   sha256=<hex HMAC-SHA256 of the raw body with the secret>`, the same scheme as
   compliance forward targets. `payload.percent_used` keeps full precision;
   Slack receives a text message with the percentage rounded to a whole number.
+  For a `team_id` budget the payload carries `scope_label`, the team's name when
+  the alert was raised (`null` once the team is deleted), and Slack names the
+  team instead of its id.
 - A `team_id` budget counts requests that recorded the key's team, which every
   request does since team ids were added to request records; older requests do
   not count. Renaming the team changes only `scope_label`.

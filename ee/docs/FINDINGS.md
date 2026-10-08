@@ -39,6 +39,12 @@ failure is logged with its type and the next organization still runs.
 - A rule that fires creates a finding, or updates the open one: `last_seen_at`,
   `occurrences`, `summary`, `evidence` and `impact`. A suppressed finding stays
   suppressed while it keeps firing.
+- `occurrences` counts evaluations that fired, not incidents. A rule looks back
+  over a window longer than the evaluation interval, so one incident is counted
+  once per evaluation that still sees it: at the default interval of 15
+  minutes, one retry-storm bucket stays inside the one-hour window for four
+  evaluations and adds 4, and a repeat-spend or unused-deployment finding adds
+  one on every evaluation while it holds.
 - An open finding not seen for 7 days is resolved with `resolved_by: "system"`.
 - A rule that fires again after its finding was resolved creates a new finding.
 

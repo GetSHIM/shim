@@ -107,7 +107,9 @@ class BillingReadModels:
                 else_=0,
             )
         ).label("unpriced_requests")
-        usage_date = func.date(func.timezone("UTC", UsageLedger.created_at))
+        # Day and window follow the lifecycle's reconciliation, as breakdown()
+        # does, so a daily series always adds up to the same window's totals.
+        usage_date = func.date(func.timezone("UTC", RequestLifecycle.reconciled_at))
         statement = (
             select(
                 usage_date.label("usage_date"),
@@ -126,10 +128,17 @@ class BillingReadModels:
                     "cost_usd"
                 ),
             )
+            .select_from(
+                UsageLedger.__table__.join(
+                    RequestLifecycle.__table__,
+                    (RequestLifecycle.organization_id == UsageLedger.organization_id)
+                    & (RequestLifecycle.request_id == UsageLedger.request_id),
+                )
+            )
             .where(
                 UsageLedger.organization_id == tenant_id,
-                UsageLedger.created_at >= start_at,
-                UsageLedger.created_at <= end_at,
+                RequestLifecycle.reconciled_at >= start_at,
+                RequestLifecycle.reconciled_at <= end_at,
                 UsageLedger.event_type.in_(("quota_settlement", "spend_settlement")),
                 *(
                     ()

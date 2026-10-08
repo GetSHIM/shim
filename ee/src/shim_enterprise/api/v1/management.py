@@ -29,7 +29,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import case, cast as sql_cast, distinct, func, or_, select, update
+from sqlalchemy import (
+    and_,
+    case,
+    cast as sql_cast,
+    distinct,
+    func,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -92,7 +102,7 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim_enterprise.observability.analytics_projection import RequestLog
-from shim_enterprise.observability.overview import OverviewReadModel
+from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
@@ -573,8 +583,11 @@ class BudgetInput(BaseModel):
         if self.scope_type != "org":
             if not self.scope_value:
                 raise ValueError("scoped budgets require scope_value")
-            if self.scope_type != "team_id":
-                self.scope_value = _validate_attribution(self.scope_value)
+            self.scope_value = (
+                str(UUID(self.scope_value))
+                if self.scope_type == "team_id"
+                else _validate_attribution(self.scope_value)
+            )
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
@@ -2187,18 +2200,13 @@ async def create_budget(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
-    if payload.scope_type == "team_id":
-        try:
-            team_id = UUID(payload.scope_value or "")
-        except ValueError:
-            team_id = None
-        if team_id is None or not await session.scalar(
-            select(Team.id).where(
-                Team.id == team_id, Team.organization_id == _tenant_id(user)
-            )
-        ):
-            raise HTTPException(status_code=422, detail="Unknown team")
-        payload.scope_value = str(team_id)
+    if payload.scope_type == "team_id" and not await session.scalar(
+        select(Team.id).where(
+            Team.id == UUID(payload.scope_value or ""),
+            Team.organization_id == _tenant_id(user),
+        )
+    ):
+        raise HTTPException(status_code=422, detail="Unknown team")
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(
         _tenant_id(user), payload.notify_targets
@@ -2563,8 +2571,9 @@ async def list_prompt_versions(
     metadata = RequestLifecycle.lifecycle_metadata
     prompt_hash = metadata["system_prompt_hash"].as_string()
     outcome = metadata["completion_outcome"].as_string()
+    tenant_id = _tenant_id(user)
     filters = [
-        RequestLifecycle.organization_id == _tenant_id(user),
+        RequestLifecycle.organization_id == tenant_id,
         RequestLifecycle.started_at >= start_at,
         RequestLifecycle.started_at <= end_at,
         RequestLifecycle.source_endpoint != "scan",
@@ -2575,32 +2584,55 @@ async def list_prompt_versions(
         filters.append(
             RequestLifecycle.requested_model.icontains(model, autoescape=True)
         )
-    first_seen = func.min(RequestLifecycle.started_at)
+    # Narrow columns only: the grouping sorts these rows, and the whole lifecycle
+    # row (its metadata jsonb) is several times wider. MATERIALIZED stops
+    # Postgres folding the projection back into the scan.
+    versions = (
+        select(
+            prompt_hash.label("system_prompt_hash"),
+            RequestLifecycle.started_at,
+            RequestLifecycle.api_key_id,
+            RequestLifecycle.requested_model,
+            RequestLifecycle.status,
+            outcome.label("outcome"),
+            metadata["shim_latency_ms"].as_integer().label("latency"),
+            # A budget denial ends `failed` but is a policy rejection.
+            and_(RequestLifecycle.status == "failed", _spend_denied(tenant_id)).label(
+                "spend_denied"
+            ),
+        )
+        .where(*filters)
+        .cte("versions")
+        .prefix_with("MATERIALIZED")
+    )
+    first_seen = func.min(versions.c.started_at)
+    # Sorts of ~100k narrow rows fit in 32MB; the 4MB default spills to disk.
+    await session.execute(text("SET LOCAL work_mem = '32MB'"))
     rows = (
         await session.execute(
             select(
-                prompt_hash.label("system_prompt_hash"),
+                versions.c.system_prompt_hash,
                 first_seen.label("first_seen"),
-                func.max(RequestLifecycle.started_at).label("last_seen"),
+                func.max(versions.c.started_at).label("last_seen"),
                 func.count().label("requests"),
-                func.array_agg(distinct(RequestLifecycle.api_key_id)).label("api_keys"),
-                func.array_agg(distinct(RequestLifecycle.requested_model)).label(
-                    "models"
-                ),
+                func.array_agg(distinct(versions.c.api_key_id)).label("api_keys"),
+                func.array_agg(distinct(versions.c.requested_model)).label("models"),
                 *(
-                    func.count().filter(outcome == name).label(name)
+                    func.count().filter(versions.c.outcome == name).label(name)
                     for name in _COMPLETION_OUTCOMES
                 ),
                 func.count()
-                .filter(RequestLifecycle.status.in_(_TECHNICAL_FAILURES))
+                .filter(
+                    versions.c.status.in_(_TECHNICAL_FAILURES),
+                    ~versions.c.spend_denied,
+                )
                 .label("failed"),
                 func.percentile_cont(0.95)
-                .within_group(metadata["shim_latency_ms"].as_integer())
-                .filter(RequestLifecycle.status == "completed")
+                .within_group(versions.c.latency)
+                .filter(versions.c.status == "completed")
                 .label("p95"),
             )
-            .where(*filters)
-            .group_by(prompt_hash)
+            .group_by(versions.c.system_prompt_hash)
             .order_by(first_seen.desc())
             .limit(_MAX_PROMPT_VERSIONS + 1)
         )
@@ -2672,7 +2704,7 @@ async def list_findings(
 
 @router.get(
     "/findings/export",
-    response_class=StreamingResponse,
+    response_class=Response,
     responses={
         200: {
             "content": {"application/x-ndjson": {}},
@@ -2686,7 +2718,7 @@ async def export_findings(
     severity_id: int | None = Query(default=None, ge=1, le=5),
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
+) -> Response:
     rows = (
         await session.scalars(
             select(Finding)
@@ -2707,7 +2739,7 @@ async def export_findings(
         json.dumps(ocsf_detection_finding(row), separators=(",", ":")) + "\n"
         for row in rows
     )
-    return StreamingResponse(iter([body]), media_type="application/x-ndjson")
+    return Response(body, media_type="application/x-ndjson")
 
 
 @router.get("/findings/{finding_id}", response_model=FindingView)
@@ -2731,6 +2763,9 @@ async def update_finding(
     finding = await _owned_finding(session, user, finding_id, lock=True)
     before = _FINDING_STATUSES[finding.status_id]
     target = STATUS_IDS[patch.status]
+    conflict = HTTPException(
+        status_code=409, detail="Another open finding exists for this subject"
+    )
     if finding.status_id == STATUS_RESOLVED and target != STATUS_RESOLVED:
         if await session.scalar(
             select(Finding.id).where(
@@ -2740,15 +2775,20 @@ async def update_finding(
                 Finding.status_id != STATUS_RESOLVED,
             )
         ):
-            raise HTTPException(
-                status_code=409,
-                detail="Another open finding exists for this subject",
-            )
+            raise conflict
     if target != finding.status_id:
         finding.status_id = target
         resolved = target == STATUS_RESOLVED
         finding.resolved_at = datetime.now(timezone.utc) if resolved else None
         finding.resolved_by = str(user.id) if resolved else None
+        try:
+            # The worker can open a finding for this subject after the check.
+            await session.flush()
+        except IntegrityError as exc:
+            await session.rollback()
+            if getattr(exc.orig, "sqlstate", None) == "23505":
+                raise conflict from exc
+            raise
         await _audit(
             session,
             user,
@@ -2974,7 +3014,10 @@ async def my_usage(
 ) -> MyUsageView:
     end_at = _aware(end or datetime.now(timezone.utc))
     start_at = _aware(
-        start or end_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start
+        or end_at.astimezone(timezone.utc).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
     )
     _validate_sync_window(start_at, end_at)
     keys = {
@@ -3410,8 +3453,7 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         for status_name in (*KNOWN_REQUEST_ACTIVITY_STATUSES, "unknown")
     }
     technical_failures = sum(
-        status_counts[status_name]
-        for status_name in ("provider_error", "timeout", "internal_error", "failed")
+        status_counts[status_name] for status_name in _TECHNICAL_FAILURES
     ) - int(row.policy_failed or 0)
     technical_requests = status_counts["completed"] + technical_failures
     p95 = row.p95_completed_shim_latency_ms

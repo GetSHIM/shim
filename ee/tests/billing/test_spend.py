@@ -531,7 +531,7 @@ async def test_daily_usage_groups_timestamps_in_utc() -> None:
 
     compiled = statements[0].compile(dialect=postgresql.dialect())
     sql = str(compiled)
-    assert "date(timezone(%(timezone_1)s, usage_ledger.created_at))" in sql
+    assert "date(timezone(%(timezone_1)s, request_lifecycle.reconciled_at))" in sql
     assert compiled.params["timezone_1"] == "UTC"
     assert " LIMIT " in sql
     assert 501 in compiled.params.values()
@@ -719,6 +719,46 @@ async def test_budget_alert_labels_incomplete_known_spend(monkeypatch) -> None:
     assert payload["cost_complete"] is False
     assert payload["unpriced_requests"] == 2
     assert "known spend only; 2 unpriced requests" in _budget_text(payload)
+
+
+@pytest.mark.asyncio
+async def test_team_budget_alert_names_the_team_and_falls_back_to_the_id(
+    db, test_org, monkeypatch
+) -> None:
+    append = AsyncMock()
+    monkeypatch.setattr("shim_enterprise.billing.spend.OutboxWriter.append", append)
+    elsewhere = Organization(id=uuid4(), name="Elsewhere", slug=f"else-{uuid4()}")
+    db.add(elsewhere)
+    await db.flush()
+    team = Team(organization_id=test_org.id, name="credit-risk")
+    foreign = Team(organization_id=elsewhere.id, name="not-yours")
+    db.add_all([team, foreign])
+    await db.flush()
+
+    async def alert_text(team_id: UUID) -> str:
+        await BudgetEvaluator._enqueue_alert(
+            db,
+            SimpleNamespace(
+                id=uuid4(),
+                organization_id=test_org.id,
+                scope_type="team_id",
+                scope_value=str(team_id),
+                limit_usd=10,
+                limit_tokens=None,
+                notify_targets=[{"kind": "slack"}],
+            ),
+            BudgetUsage(Decimal("8"), 50, ()),
+            fraction=Decimal("0.8"),
+            threshold=Decimal("0.8"),
+            period_key="2026-09",
+            now=datetime.now(timezone.utc),
+        )
+        return _budget_text(append.await_args.kwargs["values"]["payload"])
+
+    assert (await alert_text(team.id)).startswith("shim budget credit-risk: 80%")
+    missing, foreign_id = uuid4(), foreign.id
+    assert (await alert_text(missing)).startswith(f"shim budget {missing}: 80%")
+    assert (await alert_text(foreign_id)).startswith(f"shim budget {foreign_id}: 80%")
 
 
 async def _tenant_with_settled_tokens(session: AsyncSession, tokens: int) -> UUID:
@@ -1216,8 +1256,11 @@ async def test_team_id_budgets_name_their_team_and_refuse_other_teams(
     ) as client:
         refused = [
             await client.post("/api/v1/management/cost/budgets", json=budget(value))
-            for value in (str(foreign.id), "not-a-uuid", str(uuid4()))
+            for value in (str(foreign.id), str(uuid4()))
         ]
+        malformed = await client.post(
+            "/api/v1/management/cost/budgets", json=budget("not-a-uuid")
+        )
         created = await client.post(
             "/api/v1/management/cost/budgets", json=budget(str(team.id).upper())
         )
@@ -1229,7 +1272,8 @@ async def test_team_id_budgets_name_their_team_and_refuse_other_teams(
 
     assert [(r.status_code, r.json()["detail"]) for r in refused] == [
         (422, "Unknown team")
-    ] * 3
+    ] * 2
+    assert malformed.status_code == 422
     assert created.status_code == 200
     assert (created.json()["scope_value"], created.json()["scope_label"]) == (
         str(team.id),

@@ -94,8 +94,9 @@ management API without a person's sign-in. It is an organization user of kind
 
 Organization-wide reads belong to owners, admins and auditors. Everyone, readers
 included, reads their own usage with `GET /management/usage/mine?start=…&end=…`
-(default the current UTC month to now, at most 31 days): totals, a daily UTC
-series, and breakdowns by model and by API key (`api_key_id`, `name`,
+(default the UTC month of `end`, or of now, to `end`, at most 31 days): totals, a daily UTC
+series (days and window follow when each request reconciled, like the totals),
+and breakdowns by model and by API key (`api_key_id`, `name`,
 `prefix`), with the billing cost semantics (`cost_usd` null and
 `cost_complete: false` when a settlement had no price). A member reads
 the requests of the keys they own and of the keys in teams they administer;

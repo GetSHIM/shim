@@ -25,7 +25,7 @@ from shim_enterprise.billing.ledger import (
     QuotaReservationCommand,
     TerminalAction,
 )
-from shim_enterprise.billing.models import CostBudget, RequestLifecycle
+from shim_enterprise.billing.models import AuditIntent, CostBudget, RequestLifecycle
 from shim_enterprise.compliance.models import (
     ComplianceConnector,
     ComplianceForwardTarget,
@@ -1764,7 +1764,8 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
     finally:
         event.remove(connection, "before_cursor_execute", count)
 
-    assert len(statements) == 1
+    # One SET LOCAL work_mem, then the single grouped query: no per-hash reads.
+    assert len(statements) == 2
     assert page.truncated is False
     assert [item.system_prompt_hash for item in page.items] == [_HASH_B, _HASH_A, None]
     newest, version_a, unhashed = page.items
@@ -1794,6 +1795,38 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
     assert [(item.system_prompt_hash, item.requests) for item in by_model.items] == [
         (_HASH_A, 1)
     ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_versions_count_budget_denials_as_policy_not_failure(
+    db, test_org
+) -> None:
+    t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+    rows = [
+        _prompt_lifecycle(test_org.id, t0, _HASH_A, status=status, outcome=None)
+        for status in ("failed", "failed", "provider_error")
+    ]
+    db.add_all(rows)
+    db.add(
+        AuditIntent(
+            request_id=rows[0].request_id,
+            organization_id=test_org.id,
+            actor_type="internal",
+            event_type="preflight",
+            audit_policy_mode="best_effort",
+            usage_summary={"spend_denied": 1},
+            lifecycle_status="failed",
+        )
+    )
+    await db.flush()
+    owner = SimpleNamespace(role="owner", organization_id=test_org.id)
+
+    (version,) = (
+        await management.list_prompt_versions(None, None, None, None, owner, db)
+    ).items
+
+    # The same rule as the request summary's technical failures.
+    assert (version.requests, version.failed) == (3, 2)
 
 
 @pytest.mark.asyncio

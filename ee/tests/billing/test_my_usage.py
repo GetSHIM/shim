@@ -57,7 +57,13 @@ async def _key(db, owner: User, team: Team | None = None) -> ApiKey:
 
 
 async def _settle(
-    db, key: ApiKey, *, tokens: int, cost: str, unpriced: bool = False
+    db,
+    key: ApiKey,
+    *,
+    tokens: int,
+    cost: str,
+    unpriced: bool = False,
+    ledger_at: datetime | None = None,
 ) -> None:
     request_id = f"req_usage_{uuid4().hex}"
     now = datetime.now(timezone.utc)
@@ -66,7 +72,7 @@ async def _settle(
         "organization_id": key.organization_id,
         "api_key_id": key.id,
         "requested_model": "gpt-5-mini",
-        "created_at": now,
+        "created_at": ledger_at or now,
     }
     db.add(
         RequestLifecycle(
@@ -255,3 +261,31 @@ async def test_usage_mine_window_defaults_to_this_month_and_is_bounded(db) -> No
     assert (
         await management.my_usage(now - timedelta(days=31), now, member, db)
     ).totals.requests == 0
+
+
+@pytest.mark.asyncio
+async def test_usage_mine_default_start_is_the_utc_month_of_a_zoned_end(db) -> None:
+    member = await _user(db, await _tenant(db))
+    # 01:00 on 1 October at +03:00 is still September in UTC.
+    end = datetime(2026, 10, 1, 1, tzinfo=timezone(timedelta(hours=3)))
+
+    usage = await management.my_usage(None, end, member, db)
+
+    assert usage.period.start == datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_usage_mine_daily_series_uses_the_window_of_the_totals(db) -> None:
+    organization = await _tenant(db)
+    member = await _user(db, organization)
+    key = await _key(db, member)
+    now = datetime.now(timezone.utc)
+    # The ledger rows predate the window; the request reconciled inside it.
+    await _settle(db, key, tokens=10, cost="0.25", ledger_at=now - timedelta(days=3))
+
+    usage = await management.my_usage(
+        now - timedelta(days=2), now + timedelta(minutes=1), member, db
+    )
+
+    assert usage.totals.requests == 1
+    assert [(day.date, day.requests) for day in usage.daily] == [(now.date(), 1)]

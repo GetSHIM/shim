@@ -8,7 +8,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select, update
+from sqlalchemy import event, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
@@ -33,6 +33,7 @@ def _request(
     outcome: str | None = "complete",
     model: str = "gpt-5-mini",
     cost: str | None = None,
+    priced: bool = True,
 ) -> str:
     request_id = f"req_finding_{uuid4().hex}"
     db.add(
@@ -78,6 +79,9 @@ def _request(
                     event_type="spend_settlement",
                     idempotency_key=f"{request_id}:spend:settlement",
                     reservation_event_id=reservation,
+                    event_metadata=(
+                        {} if priced else {"pricing": {"pricing_resolution": "unknown"}}
+                    ),
                     **ledger,
                 ),
             ]
@@ -136,7 +140,7 @@ async def test_retry_storm_fires_at_twenty_repeats_in_one_quarter_hour(
     (storm,) = storms
     assert storm.subject_key == f"api_key:{test_api_key.id}"
     assert storm.subject == {"api_key_id": str(test_api_key.id)}
-    assert storm.severity_id == 3
+    assert service.RULES[storm.rule_id][1] == 3
     assert storm.evidence == {
         "window_start": BUCKET.isoformat(),
         "window_minutes": 15,
@@ -177,6 +181,70 @@ async def test_repeat_spend_needs_a_dollar_and_a_tenth_of_known_spend(
     assert finding.evidence["share"] == "0.1000"
     assert finding.evidence["request_ids"] == [repeated_id]
     assert finding.impact == {"cost_usd": "1.00000000", "requests": 1}
+
+
+async def _plans(db, run) -> list[str]:
+    """EXPLAIN ANALYZE every SELECT that ``run`` sends, with its parameters."""
+    connection = await db.connection()
+    sent: list[tuple[str, object]] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            sent.append((statement, parameters))
+
+    event.listen(connection.sync_connection, "before_cursor_execute", capture)
+    try:
+        await run()
+    finally:
+        event.remove(connection.sync_connection, "before_cursor_execute", capture)
+    return [
+        "\n".join(
+            row[0]
+            for row in await connection.exec_driver_sql(
+                f"EXPLAIN ANALYZE {sql}", parameters
+            )
+        )
+        for sql, parameters in sent
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_rules_sum_priced_settlements_with_one_join(
+    db, test_api_key
+) -> None:
+    def at(second: int) -> datetime:
+        return BUCKET + timedelta(seconds=second)
+
+    repeated = [
+        _request(db, test_api_key, at(0), repeat=2, cost="0.40"),
+        _request(db, test_api_key, at(1), repeat=3, cost="0.70"),
+        _request(db, test_api_key, at(2), repeat=4, cost="9", priced=False),
+        _request(db, test_api_key, at(3), repeat=5),
+    ]
+    repeated += [_request(db, test_api_key, at(4 + i), repeat=2) for i in range(16)]
+    _request(db, test_api_key, at(30), cost="2.00")
+    _request(db, test_api_key, at(31), cost="5", priced=False)
+    await db.flush()
+
+    detections: list[service.Detection] = []
+
+    async def run() -> None:
+        detections.extend(
+            await service._retry_storms(db, test_api_key.organization_id, NOW)
+            + await service._repeat_spend(db, test_api_key.organization_id, NOW)
+        )
+
+    plans = await _plans(db, run)
+
+    storm, spend = detections
+    assert storm.evidence["request_ids"] == repeated
+    assert storm.impact == {"cost_usd": "1.10000000", "requests": 20}
+    assert spend.evidence["repeated_cost_usd"] == "1.10000000"
+    assert spend.evidence["known_spend_usd"] == "3.10000000"
+    assert spend.impact == {"cost_usd": "1.10000000", "requests": 20}
+    # Spend is joined once per query, not looked up per request.
+    assert len(plans) == 2
+    assert all("SubPlan" not in plan for plan in plans), plans
 
 
 async def _deployment(db, key, *, age: timedelta, enabled: bool = True) -> str:
@@ -229,10 +297,41 @@ async def test_unused_deployment_fires_after_thirty_quiet_days(
         if d.rule_id == service.UNUSED_DEPLOYMENT
     ]
 
-    assert [(d.subject_key, d.subject["alias"], d.severity_id) for d in detections] == [
-        (f"deployment:{unused}", unused, 2)
+    assert [(d.subject_key, d.subject["alias"]) for d in detections] == [
+        (f"deployment:{unused}", unused)
     ]
+    assert service.RULES[service.UNUSED_DEPLOYMENT][1] == 2
     assert detections[0].impact is None
+
+
+@pytest.mark.asyncio
+async def test_unused_deployments_read_the_requests_once_for_every_alias(
+    db, test_api_key
+) -> None:
+    aliases = [
+        await _deployment(db, test_api_key, age=timedelta(days=40)) for _ in range(4)
+    ]
+    for alias in aliases[:2]:
+        _request(db, test_api_key, NOW - timedelta(days=1), model=alias)
+    await db.flush()
+    detections: list[service.Detection] = []
+
+    async def run() -> None:
+        detections.extend(
+            await service._unused_deployments(db, test_api_key.organization_id, NOW)
+        )
+
+    plans = await _plans(db, run)
+
+    assert sorted(d.subject["alias"] for d in detections) == sorted(aliases[2:])
+    scans = [
+        line
+        for plan in plans
+        for line in plan.splitlines()
+        if " on request_lifecycle" in line
+    ]
+    assert scans, plans
+    assert all("loops=1)" in line for line in scans), plans
 
 
 @pytest.mark.parametrize(
@@ -471,6 +570,33 @@ async def test_findings_api_filters_audits_and_exports_ocsf(
             "after": {"status": "resolved"},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_reopen_racing_the_worker_answers_409(
+    db, test_api_key, test_user_with_org
+) -> None:
+    await _storm(db, test_api_key)
+    await _evaluate(db, test_api_key)
+    (finding,) = await _findings(db, test_api_key)
+    finding.status_id = service.STATUS_RESOLVED
+    await db.flush()
+
+    def worker_reopens(session, flush_context, instances) -> None:
+        # The worker's new open finding commits after the API's existence check.
+        session.connection().execute(
+            insert(Finding).values(**{**_copy(finding), "id": uuid4(), "status_id": 1})
+        )
+
+    event.listen(db.sync_session, "before_flush", worker_reopens, once=True)
+    test_user_with_org.role = "admin"
+    async with _client(db, test_user_with_org) as client:
+        response = await client.patch(
+            f"/api/v1/management/findings/{finding.id}", json={"status": "new"}
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Another open finding exists for this subject"
 
 
 def _copy(finding: Finding) -> dict:

@@ -23,6 +23,7 @@ from shim_enterprise.billing.models import (
 from shim.billing.attribution import UNTAGGED
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.tenants.models import Team
 
 
 MAX_BUDGET_ALERT_THRESHOLDS = 10
@@ -293,6 +294,17 @@ class BudgetEvaluator:
         period_key: str,
         now: datetime,
     ) -> None:
+        # A team budget alert names the team; a deleted team leaves the id.
+        scope_label = (
+            await session.scalar(
+                select(Team.name).where(
+                    Team.id == UUID(budget.scope_value),
+                    Team.organization_id == budget.organization_id,
+                )
+            )
+            if budget.scope_type == "team_id"
+            else None
+        )
         for position, target in enumerate(budget.notify_targets or []):
             await OutboxWriter().append(
                 session,
@@ -309,6 +321,7 @@ class BudgetEvaluator:
                         "budget_id": str(budget.id),
                         "scope_type": budget.scope_type,
                         "scope_value": budget.scope_value,
+                        "scope_label": scope_label,
                         "period": period_key,
                         "threshold": float(threshold),
                         "percent_used": float(fraction * 100),
