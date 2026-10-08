@@ -23,7 +23,7 @@ from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
-from shim.observability.metrics import WARNINGS_TOTAL, bounded_label
+from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
 
 
@@ -111,8 +111,6 @@ class ProviderTarget:
     def __post_init__(self) -> None:
         if (self.input_per_million is None) != (self.output_per_million is None):
             raise ValueError("a deployment price needs both input and output")
-        if self.context_window is not None and self.context_window < 1:
-            raise ValueError("a deployment context window must be positive")
 
     @property
     def price(self) -> ModelPrice | None:
@@ -165,7 +163,8 @@ class PreparedInference:
         # Shared like policy_verdicts, so stage replacements keep earlier warnings.
         if code not in self.warnings:
             self.warnings.append(code)
-            WARNINGS_TOTAL.labels(code=bounded_label("warning", code)).inc()
+            # ResponseWarning is a closed set, so the label is bounded.
+            WARNINGS_TOTAL.labels(code=code).inc()
 
     def record_verdict(
         self,

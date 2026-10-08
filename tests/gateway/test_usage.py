@@ -679,6 +679,55 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
     assert snapshot.pricing_metadata["cache_read_tokens"] == 6_000
 
 
+def test_a_priced_deployment_is_priced_on_its_span(monkeypatch):
+    from unittest.mock import Mock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.billing.pricing import ModelPrice
+
+    span = Mock()
+    span.is_recording.return_value = True
+    monkeypatch.setattr(module.trace, "get_current_span", lambda: span)
+    # custom-model-v1 is not in the catalog; the operator's price makes it priced.
+    prepared = _prepared(model="internal-a")
+    prepared.deployment_price = ModelPrice(Decimal("0.5"), Decimal("1.5"))
+    terminal = _terminal(model="custom-model-v1")
+
+    module.record_settled_usage(prepared, terminal.usage)
+
+    attributes = span.set_attributes.call_args.args[0]
+    assert attributes["gen_ai.request.model"] == "custom-model-v1"
+    assert attributes["shim.cost_usd"] == str(terminal.usage.settlement_cost_usd)
+
+
+@pytest.mark.asyncio
+async def test_an_estimated_input_never_claims_the_large_context_price():
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    # gpt-5.4's tier starts above 272,000 input tokens; the byte estimate is not usage.
+    prepared = _prepared(model="gpt-5.4")
+    prepared.protocol = "chat"
+    prepared.admission.estimated_input_tokens = 300_000
+    prepared.admission.maximum_output_tokens = 10
+    prepared.payload = {}
+
+    await module.ResponsePostprocessor(
+        SimpleNamespace(finalize=AsyncMock()),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+    ).finalize(
+        prepared,
+        ProviderNonStream(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
+            None,
+        ),
+        stream_session=None,
+    )
+
+    assert prepared.warnings == []
+
+
 @pytest.mark.parametrize(
     ("model", "prompt_tokens", "split", "payload", "warnings"),
     [
@@ -715,6 +764,50 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
         ),
         ("claude-haiku-4-5", 900, None, {"cache_control": {"type": "ephemeral"}}, []),
         ("claude-haiku-4-5", 900, (0, 0, 0), {"messages": []}, []),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {"tools": [{"name": "t", "cache_control": {"type": "ephemeral"}}]},
+            ["CACHE_NOT_APPLIED"],
+        ),
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "x",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            ["CACHE_NOT_APPLIED"],
+        ),
+        # A tool's schema may name a property cache_control; that is not caching.
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "tools": [
+                    {
+                        "name": "t",
+                        "input_schema": {
+                            "properties": {"cache_control": {"type": "string"}}
+                        },
+                    }
+                ]
+            },
+            [],
+        ),
     ],
 )
 def test_warnings_known_only_after_the_answer(

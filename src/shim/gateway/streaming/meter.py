@@ -396,7 +396,12 @@ class StreamMeter:
             if completion is not None:
                 self.completion_tokens_actual = completion
             split = cache_split(usage, self.provider)
-            if split is not None:
+            # Anthropic's cumulative message_delta drops the one-hour breakdown message_start gave.
+            if split is not None and (
+                self.cache_split is None
+                or self.cache_split[2] == 0
+                or isinstance(usage.get("cache_creation"), Mapping)
+            ):
                 self.cache_split = split
 
     @staticmethod

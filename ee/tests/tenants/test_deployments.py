@@ -1205,10 +1205,14 @@ def test_deployment_input_refuses_a_lone_or_invalid_price_and_a_zero_window(fiel
     [
         {"input_price_per_million": Decimal("0.5")},
         {"output_price_per_million": Decimal("0.5")},
+        {
+            "input_price_per_million": Decimal("-1"),
+            "output_price_per_million": Decimal("1"),
+        },
         {"context_window": 0},
     ],
 )
-async def test_the_database_refuses_a_lone_price_and_a_zero_window(
+async def test_the_database_refuses_an_invalid_price_and_a_zero_window(
     db, test_api_key, origins, fields
 ):
     from sqlalchemy.exc import IntegrityError

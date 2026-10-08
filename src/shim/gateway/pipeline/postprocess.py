@@ -201,7 +201,7 @@ class ResponsePostprocessor:
                 ),
             ).inc()
             PROVIDER_LATENCY_MS.labels(**labels).observe(response.latency_ms)
-        warn_after_answer(prepared, prompt_tokens, split)
+        warn_after_answer(prepared, prompt_actual, split)
         gateway_response = JSONResponse(
             content=response.payload,
             headers=_gateway_headers(prepared, response.request_id),
@@ -296,7 +296,9 @@ class ResponsePostprocessor:
 
         async def finalize_stream(terminal: StreamFinalization) -> None:
             warn_after_answer(
-                prepared, terminal.usage.prompt_tokens, terminal.usage.cache_split
+                prepared,
+                None if terminal.usage.estimated else terminal.usage.prompt_tokens,
+                terminal.usage.cache_split,
             )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
@@ -334,17 +336,16 @@ class ResponsePostprocessor:
 
 
 def warn_after_answer(
-    prepared: PreparedInference, prompt_tokens: int, split: CacheSplit | None
+    prepared: PreparedInference, prompt_tokens: int | None, split: CacheSplit | None
 ) -> None:
-    threshold = (
-        None
-        if prepared.target is not None
-        else DEFAULT_PRICE_BOOK.resolve(
+    """Warn from the provider's usage; ``prompt_tokens`` is None when it was estimated."""
+
+    if prompt_tokens is not None and prepared.target is None:
+        threshold = DEFAULT_PRICE_BOOK.resolve(
             prepared.pricing_model, str(prepared.provider)
         ).large_context_threshold
-    )
-    if threshold is not None and prompt_tokens > threshold:
-        prepared.warn("LARGE_CONTEXT_PRICE")
+        if threshold is not None and prompt_tokens > threshold:
+            prepared.warn("LARGE_CONTEXT_PRICE")
     # Anthropic returns no error for a cache_control it did not apply.
     if (
         prepared.provider == "anthropic"
@@ -354,14 +355,26 @@ def warn_after_answer(
         prepared.warn("CACHE_NOT_APPLIED")
 
 
-def _has_cache_control(value: object) -> bool:
-    if isinstance(value, Mapping):
-        return "cache_control" in value or any(
-            _has_cache_control(item) for item in value.values()
-        )
-    if isinstance(value, list):
-        return any(_has_cache_control(item) for item in value)
-    return False
+def _has_cache_control(payload: Mapping[str, object]) -> bool:
+    """Top-level, system, tool and message-content breakpoints; not a tool schema's keys."""
+
+    def blocks(value: object) -> list[object]:
+        return value if isinstance(value, list) else []
+
+    candidates = [
+        payload,
+        *blocks(payload.get("system")),
+        *blocks(payload.get("tools")),
+        *(
+            block
+            for message in blocks(payload.get("messages"))
+            if isinstance(message, Mapping)
+            for block in blocks(message.get("content"))
+        ),
+    ]
+    return any(
+        isinstance(block, Mapping) and "cache_control" in block for block in candidates
+    )
 
 
 def record_settled_usage(
@@ -376,7 +389,10 @@ def record_settled_usage(
     if not span.is_recording():
         return
     provider = str(prepared.provider)
-    priced = DEFAULT_PRICE_BOOK.supports(usage.provider_model, provider)
+    # A deployment's own price counts: its model may be absent from the catalog.
+    priced = prepared.deployment_price is not None or DEFAULT_PRICE_BOOK.supports(
+        usage.provider_model, provider
+    )
     finish_reasons = sorted(set((usage.provider_finish_reasons or {}).values()))
     span.set_attributes(
         safe_attributes(

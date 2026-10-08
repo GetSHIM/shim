@@ -110,14 +110,6 @@ LABEL_VALUES: Final = MappingProxyType(
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
-        "warning": frozenset(
-            {
-                "CONTEXT_MAY_EXCEED",
-                "MODEL_DEPRECATED",
-                "LARGE_CONTEXT_PRICE",
-                "CACHE_NOT_APPLIED",
-            }
-        ),
     }
 )
 

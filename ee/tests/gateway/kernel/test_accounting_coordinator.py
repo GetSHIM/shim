@@ -34,7 +34,6 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPolicyLoader,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
-    _system_prompt_hash,
 )
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -43,6 +42,7 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderNonStream,
 )
 from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+from shim.gateway.usage import system_prompt_hash
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.streaming import StreamFinalization
@@ -147,6 +147,12 @@ def _postprocessor(usage) -> ResponsePostprocessor:
         usage,
         heartbeat_interval_seconds=30,
         output_hash_salt=None,
+    )
+
+
+def _system_prompt_hash(prepared) -> str | None:
+    return system_prompt_hash(
+        prepared, (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
     )
 
 
