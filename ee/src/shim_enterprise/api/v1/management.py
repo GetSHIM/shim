@@ -29,7 +29,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import case, cast as sql_cast, distinct, func, or_, select, update
+from sqlalchemy import (
+    and_,
+    case,
+    cast as sql_cast,
+    distinct,
+    func,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -2574,40 +2584,55 @@ async def list_prompt_versions(
         filters.append(
             RequestLifecycle.requested_model.icontains(model, autoescape=True)
         )
-    first_seen = func.min(RequestLifecycle.started_at)
+    # Narrow columns only: the grouping sorts these rows, and the whole lifecycle
+    # row (its metadata jsonb) is several times wider. MATERIALIZED stops
+    # Postgres folding the projection back into the scan.
+    versions = (
+        select(
+            prompt_hash.label("system_prompt_hash"),
+            RequestLifecycle.started_at,
+            RequestLifecycle.api_key_id,
+            RequestLifecycle.requested_model,
+            RequestLifecycle.status,
+            outcome.label("outcome"),
+            metadata["shim_latency_ms"].as_integer().label("latency"),
+            # A budget denial ends `failed` but is a policy rejection.
+            and_(RequestLifecycle.status == "failed", _spend_denied(tenant_id)).label(
+                "spend_denied"
+            ),
+        )
+        .where(*filters)
+        .cte("versions")
+        .prefix_with("MATERIALIZED")
+    )
+    first_seen = func.min(versions.c.started_at)
+    # Sorts of ~100k narrow rows fit in 32MB; the 4MB default spills to disk.
+    await session.execute(text("SET LOCAL work_mem = '32MB'"))
     rows = (
         await session.execute(
             select(
-                prompt_hash.label("system_prompt_hash"),
+                versions.c.system_prompt_hash,
                 first_seen.label("first_seen"),
-                func.max(RequestLifecycle.started_at).label("last_seen"),
+                func.max(versions.c.started_at).label("last_seen"),
                 func.count().label("requests"),
-                func.array_agg(distinct(RequestLifecycle.api_key_id)).label("api_keys"),
-                func.array_agg(distinct(RequestLifecycle.requested_model)).label(
-                    "models"
-                ),
+                func.array_agg(distinct(versions.c.api_key_id)).label("api_keys"),
+                func.array_agg(distinct(versions.c.requested_model)).label("models"),
                 *(
-                    func.count().filter(outcome == name).label(name)
+                    func.count().filter(versions.c.outcome == name).label(name)
                     for name in _COMPLETION_OUTCOMES
                 ),
-                # Technical failures as the request summary counts them: a
-                # budget denial ends `failed` but is a policy rejection.
                 func.count()
                 .filter(
-                    RequestLifecycle.status.in_(_TECHNICAL_FAILURES),
-                    or_(
-                        RequestLifecycle.status != "failed",
-                        ~_spend_denied(tenant_id),
-                    ),
+                    versions.c.status.in_(_TECHNICAL_FAILURES),
+                    ~versions.c.spend_denied,
                 )
                 .label("failed"),
                 func.percentile_cont(0.95)
-                .within_group(metadata["shim_latency_ms"].as_integer())
-                .filter(RequestLifecycle.status == "completed")
+                .within_group(versions.c.latency)
+                .filter(versions.c.status == "completed")
                 .label("p95"),
             )
-            .where(*filters)
-            .group_by(prompt_hash)
+            .group_by(versions.c.system_prompt_hash)
             .order_by(first_seen.desc())
             .limit(_MAX_PROMPT_VERSIONS + 1)
         )

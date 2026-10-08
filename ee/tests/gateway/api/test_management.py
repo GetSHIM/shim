@@ -1751,7 +1751,8 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
     finally:
         event.remove(connection, "before_cursor_execute", count)
 
-    assert len(statements) == 1
+    # One SET LOCAL work_mem, then the single grouped query: no per-hash reads.
+    assert len(statements) == 2
     assert page.truncated is False
     assert [item.system_prompt_hash for item in page.items] == [_HASH_B, _HASH_A, None]
     newest, version_a, unhashed = page.items
