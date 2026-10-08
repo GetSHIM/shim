@@ -31,16 +31,19 @@ Signing in creates a personal workspace. Accepting an invitation
 
 - An unused personal workspace is archived. Unused means the invitee is its only
   user, it is on the free plan with no billing source or billing receipt, and it
-  has no request history: no request lifecycle, usage, quota, spend, audit intent
-  or request log row (a `/v1/scan` with a key counts). Its keys, provider
-  secrets, deployments, budgets, teams, connectors, forward targets and privacy
-  settings are deleted, so its keys stop authenticating, and the stored secrets
-  are deleted from the secret store after the change commits. The organization
-  row stays with `archived_at` and `archived_reason: joined_organization`, its
-  audit chain and undelivered outbox rows stay, and the chain records
-  `tenant.personal_workspace_archived`. Nobody can belong to it again; workers
-  write no audit anchors for it and billing never lists it.
-- A personal workspace with request history is kept and the answer is 409
+  has no history: no request lifecycle, usage, quota, spend, audit intent or
+  request log row (a `/v1/scan` with a key counts), and no compliance finding or
+  activity collected by a connector. Its keys, provider secrets, deployments,
+  budgets, teams, connectors, forward targets and privacy settings are deleted,
+  so its keys stop authenticating, and the stored secrets (budget notification
+  endpoints included) are deleted from the secret store after the change
+  commits. Pending budget-alert and forward deliveries are cancelled, since
+  their secrets are gone. The organization row stays with `archived_at` and
+  `archived_reason: joined_organization`, its audit chain and undelivered audit
+  appends stay, and the chain records `tenant.personal_workspace_archived`.
+  Nobody can belong to it again, so it writes no new rows; the audit worker
+  still anchors the archive day.
+- A personal workspace with history is kept and the answer is 409
   "Your personal workspace has request history and cannot be archived; ask the
   inviting organization's owner to contact support."
 - Any other workspace (more users, a paid plan, a billing source) answers 409

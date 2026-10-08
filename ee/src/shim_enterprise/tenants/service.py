@@ -7,10 +7,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 import secrets
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import CursorResult, Delete, Select, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import AuthApiError
@@ -24,12 +25,15 @@ from shim_enterprise.billing.models import (
     UsageLedger,
 )
 from shim_enterprise.compliance.models import (
+    ComplianceActivity,
     ComplianceConnector,
+    ComplianceFinding,
     ComplianceForwardTarget,
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import Base
 from shim_enterprise.observability.analytics_projection import RequestLog
+from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -52,6 +56,10 @@ _REQUEST_HISTORY = (
     SpendPeriodUsage,
     AuditIntent,
     RequestLog,
+)
+_ARCHIVE_CANCELLED_DELIVERIES = (
+    "budget.threshold_crossed",
+    "compliance.connector_delivery_requested",
 )
 # The audit chain and its undelivered appends outlive an archived workspace.
 _ARCHIVE_KEPT_TABLES = frozenset(
@@ -248,8 +256,11 @@ async def move_user_from_bootstrap(
     source_organization_id: UUID,
     destination_organization_id: UUID,
     role: str,
-) -> tuple[User, list[tuple[str, str]]] | None:
-    """Move a personal workspace's only user; return the secrets to delete after commit."""
+) -> tuple[User, list[tuple[str, str]], list[dict[str, str]]] | None:
+    """Move a personal workspace's only user.
+
+    Returns the secrets and budget notification targets to delete after commit.
+    """
     source = await session.scalar(
         select(Organization)
         .where(Organization.id == source_organization_id)
@@ -272,15 +283,15 @@ async def move_user_from_bootstrap(
         await session.flush()
         await session.delete(source)
         await session.flush()
-        return user, []
+        return user, [], []
     if not await _is_personal(session, source):
         return None
     if await _has_request_history(session, source.id):
         raise WorkspaceHasRequestHistory
-    secrets_to_delete = await _archive_workspace(session, source, user)
+    secrets_to_delete, budget_targets = await _archive_workspace(session, source, user)
     _join(user, destination_organization_id, role)
     await session.flush()
-    return user, secrets_to_delete
+    return user, secrets_to_delete, budget_targets
 
 
 def _join(user: User, organization_id: UUID, role: str) -> None:
@@ -293,7 +304,7 @@ async def _archive_workspace(
     session: AsyncSession,
     organization: Organization,
     user: User,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     tenant_id = organization.id
     secrets_to_delete = [
         (reference, f"provider:{provider}:api-key")
@@ -319,40 +330,42 @@ async def _archive_workspace(
             )
         )
     ]
-    for targets in await session.scalars(
-        select(CostBudget.notify_targets).where(CostBudget.organization_id == tenant_id)
-    ):
-        secrets_to_delete += [
-            (target[field], purpose)
-            for target in targets
-            for field, purpose in (
-                ("secret_ref", "budget-alert-endpoint"),
-                ("signing_secret_ref", "budget-alert-signing"),
+    budget_targets = [
+        target
+        for targets in await session.scalars(
+            select(CostBudget.notify_targets).where(
+                CostBudget.organization_id == tenant_id
             )
-            if target.get(field) is not None
-        ]
+        )
+        for target in targets
+    ]
+    # Deliveries whose endpoint secrets are deleted would fail forever.
+    now = datetime.now(timezone.utc)
+    for event in await session.scalars(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == tenant_id,
+            OutboxEvent.event_type.in_(_ARCHIVE_CANCELLED_DELIVERIES),
+            OutboxEvent.status.in_(("pending", "processing", "failed")),
+        )
+        .with_for_update(of=OutboxEvent)
+    ):
+        event.cancel(now=now)
     removed: dict[str, int] = {}
     for table in reversed(Base.metadata.sorted_tables):
         if table.name in _ARCHIVE_KEPT_TABLES or "organization_id" not in table.c:
             continue
-        rows = (
-            await session.execute(
-                delete(table)
-                .where(table.c.organization_id == tenant_id)
-                .returning(table.c.organization_id)
-            )
-        ).all()
-        if rows:
-            removed[table.name] = len(rows)
-    service_accounts = (
-        await session.execute(
-            delete(User)
-            .where(User.organization_id == tenant_id, User.kind == "service")
-            .returning(User.id)
+        deleted = await _delete_rows(
+            session, delete(table).where(table.c.organization_id == tenant_id)
         )
-    ).all()
+        if deleted:
+            removed[table.name] = deleted
+    service_accounts = await _delete_rows(
+        session,
+        delete(User).where(User.organization_id == tenant_id, User.kind == "service"),
+    )
     if service_accounts:
-        removed["service_accounts"] = len(service_accounts)
+        removed["service_accounts"] = service_accounts
     await record_management_action(
         session,
         user,
@@ -360,9 +373,13 @@ async def _archive_workspace(
         str(tenant_id),
         details={"removed": removed},
     )
-    organization.archived_at = datetime.now(timezone.utc)
+    organization.archived_at = now
     organization.archived_reason = "joined_organization"
-    return secrets_to_delete
+    return secrets_to_delete, budget_targets
+
+
+async def _delete_rows(session: AsyncSession, statement: Delete) -> int:
+    return cast(CursorResult[Any], await session.execute(statement)).rowcount
 
 
 async def delete_empty_bootstrap_identity_conflict(
@@ -441,34 +458,17 @@ async def _bootstrap_is_empty(
     session: AsyncSession,
     organization: Organization,
 ) -> bool:
-    users = int(
-        await session.scalar(
-            select(func.count(User.id)).where(User.organization_id == organization.id)
-        )
-        or 0
+    return await _is_personal(session, organization) and not await _any_row(
+        session,
+        [
+            select(table.c.organization_id).where(
+                table.c.organization_id == organization.id
+            )
+            for table in Base.metadata.sorted_tables
+            if "organization_id" in table.c
+            and table.name not in {"organizations", "users", "organization_pii_configs"}
+        ],
     )
-    if (
-        users != 1
-        or organization.tier != "free"
-        or organization.billing_source is not None
-    ):
-        return False
-    ignored = {
-        "organizations",
-        "users",
-        "organization_pii_configs",
-    }
-    for table in Base.metadata.sorted_tables:
-        if table.name in ignored or "organization_id" not in table.c:
-            continue
-        exists = await session.scalar(
-            select(table.c.organization_id)
-            .where(table.c.organization_id == organization.id)
-            .limit(1)
-        )
-        if exists is not None:
-            return False
-    return True
 
 
 async def _is_personal(session: AsyncSession, organization: Organization) -> bool:
@@ -491,15 +491,32 @@ async def _is_personal(session: AsyncSession, organization: Organization) -> boo
 
 
 async def _has_request_history(session: AsyncSession, organization_id: UUID) -> bool:
-    for model in _REQUEST_HISTORY:
-        row = await session.scalar(
-            select(model.organization_id)
-            .where(model.organization_id == organization_id)
-            .limit(1)
+    return await _any_row(
+        session,
+        [
+            *(
+                select(model.organization_id).where(
+                    model.organization_id == organization_id
+                )
+                for model in _REQUEST_HISTORY
+            ),
+            # Detective evidence is history too; deleting its connector cascades it.
+            *(
+                select(model.id)
+                .join(ComplianceConnector)
+                .where(ComplianceConnector.organization_id == organization_id)
+                for model in (ComplianceFinding, ComplianceActivity)
+            ),
+        ],
+    )
+
+
+async def _any_row(session: AsyncSession, statements: Iterable[Select[Any]]) -> bool:
+    return bool(
+        await session.scalar(
+            select(or_(*(statement.exists() for statement in statements)))
         )
-        if row is not None:
-            return True
-    return False
+    )
 
 
 def _digest_api_key(plaintext: str) -> str:

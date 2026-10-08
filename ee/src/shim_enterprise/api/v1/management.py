@@ -1259,6 +1259,7 @@ async def accept_team_invite(
     previous_tenant_id = _tenant_id(user)
     changing_tenant = previous_tenant_id != invite.organization_id
     secrets_to_delete: list[tuple[str, str]] = []
+    budget_targets: list[dict[str, str]] = []
     if changing_tenant:
         try:
             moved = await move_user_from_bootstrap(
@@ -1279,7 +1280,7 @@ async def accept_team_invite(
                 status_code=409,
                 detail="Leave or empty the current organization before accepting",
             )
-        user, secrets_to_delete = moved
+        user, secrets_to_delete, budget_targets = moved
     else:
         user.role = invite.role
         user.is_active = True
@@ -1288,6 +1289,7 @@ async def accept_team_invite(
     await session.commit()
     for reference, purpose in secrets_to_delete:
         await _delete_secret_best_effort(previous_tenant_id, reference, purpose)
+    await _delete_budget_targets(previous_tenant_id, budget_targets)
     await session.refresh(user)
     return user
 
