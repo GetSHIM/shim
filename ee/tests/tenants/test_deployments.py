@@ -1000,6 +1000,7 @@ async def test_tenant_can_refuse_customer_provider_keys_before_any_upstream_call
         refused = await client.post(path, json=payload)
     assert refused.status_code == 403, refused.text
     assert refused.headers["x-shim-error-code"] == "PROVIDER_KEY_NOT_ALLOWED"
+    assert "Drop the x-provider-key header" in refused.text
     assert calls == []
     store.get_secret.assert_not_awaited()
     denial = await db.scalar(

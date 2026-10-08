@@ -11,11 +11,12 @@
 
 ## Enterprise
 
-- [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings, the daily privacy card, alerts, audit export, KVKK report, model deployments
+- [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, service accounts, budgets, prompt versions, findings, privacy settings, the daily privacy card, alerts, audit export, monthly evidence file, KVKK and ISO 42001 readiness reports, model deployments
 - [Model deployments](ee/docs/MODEL_DEPLOYMENTS.md): registering private model servers, their prices and context windows
 - [Diagnostic metadata](ee/docs/DIAGNOSTIC_METADATA.md): every field shim records per request and its null behaviour
 - [Policy decisions](ee/docs/POLICY_DECISIONS.md): the policy verdicts and the audit evidence of management changes
 - [On-prem identity](ee/docs/ON_PREM_IDENTITY.md): OIDC and Vault for customer-operated installations
 - [Provisioning](ee/docs/PROVISIONING.md): operator-managed plans and the existing-customer transition
-- [Team access](ee/docs/team-access.md): teams, roles and gateway key controls
+- [Team access](ee/docs/team-access.md): teams, roles, service accounts and gateway key controls
+- [Findings](ee/docs/FINDINGS.md): the findings inbox, its four rules, statuses and the OCSF export
 - [Offline releases](ee/docs/OFFLINE_RELEASES.md): signed releases and offline bundles
