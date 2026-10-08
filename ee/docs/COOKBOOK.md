@@ -171,12 +171,20 @@ curl -X PUT http://localhost:8000/api/v1/management/settings/pii \
   -d '{"block_pii_tr": false, "entity_actions": {"SECRET": "block", "EMAIL_ADDRESS": "monitor"}}'
 ```
 
+`placeholder_mode` is `random` (default: a new placeholder per request) or
+`stable`: the same value keeps its placeholder within the tenant for up to 30
+days, so the provider's prompt cache works on prompts that carry a masked value,
+and the provider can tell that two requests carry the same value. The key is
+derived from `SECRET_KEY`, so rotating `SECRET_KEY` changes every placeholder.
+
 Notes: an unknown type or action, `mask_last4` on a type other than
-`CREDIT_CARD` or `IBAN_CODE`, or `"entity_actions": null`, is 422. A blocked
+`CREDIT_CARD` or `IBAN_CODE`, `"entity_actions": null`, or a `placeholder_mode`
+other than `random` or `stable`, is 422. A blocked
 request is listed under `/requests` as `rejected` with its `blocked_entities`.
 Every change records a `tenant.privacy_policy_updated` audit event.
 Turning a switch off, or moving a type down the order `block`, `mask`,
-`mask_last4`, `monitor`, `off` through `entity_actions`, also records
+`mask_last4`, `monitor`, `off` through `entity_actions`, or turning
+`placeholder_mode` from `random` to `stable`, also records
 `tenant.privacy_protection_relaxed` and queues
 one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the

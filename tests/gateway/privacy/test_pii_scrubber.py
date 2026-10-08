@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import json
 import re
 import time
@@ -17,7 +19,11 @@ from shim.privacy.deanonymizer import (
     restore_openai_payload,
 )
 from shim.privacy import pii_scrubber as pii_scrubber_module
-from shim.privacy.pii_scrubber import PIIInputTooLarge, PIIScrubberService
+from shim.privacy.pii_scrubber import (
+    PIIInputTooLarge,
+    PIIScrubberService,
+    placeholder_period_key,
+)
 from shim.privacy.policies import (
     PrivacyAction,
     PrivacyOutcome,
@@ -1511,4 +1517,71 @@ def test_json_restoration_resolves_tailed_placeholders(
     assert restored["id"] == placeholder
     assert restored["content"][0]["text"] == (
         "TR33 0006 1005 1978 6457 8413 26 TR33 0006 1005 1978 6457 8413 26"
+    )
+
+
+_ROOT = b"r" * 32
+_AT = datetime(2026, 10, 8, tzinfo=timezone.utc)
+
+
+def test_stable_placeholders_follow_tenant_and_period(
+    scrubber: PIIScrubberService,
+) -> None:
+    def placeholder(tenant: str, at: datetime) -> str:
+        key = placeholder_period_key(_ROOT, tenant, at)
+        return next(iter(scrubber.scrub("alice@example.com", placeholder_key=key)[1]))
+
+    first = placeholder("tenant-a", _AT)
+    period = 2_592_000
+    start = datetime.fromtimestamp(
+        int(_AT.timestamp()) // period * period, timezone.utc
+    )
+    digest = hmac.new(
+        hmac.new(
+            _ROOT,
+            f"shim.placeholder.v1\x1ftenant-a\x1f{int(_AT.timestamp()) // period}".encode(),
+            hashlib.sha256,
+        ).digest(),
+        b"EMAIL_ADDRESS\x1falice@example.com",
+        hashlib.sha256,
+    ).hexdigest()
+
+    assert first == f"<EMAIL_ADDRESS_{digest[:32]}>"
+    assert placeholder("tenant-a", start) == first
+    assert placeholder("tenant-a", start + timedelta(days=30, seconds=-1)) == first
+    assert placeholder("tenant-a", start + timedelta(days=30)) != first
+    assert placeholder("tenant-b", _AT) != first
+
+
+def test_stable_mode_keeps_the_tail_and_two_spellings_apart(
+    scrubber: PIIScrubberService,
+) -> None:
+    key = placeholder_period_key(_ROOT, "tenant-a", _AT)
+    spaced, compact = "TR33 0006 1005 1978 6457 8413 26", "TR330006100519786457841326"
+
+    _, first = scrubber.scrub(f"{spaced} {compact}", _LAST4, placeholder_key=key)
+    _, again = scrubber.scrub(spaced, _LAST4, placeholder_key=key)
+
+    assert [placeholder[-6:] for placeholder in first] == ["~1326>", "~1326>"]
+    assert len(set(first)) == 2
+    assert next(iter(again)) == next(iter(first))
+
+
+def test_a_stable_placeholder_held_by_another_value_falls_back_to_random(
+    scrubber: PIIScrubberService,
+) -> None:
+    key = placeholder_period_key(_ROOT, "tenant-a", _AT)
+    [derived] = scrubber.scrub("alice@example.com", placeholder_key=key)[1]
+
+    scrubbed, mapping = scrubber.scrub(
+        "alice@example.com",
+        known_placeholders={derived: "bob@example.com"},
+        placeholder_key=key,
+    )
+
+    [fallback] = mapping
+    assert fallback != derived and fallback.startswith("<EMAIL_ADDRESS_")
+    assert mapping[fallback] == "alice@example.com"
+    assert scrubber.deanonymize(scrubbed, {derived: "bob@example.com", **mapping}) == (
+        "alice@example.com"
     )

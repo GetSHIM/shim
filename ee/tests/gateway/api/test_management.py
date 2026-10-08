@@ -1475,3 +1475,55 @@ async def test_team_attached_unlabelled_key_is_broken_down_by_team_id(
 
     assert await breakdown("team_id") == {str(team_id): 1, "unassigned": 1}
     assert await breakdown("team") == {"untagged": 2}
+
+
+@pytest.mark.asyncio
+async def test_turning_stable_placeholders_on_is_a_relaxation_and_off_is_not(
+    db, test_user_with_org, audit_events
+) -> None:
+    test_user_with_org.role = "admin"
+    tenant_id = test_user_with_org.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    defaults = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(test_user_with_org, db)
+    )
+
+    stable = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(placeholder_mode="stable"),
+            request,
+            test_user_with_org,
+            db,
+        )
+    )
+    random = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(placeholder_mode="random"),
+            request,
+            test_user_with_org,
+            db,
+        )
+    )
+
+    assert (defaults.placeholder_mode, stable.placeholder_mode) == ("random", "stable")
+    assert random.placeholder_mode == "random"
+    events = await audit_events(tenant_id)
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["placeholder_mode"]]
+    assert [
+        (
+            event["extra"]["before"]["placeholder_mode"],
+            event["extra"]["after"]["placeholder_mode"],
+        )
+        for event in events
+        if event["endpoint"] == "tenant.privacy_policy_updated"
+    ] == [("random", "stable"), ("stable", "random")]
+
+
+@pytest.mark.parametrize("mode", [None, "fixed"])
+def test_privacy_patch_rejects_an_unknown_placeholder_mode(mode) -> None:
+    with pytest.raises(ValidationError):
+        management.PrivacyPatch.model_validate({"placeholder_mode": mode})

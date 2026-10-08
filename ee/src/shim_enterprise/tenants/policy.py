@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hmac
+from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from pydantic import SecretBytes
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -100,6 +103,7 @@ class ResolvedTenantSettings:
     pii_config: dict[str, bool] | None
     tier_definition: dict[str, Any] | None
     entity_actions: dict[str, EntityAction] | None = None
+    placeholder_mode: str = "random"
 
 
 class TenantPolicyService:
@@ -118,19 +122,18 @@ class TenantPolicyService:
             raise ValueError("authenticated API key has no tenant owner")
         pii_config = await self._pii_config(tenant_id, session)
         tier = await self._tier_definition(api_key.tier, session)
-        # A value cached by the previous release has no entity_actions key.
-        entity_actions = (pii_config or {}).get("entity_actions")
+        switches = dict(pii_config or {})
+        # A value cached by an earlier release lacks these keys.
+        entity_actions = switches.pop("entity_actions", None)
+        placeholder_mode = switches.pop("placeholder_mode", "random")
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
             pii_config=None
             if pii_config is None
-            else {
-                key: bool(value)
-                for key, value in pii_config.items()
-                if key != "entity_actions"
-            },
+            else {key: bool(value) for key, value in switches.items()},
             tier_definition=tier,
             entity_actions=dict(entity_actions) if entity_actions else None,
+            placeholder_mode=placeholder_mode,
         )
 
     async def _pii_config(
@@ -158,6 +161,7 @@ class TenantPolicyService:
             "block_secrets": row.block_secrets,
             "block_pii_tr": row.block_pii_tr,
             "entity_actions": dict(row.entity_actions),
+            "placeholder_mode": row.placeholder_mode,
         }
         await self.cache.set_pii_config(cache_key, value)
         return value
@@ -199,6 +203,11 @@ class TenantRequestPolicyResolver:
     ) -> None:
         self.policy_service = policy_service
         self.session_factory = session_factory
+        self._placeholder_root = SecretBytes(
+            hmac.new(
+                settings.SECRET_KEY.encode(), b"shim.placeholder.root.v1", sha256
+            ).digest()
+        )
 
     async def resolve(
         self,
@@ -248,5 +257,8 @@ class TenantRequestPolicyResolver:
                 ),
                 pii_config=tenant_settings.pii_config,
                 entity_actions=tenant_settings.entity_actions,
+                placeholder_key=self._placeholder_root
+                if tenant_settings.placeholder_mode == "stable"
+                else None,
             )
         return resolved

@@ -308,6 +308,13 @@ class PrivacySettings(BaseModel):
     entity_actions: dict[str, EntityAction] = Field(
         description="Stored per-type overrides of the group switches."
     )
+    placeholder_mode: Literal["random", "stable"] = Field(
+        description=(
+            "random: a new placeholder per request. stable: the same value keeps "
+            "its placeholder for up to 30 days, so provider prompt caching works "
+            "and the provider can link the value across requests."
+        )
+    )
 
     @computed_field(description="The action every entity type gets.")
     @property
@@ -338,6 +345,9 @@ class PrivacyPatch(BaseModel):
     entity_actions: dict[str, EntityAction] = Field(
         default_factory=dict,
         description="Replaces the stored overrides whole; {} removes them all.",
+    )
+    placeholder_mode: Literal["random", "stable"] = Field(
+        default="random", description="Left unchanged when absent."
     )
 
     @field_validator("entity_actions")
@@ -1700,7 +1710,10 @@ async def update_privacy_settings(
     )
     relaxed = [
         field for field in _PRIVACY_SWITCHES if before[field] and not after[field]
-    ] + [
+    ]
+    if before["placeholder_mode"] == "random" and after["placeholder_mode"] == "stable":
+        relaxed.append("placeholder_mode")
+    relaxed += [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
         if _ACTION_RANK[action] < _ACTION_RANK[before["effective_actions"][entity_type]]

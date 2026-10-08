@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import get_type_hints
@@ -7,7 +8,7 @@ from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
-from pydantic import SecretStr
+from pydantic import SecretBytes, SecretStr
 
 import shim.gateway.local_auth as local_auth_module
 import shim.gateway.kernel.result as kernel_result
@@ -265,3 +266,22 @@ def test_local_auth_reads_the_google_key_last_and_only_when_allowed(
         with pytest.raises(HTTPException) as error:
             authenticator.authenticate(headers, accept_google_key=accept_google_key)
         assert error.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_the_placeholder_key_is_carried_but_never_shown() -> None:
+    key = SecretBytes(b"placeholder-root-key-of-32-bytes")
+    principal = LocalAuthenticator(SecretStr(LOCAL_KEY)).authenticate(
+        {"x-shim-key": LOCAL_KEY}
+    )
+
+    policy = await LocalRequestPolicyResolver(
+        rate_limit_rpm=60, rate_limit_tpm=10_000, placeholder_key=key
+    ).resolve(principal)
+
+    assert policy.placeholder_key == key
+    assert b"placeholder-root" not in repr(policy).encode()
+    [field] = [
+        item for item in fields(PreparedInference) if item.name == "placeholder_key"
+    ]
+    assert field.repr is False

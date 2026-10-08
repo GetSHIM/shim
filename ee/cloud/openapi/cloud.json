@@ -6747,6 +6747,16 @@
             "description": "Replaces the stored overrides whole; {} removes them all.",
             "title": "Entity Actions",
             "type": "object"
+          },
+          "placeholder_mode": {
+            "default": "random",
+            "description": "Left unchanged when absent.",
+            "enum": [
+              "random",
+              "stable"
+            ],
+            "title": "Placeholder Mode",
+            "type": "string"
           }
         },
         "title": "PrivacyPatch",
@@ -6804,6 +6814,15 @@
             "description": "Stored per-type overrides of the group switches.",
             "title": "Entity Actions",
             "type": "object"
+          },
+          "placeholder_mode": {
+            "description": "random: a new placeholder per request. stable: the same value keeps its placeholder for up to 30 days, so provider prompt caching works and the provider can link the value across requests.",
+            "enum": [
+              "random",
+              "stable"
+            ],
+            "title": "Placeholder Mode",
+            "type": "string"
           }
         },
         "required": [
@@ -6813,6 +6832,7 @@
           "block_secrets",
           "block_pii_tr",
           "entity_actions",
+          "placeholder_mode",
           "effective_actions"
         ],
         "title": "PrivacySettings",

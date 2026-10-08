@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import codecs
+import hmac
 import re
 import secrets
 import unicodedata
 from collections.abc import Iterable, Mapping
+from datetime import datetime
+from hashlib import sha256
 from typing import Any
 
 from presidio_analyzer import RecognizerResult
@@ -189,6 +192,7 @@ class PIIScrubberService:
         known_placeholders: Mapping[str, str] | None = None,
         placeholders_by_value: dict[str, str] | None = None,
         unmasked: dict[str, str] | None = None,
+        placeholder_key: bytes | None = None,
     ) -> tuple[str, dict[str, str]]:
         """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type)."""
         if not isinstance(text, str):
@@ -217,7 +221,16 @@ class PIIScrubberService:
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
                 tail = _tail(item.entity_type, value) if action == "mask_last4" else ""
-                placeholder = self._placeholder(item.entity_type, tail)
+                if placeholder_key:
+                    digest = hmac.new(
+                        placeholder_key,
+                        f"{item.entity_type}\x1f{value}".encode(),
+                        sha256,
+                    ).hexdigest()
+                    placeholder = f"<{item.entity_type}_{digest[:32]}{tail}>"
+                else:
+                    placeholder = self._placeholder(item.entity_type, tail)
+                # A placeholder held by another value falls back to a random one.
                 while (
                     placeholder in (known_placeholders or {})
                     or placeholder in verification_map
@@ -352,6 +365,12 @@ class PIIScrubberService:
     @staticmethod
     def _placeholder(entity_type: str, tail: str = "") -> str:
         return f"<{entity_type}_{secrets.token_hex(16)}{tail}>"
+
+
+def placeholder_period_key(root_key: bytes, tenant_id: object, at: datetime) -> bytes:
+    period = int(at.timestamp()) // 2_592_000
+    label = f"shim.placeholder.v1\x1f{tenant_id}\x1f{period}"
+    return hmac.new(root_key, label.encode(), sha256).digest()
 
 
 def _tail(entity_type: str, value: str) -> str:

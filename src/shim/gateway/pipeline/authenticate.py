@@ -102,6 +102,7 @@ class AuthenticateStage:
             policy=policy.request_policy,
             pii_config=policy.pii_config,
             entity_actions=policy.entity_actions,
+            placeholder_key=policy.placeholder_key,
             provider=ProviderId(value.provider),
             timing=value.timing,
         )

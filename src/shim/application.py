@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import SecretBytes
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim.api.v1.chat import router as chat_router
@@ -125,6 +126,12 @@ def create_community_app(
                     rate_limit_rpm=configured.DEFAULT_RPM_LIMIT,
                     rate_limit_tpm=configured.DEFAULT_TPM_LIMIT,
                     entity_actions=configured.PII_ENTITY_ACTIONS,
+                    placeholder_key=SecretBytes(
+                        configured.PII_PLACEHOLDER_KEY.get_secret_value().encode()
+                    )
+                    if configured.PII_PLACEHOLDER_MODE == "stable"
+                    and configured.PII_PLACEHOLDER_KEY is not None
+                    else None,
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

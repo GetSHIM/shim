@@ -240,8 +240,16 @@ except openai.BadRequestError as error:
     print(error.body["message"])  # Request blocked by privacy policy: SECRET.
 ```
 
-Notes: an unknown type or action, or `mask_last4` on another type, stops the
-gateway at start-up with the setting named. A tailed placeholder is restored
+To let the provider's prompt cache work on prompts that carry a masked value,
+such as a system prompt with a support address, set `PII_PLACEHOLDER_MODE=stable`
+and `PII_PLACEHOLDER_KEY` to a secret of at least 32 characters. The same value
+then gets the same placeholder for up to 30 days (fixed UTC windows), derived
+from the key with HMAC-SHA256; the provider can tell that two requests carry the
+same value, never the value itself. Two spellings of a value are two values.
+Changing the key changes every placeholder.
+
+Notes: an unknown type or action, `mask_last4` on another type, or `stable`
+without a key, stops the gateway at start-up with the setting named. A tailed placeholder is restored
 whether the model writes it back with or without its tail; with a different
 tail it is left as written. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).

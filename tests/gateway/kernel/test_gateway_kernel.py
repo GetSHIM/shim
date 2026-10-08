@@ -336,6 +336,7 @@ async def _send(
     payload: dict,
     *,
     usage=None,
+    settings: dict[str, str] | None = None,
 ) -> tuple[httpx.Response, list[httpx.Request], list[dict]]:
     calls: list[httpx.Request] = []
 
@@ -351,6 +352,7 @@ async def _send(
                 _env_file=None,
                 SHIM_API_KEY=_GATEWAY_KEY,
                 PII_ENTITY_ACTIONS=json.dumps(actions),
+                **(settings or {}),
             ),
             http_client=outbound,
             event_stream=events,
@@ -555,3 +557,24 @@ async def test_mask_last4_shows_the_tail_to_the_provider_and_counts_only_elsewhe
     [event] = events
     assert event["privacy_counts"] == {"CREDIT_CARD": 1}
     assert "~1111" not in json.dumps(event)
+
+
+@pytest.mark.asyncio
+async def test_stable_placeholders_repeat_across_requests_and_never_leave_the_scrubber(
+    caplog: pytest.LogCaptureFixture,
+):
+    caplog.set_level("DEBUG")
+    stable = {"PII_PLACEHOLDER_MODE": "stable", "PII_PLACEHOLDER_KEY": "k" * 32}
+    payload = _ROUTES["chat"][2]("Write to alice@example.com")
+    sent, versions = [], []
+    for settings in (stable, stable, {}):
+        response, calls, events = await _send({}, "chat", payload, settings=settings)
+        assert response.status_code == 200
+        sent.append(json.loads(calls[0].content)["messages"][0]["content"])
+        versions.append(_privacy_verdict(events[0])[2])
+        assert "k" * 32 not in json.dumps(events)
+
+    assert sent[0] == sent[1] != sent[2]
+    assert "alice@example.com" not in "".join(sent)
+    assert len(set(versions)) == 1
+    assert "k" * 32 not in caplog.text

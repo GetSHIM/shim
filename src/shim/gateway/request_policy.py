@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Protocol
 
+from pydantic import SecretBytes
+
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
 from shim.gateway.contracts.ids import TenantId
@@ -31,6 +33,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     request_policy: RequestPolicyContext
     pii_config: dict[str, bool] | None
     entity_actions: Mapping[str, EntityAction] | None = None
+    # Stable-placeholder root key; None keeps placeholders random.
+    placeholder_key: SecretBytes | None = None
 
 
 class RequestPolicyResolver(Protocol):
@@ -43,7 +47,12 @@ class RequestPolicyResolver(Protocol):
 class LocalRequestPolicyResolver:
     """Resolve the fixed single-user community policy."""
 
-    __slots__ = ("_entity_actions", "_rate_limit_rpm", "_rate_limit_tpm")
+    __slots__ = (
+        "_entity_actions",
+        "_placeholder_key",
+        "_rate_limit_rpm",
+        "_rate_limit_tpm",
+    )
 
     def __init__(
         self,
@@ -51,10 +60,12 @@ class LocalRequestPolicyResolver:
         rate_limit_rpm: int,
         rate_limit_tpm: int,
         entity_actions: Mapping[str, EntityAction] | None = None,
+        placeholder_key: SecretBytes | None = None,
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
         self._entity_actions = entity_actions
+        self._placeholder_key = placeholder_key
 
     async def resolve(
         self,
@@ -82,4 +93,5 @@ class LocalRequestPolicyResolver:
             ),
             pii_config=effective_pii_config(),
             entity_actions=self._entity_actions,
+            placeholder_key=self._placeholder_key,
         )

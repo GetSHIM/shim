@@ -11,7 +11,7 @@ import json
 from time import perf_counter
 from typing import Any, Literal, TypeVar
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, SecretBytes
 
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
@@ -128,6 +128,7 @@ class PreparedInference:
     pii_config: dict[str, bool] | None
     admission: AdmissionState | None = None
     entity_actions: Mapping[str, EntityAction] | None = None
+    placeholder_key: SecretBytes | None = field(default=None, repr=False, compare=False)
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None

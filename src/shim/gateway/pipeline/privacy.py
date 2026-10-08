@@ -15,7 +15,11 @@ from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import PRIVACY_DETECTION_TOTAL, bounded_label
-from shim.privacy.pii_scrubber import PIIInputTooLarge, PIIScrubberService
+from shim.privacy.pii_scrubber import (
+    PIIInputTooLarge,
+    PIIScrubberService,
+    placeholder_period_key,
+)
 from shim.privacy.policies import (
     EntityAction,
     PrivacyAction,
@@ -213,6 +217,13 @@ class PrivacyStage:
             known_placeholders=parent_map,
             request_model=value.model,
             unmasked=unmasked,
+            placeholder_key=None
+            if value.placeholder_key is None
+            else placeholder_period_key(
+                value.placeholder_key.get_secret_value(),
+                value.tenant_id,
+                value.context.started_at,
+            ),
         )
         if (
             verification_map
@@ -273,6 +284,7 @@ def scrub_payload(
     known_placeholders: Mapping[str, str] | None = None,
     request_model: str | None = None,
     unmasked: dict[str, str] | None = None,
+    placeholder_key: bytes | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     actions = entity_actions or effective_entity_actions()
     verification_map = dict(known_placeholders or {})
@@ -361,6 +373,7 @@ def scrub_payload(
             known_placeholders=verification_map,
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
+            placeholder_key=placeholder_key,
         )
         verification_map.update(found)
         unmasked.update(kept)

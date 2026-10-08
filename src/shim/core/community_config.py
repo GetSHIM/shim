@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from shim.privacy.policies import EntityAction, effective_entity_actions
@@ -44,6 +44,10 @@ class CommunitySettings(BaseSettings):
     GOOGLE_TIMEOUT_SECONDS: float = Field(default=60, gt=0)
     PII_ENTITY_ACTIONS: Annotated[dict[str, EntityAction], NoDecode] = Field(
         default_factory=dict
+    )
+    PII_PLACEHOLDER_MODE: Literal["random", "stable"] = "random"
+    PII_PLACEHOLDER_KEY: SecretStr | None = Field(
+        default=None, min_length=32, validate_default=True
     )
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
@@ -85,6 +89,15 @@ class CommunitySettings(BaseSettings):
         value: dict[str, EntityAction],
     ) -> dict[str, EntityAction]:
         effective_entity_actions(None, value)
+        return value
+
+    @field_validator("PII_PLACEHOLDER_KEY")
+    @classmethod
+    def require_a_key_for_stable_placeholders(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        if value is None and info.data.get("PII_PLACEHOLDER_MODE") == "stable":
+            raise ValueError("required when PII_PLACEHOLDER_MODE is stable")
         return value
 
     @field_validator("SHIM_API_KEY")

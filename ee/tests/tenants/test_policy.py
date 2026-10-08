@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
+import hmac
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -221,7 +223,11 @@ async def test_cached_privacy_settings_decode_old_and_new_values(
 
 @pytest.mark.asyncio
 async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
-    row = SimpleNamespace(**_SWITCHES, entity_actions={"EMAIL_ADDRESS": "monitor"})
+    row = SimpleNamespace(
+        **_SWITCHES,
+        entity_actions={"EMAIL_ADDRESS": "monitor"},
+        placeholder_mode="stable",
+    )
     session = SimpleNamespace(
         execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: row))
     )
@@ -230,6 +236,71 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
 
     resolved = await policy_module.TenantPolicyService(cache).resolve(api_key, session)
 
-    assert cache.stored == {**_SWITCHES, "entity_actions": {"EMAIL_ADDRESS": "monitor"}}
+    assert cache.stored == {
+        **_SWITCHES,
+        "entity_actions": {"EMAIL_ADDRESS": "monitor"},
+        "placeholder_mode": "stable",
+    }
     assert resolved.pii_config == _SWITCHES
     assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
+    assert resolved.placeholder_mode == "stable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "mode"),
+    [
+        (_SWITCHES, "random"),
+        ({**_SWITCHES, "placeholder_mode": "random"}, "random"),
+        ({**_SWITCHES, "placeholder_mode": "stable"}, "stable"),
+    ],
+)
+async def test_cached_placeholder_mode_stays_out_of_the_switches(cached, mode) -> None:
+    api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
+
+    resolved = await policy_module.TenantPolicyService(_PolicyCache(cached)).resolve(
+        api_key, session=None
+    )
+
+    assert resolved.pii_config == _SWITCHES
+    assert resolved.placeholder_mode == mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["random", "stable"])
+async def test_only_stable_tenants_get_the_placeholder_root_key(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    api_key = SimpleNamespace(
+        key_hash="key-hash", tier="managed", cost_center=None, team=None
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+    policy_service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=ResolvedTenantSettings(
+                tenant_id=UUID(int=1),
+                pii_config=None,
+                tier_definition=None,
+                placeholder_mode=mode,
+            )
+        )
+    )
+    resolver = TenantRequestPolicyResolver(
+        policy_service, Mock(return_value=SessionContext(object()))
+    )
+
+    resolved = await resolver.resolve(SimpleNamespace())
+
+    root = hmac.new(
+        policy_module.settings.SECRET_KEY.encode(),
+        b"shim.placeholder.root.v1",
+        hashlib.sha256,
+    ).digest()
+    if mode == "random":
+        assert resolved.placeholder_key is None
+        return
+    assert resolved.placeholder_key is not None
+    assert resolved.placeholder_key.get_secret_value() == root
+    assert root.hex() not in repr(resolved) and repr(root) not in repr(resolved)

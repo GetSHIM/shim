@@ -82,7 +82,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | Event | `extra` details |
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
-| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off` |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, and `placeholder_mode` when it moved from `random` to `stable` |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
 | `tenant.provider_key_policy_updated` | `before` and `after` of `allow_customer_provider_keys` when it changed |

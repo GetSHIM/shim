@@ -116,3 +116,47 @@ def test_cli_names_an_invalid_pii_entity_actions_setting(
     error = capsys.readouterr().err
     assert "shim: error: PII_ENTITY_ACTIONS" in error
     assert message in error
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        (
+            {"PII_PLACEHOLDER_MODE": "stable"},
+            "PII_PLACEHOLDER_KEY: Value error, required when PII_PLACEHOLDER_MODE is stable",
+        ),
+        (
+            {"PII_PLACEHOLDER_MODE": "stable", "PII_PLACEHOLDER_KEY": "k" * 31},
+            "PII_PLACEHOLDER_KEY: Value should have at least 32 items",
+        ),
+        (
+            {"PII_PLACEHOLDER_MODE": "fixed"},
+            "PII_PLACEHOLDER_MODE: Input should be 'random' or 'stable'",
+        ),
+    ],
+)
+def test_cli_names_an_invalid_placeholder_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    environment: dict[str, str],
+    message: str,
+) -> None:
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(SystemExit):
+        cli.main(["serve"])
+
+    error = capsys.readouterr().err
+    assert f"shim: error: {message}" in error
+    assert "k" * 31 not in error
+
+
+def test_placeholders_stay_random_unless_stable_is_chosen() -> None:
+    assert CommunitySettings(_env_file=None).PII_PLACEHOLDER_MODE == "random"
+    assert (
+        CommunitySettings(
+            _env_file=None, PII_PLACEHOLDER_KEY="k" * 32
+        ).PII_PLACEHOLDER_MODE
+        == "random"
+    )
