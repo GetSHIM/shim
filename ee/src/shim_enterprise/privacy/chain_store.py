@@ -46,14 +46,15 @@ class RedisPrivacyContinuationStore:
         self,
         tenant_id: TenantId,
         response_id: str,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, str]:
         client = self._cache.redis
         if client is None:
             raise PrivacyContinuationUnavailableError()
         try:
             encrypted = await client.get(self._key(tenant_id, response_id))
+            # Every turn writes a marker, so a missing one means the state was lost.
             if encrypted is None:
-                return None
+                raise PrivacyContinuationUnavailableError()
             raw = self._cipher.decrypt(encrypted.encode()).decode()
             payload = json.loads(raw)
             if payload.get("tenant_id") != str(tenant_id):
