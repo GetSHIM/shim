@@ -197,6 +197,8 @@ started in that month, and has no file for it yet. The file is a PDF stored in
 `evidence_reports` (`kind` `monthly`) with its SHA-256, size, generation time and
 generator version. A row is written once and never changed; a second worker
 racing for the same month inserts nothing. Rendering runs off the event loop.
+An organization whose file fails counts as an error of the pass, so the worker
+writes no heartbeat and the next pass tries again.
 
 The PDF says on its cover that it is a measurement of gateway traffic, not an
 audit, an assessment or a certification. Each section names its source table

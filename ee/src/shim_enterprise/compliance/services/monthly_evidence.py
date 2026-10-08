@@ -475,8 +475,11 @@ async def generate_monthly_evidence(
 
 async def generate_due_monthly_evidence(
     session_factory: Callable[[], Any], *, now: datetime
-) -> int:
-    """The previous month's file for each active organization with traffic in it."""
+) -> tuple[int, int]:
+    """The previous month's file for each active organization with traffic in it.
+
+    Returns the files written and the organizations that failed.
+    """
     window = monthly_window(previous_period(now), now=now)
     async with session_factory() as session:
         due = (
@@ -485,11 +488,7 @@ async def generate_due_monthly_evidence(
                 .where(
                     Organization.archived_at.is_(None),
                     select(RequestLifecycle.id)
-                    .where(
-                        RequestLifecycle.organization_id == Organization.id,
-                        RequestLifecycle.started_at >= window.start,
-                        RequestLifecycle.started_at <= window.end,
-                    )
+                    .where(*lifecycle_window(Organization.id, window.start, window.end))
                     .exists(),
                     ~select(MonthlyEvidenceFile.id)
                     .where(
@@ -502,7 +501,7 @@ async def generate_due_monthly_evidence(
                 .order_by(Organization.id)
             )
         ).all()
-    generated = 0
+    generated = failed = 0
     for tenant_id in due:
         async with session_factory() as session:
             try:
@@ -513,9 +512,10 @@ async def generate_due_monthly_evidence(
                 await session.rollback()
             except Exception as exc:
                 await session.rollback()
+                failed += 1
                 logger.error(
                     "Monthly evidence failed organization_id=%s type=%s",
                     tenant_id,
                     type(exc).__name__,
                 )
-    return generated
+    return generated, failed
