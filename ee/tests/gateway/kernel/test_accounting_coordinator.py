@@ -346,6 +346,7 @@ async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
         action=PrivacyAction.SCRUBBED,
         pii_detected=True,
         verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
+        pii_entities={"EMAIL_ADDRESS": 1},
         blocked_entities={"SECRET": 1},
     )
     prepared.record_verdict(
@@ -408,6 +409,28 @@ async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
         counts["monitored_entities"],
         counts["blocked_entities"],
     )
+
+
+def test_a_privacy_block_before_admission_carries_its_counts_to_the_audit() -> None:
+    from shim_enterprise.gateway.pipeline.outbox import rejection_intent
+
+    prepared = _prepared()
+    prepared.source_endpoint = "messages.count_tokens"
+    prepared.context = SimpleNamespace(
+        user_id=None, actor_type="api_key", started_at=datetime.now(timezone.utc)
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED, pii_detected=True, blocked_entities={"SECRET": 1}
+    )
+    prepared.record_verdict(
+        "privacy.input", stage="privacy", outcome="deny", reason_code="SECRET_BLOCKED"
+    )
+    extra = rejection_intent(prepared).payload["extra"]
+
+    assert extra["lifecycle_status"] == "rejected"
+    assert extra["blocked_entities"] == {"SECRET": 1}
+    prepared.privacy = None
+    assert "blocked_entities" not in rejection_intent(prepared).payload["extra"]
 
 
 async def _create_tenant(
@@ -2577,6 +2600,7 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
             "<EMAIL_ADDRESS_ff8d9811>": values[0],
             "<EMAIL_ADDRESS_ff8d9812>": values[1],
         },
+        pii_entities={"EMAIL_ADDRESS": 2},
         monitored_entities={"PHONE_NUMBER": 1},
         blocked_entities={"SECRET": 1},
         bulk_disclosure=bulk,

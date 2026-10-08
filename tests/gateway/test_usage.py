@@ -45,6 +45,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             action=PrivacyAction.SCRUBBED,
             pii_detected=True,
             verification_map={"<EMAIL_ADDRESS_a1>": "private@example.com"},
+            pii_entities={"EMAIL_ADDRESS": 1},
         ),
     )
     prepared.warn = MethodType(PreparedInference.warn, prepared)

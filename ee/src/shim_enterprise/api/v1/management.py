@@ -13,7 +13,7 @@ import itertools
 import json
 import logging
 import secrets
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, cast, get_args
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -79,7 +79,11 @@ from shim_enterprise.findings.service import (
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
-from shim.privacy.policies import EntityAction, effective_entity_actions
+from shim.privacy.policies import (
+    PII_CONFIG_DEFAULTS,
+    EntityAction,
+    effective_entity_actions,
+)
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.overview import OverviewReadModel
 from shim_enterprise.outbox.models import OutboxEvent
@@ -312,16 +316,6 @@ class ProviderSecretView(BaseModel):
     verified_at: datetime | None
 
 
-_PRIVACY_SWITCHES = (
-    "block_email",
-    "block_phone",
-    "block_credit_card",
-    "block_secrets",
-    "block_pii_tr",
-)
-_ACTION_RANK = {"off": 0, "monitor": 1, "mask_last4": 2, "mask": 3, "block": 4}
-
-
 class PrivacySettings(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -357,7 +351,7 @@ class PrivacySettings(BaseModel):
     @property
     def effective_actions(self) -> dict[str, EntityAction]:
         return effective_entity_actions(
-            {field: getattr(self, field) for field in _PRIVACY_SWITCHES},
+            {field: getattr(self, field) for field in PII_CONFIG_DEFAULTS},
             self.entity_actions,
         )
 
@@ -2036,7 +2030,7 @@ async def update_privacy_settings(
         ),
     )
     relaxed = [
-        field for field in _PRIVACY_SWITCHES if before[field] and not after[field]
+        field for field in PII_CONFIG_DEFAULTS if before[field] and not after[field]
     ]
     if before["placeholder_mode"] == "random" and after["placeholder_mode"] == "stable":
         relaxed.append("placeholder_mode")
@@ -2050,7 +2044,8 @@ async def update_privacy_settings(
     relaxed += [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
-        if _ACTION_RANK[action] < _ACTION_RANK[before["effective_actions"][entity_type]]
+        if get_args(EntityAction).index(action)
+        < get_args(EntityAction).index(before["effective_actions"][entity_type])
         and before["entity_actions"].get(entity_type)
         != after["entity_actions"].get(entity_type)
     ]

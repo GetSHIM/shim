@@ -93,7 +93,7 @@ def test_pii_entity_actions_are_parsed_from_json_and_default_to_none() -> None:
         ('{"PERSON": "mask"}', "unknown entity type: PERSON"),
         (
             '{"SECRET": "warn"}',
-            "Input should be 'off', 'monitor', 'mask', 'mask_last4' or 'block'",
+            "Input should be 'off', 'monitor', 'mask_last4', 'mask' or 'block'",
         ),
         (
             '{"EMAIL_ADDRESS": "mask_last4"}',

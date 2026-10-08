@@ -85,7 +85,11 @@ forbidden_noncloud_import_roots = [
 "shim.privacy.classification" = ["content_ref"]
 "shim.privacy.continuation" = ["PrivacyContinuationUnavailableError"]
 "shim.privacy.pii_scrubber" = ["PIIScrubberService"]
-"shim.privacy.policies" = ["EntityAction", "effective_entity_actions"]
+"shim.privacy.policies" = [
+  "EntityAction",
+  "PII_CONFIG_DEFAULTS",
+  "effective_entity_actions",
+]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]

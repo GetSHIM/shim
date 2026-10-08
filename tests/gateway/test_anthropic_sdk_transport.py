@@ -29,6 +29,10 @@ from shim.secrets.credentials import (
     EnvironmentProviderCredentialResolver,
     EphemeralProviderCredential,
 )
+from shim.privacy.policies import effective_entity_actions
+
+
+DEFAULT_ACTIONS = effective_entity_actions()
 
 
 settings = CommunitySettings(_env_file=None)
@@ -104,7 +108,7 @@ def test_messages_request_preserves_provider_fields_and_validates_routing() -> N
 
 def test_restoration_never_changes_anthropic_protocol_metadata() -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     restored = restore_anthropic_payload(
         {
             "type": placeholder,
@@ -172,7 +176,7 @@ def test_anthropic_scrubbing_preserves_valid_protocol_fields_and_covers_native_t
                 },
             ],
         },
-        None,
+        DEFAULT_ACTIONS,
         scrubber,
     )
 
@@ -194,7 +198,7 @@ def test_anthropic_scrubbing_preserves_valid_protocol_fields_and_covers_native_t
 
 def test_stream_restoration_flushes_a_literal_placeholder_prefix() -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     prefix = placeholder[:8]
     restorer = AnthropicStreamRestorer(mapping, scrubber)
 
@@ -218,7 +222,7 @@ async def test_nonstream_uses_native_sdk_and_restores_output(
 ) -> None:
     monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     seen: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -460,7 +464,7 @@ async def test_stream_preserves_native_sse_and_split_privacy_placeholders(
 ) -> None:
     monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     split = len(placeholder) // 2
     events = [
         {

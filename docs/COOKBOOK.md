@@ -180,6 +180,15 @@ reported by the provider. The writer queue is bounded and drops the newest event
 when full, counted by `shim_local_usage_dropped_total`. Community keeps no request
 history; durable per-team reports are enterprise.
 
+Upgrading from a release that wrote `"version": 3`: version 4 adds `event`,
+`cache_read_tokens`, `cache_write_tokens`, `monitored_entities`,
+`blocked_entities`, `bulk_disclosure` and `warnings` to the request line, fills
+`system_prompt_hash`, and adds the `response_privacy` line, so a reader that
+selected `version == 3` must select `version == 4` and `event == "request"`.
+The `privacy.input` verdict's `policy_version` now hashes the effective action
+of every type, so it changes once for every tenant on the first request after
+the upgrade, also in enterprise, without any setting having changed.
+
 ## Scan text before you send it
 
 Find out what shim would mask in a text, without calling a provider.
@@ -293,9 +302,13 @@ without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than
 whether the model writes it back with or without its tail; with a different
 tail it is left as written. The tail reaches only the provider: events and
 metrics carry counts. The types are those listed in [Scan text before you send it](#scan-text-before-you-send-it).
+Where two detections overlap, as an e-mail inside a file path, the span takes
+the stronger action (`block`, then `mask`, then `mask_last4`, then `monitor`), so
+watching one type never sends a value another type masks or blocks.
 A type set to `monitor` or `off` is not checked in provider protocol
-identifiers, and a gateway where no type is `mask` or `block` also accepts
-images and files it cannot inspect. Enterprise sets the same actions per tenant;
+identifiers, and a blocked type found there is refused with `SECRET_BLOCKED` or
+`PII_BLOCKED` like one in content. A gateway where no type is `mask` or `block`
+also accepts images and files it cannot inspect. Enterprise sets the same actions per tenant;
 see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 
 ## Read errors and retry

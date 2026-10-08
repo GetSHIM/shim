@@ -33,6 +33,9 @@ from shim.privacy.policies import (
 )
 
 
+DEFAULT_ACTIONS = effective_entity_actions()
+
+
 @pytest.fixture
 def scrubber() -> PIIScrubberService:
     return PIIScrubberService()
@@ -53,8 +56,8 @@ def test_sensitive_values_use_random_typed_placeholders(
     text: str,
     entity_type: str,
 ) -> None:
-    first, first_map = scrubber.scrub(text)
-    second, second_map = scrubber.scrub(text)
+    first, first_map = scrubber.scrub(text, DEFAULT_ACTIONS)
+    second, second_map = scrubber.scrub(text, DEFAULT_ACTIONS)
 
     assert first != second
     assert first_map != second_map
@@ -68,7 +71,7 @@ def test_placeholder_does_not_expose_an_unkeyed_value_digest(
     scrubber: PIIScrubberService,
 ) -> None:
     email = "alice@example.com"
-    _, mapping = scrubber.scrub(email)
+    _, mapping = scrubber.scrub(email, DEFAULT_ACTIONS)
 
     assert hashlib.sha256(email.encode()).hexdigest()[:32] not in next(iter(mapping))
 
@@ -77,13 +80,12 @@ def test_known_placeholder_is_reused_only_when_explicitly_scoped(
     scrubber: PIIScrubberService,
 ) -> None:
     email = "alice@example.com"
-    first, mapping = scrubber.scrub(email)
+    first, mapping = scrubber.scrub(email, DEFAULT_ACTIONS)
 
     continued, continued_map = scrubber.scrub(
-        email,
-        known_placeholders=mapping,
+        email, DEFAULT_ACTIONS, known_placeholders=mapping
     )
-    unrelated, _ = scrubber.scrub(email)
+    unrelated, _ = scrubber.scrub(email, DEFAULT_ACTIONS)
 
     assert continued == first
     assert continued_map == mapping
@@ -113,9 +115,9 @@ def test_analyzer_limit_is_reported_as_request_too_large(
     monkeypatch.setattr(pii_scrubber_module, "MAX_ANALYZABLE_TEXT_LENGTH", 3)
 
     with pytest.raises(PIIInputTooLarge):
-        scrubber.scrub("safe")
+        scrubber.scrub("safe", DEFAULT_ACTIONS)
     with pytest.raises(HTTPException) as error:
-        scrub_payload({"input": "safe"}, None, scrubber)
+        scrub_payload({"input": "safe"}, DEFAULT_ACTIONS, scrubber)
 
     assert error.value.status_code == 413
     assert error.value.detail["code"] == "REQUEST_TOO_LARGE"
@@ -126,7 +128,7 @@ def test_clean_text_preserves_the_original_representation(
 ) -> None:
     text = "Ｆｕｌｌ%20ｗｉｄｔｈ\u200b"
 
-    assert scrubber.scrub(text) == (text, {})
+    assert scrubber.scrub(text, DEFAULT_ACTIONS) == (text, {})
 
 
 @pytest.mark.parametrize(
@@ -153,9 +155,11 @@ def test_transformed_pii_uses_original_source_spans(
     source_value: str,
 ) -> None:
     detection = next(
-        item for item in scrubber.analyze(text) if item["type"] == entity_type
+        item
+        for item in scrubber.analyze(text, DEFAULT_ACTIONS)
+        if item["type"] == entity_type
     )
-    scrubbed, mapping = scrubber.scrub(text)
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
 
     assert text[detection["start"] : detection["end"]] == source_value
     assert set(mapping.values()) == {source_value}
@@ -168,7 +172,7 @@ def test_distinct_values_cannot_share_a_placeholder(
     first = "user92207@example.com"
     second = "user134538@example.com"
 
-    scrubbed, mapping = scrubber.scrub(f"{first} {second}")
+    scrubbed, mapping = scrubber.scrub(f"{first} {second}", DEFAULT_ACTIONS)
 
     assert len(mapping) == 2
     assert set(mapping.values()) == {first, second}
@@ -208,7 +212,7 @@ def test_representative_plaintext_branches_are_scrubbed() -> None:
         ],
     }
 
-    safe, mapping = scrub_payload(payload, None, PIIScrubberService())
+    safe, mapping = scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
 
     assert email not in json.dumps(safe)
     assert set(mapping.values()) == {email}
@@ -286,7 +290,7 @@ def test_current_openai_and_anthropic_tool_blocks_scrub_only_content() -> None:
         ],
     }
 
-    safe, mapping = scrub_payload(payload, None, PIIScrubberService())
+    safe, mapping = scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
 
     assert email not in json.dumps(safe)
     assert set(mapping.values()) == {email}
@@ -336,7 +340,7 @@ def test_current_openai_and_anthropic_tool_blocks_scrub_only_content() -> None:
 )
 def test_current_opaque_media_blocks_are_rejected(payload: dict[str, object]) -> None:
     with pytest.raises(HTTPException, match="opaque media"):
-        scrub_payload(payload, None, PIIScrubberService())
+        scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
 
 
 def test_payload_reuses_one_placeholder_for_repeated_values() -> None:
@@ -344,7 +348,7 @@ def test_payload_reuses_one_placeholder_for_repeated_values() -> None:
 
     safe, mapping = scrub_payload(
         {"input": email, "instructions": f"Contact {email}"},
-        None,
+        DEFAULT_ACTIONS,
         PIIScrubberService(),
     )
 
@@ -416,7 +420,7 @@ def test_scrubbing_rejects_uninspectable_media(
 ) -> None:
     payload = _media_payload(protocol, part)
     with pytest.raises(HTTPException, match="opaque media") as error:
-        scrub_payload(payload, None, PIIScrubberService())
+        scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
     assert error.value.status_code == 400
     assert error.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"
 
@@ -473,7 +477,10 @@ def test_media_detection_ignores_tool_schemas_and_unhashable_types() -> None:
         ],
     }
 
-    assert scrub_payload(payload, None, PIIScrubberService()) == (payload, {})
+    assert scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService()) == (
+        payload,
+        {},
+    )
 
 
 @pytest.mark.parametrize(
@@ -512,7 +519,7 @@ def test_scrubbing_rejects_opaque_media_nested_in_tool_data(
     payload: dict[str, object],
 ) -> None:
     with pytest.raises(HTTPException, match="opaque media"):
-        scrub_payload(payload, None, PIIScrubberService())
+        scrub_payload(payload, DEFAULT_ACTIONS, PIIScrubberService())
 
 
 def test_pii_in_protocol_identifier_is_rejected_without_rewriting_valid_ids() -> None:
@@ -538,7 +545,7 @@ def test_pii_in_protocol_identifier_is_rejected_without_rewriting_valid_ids() ->
                 }
             ]
         },
-        None,
+        DEFAULT_ACTIONS,
         PIIScrubberService(),
     )
 
@@ -567,7 +574,7 @@ def test_pii_in_protocol_identifier_is_rejected_without_rewriting_valid_ids() ->
                     }
                 ]
             },
-            None,
+            DEFAULT_ACTIONS,
             PIIScrubberService(),
         )
     assert error.value.status_code == 400
@@ -581,7 +588,7 @@ def test_validated_request_model_bypasses_identifier_pii_detection() -> None:
             "model": model,
             "messages": [{"role": "user", "content": "Email alice@example.com"}],
         },
-        None,
+        DEFAULT_ACTIONS,
         PIIScrubberService(),
         request_model=model,
     )
@@ -595,7 +602,7 @@ def test_model_pii_still_rejected_when_not_the_validated_request_model() -> None
     with pytest.raises(HTTPException, match="protocol identifier") as error:
         scrub_payload(
             {"model": "private@example.com"},
-            None,
+            DEFAULT_ACTIONS,
             PIIScrubberService(),
             request_model="claude-sonnet-4-5",
         )
@@ -615,7 +622,7 @@ def test_opaque_protocol_values_are_preserved_when_clean_and_rejected_with_pii()
                 }
             ]
         },
-        None,
+        DEFAULT_ACTIONS,
         PIIScrubberService(),
     )
 
@@ -633,7 +640,7 @@ def test_opaque_protocol_values_are_preserved_when_clean_and_rejected_with_pii()
                     }
                 ]
             },
-            None,
+            DEFAULT_ACTIONS,
             PIIScrubberService(),
         )
 
@@ -661,7 +668,7 @@ def test_private_key_is_scrubbed_as_one_secret(
         "-----END PRIVATE KEY-----"
     )
 
-    scrubbed, mapping = scrubber.scrub(private_key)
+    scrubbed, mapping = scrubber.scrub(private_key, DEFAULT_ACTIONS)
 
     assert len(mapping) == 1
     assert next(iter(mapping)).startswith("<SECRET_")
@@ -674,7 +681,7 @@ def test_a_spaced_iban_is_masked_whole_even_where_a_card_fits_inside(
 ) -> None:
     iban = "TR96 1569 9085 0078 9107 8735 82"
 
-    scrubbed, mapping = scrubber.scrub(f"Ödeme {iban} hesabına")
+    scrubbed, mapping = scrubber.scrub(f"Ödeme {iban} hesabına", DEFAULT_ACTIONS)
 
     assert list(mapping.values()) == [iban]
     assert next(iter(mapping)).startswith("<IBAN_CODE_")
@@ -687,7 +694,7 @@ def test_troy_and_mastercard_two_series_are_one_card(
     scrubber: PIIScrubberService,
     card: str,
 ) -> None:
-    scrubbed, mapping = scrubber.scrub(f"Kart {card} ile öde")
+    scrubbed, mapping = scrubber.scrub(f"Kart {card} ile öde", DEFAULT_ACTIONS)
 
     assert list(mapping.values()) == [card]
     assert next(iter(mapping)).startswith("<CREDIT_CARD_")
@@ -718,7 +725,7 @@ def test_vendor_tokens_and_turkish_passwords_are_one_secret(
     text: str,
     secret: str,
 ) -> None:
-    scrubbed, mapping = scrubber.scrub(text)
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
 
     assert len(mapping) == 1
     assert next(iter(mapping)).startswith("<SECRET_")
@@ -744,7 +751,7 @@ def test_identifiers_written_around_the_detector_are_one_placeholder(
 ) -> None:
     text = f"Müşteri bilgisi: {value}, teşekkürler"
 
-    scrubbed, mapping = scrubber.scrub(text)
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
 
     assert list(mapping.values()) == [value]
     assert next(iter(mapping)).startswith(f"<{entity}_")
@@ -767,7 +774,7 @@ def test_a_lowercase_word_or_next_line_after_an_iban_does_not_hide_it(
 ) -> None:
     assert [
         (finding["type"], text[finding["start"] : finding["end"]])
-        for finding in scrubber.analyze(text)
+        for finding in scrubber.analyze(text, DEFAULT_ACTIONS)
     ] == [("IBAN_CODE", iban)]
 
 
@@ -776,7 +783,7 @@ def test_a_plate_is_one_placeholder_under_the_turkish_identifier_switch(
 ) -> None:
     text = "Araç 34 ABC 123, 16 GB 512 RAM"
 
-    scrubbed, mapping = scrubber.scrub(text)
+    scrubbed, mapping = scrubber.scrub(text, DEFAULT_ACTIONS)
 
     assert list(mapping.values()) == ["34 ABC 123"]
     assert next(iter(mapping)).startswith("<TR_LICENSE_PLATE_")
@@ -791,7 +798,7 @@ def test_a_plate_is_one_placeholder_under_the_turkish_identifier_switch(
 def test_native_payload_restores_content_not_metadata_or_ids(
     scrubber: PIIScrubberService,
 ) -> None:
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     payload = {
         "id": f"item_{placeholder}",
         "metadata": {"text": placeholder},
@@ -818,7 +825,7 @@ def test_native_payload_restores_content_not_metadata_or_ids(
 
 def test_current_tool_outputs_restore_json_but_not_protocol_or_media() -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     payload = {
         "output": [
             {
@@ -890,7 +897,7 @@ def test_current_tool_outputs_restore_json_but_not_protocol_or_media() -> None:
 
 def test_anthropic_beta_compaction_restores_content_not_opaque_metadata() -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     payload = {
         "content": [
             {
@@ -917,7 +924,7 @@ def test_anthropic_beta_compaction_restores_content_not_opaque_metadata() -> Non
 @pytest.mark.parametrize("restore", [restore_openai_payload, restore_anthropic_payload])
 def test_future_response_fields_restore_without_changing_protocol_ids(restore) -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
 
     restored = restore(
         {
@@ -943,7 +950,7 @@ def test_future_response_fields_restore_without_changing_protocol_ids(restore) -
 @pytest.mark.parametrize("restore", [restore_openai_payload, restore_anthropic_payload])
 def test_provider_protocol_fields_are_never_deanonymized(restore) -> None:
     scrubber = PIIScrubberService()
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     fields = {
         "authorization",
         "cachedContent",
@@ -975,7 +982,7 @@ def test_provider_protocol_fields_are_never_deanonymized(restore) -> None:
 def test_responses_stream_restores_three_way_splits_and_interleaved_items(
     scrubber: PIIScrubberService,
 ) -> None:
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     pieces = [placeholder[:7], placeholder[7:15], placeholder[15:]]
     restorer = OpenAIStreamRestorer(mapping, scrubber)
     events = [
@@ -1047,7 +1054,7 @@ def test_responses_stream_restores_three_way_splits_and_interleaved_items(
 def test_current_text_deltas_restore_without_interpreting_audio_media(
     scrubber: PIIScrubberService,
 ) -> None:
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     midpoint = len(placeholder) // 2
     restorer = OpenAIStreamRestorer(mapping, scrubber)
 
@@ -1090,7 +1097,7 @@ def test_current_text_deltas_restore_without_interpreting_audio_media(
 def test_anthropic_beta_compaction_stream_restores_split_content(
     scrubber: PIIScrubberService,
 ) -> None:
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     midpoint = len(placeholder) // 2
     restorer = AnthropicStreamRestorer(mapping, scrubber)
 
@@ -1118,7 +1125,7 @@ def test_anthropic_beta_compaction_stream_restores_split_content(
 def test_chat_stream_restores_split_tool_arguments(
     scrubber: PIIScrubberService,
 ) -> None:
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     midpoint = len(placeholder) // 2
     restorer = OpenAIStreamRestorer(mapping, scrubber)
 
@@ -1170,7 +1177,7 @@ def test_chat_stream_restores_split_tool_arguments(
 def test_fragment_carry_is_bounded_and_preserves_every_placeholder_split(scrubber):
     from shim.privacy.deanonymizer import restore_fragment
 
-    placeholder, mapping = scrubber.scrub("alice@example.com")
+    placeholder, mapping = scrubber.scrub("alice@example.com", DEFAULT_ACTIONS)
     for token in (placeholder, "<  " + placeholder[1:-1] + "  >"):
         for split in range(len(token) + 1):
             buffers = {}
@@ -1208,7 +1215,7 @@ def test_ids_numbers_and_versions_are_not_phones_or_addresses(
     scrubber: PIIScrubberService,
     text: str,
 ) -> None:
-    assert scrubber.analyze(text) == []
+    assert scrubber.analyze(text, DEFAULT_ACTIONS) == []
 
 
 @pytest.mark.parametrize(
@@ -1254,7 +1261,7 @@ def test_phones_and_addresses_are_detected_unless_marked_otherwise(
 ) -> None:
     assert [
         (finding["type"], text[finding["start"] : finding["end"]])
-        for finding in scrubber.analyze(text)
+        for finding in scrubber.analyze(text, DEFAULT_ACTIONS)
     ] == [(entity, value)]
 
 
@@ -1269,7 +1276,7 @@ def test_phones_and_addresses_are_detected_unless_marked_otherwise(
 def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
     scrubber: PIIScrubberService, address: str
 ) -> None:
-    scrubbed, mapping = scrubber.scrub(f"Bilgi: {address}")
+    scrubbed, mapping = scrubber.scrub(f"Bilgi: {address}", DEFAULT_ACTIONS)
 
     assert list(mapping.values()) == [address]
     assert scrubbed == f"Bilgi: {next(iter(mapping))}"
@@ -1284,7 +1291,7 @@ def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
 )
 def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
     started = time.perf_counter()
-    scrubber.analyze(text)
+    scrubber.analyze(text, DEFAULT_ACTIONS)
 
     # Unbounded, the email patterns took 20 s and more on 32 KB.
     assert time.perf_counter() - started < 5
@@ -1303,7 +1310,7 @@ def test_a_json_document_survives_scrubbing_with_only_the_phone_replaced(
         }
     )
 
-    scrubbed, mapping = scrubber.scrub(document)
+    scrubbed, mapping = scrubber.scrub(document, DEFAULT_ACTIONS)
     parsed = json.loads(scrubbed)
 
     assert list(mapping.values()) == ["0212 555 12 34"]
@@ -1419,7 +1426,7 @@ def test_mask_last4_keeps_the_last_four_after_the_hex(
     assert scrubbed == f"Pay with {placeholder} today"
     assert mapping[placeholder] == value
     assert scrubber.deanonymize(scrubbed, mapping) == f"Pay with {value} today"
-    assert "~" not in next(iter(scrubber.scrub(value)[1]))
+    assert "~" not in next(iter(scrubber.scrub(value, DEFAULT_ACTIONS)[1]))
 
 
 def test_a_tail_too_short_to_show_keeps_the_value_masked_whole() -> None:
@@ -1445,17 +1452,6 @@ def test_a_tailed_placeholder_restores_with_or_without_its_tail_only(
     assert scrubber.deanonymize("<CREDIT_CARD_" + "0" * 32 + ">", mapping) == (
         "<CREDIT_CARD_" + "0" * 32 + ">"
     )
-
-
-def test_pii_entities_counts_a_tailed_placeholder_once(
-    scrubber: PIIScrubberService,
-) -> None:
-    _, mapping = scrubber.scrub("4111 1111 1111 1111 and 4111 1111 1111 1111", _LAST4)
-    outcome = PrivacyOutcome(
-        action=PrivacyAction.SCRUBBED, pii_detected=True, verification_map=mapping
-    )
-
-    assert dict(outcome.pii_entities) == {"CREDIT_CARD": 1}
 
 
 def test_a_tailed_placeholder_survives_every_stream_split(
@@ -1531,7 +1527,13 @@ def test_stable_placeholders_follow_tenant_and_period(
 ) -> None:
     def placeholder(tenant: str, at: datetime) -> str:
         key = placeholder_period_key(_ROOT, tenant, at)
-        return next(iter(scrubber.scrub("alice@example.com", placeholder_key=key)[1]))
+        return next(
+            iter(
+                scrubber.scrub(
+                    "alice@example.com", DEFAULT_ACTIONS, placeholder_key=key
+                )[1]
+            )
+        )
 
     first = placeholder("tenant-a", _AT)
     period = 2_592_000
@@ -1573,10 +1575,13 @@ def test_a_stable_placeholder_held_by_another_value_falls_back_to_random(
     scrubber: PIIScrubberService,
 ) -> None:
     key = placeholder_period_key(_ROOT, "tenant-a", _AT)
-    [derived] = scrubber.scrub("alice@example.com", placeholder_key=key)[1]
+    [derived] = scrubber.scrub(
+        "alice@example.com", DEFAULT_ACTIONS, placeholder_key=key
+    )[1]
 
     scrubbed, mapping = scrubber.scrub(
         "alice@example.com",
+        DEFAULT_ACTIONS,
         known_placeholders={derived: "bob@example.com"},
         placeholder_key=key,
     )
@@ -1638,3 +1643,33 @@ def test_a_response_scan_reads_only_up_to_the_analyzer_limit(
         "response_entities": {},
         "truncated": True,
     }
+
+
+_NESTED_EMAIL = "Open /home/alice/john.doe@example.com/notes.txt please"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "masked", "kept"),
+    [
+        ({"FILE_PATH": "monitor"}, ["EMAIL_ADDRESS"], []),
+        ({"FILE_PATH": "monitor", "EMAIL_ADDRESS": "block"}, [], ["EMAIL_ADDRESS"]),
+        ({"EMAIL_ADDRESS": "block"}, [], ["EMAIL_ADDRESS"]),
+    ],
+)
+def test_the_stronger_action_wins_an_overlap(
+    scrubber: PIIScrubberService,
+    overrides: dict[str, str],
+    masked: list[str],
+    kept: list[str],
+) -> None:
+    unmasked: dict[str, str] = {}
+
+    scrubbed, mapping = scrubber.scrub(
+        _NESTED_EMAIL, effective_entity_actions(None, overrides), unmasked=unmasked
+    )
+
+    assert [placeholder[1:].rpartition("_")[0] for placeholder in mapping] == masked
+    assert list(unmasked.values()) == kept
+    assert all("john.doe@example.com" in value for value in unmasked)
+    if masked:
+        assert "john.doe@example.com" not in scrubbed

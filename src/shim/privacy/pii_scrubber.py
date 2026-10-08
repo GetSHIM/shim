@@ -10,11 +10,11 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, get_args
 
 from presidio_analyzer import RecognizerResult
 
-from shim.privacy.policies import EntityAction, effective_entity_actions
+from shim.privacy.policies import EntityAction
 from shim.privacy.presidio_analyzer import PresidioAnalyzer
 
 
@@ -169,9 +169,8 @@ class PIIScrubberService:
     def analyze(
         self,
         text: str,
-        actions: Mapping[str, EntityAction] | None = None,
+        actions: Mapping[str, EntityAction],
     ) -> list[dict[str, Any]]:
-        actions = actions or effective_entity_actions()
         detections = self._source_detections(text, actions)
         return [
             {
@@ -187,7 +186,7 @@ class PIIScrubberService:
     def scrub(
         self,
         text: str,
-        actions: Mapping[str, EntityAction] | None = None,
+        actions: Mapping[str, EntityAction],
         *,
         known_placeholders: Mapping[str, str] | None = None,
         placeholders_by_value: dict[str, str] | None = None,
@@ -197,7 +196,6 @@ class PIIScrubberService:
         """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type)."""
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
-        actions = actions or effective_entity_actions()
         if all(action == "off" for action in actions.values()):
             return text, {}
         detections = self._source_detections(text, actions)
@@ -288,7 +286,7 @@ class PIIScrubberService:
         prepared, spans = _preprocess_with_spans(text)
         if len(prepared) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
-        detections = self._non_overlapping(self._detections(prepared, actions))
+        detections = self._non_overlapping(self._detections(prepared, actions), actions)
         mapped: list[RecognizerResult] = []
         for item in detections:
             matched_spans = spans[item.start : item.end]
@@ -301,7 +299,7 @@ class PIIScrubberService:
                     score=item.score,
                 )
             )
-        return self._non_overlapping(mapped)
+        return self._non_overlapping(mapped, actions)
 
     @staticmethod
     def _deduplicate(items: Iterable[RecognizerResult]) -> list[RecognizerResult]:
@@ -315,6 +313,7 @@ class PIIScrubberService:
     @staticmethod
     def _non_overlapping(
         items: Iterable[RecognizerResult],
+        actions: Mapping[str, EntityAction],
     ) -> list[RecognizerResult]:
         priority = {
             "DB_URI": 100,
@@ -336,6 +335,9 @@ class PIIScrubberService:
             ranked = sorted(
                 component,
                 key=lambda item: (
+                    # The stronger action first, so an overlap never lets a
+                    # monitored or masked span hide a value to mask or block.
+                    -get_args(EntityAction).index(actions[item.entity_type]),
                     -priority.get(item.entity_type, 0),
                     -(item.end - item.start),
                     item.start,

@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, ValidationInfo, field_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from shim.privacy.policies import EntityAction, effective_entity_actions
@@ -80,19 +86,14 @@ class CommunitySettings(BaseSettings):
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
 
-    @field_validator("PII_ENTITY_ACTIONS", mode="before")
+    @field_validator("PII_ENTITY_ACTIONS", mode="wrap")
     @classmethod
-    def parse_entity_actions(cls, value: object) -> object:
-        return json.loads(value) if isinstance(value, str) else value
-
-    @field_validator("PII_ENTITY_ACTIONS")
-    @classmethod
-    def reject_unknown_entity_types(
-        cls,
-        value: dict[str, EntityAction],
+    def parse_entity_actions(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
     ) -> dict[str, EntityAction]:
-        effective_entity_actions(None, value)
-        return value
+        actions = handler(json.loads(value) if isinstance(value, str) else value)
+        effective_entity_actions(None, actions)
+        return actions
 
     @field_validator("PII_PLACEHOLDER_KEY")
     @classmethod

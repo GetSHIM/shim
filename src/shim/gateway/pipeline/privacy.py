@@ -30,6 +30,7 @@ from shim.privacy.policies import (
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
+    block_code,
     effective_entity_actions,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
@@ -165,14 +166,17 @@ class PrivacyStage:
         try:
             prepared = await self._run(value, actions)
         except BaseException as error:
+            refused = isinstance(error, HTTPException) and error.status_code < 500
+            detail = getattr(error, "detail", None)
+            code = detail.get("code") if refused and isinstance(detail, dict) else None
             value.record_verdict(
                 "privacy.input",
                 stage="privacy",
-                outcome="deny"
-                if isinstance(error, HTTPException) and error.status_code < 500
-                else "error",
-                reason_code="PRIVACY_POLICY_BLOCKED"
-                if isinstance(error, HTTPException) and error.status_code < 500
+                outcome="deny" if refused else "error",
+                reason_code=code
+                if code in {"SECRET_BLOCKED", "PII_BLOCKED"}
+                else "PRIVACY_POLICY_BLOCKED"
+                if refused
                 else "PRIVACY_UNAVAILABLE",
                 policy=policy,
             )
@@ -259,9 +263,8 @@ class PrivacyStage:
             if actions[entity_type] == "block"
         )
         pii_detected = bool(verification_map or unmasked)
-        distinct_values = len(verification_map.keys() - parent_map.keys()) + len(
-            unmasked
-        )
+        new_placeholders = verification_map.keys() - parent_map.keys()
+        distinct_values = len(new_placeholders) + len(unmasked)
         threshold = value.bulk_threshold
         privacy = PrivacyOutcome(
             action=(
@@ -273,13 +276,17 @@ class PrivacyStage:
             ),
             pii_detected=pii_detected,
             verification_map=verification_map,
+            # <TYPE_hex> or <TYPE_hex~tail>
+            pii_entities=Counter(
+                placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
+                for placeholder in new_placeholders
+            ),
             monitored_entities=Counter(monitored.values()),
             blocked_entities=blocked,
             bulk_disclosure={"distinct_values": distinct_values, "threshold": threshold}
             if threshold is not None and distinct_values >= threshold
             else None,
             monitored_values=frozenset(monitored),
-            inherited_placeholders=frozenset(parent_map),
         )
         for counts in (
             privacy.pii_entities,
@@ -302,7 +309,7 @@ class PrivacyStage:
 
 def scrub_payload(
     payload: Mapping[str, Any],
-    entity_actions: Mapping[str, EntityAction] | None,
+    actions: Mapping[str, EntityAction],
     scrubber: PIIScrubberService,
     *,
     known_placeholders: Mapping[str, str] | None = None,
@@ -310,7 +317,6 @@ def scrub_payload(
     unmasked: dict[str, str] | None = None,
     placeholder_key: bytes | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    actions = entity_actions or effective_entity_actions()
     verification_map = dict(known_placeholders or {})
     if all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
@@ -324,7 +330,8 @@ def scrub_payload(
     placeholders_by_value = {
         value: placeholder for placeholder, value in verification_map.items()
     }
-    pii_cache: dict[str, bool] = {}
+    # A value's verdict as an identifier: PII to mask, and the types it blocks.
+    pii_cache: dict[str, tuple[bool, frozenset[str]]] = {}
     text_cache: dict[str, str] = {}
 
     def reject(
@@ -353,7 +360,13 @@ def scrub_payload(
                 pii_cache[value] = detected
                 if not found and not kept:
                     text_cache[value] = value
-            if detected:
+            masked, blocked = detected
+            if blocked:
+                reject(
+                    f"Request blocked by privacy policy: {', '.join(sorted(blocked))}.",
+                    code=str(block_code(blocked)),
+                )
+            if masked:
                 reject("PII is not allowed in provider protocol identifiers.")
         elif isinstance(value, list):
             for item in value:
@@ -384,8 +397,12 @@ def scrub_payload(
                 return True
         return any(value.get(field) is not None for field in _OPAQUE_MEDIA_FIELDS)
 
-    def protected(found: Mapping[str, str], kept: Mapping[str, str]) -> bool:
-        return bool(found) or any(actions[kind] == "block" for kind in kept.values())
+    def protected(
+        found: Mapping[str, str], kept: Mapping[str, str]
+    ) -> tuple[bool, frozenset[str]]:
+        return bool(found), frozenset(
+            kind for kind in kept.values() if actions[kind] == "block"
+        )
 
     def scrub_text(value: str) -> str:
         if value in text_cache:

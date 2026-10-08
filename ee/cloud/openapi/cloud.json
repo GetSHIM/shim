@@ -7249,8 +7249,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
@@ -7322,8 +7322,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
@@ -7338,8 +7338,8 @@
               "enum": [
                 "off",
                 "monitor",
-                "mask",
                 "mask_last4",
+                "mask",
                 "block"
               ],
               "type": "string"
