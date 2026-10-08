@@ -536,19 +536,6 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
 
-```python
-import os
-
-from openai import OpenAI
-
-# Clients talk to LiteLLM with its master key; LiteLLM talks to shim with the shim key.
-client = OpenAI(base_url="http://localhost:4000/v1", api_key=os.environ["LITELLM_MASTER_KEY"])
-client.chat.completions.create(
-    model="shim-anthropic",
-    messages=[{"role": "user", "content": "Email jane.doe@example.com about the invoice"}],
-)
-```
-
 Without the proxy, LiteLLM's SDK takes the same values on each call:
 
 ```python

@@ -87,12 +87,6 @@ logger = logging.getLogger(__name__)
 _CUSTOMER_KEY_REFUSED = "spend:customer-provider-key:refused:v1"
 
 
-def _system_prompt_hash(prepared: PreparedInference) -> str | None:
-    return system_prompt_hash(
-        prepared, (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
-    )
-
-
 class AccountingPolicyLoader:
     """Load current quota/spend policy while locking its authoritative row."""
 
@@ -378,7 +372,12 @@ class DurableAccountingCoordinator:
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,
-                        system_prompt_hash=_system_prompt_hash(prepared),
+                        system_prompt_hash=system_prompt_hash(
+                            prepared,
+                            (
+                                settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY
+                            ).encode("utf-8"),
+                        ),
                         deployment_kind=prepared.deployment_kind,
                         policy=policy,
                         audit_policy_mode=prepared.context.audit_policy.mode,
