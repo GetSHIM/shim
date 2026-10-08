@@ -7234,6 +7234,7 @@
           "bulk_threshold": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 2.0,
                 "type": "integer"
               },

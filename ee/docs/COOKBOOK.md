@@ -209,7 +209,8 @@ type, the API key and the time, never a value.
 
 Notes: an unknown type or action, `mask_last4` on a type other than
 `CREDIT_CARD` or `IBAN_CODE`, `"entity_actions": null`, a `placeholder_mode`
-other than `random` or `stable`, a `bulk_threshold` below 2, or a
+other than `random` or `stable`, a `bulk_threshold` below 2 or above
+2,147,483,647, or a
 `response_scan` other than `off` or `count`, is 422. A blocked
 request is listed under `/requests` as `rejected` with its `blocked_entities`.
 Every change records a `tenant.privacy_policy_updated` audit event.

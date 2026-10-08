@@ -128,10 +128,6 @@ class PrivacyOutcome:
             "blocked_entities",
         ):
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
-        if self.bulk_disclosure is not None:
-            object.__setattr__(
-                self, "bulk_disclosure", MappingProxyType(dict(self.bulk_disclosure))
-            )
 
     @property
     def block_code(self) -> str | None:

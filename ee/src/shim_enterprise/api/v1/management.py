@@ -73,6 +73,7 @@ from shim_enterprise.compliance.url_guard import (
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
+from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
     STATUS_IDS,
     STATUS_RESOLVED,
@@ -387,6 +388,7 @@ class PrivacyPatch(BaseModel):
     bulk_threshold: int | None = Field(
         default=None,
         ge=2,
+        le=2_147_483_647,
         description="null turns the alarm off; left unchanged when absent.",
     )
 
@@ -2519,21 +2521,7 @@ async def list_requests(
                 team=row.team,
                 **{
                     field: (row.details or {}).get(field)
-                    for field in (
-                        "provider_finish_reasons",
-                        "completion_outcome",
-                        "repeat_chain_length",
-                        "ttft_ms",
-                        "cached_input_tokens",
-                        "warnings",
-                        "shim_latency_ms",
-                        "system_prompt_hash",
-                        "deployment_kind",
-                        "pii_entities",
-                        "monitored_entities",
-                        "blocked_entities",
-                        "bulk_disclosure",
-                    )
+                    for field in _DIAGNOSTIC_FIELDS
                 },
                 response_entities=response_entities,
             )
