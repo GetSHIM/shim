@@ -94,6 +94,7 @@ class EnterpriseGatewayService(GatewayService):
                     detail={
                         "code": "PROVIDER_KEY_NOT_ALLOWED",
                         "message": "This organization does not accept provider keys in requests; remove x-provider-key to use the organization's stored key.",
+                        "hint": "Drop the x-provider-key header, or ask an organization admin to allow customer provider keys.",
                     },
                 ) from None
             raise_accounting_limit("SPEND_LIMIT_EXCEEDED")
