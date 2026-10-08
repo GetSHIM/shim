@@ -2670,7 +2670,7 @@ async def list_findings(
 
 @router.get(
     "/findings/export",
-    response_class=StreamingResponse,
+    response_class=Response,
     responses={
         200: {
             "content": {"application/x-ndjson": {}},
@@ -2684,7 +2684,7 @@ async def export_findings(
     severity_id: int | None = Query(default=None, ge=1, le=5),
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> StreamingResponse:
+) -> Response:
     rows = (
         await session.scalars(
             select(Finding)
@@ -2705,7 +2705,7 @@ async def export_findings(
         json.dumps(ocsf_detection_finding(row), separators=(",", ":")) + "\n"
         for row in rows
     )
-    return StreamingResponse(iter([body]), media_type="application/x-ndjson")
+    return Response(body, media_type="application/x-ndjson")
 
 
 @router.get("/findings/{finding_id}", response_model=FindingView)
@@ -2729,6 +2729,9 @@ async def update_finding(
     finding = await _owned_finding(session, user, finding_id, lock=True)
     before = _FINDING_STATUSES[finding.status_id]
     target = STATUS_IDS[patch.status]
+    conflict = HTTPException(
+        status_code=409, detail="Another open finding exists for this subject"
+    )
     if finding.status_id == STATUS_RESOLVED and target != STATUS_RESOLVED:
         if await session.scalar(
             select(Finding.id).where(
@@ -2738,15 +2741,20 @@ async def update_finding(
                 Finding.status_id != STATUS_RESOLVED,
             )
         ):
-            raise HTTPException(
-                status_code=409,
-                detail="Another open finding exists for this subject",
-            )
+            raise conflict
     if target != finding.status_id:
         finding.status_id = target
         resolved = target == STATUS_RESOLVED
         finding.resolved_at = datetime.now(timezone.utc) if resolved else None
         finding.resolved_by = str(user.id) if resolved else None
+        try:
+            # The worker can open a finding for this subject after the check.
+            await session.flush()
+        except IntegrityError as exc:
+            await session.rollback()
+            if getattr(exc.orig, "sqlstate", None) == "23505":
+                raise conflict from exc
+            raise
         await _audit(
             session,
             user,
