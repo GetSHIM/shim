@@ -375,7 +375,10 @@ def record_settled_usage(
     if not span.is_recording():
         return
     provider = str(prepared.provider)
-    priced = DEFAULT_PRICE_BOOK.supports(usage.provider_model, provider)
+    # A deployment's own price counts: its model may be absent from the catalog.
+    priced = prepared.deployment_price is not None or DEFAULT_PRICE_BOOK.supports(
+        usage.provider_model, provider
+    )
     finish_reasons = sorted(set((usage.provider_finish_reasons or {}).values()))
     span.set_attributes(
         safe_attributes(

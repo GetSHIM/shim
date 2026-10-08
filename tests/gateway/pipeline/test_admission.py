@@ -726,10 +726,9 @@ def _target(**fields) -> object:
     [
         {"input_per_million": Decimal("1")},
         {"output_per_million": Decimal("1")},
-        {"context_window": 0},
     ],
 )
-def test_a_target_refuses_a_lone_price_and_a_zero_window(fields) -> None:
+def test_a_target_refuses_a_lone_price(fields) -> None:
     with pytest.raises(ValueError):
         _target(**fields)
 

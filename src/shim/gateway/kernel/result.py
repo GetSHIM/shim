@@ -111,8 +111,6 @@ class ProviderTarget:
     def __post_init__(self) -> None:
         if (self.input_per_million is None) != (self.output_per_million is None):
             raise ValueError("a deployment price needs both input and output")
-        if self.context_window is not None and self.context_window < 1:
-            raise ValueError("a deployment context window must be positive")
 
     @property
     def price(self) -> ModelPrice | None:

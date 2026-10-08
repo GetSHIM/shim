@@ -646,6 +646,26 @@ async def test_reported_cache_tokens_settle_at_cache_prices(monkeypatch, stream)
     assert snapshot.pricing_metadata["cache_read_tokens"] == 6_000
 
 
+def test_a_priced_deployment_is_priced_on_its_span(monkeypatch):
+    from unittest.mock import Mock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.billing.pricing import ModelPrice
+
+    span = Mock()
+    span.is_recording.return_value = True
+    monkeypatch.setattr(module.trace, "get_current_span", lambda: span)
+    # custom-model-v1 is not in the catalog; the operator's price makes it priced.
+    prepared = _prepared(model="internal-a")
+    prepared.deployment_price = ModelPrice(Decimal("0.5"), Decimal("1.5"))
+    terminal = _terminal(model="custom-model-v1")
+
+    module.record_settled_usage(prepared, terminal.usage)
+
+    attributes = span.set_attributes.call_args.args[0]
+    assert attributes["gen_ai.request.model"] == "custom-model-v1"
+    assert attributes["shim.cost_usd"] == str(terminal.usage.settlement_cost_usd)
+
+
 @pytest.mark.asyncio
 async def test_an_estimated_input_never_claims_the_large_context_price():
     from unittest.mock import AsyncMock
