@@ -21,6 +21,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 
 ## Attribute spend to teams
 
@@ -410,3 +411,25 @@ Notes:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
+
+## See what changed after a prompt change
+
+Compare how answers ended before and after your system prompt changed.
+
+1. As an owner, admin or auditor, list the versions:
+   `GET /api/v1/management/prompt-versions?start=…&end=…` (default the last 7
+   days, at most 31), optionally with `api_key_id` or `model`.
+2. Each version is a `system_prompt_hash` with `first_seen`, `last_seen`,
+   `requests`, `outcomes` (`complete`, `truncated`, `empty`, `refused`,
+   `filtered`), `failed` and `p95_shim_latency_ms`. Newest first.
+3. List one version's requests with `GET /api/v1/management/requests?system_prompt_hash=…`.
+
+```console
+curl 'http://localhost:8000/api/v1/management/prompt-versions?start=2026-10-01T00:00:00Z' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: the hash is keyed per installation and tenant and never reveals the
+prompt; prompt text is not stored. Requests without system instructions are one
+item with `system_prompt_hash: null`. Details are in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#system-instruction-hashing).

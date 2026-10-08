@@ -110,6 +110,20 @@ Model names and user conversation content are excluded.
 An explicitly empty instruction differs from an absent instruction. Provider-held
 prompts, previous responses, and cached instructions are not reconstructed.
 
+A new digest is a new prompt version. `GET /api/v1/management/prompt-versions`
+(owners, admins and auditors) groups the tenant's requests started in a window
+(`start` and `end`, default the last 7 days, at most 31; optional `api_key_id`
+and `model`, a case-insensitive substring) by digest. Each item has
+`system_prompt_hash`, `first_seen` and `last_seen` within the window,
+`requests`, up to 10 `api_keys` and `models`, `outcomes` (the counts of each
+`completion_outcome`), `failed` (requests that ended `provider_error`,
+`timeout`, `internal_error` or `failed`) and `p95_shim_latency_ms` over completed
+requests. Requests without a digest form one item with
+`system_prompt_hash: null`. Items are sorted newest `first_seen` first, at most
+200, with `truncated: true` when there were more. `/requests` and
+`/requests/export` take `system_prompt_hash=` for an exact match; a value that is
+not `hmac-sha256:v1:` and 64 lowercase hex characters answers 422.
+
 ## Persistence and reading
 
 Request fields enter `request_lifecycle.metadata` during quota reservation.

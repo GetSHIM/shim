@@ -6733,6 +6733,141 @@
         "title": "PrivacySettings",
         "type": "object"
       },
+      "PromptVersionOutcomes": {
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "integer"
+          },
+          "empty": {
+            "title": "Empty",
+            "type": "integer"
+          },
+          "filtered": {
+            "title": "Filtered",
+            "type": "integer"
+          },
+          "refused": {
+            "title": "Refused",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "truncated",
+          "empty",
+          "refused",
+          "filtered"
+        ],
+        "title": "PromptVersionOutcomes",
+        "type": "object"
+      },
+      "PromptVersionPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PromptVersionView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "period",
+          "items",
+          "truncated"
+        ],
+        "title": "PromptVersionPage",
+        "type": "object"
+      },
+      "PromptVersionView": {
+        "properties": {
+          "api_keys": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "title": "First Seen",
+            "type": "string"
+          },
+          "last_seen": {
+            "format": "date-time",
+            "title": "Last Seen",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Models",
+            "type": "array"
+          },
+          "outcomes": {
+            "$ref": "#/components/schemas/PromptVersionOutcomes"
+          },
+          "p95_shim_latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Shim Latency Ms"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "system_prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Prompt Hash"
+          }
+        },
+        "required": [
+          "system_prompt_hash",
+          "first_seen",
+          "last_seen",
+          "requests",
+          "api_keys",
+          "models",
+          "outcomes",
+          "failed",
+          "p95_shim_latency_ms"
+        ],
+        "title": "PromptVersionView",
+        "type": "object"
+      },
       "ProviderKeySettings": {
         "properties": {
           "allow_customer_provider_keys": {
@@ -13327,6 +13462,115 @@
         ]
       }
     },
+    "/api/v1/management/prompt-versions": {
+      "get": {
+        "operationId": "list_prompt_versions_api_v1_management_prompt_versions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          },
+          {
+            "description": "Case-insensitive model substring.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive model substring.",
+              "title": "Model"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptVersionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Prompt Versions",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/providers": {
       "get": {
         "operationId": "list_provider_secrets_api_v1_management_providers_get",
@@ -13711,6 +13955,23 @@
           },
           {
             "in": "query",
+            "name": "system_prompt_hash",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^hmac-sha256:v1:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "System Prompt Hash"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -13923,6 +14184,23 @@
               ],
               "description": "Case-insensitive cost center substring.",
               "title": "Cost Center"
+            }
+          },
+          {
+            "in": "query",
+            "name": "system_prompt_hash",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^hmac-sha256:v1:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "System Prompt Hash"
             }
           }
         ],

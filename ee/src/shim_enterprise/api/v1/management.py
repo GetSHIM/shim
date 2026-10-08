@@ -29,7 +29,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import case, cast as sql_cast, func, or_, select, update
+from sqlalchemy import case, cast as sql_cast, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -42,7 +42,12 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
-from shim_enterprise.billing.models import AuditIntent, CostBudget, UsageLedger
+from shim_enterprise.billing.models import (
+    AuditIntent,
+    CostBudget,
+    RequestLifecycle,
+    UsageLedger,
+)
 from shim_enterprise.billing.read_models import (
     MAX_BILLING_DAILY_ROWS,
     MAX_BILLING_BREAKDOWN_ROWS,
@@ -160,6 +165,10 @@ _BILLING_EXPORT_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 _MAX_SYNC_WINDOW = timedelta(days=31)
 _MAX_SYNC_REQUEST_EXPORT_ROWS = 10_000
+_MAX_PROMPT_VERSIONS = 200
+_SYSTEM_PROMPT_HASH_PATTERN = r"^hmac-sha256:v1:[0-9a-f]{64}$"
+_COMPLETION_OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
+_TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
 _MAX_SYNC_BUDGETS = 100
 _MAX_SYNC_BUDGET_DELIVERIES = 100
 
@@ -586,6 +595,32 @@ class BillingUsageView(BaseModel):
     total_cost: float | None
     unpriced_requests: int = 0
     cost_complete: bool = True
+
+
+class PromptVersionOutcomes(BaseModel):
+    complete: int
+    truncated: int
+    empty: int
+    refused: int
+    filtered: int
+
+
+class PromptVersionView(BaseModel):
+    system_prompt_hash: str | None
+    first_seen: datetime
+    last_seen: datetime
+    requests: int
+    api_keys: list[UUID] = Field(max_length=10)
+    models: list[str] = Field(max_length=10)
+    outcomes: PromptVersionOutcomes
+    failed: int
+    p95_shim_latency_ms: int | None
+
+
+class PromptVersionPage(BaseModel):
+    period: BillingPeriodView
+    items: list[PromptVersionView]
+    truncated: bool
 
 
 class UsageTotalsView(BaseModel):
@@ -2251,6 +2286,9 @@ async def list_requests(
         max_length=settings.COST_TAG_MAX_LENGTH,
         description="Case-insensitive cost center substring.",
     ),
+    system_prompt_hash: str | None = Query(
+        default=None, pattern=_SYSTEM_PROMPT_HASH_PATTERN
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -2268,6 +2306,7 @@ async def list_requests(
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
+        system_prompt_hash=system_prompt_hash,
     )
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
@@ -2319,6 +2358,90 @@ async def list_requests(
     )
 
 
+@router.get("/prompt-versions", response_model=PromptVersionPage)
+async def list_prompt_versions(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    api_key_id: UUID | None = Query(default=None),
+    model: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Case-insensitive model substring.",
+    ),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> PromptVersionPage:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(start or end_at - timedelta(days=7))
+    _validate_sync_window(start_at, end_at)
+    metadata = RequestLifecycle.lifecycle_metadata
+    prompt_hash = metadata["system_prompt_hash"].as_string()
+    outcome = metadata["completion_outcome"].as_string()
+    filters = [
+        RequestLifecycle.organization_id == _tenant_id(user),
+        RequestLifecycle.started_at >= start_at,
+        RequestLifecycle.started_at <= end_at,
+        RequestLifecycle.source_endpoint != "scan",
+    ]
+    if api_key_id is not None:
+        filters.append(RequestLifecycle.api_key_id == api_key_id)
+    if model is not None:
+        filters.append(
+            RequestLifecycle.requested_model.icontains(model, autoescape=True)
+        )
+    first_seen = func.min(RequestLifecycle.started_at)
+    rows = (
+        await session.execute(
+            select(
+                prompt_hash.label("system_prompt_hash"),
+                first_seen.label("first_seen"),
+                func.max(RequestLifecycle.started_at).label("last_seen"),
+                func.count().label("requests"),
+                func.array_agg(distinct(RequestLifecycle.api_key_id)).label("api_keys"),
+                func.array_agg(distinct(RequestLifecycle.requested_model)).label(
+                    "models"
+                ),
+                *(
+                    func.count().filter(outcome == name).label(name)
+                    for name in _COMPLETION_OUTCOMES
+                ),
+                func.count()
+                .filter(RequestLifecycle.status.in_(_TECHNICAL_FAILURES))
+                .label("failed"),
+                func.percentile_cont(0.95)
+                .within_group(metadata["shim_latency_ms"].as_integer())
+                .filter(RequestLifecycle.status == "completed")
+                .label("p95"),
+            )
+            .where(*filters)
+            .group_by(prompt_hash)
+            .order_by(first_seen.desc())
+            .limit(_MAX_PROMPT_VERSIONS + 1)
+        )
+    ).all()
+    return PromptVersionPage(
+        period=BillingPeriodView(start=start_at, end=end_at),
+        items=[
+            PromptVersionView(
+                system_prompt_hash=row.system_prompt_hash,
+                first_seen=row.first_seen,
+                last_seen=row.last_seen,
+                requests=row.requests,
+                api_keys=[key for key in row.api_keys if key is not None][:10],
+                models=row.models[:10],
+                outcomes=PromptVersionOutcomes(
+                    **{name: getattr(row, name) for name in _COMPLETION_OUTCOMES}
+                ),
+                failed=row.failed,
+                p95_shim_latency_ms=round(row.p95) if row.p95 is not None else None,
+            )
+            for row in rows[:_MAX_PROMPT_VERSIONS]
+        ],
+        truncated=len(rows) > _MAX_PROMPT_VERSIONS,
+    )
+
+
 @router.get(
     "/requests/export",
     response_class=StreamingResponse,
@@ -2348,6 +2471,9 @@ async def export_requests(
         max_length=settings.COST_TAG_MAX_LENGTH,
         description="Case-insensitive cost center substring.",
     ),
+    system_prompt_hash: str | None = Query(
+        default=None, pattern=_SYSTEM_PROMPT_HASH_PATTERN
+    ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -2365,6 +2491,7 @@ async def export_requests(
         pii_detected=pii_detected,
         tag=tag,
         cost_center=cost_center,
+        system_prompt_hash=system_prompt_hash,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
@@ -2737,6 +2864,7 @@ def _request_filters(
     pii_detected: bool | None,
     tag: str | None,
     cost_center: str | None,
+    system_prompt_hash: str | None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -2789,6 +2917,10 @@ def _request_filters(
         filters.append(RequestLog.request_id == request_id)
     if pii_detected is not None:
         filters.append(RequestLog.pii_detected == pii_detected)
+    if system_prompt_hash is not None:
+        filters.append(
+            RequestLog.details["system_prompt_hash"].as_string() == system_prompt_hash
+        )
     if normalized_tag is not None:
         tag_values = func.jsonb_array_elements_text(
             func.coalesce(RequestLog.tags, sql_cast([], JSONB))

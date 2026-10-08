@@ -1,4 +1,5 @@
 import csv
+import io
 from datetime import datetime, timedelta, timezone
 import json
 from decimal import Decimal
@@ -10,7 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.dialects import postgresql
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
@@ -24,13 +25,14 @@ from shim_enterprise.billing.ledger import (
     QuotaReservationCommand,
     TerminalAction,
 )
-from shim_enterprise.billing.models import CostBudget
+from shim_enterprise.billing.models import CostBudget, RequestLifecycle
 from shim_enterprise.compliance.models import (
     ComplianceConnector,
     ComplianceForwardTarget,
 )
 from shim_enterprise.compliance.services.forwarder import DELIVERY_EVENT
 from shim_enterprise.core.database import get_db
+from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import Organization
 from shim_enterprise.billing.read_models import BillingReadModels
@@ -330,6 +332,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         pii_detected=True,
         tag=" Research ",
         cost_center=" Research ",
+        system_prompt_hash=None,
         limit=25,
         offset=5,
         user=SimpleNamespace(role="owner", organization_id=tenant_id),
@@ -468,6 +471,7 @@ async def test_request_activity_rejects_an_inverted_period() -> None:
             pii_detected=None,
             tag=None,
             cost_center=None,
+            system_prompt_hash=None,
             limit=50,
             offset=0,
             user=SimpleNamespace(organization_id=uuid4()),
@@ -622,6 +626,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         pii_detected=None,
         tag=None,
         cost_center=None,
+        system_prompt_hash=None,
         user=SimpleNamespace(role="owner", organization_id=tenant_id),
         session=session,
     )
@@ -676,6 +681,7 @@ async def test_request_export_rejects_oversized_window_before_query() -> None:
             pii_detected=None,
             tag=None,
             cost_center=None,
+            system_prompt_hash=None,
             user=SimpleNamespace(organization_id=uuid4()),
             session=session,
         )
@@ -702,6 +708,7 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
             pii_detected=None,
             tag=None,
             cost_center=None,
+            system_prompt_hash=None,
             user=SimpleNamespace(role="owner", organization_id=uuid4()),
             session=session,
         )
@@ -1166,6 +1173,7 @@ async def test_profile_key_budget_run_and_exports_record_one_audit_event_each(
         pii_detected=None,
         tag=None,
         cost_center=None,
+        system_prompt_hash=None,
         user=user,
         session=db,
     )
@@ -1344,3 +1352,206 @@ async def test_team_attached_unlabelled_key_is_broken_down_by_team_id(
 
     assert await breakdown("team_id") == {str(team_id): 1, "unassigned": 1}
     assert await breakdown("team") == {"untagged": 2}
+
+
+_HASH_A = "hmac-sha256:v1:" + "a" * 64
+_HASH_B = "hmac-sha256:v1:" + "b" * 64
+
+
+def _prompt_lifecycle(
+    organization_id,
+    started_at: datetime,
+    prompt_hash: str | None,
+    *,
+    api_key_id=None,
+    status: str = "completed",
+    outcome: str | None = "complete",
+    latency: int | None = 10,
+    model: str = "gpt-5-mini",
+):
+    return RequestLifecycle(
+        request_id=f"req_prompt_{uuid4().hex}",
+        organization_id=organization_id,
+        actor_type="api_key" if api_key_id else "internal",
+        api_key_id=api_key_id,
+        source_endpoint="chat.completions",
+        status=status,
+        requested_model=model,
+        stream=False,
+        started_at=started_at,
+        lifecycle_metadata={
+            "system_prompt_hash": prompt_hash,
+            "completion_outcome": outcome,
+            "shim_latency_ms": latency,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> None:
+    tenant_id = test_api_key.organization_id
+    other = Organization(id=uuid4(), name="Other", slug=f"prompt-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+    key = test_api_key.id
+    db.add_all(
+        [
+            _prompt_lifecycle(tenant_id, t0, _HASH_A, api_key_id=key, latency=10),
+            _prompt_lifecycle(
+                tenant_id,
+                t0 + timedelta(seconds=1),
+                _HASH_A,
+                api_key_id=key,
+                outcome="truncated",
+                latency=20,
+            ),
+            _prompt_lifecycle(
+                tenant_id,
+                t0 + timedelta(seconds=2),
+                _HASH_A,
+                api_key_id=key,
+                outcome="truncated",
+                latency=30,
+                model="gpt-5-nano",
+            ),
+            _prompt_lifecycle(tenant_id, t0 + timedelta(seconds=10), _HASH_B),
+            _prompt_lifecycle(
+                tenant_id,
+                t0 + timedelta(seconds=11),
+                _HASH_B,
+                status="provider_error",
+                outcome=None,
+                latency=None,
+            ),
+            _prompt_lifecycle(tenant_id, t0 - timedelta(seconds=5), None),
+            _prompt_lifecycle(other.id, t0, "hmac-sha256:v1:" + "c" * 64),
+            _prompt_lifecycle(tenant_id, t0 - timedelta(days=8), _HASH_A),
+        ]
+    )
+    await db.flush()
+    owner = SimpleNamespace(role="owner", organization_id=tenant_id)
+    connection = (await db.connection()).sync_connection
+    statements = []
+
+    def count(*_args) -> None:
+        statements.append(1)
+
+    event.listen(connection, "before_cursor_execute", count)
+    try:
+        page = await management.list_prompt_versions(None, None, None, None, owner, db)
+    finally:
+        event.remove(connection, "before_cursor_execute", count)
+
+    assert len(statements) == 1
+    assert page.truncated is False
+    assert [item.system_prompt_hash for item in page.items] == [_HASH_B, _HASH_A, None]
+    newest, version_a, unhashed = page.items
+    assert (version_a.first_seen, version_a.last_seen) == (
+        t0,
+        t0 + timedelta(seconds=2),
+    )
+    assert version_a.requests == 3
+    assert version_a.api_keys == [key]
+    assert version_a.models == ["gpt-5-mini", "gpt-5-nano"]
+    assert version_a.outcomes.model_dump() == {
+        "complete": 1,
+        "truncated": 2,
+        "empty": 0,
+        "refused": 0,
+        "filtered": 0,
+    }
+    assert (version_a.failed, version_a.p95_shim_latency_ms) == (0, 29)
+    assert (newest.requests, newest.failed, newest.p95_shim_latency_ms) == (2, 1, 10)
+    assert newest.api_keys == []
+    assert unhashed.requests == 1
+    by_key = await management.list_prompt_versions(None, None, uuid4(), None, owner, db)
+    by_model = await management.list_prompt_versions(
+        None, None, None, "NANO", owner, db
+    )
+    assert by_key.items == []
+    assert [(item.system_prompt_hash, item.requests) for item in by_model.items] == [
+        (_HASH_A, 1)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prompt_versions_stop_at_200_and_bound_the_window(db, test_org) -> None:
+    start = datetime.now(timezone.utc) - timedelta(hours=1)
+    db.add_all(
+        _prompt_lifecycle(
+            test_org.id,
+            start + timedelta(seconds=index),
+            f"hmac-sha256:v1:{index:064x}",
+        )
+        for index in range(201)
+    )
+    await db.flush()
+    owner = SimpleNamespace(role="owner", organization_id=test_org.id)
+
+    page = await management.list_prompt_versions(None, None, None, None, owner, db)
+
+    assert (len(page.items), page.truncated) == (200, True)
+    assert page.items[0].system_prompt_hash == f"hmac-sha256:v1:{200:064x}"
+    now = datetime.now(timezone.utc)
+    for window in ((now, now - timedelta(seconds=1)), (now - timedelta(days=32), now)):
+        with pytest.raises(management.HTTPException) as refused:
+            await management.list_prompt_versions(*window, None, None, owner, db)
+        assert refused.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_prompt_versions_are_for_readers_and_requests_filter_by_hash(
+    db, test_user_with_org, test_api_key
+) -> None:
+    user = test_user_with_org
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        RequestLog(
+            request_id=f"req_prompt_{uuid4().hex}",
+            api_key_id=test_api_key.id,
+            organization_id=user.organization_id,
+            timestamp=now - timedelta(seconds=index),
+            details={"system_prompt_hash": prompt_hash},
+        )
+        for index, prompt_hash in enumerate([_HASH_A, _HASH_A, _HASH_B, None])
+    )
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        statuses = {}
+        for role in ("member", "auditor", "owner"):
+            user.role = role
+            statuses[role] = (
+                await client.get("/api/v1/management/prompt-versions")
+            ).status_code
+        filtered = await client.get(
+            "/api/v1/management/requests", params={"system_prompt_hash": _HASH_A}
+        )
+        exported = await client.get(
+            "/api/v1/management/requests/export",
+            params={"system_prompt_hash": _HASH_B},
+        )
+        malformed = [
+            (
+                await client.get(
+                    f"/api/v1/management/{path}", params={"system_prompt_hash": value}
+                )
+            ).status_code
+            for path in ("requests", "requests/export")
+            for value in ("abc", _HASH_A.upper(), _HASH_A + "0")
+        ]
+
+    assert statuses == {"member": 403, "auditor": 200, "owner": 200}
+    assert filtered.json()["total"] == 2
+    assert {item["system_prompt_hash"] for item in filtered.json()["items"]} == {
+        _HASH_A
+    }
+    assert len(list(csv.DictReader(io.StringIO(exported.text.lstrip("﻿"))))) == 1
+    assert malformed == [422] * 6

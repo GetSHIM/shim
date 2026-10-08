@@ -1341,6 +1341,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
         pii_detected=None,
         tag=None,
         cost_center=None,
+        system_prompt_hash=None,
         limit=10,
         offset=0,
         user=SimpleNamespace(
