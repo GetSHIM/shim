@@ -81,7 +81,7 @@ from shim_enterprise.findings.service import (
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim.privacy.policies import EntityAction, effective_entity_actions
 from shim_enterprise.observability.analytics_projection import RequestLog
-from shim_enterprise.observability.overview import OverviewReadModel
+from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
@@ -2561,8 +2561,9 @@ async def list_prompt_versions(
     metadata = RequestLifecycle.lifecycle_metadata
     prompt_hash = metadata["system_prompt_hash"].as_string()
     outcome = metadata["completion_outcome"].as_string()
+    tenant_id = _tenant_id(user)
     filters = [
-        RequestLifecycle.organization_id == _tenant_id(user),
+        RequestLifecycle.organization_id == tenant_id,
         RequestLifecycle.started_at >= start_at,
         RequestLifecycle.started_at <= end_at,
         RequestLifecycle.source_endpoint != "scan",
@@ -2589,8 +2590,16 @@ async def list_prompt_versions(
                     func.count().filter(outcome == name).label(name)
                     for name in _COMPLETION_OUTCOMES
                 ),
+                # Technical failures as the request summary counts them: a
+                # budget denial ends `failed` but is a policy rejection.
                 func.count()
-                .filter(RequestLifecycle.status.in_(_TECHNICAL_FAILURES))
+                .filter(
+                    RequestLifecycle.status.in_(_TECHNICAL_FAILURES),
+                    or_(
+                        RequestLifecycle.status != "failed",
+                        ~_spend_denied(tenant_id),
+                    ),
+                )
                 .label("failed"),
                 func.percentile_cont(0.95)
                 .within_group(metadata["shim_latency_ms"].as_integer())
@@ -3416,8 +3425,7 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         for status_name in (*KNOWN_REQUEST_ACTIVITY_STATUSES, "unknown")
     }
     technical_failures = sum(
-        status_counts[status_name]
-        for status_name in ("provider_error", "timeout", "internal_error", "failed")
+        status_counts[status_name] for status_name in _TECHNICAL_FAILURES
     ) - int(row.policy_failed or 0)
     technical_requests = status_counts["completed"] + technical_failures
     p95 = row.p95_completed_shim_latency_ms
