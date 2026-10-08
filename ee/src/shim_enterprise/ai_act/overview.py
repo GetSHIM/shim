@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Integer, Select, case, cast as sql_cast, func, literal, or_
+from sqlalchemy import select, true, union_all
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.models import AIActAuditAnchor, AIActAuditLog
@@ -16,6 +18,7 @@ from shim_enterprise.ai_act.retention import (
     RETENTION_FLOOR_DAYS,
     effective_retention_days,
 )
+from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.observability.analytics_projection import RequestLog
 
@@ -225,4 +228,108 @@ async def build_overview(
         "preventive": preventive,
         "audit_log": await projector.audit(cast(int, preventive["total_requests"])),
         "connectors": await projector.connectors(),
+    }
+
+
+_CARD_MAPS = {
+    "masked": "pii_entities",
+    "monitored": "monitored_entities",
+    "blocked": "blocked_entities",
+    "response_detections": "response_entities",
+}
+
+
+def _metadata_object(key: str) -> Any:
+    # Older rows lack the key and a failed scan stores null; both count as empty.
+    value = RequestLifecycle.lifecycle_metadata[key]
+    return case(
+        (func.jsonb_typeof(value) == "object", value), else_=sql_cast({}, JSONB)
+    )
+
+
+async def build_privacy_card(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+) -> dict[str, Any]:
+    """Count one window's privacy facts from request_lifecycle, two queries."""
+
+    window = (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= start,
+        RequestLifecycle.started_at < end,
+    )
+    empty = sql_cast({}, JSONB)
+    verdicts = RequestLifecycle.lifecycle_metadata["policy_verdicts"]
+    totals = (
+        await session.execute(
+            select(
+                func.count(),
+                func.count().filter(
+                    or_(
+                        *(
+                            _metadata_object(key) != empty
+                            for key in (
+                                "pii_entities",
+                                "monitored_entities",
+                                "blocked_entities",
+                            )
+                        )
+                    )
+                ),
+                func.count().filter(
+                    or_(
+                        *(
+                            verdicts.contains(
+                                [
+                                    {
+                                        "rule_id": "privacy.input",
+                                        "outcome": "deny",
+                                        "reason_code": code,
+                                    }
+                                ]
+                            )
+                            for code in ("SECRET_BLOCKED", "PII_BLOCKED")
+                        )
+                    )
+                ),
+                func.count().filter(
+                    func.jsonb_typeof(
+                        RequestLifecycle.lifecycle_metadata["bulk_disclosure"]
+                    )
+                    == "object"
+                ),
+            ).where(*window)
+        )
+    ).one()
+    families = []
+    for family, key in _CARD_MAPS.items():
+        entries = (
+            func.jsonb_each_text(_metadata_object(key))
+            .table_valued("key", "value")
+            .lateral()
+        )
+        families.append(
+            select(
+                literal(family).label("family"),
+                entries.c.key,
+                func.sum(sql_cast(entries.c.value, Integer)).label("count"),
+            )
+            .select_from(RequestLifecycle)
+            .join(entries, true())
+            .where(*window)
+            .group_by(entries.c.key)
+        )
+    card: dict[str, Any] = {family: {} for family in _CARD_MAPS}
+    for family, entity_type, count in await session.execute(union_all(*families)):
+        card[family][entity_type] = int(count)
+    return {
+        **{family: dict(sorted(counts.items())) for family, counts in card.items()},
+        "requests": totals[0],
+        "requests_with_personal_data": totals[1],
+        "blocked_requests": totals[2],
+        "bulk_disclosures": totals[3],
+        "secrets": sum(
+            card[family].get(entity_type, 0)
+            for family in ("masked", "monitored", "blocked")
+            for entity_type in ("SECRET", "DB_URI")
+        ),
     }

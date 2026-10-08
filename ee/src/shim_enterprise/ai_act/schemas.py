@@ -128,6 +128,41 @@ class ConnectorOverview(BaseModel):
     max_lag_seconds: float = Field(ge=0)
 
 
+class PrivacyCardWindow(BaseModel):
+    start: datetime
+    end: datetime
+    tz: str
+
+
+class PrivacyCard(BaseModel):
+    """What shim caught on one local calendar day; counts only."""
+
+    date: date
+    requests: int = Field(description="Admitted requests.")
+    requests_with_personal_data: int = Field(
+        description="Requests with any masked, monitored or blocked value."
+    )
+    masked: dict[str, int] = Field(description="Masked values by entity type.")
+    monitored: dict[str, int] = Field(
+        description="Values sent unchanged under a monitor action, by entity type."
+    )
+    blocked: dict[str, int] = Field(
+        description="Values that stopped a request, by entity type."
+    )
+    secrets: int = Field(description="SECRET and DB_URI values across the three maps.")
+    blocked_requests: int = Field(
+        description="Requests refused with SECRET_BLOCKED or PII_BLOCKED."
+    )
+    bulk_disclosures: int = Field(
+        description="Requests that reached the tenant's bulk threshold."
+    )
+    response_detections: dict[str, int] = Field(
+        description="Values answers carried that their requests did not, by entity type."
+    )
+    window: PrivacyCardWindow
+    generated_at: datetime
+
+
 class OverviewResponse(BaseModel):
     detective: DetectiveOverview
     preventive: PreventiveOverview

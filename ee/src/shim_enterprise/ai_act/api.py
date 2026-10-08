@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Literal
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
@@ -19,7 +20,11 @@ from shim_enterprise.ai_act.models import (
     OversightPolicy,
     OversightRequest,
 )
-from shim_enterprise.ai_act.overview import build_overview, empty_overview
+from shim_enterprise.ai_act.overview import (
+    build_overview,
+    build_privacy_card,
+    empty_overview,
+)
 from shim_enterprise.ai_act.oversight import (
     OversightStateError,
     decide,
@@ -39,6 +44,7 @@ from shim_enterprise.ai_act.schemas import (
     OversightPolicyUpdate,
     OversightRequestRead,
     OverviewResponse,
+    PrivacyCard,
     VerifyResult,
 )
 from shim_enterprise.ai_act.verify import (
@@ -164,6 +170,44 @@ async def compliance_overview(
         end,
     )
     return OverviewResponse.model_validate(projection)
+
+
+@router.get("/privacy-card", response_model=PrivacyCard)
+async def privacy_card(
+    day: date | None = Query(
+        default=None,
+        alias="date",
+        description="Local calendar day; yesterday in tz when omitted.",
+    ),
+    tz: str = Query(default="Europe/Istanbul", max_length=64),
+    current_user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> PrivacyCard:
+    try:
+        zone = ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="tz must be an IANA time zone"
+        ) from None
+    today = datetime.now(zone).date()
+    day = day or today - timedelta(days=1)
+    if day > today or day < today - timedelta(days=400):
+        raise HTTPException(
+            status_code=422, detail="date must be within the last 400 days"
+        )
+    start = datetime.combine(day, time(), zone).astimezone(timezone.utc)
+    end = datetime.combine(day + timedelta(days=1), time(), zone).astimezone(
+        timezone.utc
+    )
+    if current_user.organization_id is None:
+        raise HTTPException(status_code=403, detail="A tenant membership is required.")
+    counts = await build_privacy_card(session, current_user.organization_id, start, end)
+    return PrivacyCard(
+        date=day,
+        window={"start": start, "end": end, "tz": tz},
+        generated_at=datetime.now(timezone.utc),
+        **counts,
+    )
 
 
 @router.get("/audit/logs", response_model=AuditLogPage)

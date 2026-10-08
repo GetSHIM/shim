@@ -15,6 +15,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Attribute spend to teams](#attribute-spend-to-teams)
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
+- [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
@@ -203,6 +204,37 @@ Turning a switch off, or moving a type down the order `block`, `mask`,
 one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the
 forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-details).
+
+## Read the daily privacy card
+
+See what shim caught on one day: personal data masked, watched or refused, pasted
+secrets, bulk pastes and personal data the model sent back.
+
+1. `GET /api/v1/compliance/privacy-card` (owner, admin or auditor) answers for
+   yesterday in `Europe/Istanbul`. Pass `date=YYYY-MM-DD` for another day, at most
+   400 days back and not in the future, and `tz` for another IANA time zone; the
+   window is that local calendar day. Either one invalid is 422.
+2. Read the counts:
+
+| Field | Meaning |
+| --- | --- |
+| `requests` | Admitted requests that day. |
+| `requests_with_personal_data` | Requests with any masked, monitored or blocked value. |
+| `masked`, `monitored`, `blocked` | Distinct values by entity type, summed over the requests. |
+| `secrets` | `SECRET` and `DB_URI` values across the three maps. |
+| `blocked_requests` | Requests refused with `SECRET_BLOCKED` or `PII_BLOCKED`. |
+| `bulk_disclosures` | Requests that reached the [bulk threshold](#change-the-privacy-settings). |
+| `response_detections` | Values answers carried that their requests did not, when `response_scan` is `count`. |
+| `window` | The day's `start` and `end` in UTC, and `tz`. |
+
+```console
+curl "http://localhost:8000/api/v1/compliance/privacy-card?date=2026-10-07&tz=Europe/Istanbul" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: the card holds counts only, never a value, placeholder, prompt or user.
+Requests written before a count existed add zero to it. It reads the tenant's
+request lifecycle for one day, so it is cheap to load on every visit.
 
 ## Send tenant alerts
 

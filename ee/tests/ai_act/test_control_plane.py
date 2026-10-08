@@ -558,3 +558,167 @@ async def test_oversight_changes_triggers_and_evidence_reads_are_audited(
     assert extra["compliance.audit_bundle_exported"]["rows"] == 1
     assert extra["compliance.audit_verified"]["ok"] is True
     assert extra["compliance.audit_report_generated"]["frameworks"] == ["ai_act"]
+
+
+def _card_row(tenant_id, api_key_id, started_at, metadata=None, *, org=None):
+    from shim_enterprise.billing.models import RequestLifecycle
+
+    return RequestLifecycle(
+        organization_id=org or tenant_id,
+        request_id=f"req_card_{uuid4().hex}",
+        actor_type="api_key" if api_key_id else "internal",
+        api_key_id=api_key_id,
+        source_endpoint="chat.completions",
+        status="completed",
+        requested_model="gpt-5-nano",
+        stream=False,
+        started_at=started_at,
+        reconciliation_due_at=started_at + timedelta(minutes=2),
+        lifecycle_metadata=metadata or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_privacy_card_counts_one_local_day(
+    db, test_user_with_org, test_api_key, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shim_enterprise.tenants.models import Organization
+
+    tenant_id = test_user_with_org.organization_id
+    day = (datetime.now(timezone.utc) - timedelta(days=3)).date()
+    # Istanbul is UTC+3: its day starts at 21:00 UTC the evening before.
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc) - timedelta(
+        hours=3
+    )
+    blocked = [
+        {"rule_id": "privacy.input", "outcome": "deny", "reason_code": "SECRET_BLOCKED"}
+    ]
+    other = Organization(name="Other tenant", slug=f"other-{uuid4().hex[:8]}")
+    db.add(other)
+    await db.flush()
+    db.add_all(
+        [
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start,
+                {"pii_entities": {"TR_NATIONAL_ID": 1}},
+            ),
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start + timedelta(hours=5),
+                {
+                    "pii_entities": {},
+                    "monitored_entities": {"EMAIL_ADDRESS": 2},
+                    "blocked_entities": {},
+                },
+            ),
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start + timedelta(hours=6),
+                {"blocked_entities": {"SECRET": 1}, "policy_verdicts": blocked},
+            ),
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start + timedelta(hours=7),
+                {
+                    "pii_entities": {"EMAIL_ADDRESS": 60, "DB_URI": 1},
+                    "bulk_disclosure": {"distinct_values": 61, "threshold": 50},
+                    "response_entities": {"IBAN_CODE": 1},
+                },
+            ),
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start + timedelta(hours=8),
+                {"response_entities": None},
+            ),
+            _card_row(tenant_id, test_api_key.id, start + timedelta(hours=9)),
+            # Outside the Istanbul day, and another tenant's row inside it.
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start - timedelta(seconds=1),
+                {"pii_entities": {"SECRET": 9}},
+            ),
+            _card_row(
+                tenant_id,
+                test_api_key.id,
+                start + timedelta(days=1),
+                {"pii_entities": {"SECRET": 9}},
+            ),
+            _card_row(
+                tenant_id,
+                None,
+                start + timedelta(hours=1),
+                {"pii_entities": {"SECRET": 9}},
+                org=other.id,
+            ),
+        ]
+    )
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[get_db] = lambda: db
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    executed = []
+    execute = db.execute
+
+    async def counting(*args, **kwargs):
+        executed.append(args[0])
+        return await execute(*args, **kwargs)
+
+    monkeypatch.setattr(db, "execute", counting)
+    path = "/api/v1/compliance/privacy-card"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        test_user_with_org.role = "auditor"
+        istanbul = await client.get(path, params={"date": day.isoformat()})
+        queries = len(executed)
+        utc = await client.get(path, params={"date": day.isoformat(), "tz": "UTC"})
+        empty = await client.get(
+            path, params={"date": (day - timedelta(days=30)).isoformat()}
+        )
+        invalid = [
+            await client.get(path, params=params)
+            for params in (
+                {"tz": "Mars/Olympus"},
+                {"date": (day + timedelta(days=10)).isoformat()},
+                {"date": (day - timedelta(days=500)).isoformat()},
+                {"date": "yesterday"},
+            )
+        ]
+        test_user_with_org.role = "member"
+        member = await client.get(path)
+
+    assert istanbul.status_code == 200, istanbul.text
+    card = istanbul.json()
+    assert queries == 2
+    assert {
+        key: card[key] for key in card if key not in {"window", "generated_at"}
+    } == {
+        "date": day.isoformat(),
+        "requests": 6,
+        "requests_with_personal_data": 4,
+        "masked": {"DB_URI": 1, "EMAIL_ADDRESS": 60, "TR_NATIONAL_ID": 1},
+        "monitored": {"EMAIL_ADDRESS": 2},
+        "blocked": {"SECRET": 1},
+        "secrets": 2,
+        "blocked_requests": 1,
+        "bulk_disclosures": 1,
+        "response_detections": {"IBAN_CODE": 1},
+    }
+    assert card["window"]["tz"] == "Europe/Istanbul"
+    assert datetime.fromisoformat(card["window"]["start"]) == start
+    # The UTC day drops the 21:00-UTC first row and gains the next Istanbul day's first one.
+    assert utc.json()["requests"] == 6
+    assert utc.json()["masked"] == {"DB_URI": 1, "EMAIL_ADDRESS": 60, "SECRET": 9}
+    assert empty.json()["requests"] == 0 and empty.json()["masked"] == {}
+    assert [response.status_code for response in invalid] == [422, 422, 422, 422]
+    assert member.status_code == 403

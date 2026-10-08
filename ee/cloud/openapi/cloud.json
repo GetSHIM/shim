@@ -6762,6 +6762,122 @@
         "title": "PreventiveOverview",
         "type": "object"
       },
+      "PrivacyCard": {
+        "description": "What shim caught on one local calendar day; counts only.",
+        "properties": {
+          "blocked": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Values that stopped a request, by entity type.",
+            "title": "Blocked",
+            "type": "object"
+          },
+          "blocked_requests": {
+            "description": "Requests refused with SECRET_BLOCKED or PII_BLOCKED.",
+            "title": "Blocked Requests",
+            "type": "integer"
+          },
+          "bulk_disclosures": {
+            "description": "Requests that reached the tenant's bulk threshold.",
+            "title": "Bulk Disclosures",
+            "type": "integer"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "masked": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Masked values by entity type.",
+            "title": "Masked",
+            "type": "object"
+          },
+          "monitored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Values sent unchanged under a monitor action, by entity type.",
+            "title": "Monitored",
+            "type": "object"
+          },
+          "requests": {
+            "description": "Admitted requests.",
+            "title": "Requests",
+            "type": "integer"
+          },
+          "requests_with_personal_data": {
+            "description": "Requests with any masked, monitored or blocked value.",
+            "title": "Requests With Personal Data",
+            "type": "integer"
+          },
+          "response_detections": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Values answers carried that their requests did not, by entity type.",
+            "title": "Response Detections",
+            "type": "object"
+          },
+          "secrets": {
+            "description": "SECRET and DB_URI values across the three maps.",
+            "title": "Secrets",
+            "type": "integer"
+          },
+          "window": {
+            "$ref": "#/components/schemas/PrivacyCardWindow"
+          }
+        },
+        "required": [
+          "date",
+          "requests",
+          "requests_with_personal_data",
+          "masked",
+          "monitored",
+          "blocked",
+          "secrets",
+          "blocked_requests",
+          "bulk_disclosures",
+          "response_detections",
+          "window",
+          "generated_at"
+        ],
+        "title": "PrivacyCard",
+        "type": "object"
+      },
+      "PrivacyCardWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "tz": {
+            "title": "Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "tz"
+        ],
+        "title": "PrivacyCardWindow",
+        "type": "object"
+      },
       "PrivacyPatch": {
         "properties": {
           "block_credit_card": {
@@ -12173,6 +12289,74 @@
           }
         ],
         "summary": "Compliance Overview",
+        "tags": [
+          "ai-act-control-plane"
+        ]
+      }
+    },
+    "/api/v1/compliance/privacy-card": {
+      "get": {
+        "operationId": "privacy_card_api_v1_compliance_privacy_card_get",
+        "parameters": [
+          {
+            "description": "Local calendar day; yesterday in tz when omitted.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Local calendar day; yesterday in tz when omitted.",
+              "title": "Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tz",
+            "required": false,
+            "schema": {
+              "default": "Europe/Istanbul",
+              "maxLength": 64,
+              "title": "Tz",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyCard"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Privacy Card",
         "tags": [
           "ai-act-control-plane"
         ]
