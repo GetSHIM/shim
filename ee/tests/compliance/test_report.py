@@ -936,6 +936,7 @@ async def test_connector_and_forward_target_changes_runs_and_reports_are_audited
     target_update = extra["compliance.forward_target_updated"]
     assert target_update == {
         "subject_id": str(target.id),
+        "actor_type": "user_jwt",
         "before": {"min_severity": "high"},
         "after": {"min_severity": "critical"},
         "destination_rotated": False,

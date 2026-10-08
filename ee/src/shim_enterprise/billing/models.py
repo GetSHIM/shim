@@ -595,7 +595,7 @@ class CostBudget(Base, TimestampMixin):
     __tablename__ = "cost_budget"
     __table_args__ = (
         CheckConstraint(
-            "scope_type IN ('org', 'tag', 'team')",
+            "scope_type IN ('org', 'tag', 'team', 'team_id')",
             name="ck_cost_budget_scope_type",
         ),
         CheckConstraint("period = 'monthly'", name="ck_cost_budget_period"),

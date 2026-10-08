@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
-from sqlalchemy import case, cast, func, select, true
+from sqlalchemy import String, case, cast, func, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +81,7 @@ class BillingReadModels:
         tenant_id: TenantId,
         start_at: datetime,
         end_at: datetime,
+        api_key_ids: Collection[UUID] | None = None,
     ) -> list[DailyUsage]:
         if start_at.tzinfo is None or end_at.tzinfo is None:
             raise ValueError("billing read boundaries must be timezone-aware")
@@ -128,6 +131,11 @@ class BillingReadModels:
                 UsageLedger.created_at >= start_at,
                 UsageLedger.created_at <= end_at,
                 UsageLedger.event_type.in_(("quota_settlement", "spend_settlement")),
+                *(
+                    ()
+                    if api_key_ids is None
+                    else (UsageLedger.api_key_id.in_(api_key_ids),)
+                ),
             )
             .group_by(usage_date, UsageLedger.requested_model)
             .order_by(usage_date, UsageLedger.requested_model)
@@ -154,8 +162,9 @@ class BillingReadModels:
         tenant_id: TenantId,
         start_at: datetime,
         end_at: datetime,
-        group_by: BillingBreakdownGroup,
+        group_by: BillingBreakdownGroup | Literal["api_key_id"],
         limit: int | None,
+        api_key_ids: Collection[UUID] | None = None,
     ) -> list[BillingBreakdown]:
         if start_at.tzinfo is None or end_at.tzinfo is None:
             raise ValueError("billing read boundaries must be timezone-aware")
@@ -200,6 +209,8 @@ class BillingReadModels:
                 RequestLifecycle.lifecycle_metadata["team"].as_string(),
                 UNTAGGED,
             )
+        elif group_by == "api_key_id":
+            group_key = cast(RequestLifecycle.api_key_id, String)
         elif group_by == "team_id":
             group_key = func.coalesce(
                 RequestLifecycle.lifecycle_metadata["team_id"].as_string(),
@@ -257,6 +268,11 @@ class BillingReadModels:
                 RequestLifecycle.reconciled_at >= start_at,
                 RequestLifecycle.reconciled_at <= end_at,
                 UsageLedger.event_type.in_(("quota_settlement", "spend_settlement")),
+                *(
+                    ()
+                    if api_key_ids is None
+                    else (RequestLifecycle.api_key_id.in_(api_key_ids),)
+                ),
             )
             .group_by(group_key)
             .order_by(cost_usd.desc(), group_key)

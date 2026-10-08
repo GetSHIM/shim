@@ -15,8 +15,12 @@ from shim_enterprise.ai_act.anchor import write_anchor
 from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.ai_act.oversight import expire_pending, run_oversight_evaluation
 from shim_enterprise.ai_act.retention import archive_expired
+from shim_enterprise.compliance.services.monthly_evidence import (
+    generate_due_monthly_evidence,
+)
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.tenants.models import Organization
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -31,6 +35,7 @@ class MaintenanceSummary:
     oversight_created: int = 0
     oversight_expired: int = 0
     archive_eligible: int = 0
+    monthly_evidence: int = 0
     errors: int = 0
 
 
@@ -59,13 +64,18 @@ class AuditMaintenanceWorker:
                 created = await run_oversight_evaluation(session)
                 expired = await expire_pending(session)
             archive = await archive_expired(session)
-            return MaintenanceSummary(
-                anchored_tenants=anchored,
-                errors=errors,
-                oversight_created=int(created["created"]),
-                oversight_expired=int(expired["expired"]),
-                archive_eligible=int(archive["eligible"]),
-            )
+        # Each organization's file is its own transaction, after the anchors commit.
+        monthly = await generate_due_monthly_evidence(
+            self.session_factory, now=datetime.now(timezone.utc)
+        )
+        return MaintenanceSummary(
+            anchored_tenants=anchored,
+            errors=errors,
+            oversight_created=int(created["created"]),
+            oversight_expired=int(expired["expired"]),
+            archive_eligible=int(archive["eligible"]),
+            monthly_evidence=monthly,
+        )
 
     async def _anchor_tenants(
         self,
@@ -76,9 +86,12 @@ class AuditMaintenanceWorker:
         start = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc)
         tenant_ids = (
             await session.execute(
-                select(distinct(AIActAuditLog.organization_id)).where(
+                select(distinct(AIActAuditLog.organization_id))
+                .join(Organization, Organization.id == AIActAuditLog.organization_id)
+                .where(
                     AIActAuditLog.created_at >= start,
                     AIActAuditLog.created_at < start + timedelta(days=1),
+                    Organization.archived_at.is_(None),
                 )
             )
         ).scalars()

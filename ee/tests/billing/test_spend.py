@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
@@ -45,7 +46,7 @@ from shim_enterprise.core.database import get_db
 from shim.gateway.contracts.ids import TenantId
 from shim_enterprise.outbox.handlers import _budget_text
 from shim_enterprise.outbox.models import OutboxEvent
-from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
 
 
 _TARGET = {"kind": "webhook", "endpoint": "https://alerts.example/hook"}
@@ -465,6 +466,7 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
     tenant_id = uuid4()
     row = SimpleNamespace(
         id=uuid4(),
+        organization_id=tenant_id,
         scope_type="org",
         scope_value=None,
         period="monthly",
@@ -473,6 +475,7 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
         alert_thresholds=[0.8, 1.0],
         notify_targets=[],
         enabled=True,
+        created_at=datetime.now(timezone.utc),
     )
     user = SimpleNamespace(organization_id=tenant_id)
     session = SimpleNamespace(
@@ -487,14 +490,14 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
             row.id, management.BudgetPatch(**values), user, session
         )
 
-    assert await apply(enabled=False) is row
+    assert (await apply(enabled=False)).id == row.id
     assert row.limit_usd == Decimal("10")
     assert row.limit_tokens == 100
     session.commit.assert_awaited_once()
 
     session.commit.reset_mock()
     audit.reset_mock()
-    assert await apply(limit_usd=None) is row
+    assert (await apply(limit_usd=None)).id == row.id
     assert row.limit_usd is None
     assert row.limit_tokens == 100
     session.commit.assert_awaited_once()
@@ -1122,3 +1125,118 @@ async def test_budget_signing_secrets_live_in_the_secret_store(monkeypatch) -> N
         )
     with pytest.raises(ValidationError):
         management.NotificationTargetInput(**_TARGET, secret="short")
+
+
+_RISK = UUID("00000000-0000-4000-8000-0000000000a1")
+_OTHER_TEAM = UUID("00000000-0000-4000-8000-0000000000a2")
+
+
+@pytest.mark.parametrize(
+    ("labels", "fractions"),
+    [
+        pytest.param(
+            {"team_id": str(_RISK), "team": "risk"}, (1.0, 1.0), id="labelled"
+        ),
+        pytest.param({"team_id": str(_RISK)}, (1.0, 0.0), id="unlabelled-in-team"),
+        pytest.param(
+            {"team_id": str(_OTHER_TEAM), "team": "risk"}, (0.0, 1.0), id="other-team"
+        ),
+        pytest.param({"team": "risk"}, (0.0, 1.0), id="before-team-ids"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_team_id_budgets_match_the_key_team_and_label_budgets_the_label(
+    db, labels: dict[str, str], fractions: tuple[float, float]
+) -> None:
+    organization_id = await _tenant_with_settled_tokens(db, 50)
+    await db.execute(
+        text(
+            "UPDATE request_lifecycle SET metadata = "
+            "(metadata - 'team_id' - 'team') || CAST(:labels AS jsonb) "
+            "WHERE organization_id = :org"
+        ),
+        {"labels": json.dumps(labels), "org": organization_id},
+    )
+    evaluator = BudgetEvaluator()
+    now = datetime.now(timezone.utc)
+
+    measured = []
+    for scope_type, scope_value in (("team_id", str(_RISK)), ("team", "risk")):
+        budget = CostBudget(
+            organization_id=organization_id,
+            scope_type=scope_type,
+            scope_value=scope_value,
+            limit_tokens=50,
+            alert_thresholds=[1.0],
+            notify_targets=[
+                {
+                    "kind": "webhook",
+                    "endpoint_origin": "https://alerts.example",
+                    "secret_ref": "fernet:v2:target",
+                }
+            ],
+        )
+        db.add(budget)
+        await db.flush()
+        measured.append((await evaluator.evaluate(db, budget, now=now))["fraction"])
+
+    assert tuple(measured) == fractions
+
+
+@pytest.mark.asyncio
+async def test_team_id_budgets_name_their_team_and_refuse_other_teams(
+    db, test_user_with_org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_user_with_org.role = "admin"
+    monkeypatch.setattr(management, "assert_safe_forward_url", AsyncMock())
+    elsewhere = Organization(id=uuid4(), name="Elsewhere", slug=f"else-{uuid4()}")
+    db.add(elsewhere)
+    await db.flush()
+    team = Team(organization_id=test_user_with_org.organization_id, name="risk")
+    foreign = Team(organization_id=elsewhere.id, name="risk")
+    db.add_all([team, foreign])
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    application.dependency_overrides[get_db] = lambda: db
+
+    def budget(scope_value: str) -> dict:
+        return {
+            "scope_type": "team_id",
+            "scope_value": scope_value,
+            "limit_usd": "1",
+            "notify_targets": [_TARGET],
+        }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        refused = [
+            await client.post("/api/v1/management/cost/budgets", json=budget(value))
+            for value in (str(foreign.id), "not-a-uuid", str(uuid4()))
+        ]
+        created = await client.post(
+            "/api/v1/management/cost/budgets", json=budget(str(team.id).upper())
+        )
+        team.name = "credit-risk"
+        await db.flush()
+        renamed = await client.get("/api/v1/management/cost/budgets")
+        await db.execute(delete(Team).where(Team.id == team.id))
+        deleted = await client.get("/api/v1/management/cost/budgets")
+
+    assert [(r.status_code, r.json()["detail"]) for r in refused] == [
+        (422, "Unknown team")
+    ] * 3
+    assert created.status_code == 200
+    assert (created.json()["scope_value"], created.json()["scope_label"]) == (
+        str(team.id),
+        "risk",
+    )
+    assert [row["scope_label"] for row in renamed.json()] == ["credit-risk"]
+    assert [row["scope_label"] for row in deleted.json()] == [None]
+    row = await db.get(CostBudget, UUID(created.json()["id"]))
+    result = await BudgetEvaluator().evaluate(db, row, now=datetime.now(timezone.utc))
+    assert (result["fraction"], result["fired"]) == (0.0, [])

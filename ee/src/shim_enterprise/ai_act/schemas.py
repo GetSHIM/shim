@@ -22,7 +22,7 @@ class AuditLogRead(OrmReadModel):
     request_id: str | None = None
     api_key_id: UUID | None = None
     actor: str | None = None
-    actor_type: Literal["api_key", "user_jwt", "internal"] | None = Field(
+    actor_type: Literal["api_key", "user_jwt", "internal", "service"] | None = Field(
         default=None, validation_alias=AliasPath("extra", "actor_type")
     )
     lifecycle_status: str | None = Field(
@@ -226,3 +226,36 @@ class OversightRequestRead(OrmReadModel):
 class OversightDecision(BaseModel):
     decision: Literal["approve", "reject"]
     note: str | None = Field(default=None, max_length=2_000)
+
+
+class MonthlyEvidenceRead(OrmReadModel):
+    period: str
+    kind: Literal["monthly", "monthly_partial"]
+    format: str
+    size_bytes: int = Field(ge=0)
+    sha256: str
+    generated_at: datetime
+
+
+ReadinessStatus = Literal["implemented", "partial", "not_implemented", "not_applicable"]
+
+
+class ReadinessDeclarationInput(BaseModel):
+    status: ReadinessStatus
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ReadinessDeclarationRead(OrmReadModel):
+    control_id: str
+    status: ReadinessStatus
+    note: str | None
+    declared_by: UUID
+    declared_at: datetime
+    updated_at: datetime
+
+
+class ReadinessReportRequest(BaseModel):
+    framework: Literal["iso42001"]
+    start: datetime | None = None
+    end: datetime | None = None
+    format: Literal["pdf", "csv"] = "pdf"

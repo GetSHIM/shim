@@ -94,6 +94,9 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |
 | `tenant.api_key_updated` | `before` and `after` of the changed fields (`cost_center`, `team`, `team_id`, `allowed_models`) |
 | `tenant.model_deployment_updated` | `before` and `after` of the changed configuration fields |
+| `tenant.personal_workspace_archived` | `removed`: rows deleted per table when the workspace's only user joined another organization; recorded in the archived workspace's chain |
+| `tenant.service_account_created` | `after`: `name`, `role` and `expires_at` of the new service account |
+| `tenant.service_account_rotated` / `_deleted` | none beyond the account id in `subject_id` |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
 | `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
 | `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |
@@ -103,16 +106,19 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `compliance.oversight_policy_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` |
 | `compliance.oversight_evaluated` | `evaluated`, `created`, `expired` counts of the manual run |
 | `compliance.audit_anchored` | `anchor_date` and `row_count` of the manually written anchor |
+| `tenant.readiness_declared` | `framework`, `control_id`, `before` and `after` of `status`, and `note_changed` (the note itself is never written to the chain) |
 
 No key, secret reference, masked key, endpoint path or fingerprint is recorded.
-The actor of every event is the signed-in user. For the two OIDC events the actor
+The actor of every event is the signed-in user or service account, and `extra.actor_type`
+says which: `user_jwt` or `service`. For the two OIDC events the actor
 is the user who signed in, and a login that changes nothing records nothing.
 
 Evidence reads are recorded too, once the data is selected, so an export never
 contains its own event: `compliance.audit_bundle_exported`,
 `compliance.audit_verified` (with `ok`), `compliance.audit_report_generated`,
-`compliance.kvkk_report_generated`, `tenant.requests_exported` and
-`tenant.billing_exported`. Each carries the window `start` and `end` and, where it
+`compliance.kvkk_report_generated`, `compliance.readiness_report_generated`, `tenant.requests_exported`,
+`tenant.billing_exported` and `tenant.evidence_downloaded` (with `kind`,
+`period` and `sha256` of the file). Each carries the window `start` and `end` and, where it
 applies, the row count, format, frameworks, connector or grouping. List views
 (`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
@@ -182,3 +188,91 @@ window. The scope line then reads "all tenant connectors and the gateway". The
 section holds entity names, categories and counts only, and the header names the
 organization by its id. A connector-scoped report and the CSV keep their
 connector-only content.
+
+## Monthly evidence file
+
+On each pass the ai_act worker writes the previous calendar month's evidence
+file (UTC) for every organization that is not archived, had at least one request
+started in that month, and has no file for it yet. The file is a PDF stored in
+`evidence_reports` (`kind` `monthly`) with its SHA-256, size, generation time and
+generator version. A row is written once and never changed; a second worker
+racing for the same month inserts nothing. Rendering runs off the event loop.
+
+The PDF says on its cover that it is a measurement of gateway traffic, not an
+audit, an assessment or a certification. Each section names its source table
+and window:
+
+1. Traffic: requests and cost per provider and per model, from the spend and
+   quota settlements, with unknown prices shown as unknown, never as zero.
+2. What left: per provider and entity type, the values masked, monitored and
+   blocked, the count of bulk disclosures and the entity types found in
+   answers, from `request_lifecycle` metadata. A field the gateway version did
+   not record reads "not recorded in this version".
+3. What was stopped: policy verdicts with outcome `deny`, by rule and reason code.
+4. Who changed what: management actions by action and actor type.
+5. Audit chain: the [server-side check](#audit-evidence-bundle) for the month,
+   from the latest daily anchor before it, or the reason it could not run.
+6. Findings: per rule, the [findings](FINDINGS.md) opened, open at the end and
+   resolved in the month.
+
+The file holds counts and names only: no prompt, answer, detected value or key.
+
+The same transaction queues one `evidence.monthly_ready` intent (idempotency key
+`evidence:<kind>:<period>`). The outbox worker turns it into one
+`compliance.connector_delivery_requested` delivery per enabled
+[forward target](COOKBOOK.md#send-tenant-alerts) of the tenant, with the body
+`{"source": "shim", "event_type": "tenant_evidence", "kind":
+"evidence_monthly_ready", "report_kind": ..., "period": ..., "sha256": ...,
+"download": "/api/v1/compliance/evidence/monthly/<period>?kind=<kind>",
+"occurred_at": ...}`; Slack and e-mail get one sentence with the period and
+the download route. The file itself is never sent.
+
+An operator can write one file with `ee/scripts/generate_monthly_evidence.py
+--organization <uuid> --period YYYY-MM`: a closed month is written as `monthly`,
+the current month as `monthly_partial` (so a test never takes the closed
+month's place), a future month is refused, and so is a period that already has
+a file of that kind.
+
+## ISO/IEC 42001 readiness report
+
+`POST /api/v1/compliance/reports/readiness` with `{"framework": "iso42001",
+"start", "end", "format": "pdf" | "csv"}` lists the 38 Annex A controls, one row
+each, for a window of at most 366 days (default the last 30 days). Owners, admins
+and auditors can produce it; it is a paid report (tier feature
+`readiness_report`, enterprise tier), so other plans get 403
+`PLAN_UPGRADE_REQUIRED` with the eligible plans.
+
+Each row has a source:
+
+- `measured` (A.4.2, A.4.4, A.6.2.6, A.6.2.8, A.9.2, A.10.3): numbers from
+  `request_lifecycle`, the audit chain, the settlements and the model registry
+  over the window, and whether evidence is present by the rule printed beside
+  it, for example "present when the window has audit rows, the chain verifies
+  and retention is at least 180 days".
+- `input` (A.2.2, A.4.3, A.5.4, A.9.4): numbers for the organization's own
+  statement, never proof of the control. A.9.4 shows the share of requests
+  with a tag or cost center, which says nothing about whether the use was the
+  intended one.
+- `declared` (the other 28): the organization's statement only, or "not
+  declared".
+
+Two rows differ from the 3 September coverage matrix on purpose: A.8.3 is
+declared, because stored evidence files do not show a way for interested parties
+to report adverse impacts, and A.9.4 is input, as above. A.6.2.4 and A.8.4 stay
+declared until continuous evaluation and an incident record exist.
+
+Declarations are kept per organization and control:
+`GET /api/v1/compliance/readiness/iso42001/declarations` (readers) and
+`PUT /api/v1/compliance/readiness/iso42001/declarations/{control_id}` (owners
+and admins) with `status` (`implemented`, `partial`, `not_implemented`,
+`not_applicable`) and an optional `note` of up to 2,000 characters; an unknown
+control is 404.
+
+The cover says: "This report shows which ISO/IEC 42001 Annex A controls shim can
+evidence from gateway traffic, and records the organization's own statements for
+the rest. It is not an audit, a certification or a statement of conformity."
+The control numbers and titles come from secondary sources; until they are
+checked against the purchased standard, `verified_against_standard` in
+`shim_enterprise/ai_act/readiness/iso42001.yaml` stays false and the cover adds
+"Control numbers and titles have not yet been checked against the published
+standard." The five-control framework report (`/reports/audit`) is unchanged.

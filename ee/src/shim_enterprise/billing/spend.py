@@ -232,6 +232,11 @@ class BudgetEvaluator:
             return (
                 lifecycle.lifecycle_metadata["tags"].contains([budget.scope_value]),
             )
+        if budget.scope_type == "team_id":
+            return (
+                lifecycle.lifecycle_metadata["team_id"].as_string()
+                == budget.scope_value,
+            )
         return (lifecycle.lifecycle_metadata["team"].as_string() == budget.scope_value,)
 
     @staticmethod

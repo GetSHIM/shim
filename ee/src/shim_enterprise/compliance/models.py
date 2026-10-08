@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -324,3 +325,42 @@ class ComplianceLogFile(Base, TimestampMixin):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     connector: Mapped[ComplianceConnector] = relationship(back_populates="log_files")
+
+
+class MonthlyEvidenceFile(Base):
+    """A generated monthly evidence PDF; rows are written once and never updated."""
+
+    __tablename__ = "evidence_reports"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('monthly', 'monthly_partial')", name="ck_evidence_reports_kind"
+        ),
+        CheckConstraint("format = 'pdf'", name="ck_evidence_reports_format"),
+        CheckConstraint(
+            "period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'", name="ck_evidence_reports_period"
+        ),
+        UniqueConstraint(
+            "organization_id", "kind", "period", name="uq_evidence_reports_period"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey("organizations.id", name="fk_evidence_reports_organization_id"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    format: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="pdf", server_default="pdf"
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    generator_version: Mapped[str] = mapped_column(String(64), nullable=False)

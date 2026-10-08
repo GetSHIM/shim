@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import io
+import itertools
 import json
 import logging
 import secrets
 from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -28,7 +29,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import case, cast as sql_cast, func, or_, select, update
+from sqlalchemy import case, cast as sql_cast, distinct, func, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -51,8 +52,10 @@ from shim_enterprise.billing.models import (
 from shim_enterprise.billing.read_models import (
     MAX_BILLING_DAILY_ROWS,
     MAX_BILLING_BREAKDOWN_ROWS,
+    BillingBreakdown,
     BillingBreakdownGroup,
     BillingReadModels,
+    DailyUsage,
 )
 from shim_enterprise.billing.spend import (
     MAX_BUDGET_ALERT_THRESHOLDS,
@@ -69,6 +72,12 @@ from shim_enterprise.compliance.url_guard import (
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.findings.models import Finding
+from shim_enterprise.findings.service import (
+    STATUS_IDS,
+    STATUS_RESOLVED,
+    ocsf_detection_finding,
+)
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim.privacy.policies import EntityAction, effective_entity_actions
 from shim_enterprise.observability.analytics_projection import RequestLog
@@ -84,6 +93,7 @@ from shim_enterprise.tenants.models import (
     OrganizationInvite,
     Organization,
     ProviderSecret,
+    ServiceAccountCredential,
     TierDefinition,
     Team,
     TeamMembership,
@@ -101,7 +111,12 @@ from shim_enterprise.tenants.teams import (
 )
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
-from shim_enterprise.tenants.service import move_user_from_bootstrap
+from shim_enterprise.tenants.service import (
+    SERVICE_ACCOUNT_EMAIL_DOMAIN,
+    WorkspaceHasRequestHistory,
+    issue_service_account_key,
+    move_user_from_bootstrap,
+)
 
 
 router = APIRouter()
@@ -158,6 +173,10 @@ _BILLING_EXPORT_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 _MAX_SYNC_WINDOW = timedelta(days=31)
 _MAX_SYNC_REQUEST_EXPORT_ROWS = 10_000
+_MAX_PROMPT_VERSIONS = 200
+_SYSTEM_PROMPT_HASH_PATTERN = r"^hmac-sha256:v1:[0-9a-f]{64}$"
+_COMPLETION_OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
+_TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
 _MAX_SYNC_BUDGETS = 100
 _MAX_SYNC_BUDGET_DELIVERIES = 100
 
@@ -402,6 +421,27 @@ class SubscriptionView(BaseModel):
     entitlements: dict[str, bool]
 
 
+class ServiceAccountInput(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    role: Literal["admin", "auditor"]
+    expires_in_days: int = Field(ge=1, le=365)
+
+
+class ServiceAccountView(BaseModel):
+    id: UUID
+    name: str | None
+    role: Literal["admin", "auditor"]
+    prefix: str
+    expires_at: datetime
+    last_used_at: datetime | None
+    created_by: UUID
+    created_at: datetime
+
+
+class CreatedServiceAccount(ServiceAccountView):
+    plaintext: str
+
+
 class TeamMemberView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -473,7 +513,7 @@ class NotificationTargetView(BaseModel):
 
 
 class BudgetInput(BaseModel):
-    scope_type: Literal["tag", "team", "org"]
+    scope_type: Literal["tag", "team", "team_id", "org"]
     scope_value: str | None = None
     limit_usd: Decimal | None = Field(default=None, gt=0)
     limit_tokens: int | None = Field(default=None, gt=0)
@@ -522,7 +562,8 @@ class BudgetInput(BaseModel):
         if self.scope_type != "org":
             if not self.scope_value:
                 raise ValueError("scoped budgets require scope_value")
-            self.scope_value = _validate_attribution(self.scope_value)
+            if self.scope_type != "team_id":
+                self.scope_value = _validate_attribution(self.scope_value)
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
@@ -574,8 +615,9 @@ class BudgetView(BaseModel):
 
     id: UUID
     organization_id: UUID
-    scope_type: Literal["tag", "team", "org"]
+    scope_type: Literal["tag", "team", "team_id", "org"]
     scope_value: str | None
+    scope_label: str | None = None
     period: str
     limit_usd: Decimal | None
     limit_tokens: int | None
@@ -624,6 +666,105 @@ class BillingUsageView(BaseModel):
     total_cost: float | None
     unpriced_requests: int = 0
     cost_complete: bool = True
+
+
+class PromptVersionOutcomes(BaseModel):
+    complete: int
+    truncated: int
+    empty: int
+    refused: int
+    filtered: int
+
+
+class PromptVersionView(BaseModel):
+    system_prompt_hash: str | None
+    first_seen: datetime
+    last_seen: datetime
+    requests: int
+    api_keys: list[UUID] = Field(max_length=10)
+    models: list[str] = Field(max_length=10)
+    outcomes: PromptVersionOutcomes
+    failed: int
+    p95_shim_latency_ms: int | None
+
+
+class PromptVersionPage(BaseModel):
+    period: BillingPeriodView
+    items: list[PromptVersionView]
+    truncated: bool
+
+
+FindingStatus = Literal["new", "in_progress", "suppressed", "resolved"]
+_FINDING_STATUSES = {value: name for name, value in STATUS_IDS.items()}
+
+
+class FindingView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    source: str
+    rule_id: str
+    rule_version: int
+    subject: dict[str, Any]
+    title: str
+    summary: str
+    severity_id: int
+    status_id: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    occurrences: int
+    evidence: dict[str, Any]
+    impact: dict[str, Any] | None
+    remediation: dict[str, Any]
+    resolved_at: datetime | None
+    resolved_by: str | None
+
+    @computed_field
+    @property
+    def status(self) -> FindingStatus:
+        return cast(FindingStatus, _FINDING_STATUSES[self.status_id])
+
+
+class FindingPage(BaseModel):
+    items: list[FindingView]
+    total: int
+    limit: int
+    offset: int
+
+
+class FindingPatch(BaseModel):
+    status: FindingStatus
+
+
+class UsageTotalsView(BaseModel):
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    cost_usd: Decimal | None
+    cost_complete: bool
+    unpriced_requests: int
+
+
+class UsageDayView(UsageTotalsView):
+    date: date
+
+
+class UsageModelView(UsageTotalsView):
+    model: str
+
+
+class UsageKeyView(UsageTotalsView):
+    api_key_id: UUID
+    name: str | None
+    prefix: str
+
+
+class MyUsageView(BaseModel):
+    period: BillingPeriodView
+    totals: UsageTotalsView
+    daily: list[UsageDayView]
+    by_model: list[UsageModelView]
+    by_api_key: list[UsageKeyView]
 
 
 KNOWN_REQUEST_ACTIVITY_STATUSES = (
@@ -940,6 +1081,7 @@ async def list_team_members(
                 .where(
                     User.organization_id == _tenant_id(user),
                     User.is_active.is_(True),
+                    User.kind == "human",
                 )
                 .order_by(User.created_at, User.id)
             )
@@ -1109,29 +1251,43 @@ async def accept_team_invite(
         raise HTTPException(status_code=400, detail="Invitation is invalid or expired")
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
+    if user.kind == "service":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot accept invitations"
+        )
     await _require_entitlement(session, invite.organization_id, "team_rbac")
     previous_tenant_id = _tenant_id(user)
     changing_tenant = previous_tenant_id != invite.organization_id
+    secrets_to_delete: list[tuple[str, str]] = []
     if changing_tenant:
-        moved_user = await move_user_from_bootstrap(
-            session,
-            user_id=user.id,
-            source_organization_id=previous_tenant_id,
-            destination_organization_id=invite.organization_id,
-            role=invite.role,
-        )
-        if moved_user is None:
+        try:
+            moved = await move_user_from_bootstrap(
+                session,
+                user_id=user.id,
+                source_organization_id=previous_tenant_id,
+                destination_organization_id=invite.organization_id,
+                role=invite.role,
+            )
+        except WorkspaceHasRequestHistory as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Your personal workspace has request history and cannot be "
+                "archived; ask the inviting organization's owner to contact support.",
+            ) from exc
+        if moved is None:
             raise HTTPException(
                 status_code=409,
                 detail="Leave or empty the current organization before accepting",
             )
-        user = moved_user
+        user, secrets_to_delete = moved
     else:
         user.role = invite.role
         user.is_active = True
     invite.accepted_at = now
     await _audit(session, user, "tenant.team_invite_accepted", str(invite.id))
     await session.commit()
+    for reference, purpose in secrets_to_delete:
+        await _delete_secret_best_effort(previous_tenant_id, reference, purpose)
     await session.refresh(user)
     return user
 
@@ -1182,6 +1338,125 @@ async def remove_team_member(
         .values(is_active=False)
     )
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
+    await session.commit()
+
+
+@router.post(
+    "/service-accounts",
+    response_model=CreatedServiceAccount,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_service_account(
+    payload: ServiceAccountInput,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> CreatedServiceAccount:
+    account_id = uuid4()
+    account = User(
+        id=account_id,
+        organization_id=_tenant_id(user),
+        email=f"{account_id}@{SERVICE_ACCOUNT_EMAIL_DOMAIN}",
+        full_name=payload.name,
+        role=payload.role,
+        kind="service",
+        is_active=True,
+        is_verified=True,
+    )
+    session.add(account)
+    await session.flush()
+    expires_at = datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
+    plaintext, credential = issue_service_account_key(
+        session, account, created_by=user.id, expires_at=expires_at
+    )
+    await session.flush()
+    await _audit(
+        session,
+        user,
+        "tenant.service_account_created",
+        str(account.id),
+        details={
+            "after": {
+                "name": payload.name,
+                "role": payload.role,
+                "expires_at": expires_at.isoformat(),
+            }
+        },
+    )
+    await session.commit()
+    return await _created_service_account(session, account, credential, plaintext)
+
+
+@router.get("/service-accounts", response_model=list[ServiceAccountView])
+async def list_service_accounts(
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> list[ServiceAccountView]:
+    if user.kind == "service":
+        raise HTTPException(403, "Service accounts cannot manage service accounts")
+    rows = await session.execute(
+        select(User, ServiceAccountCredential)
+        .join(
+            ServiceAccountCredential,
+            (ServiceAccountCredential.user_id == User.id)
+            & (ServiceAccountCredential.organization_id == User.organization_id)
+            & ServiceAccountCredential.revoked_at.is_(None),
+        )
+        .where(
+            User.organization_id == _tenant_id(user),
+            User.kind == "service",
+            User.is_active.is_(True),
+        )
+        .order_by(User.created_at, User.id)
+    )
+    return [_service_account_row(account, credential) for account, credential in rows]
+
+
+@router.post(
+    "/service-accounts/{account_id}/rotate", response_model=CreatedServiceAccount
+)
+async def rotate_service_account(
+    account_id: UUID,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> CreatedServiceAccount:
+    account = await _owned_service_account(session, user, account_id)
+    expires_at = await session.scalar(
+        select(func.max(ServiceAccountCredential.expires_at)).where(
+            ServiceAccountCredential.user_id == account.id,
+            ServiceAccountCredential.revoked_at.is_(None),
+        )
+    )
+    if expires_at is None:
+        raise HTTPException(status_code=404, detail="Service account not found")
+    await _revoke_service_account_keys(session, account)
+    plaintext, credential = issue_service_account_key(
+        session, account, created_by=user.id, expires_at=expires_at
+    )
+    await session.flush()
+    await _audit(session, user, "tenant.service_account_rotated", str(account.id))
+    await session.commit()
+    return await _created_service_account(session, account, credential, plaintext)
+
+
+@router.delete(
+    "/service-accounts/{account_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_service_account(
+    account_id: UUID,
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    account = await _owned_service_account(session, user, account_id)
+    account.is_active = False
+    await _revoke_service_account_keys(session, account)
+    await session.execute(
+        update(ApiKey)
+        .where(ApiKey.user_id == account.id, ApiKey.is_active.is_(True))
+        .values(is_active=False)
+    )
+    await _audit(session, user, "tenant.service_account_deleted", str(account.id))
     await session.commit()
 
 
@@ -1873,7 +2148,7 @@ async def list_budgets(
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> list[CostBudget]:
+) -> list[BudgetView]:
     statement = (
         select(CostBudget)
         .where(CostBudget.organization_id == _tenant_id(user))
@@ -1887,7 +2162,7 @@ async def list_budgets(
             validate_budget_notification_config(budget)
     except BudgetConfigurationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    return budgets
+    return await _budget_views(session, budgets)
 
 
 @router.post("/cost/budgets", response_model=BudgetView)
@@ -1895,7 +2170,19 @@ async def create_budget(
     payload: BudgetInput,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> CostBudget:
+) -> BudgetView:
+    if payload.scope_type == "team_id":
+        try:
+            team_id = UUID(payload.scope_value or "")
+        except ValueError:
+            team_id = None
+        if team_id is None or not await session.scalar(
+            select(Team.id).where(
+                Team.id == team_id, Team.organization_id == _tenant_id(user)
+            )
+        ):
+            raise HTTPException(status_code=422, detail="Unknown team")
+        payload.scope_value = str(team_id)
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(
         _tenant_id(user), payload.notify_targets
@@ -1927,7 +2214,7 @@ async def create_budget(
         await _delete_budget_targets(_tenant_id(user), stored_targets)
         raise
     await session.refresh(row)
-    return row
+    return (await _budget_views(session, [row]))[0]
 
 
 @router.patch("/cost/budgets/{budget_id}", response_model=BudgetView)
@@ -1936,7 +2223,7 @@ async def update_budget(
     patch: BudgetPatch,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> CostBudget:
+) -> BudgetView:
     row = await _owned_budget(session, user, budget_id)
     fields_set = patch.model_fields_set
     limit_usd = patch.limit_usd if "limit_usd" in fields_set else row.limit_usd
@@ -1979,7 +2266,7 @@ async def update_budget(
     if replacement_targets is not None:
         await _delete_budget_targets(_tenant_id(user), previous_targets)
     await session.refresh(row)
-    return row
+    return (await _budget_views(session, [row]))[0]
 
 
 @router.delete(
@@ -2174,6 +2461,9 @@ async def list_requests(
         ResponseWarning | None,
         Query(description="Only requests that carried this warning code."),
     ] = None,
+    system_prompt_hash: Annotated[
+        str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
+    ] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -2192,6 +2482,7 @@ async def list_requests(
         tag=tag,
         cost_center=cost_center,
         warning=warning,
+        system_prompt_hash=system_prompt_hash,
     )
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
@@ -2250,6 +2541,241 @@ async def list_requests(
     )
 
 
+@router.get("/prompt-versions", response_model=PromptVersionPage)
+async def list_prompt_versions(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    api_key_id: UUID | None = Query(default=None),
+    model: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Case-insensitive model substring.",
+    ),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> PromptVersionPage:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(start or end_at - timedelta(days=7))
+    _validate_sync_window(start_at, end_at)
+    metadata = RequestLifecycle.lifecycle_metadata
+    prompt_hash = metadata["system_prompt_hash"].as_string()
+    outcome = metadata["completion_outcome"].as_string()
+    filters = [
+        RequestLifecycle.organization_id == _tenant_id(user),
+        RequestLifecycle.started_at >= start_at,
+        RequestLifecycle.started_at <= end_at,
+        RequestLifecycle.source_endpoint != "scan",
+    ]
+    if api_key_id is not None:
+        filters.append(RequestLifecycle.api_key_id == api_key_id)
+    if model is not None:
+        filters.append(
+            RequestLifecycle.requested_model.icontains(model, autoescape=True)
+        )
+    first_seen = func.min(RequestLifecycle.started_at)
+    rows = (
+        await session.execute(
+            select(
+                prompt_hash.label("system_prompt_hash"),
+                first_seen.label("first_seen"),
+                func.max(RequestLifecycle.started_at).label("last_seen"),
+                func.count().label("requests"),
+                func.array_agg(distinct(RequestLifecycle.api_key_id)).label("api_keys"),
+                func.array_agg(distinct(RequestLifecycle.requested_model)).label(
+                    "models"
+                ),
+                *(
+                    func.count().filter(outcome == name).label(name)
+                    for name in _COMPLETION_OUTCOMES
+                ),
+                func.count()
+                .filter(RequestLifecycle.status.in_(_TECHNICAL_FAILURES))
+                .label("failed"),
+                func.percentile_cont(0.95)
+                .within_group(metadata["shim_latency_ms"].as_integer())
+                .filter(RequestLifecycle.status == "completed")
+                .label("p95"),
+            )
+            .where(*filters)
+            .group_by(prompt_hash)
+            .order_by(first_seen.desc())
+            .limit(_MAX_PROMPT_VERSIONS + 1)
+        )
+    ).all()
+    return PromptVersionPage(
+        period=BillingPeriodView(start=start_at, end=end_at),
+        items=[
+            PromptVersionView(
+                system_prompt_hash=row.system_prompt_hash,
+                first_seen=row.first_seen,
+                last_seen=row.last_seen,
+                requests=row.requests,
+                api_keys=[key for key in row.api_keys if key is not None][:10],
+                models=row.models[:10],
+                outcomes=PromptVersionOutcomes(
+                    **{name: getattr(row, name) for name in _COMPLETION_OUTCOMES}
+                ),
+                failed=row.failed,
+                p95_shim_latency_ms=round(row.p95) if row.p95 is not None else None,
+            )
+            for row in rows[:_MAX_PROMPT_VERSIONS]
+        ],
+        truncated=len(rows) > _MAX_PROMPT_VERSIONS,
+    )
+
+
+def _finding_filters(
+    user: User,
+    status_filter: FindingStatus | None,
+    rule_id: str | None,
+    severity_id: int | None,
+) -> list[Any]:
+    filters = [Finding.organization_id == _tenant_id(user)]
+    if status_filter is not None:
+        filters.append(Finding.status_id == STATUS_IDS[status_filter])
+    if rule_id is not None:
+        filters.append(Finding.rule_id == rule_id)
+    if severity_id is not None:
+        filters.append(Finding.severity_id == severity_id)
+    return filters
+
+
+@router.get("/findings", response_model=FindingPage)
+async def list_findings(
+    status_filter: FindingStatus | None = Query(default=None, alias="status"),
+    rule_id: str | None = Query(default=None, min_length=1, max_length=64),
+    severity_id: int | None = Query(default=None, ge=1, le=5),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> FindingPage:
+    filters = _finding_filters(user, status_filter, rule_id, severity_id)
+    total = await session.scalar(select(func.count(Finding.id)).where(*filters))
+    rows = await session.scalars(
+        select(Finding)
+        .where(*filters)
+        .order_by(Finding.last_seen_at.desc(), Finding.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return FindingPage(
+        items=[FindingView.model_validate(row) for row in rows],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/findings/export",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {"application/x-ndjson": {}},
+            "description": "One OCSF Detection Finding per line.",
+        }
+    },
+)
+async def export_findings(
+    status_filter: FindingStatus | None = Query(default=None, alias="status"),
+    rule_id: str | None = Query(default=None, min_length=1, max_length=64),
+    severity_id: int | None = Query(default=None, ge=1, le=5),
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    rows = (
+        await session.scalars(
+            select(Finding)
+            .where(*_finding_filters(user, status_filter, rule_id, severity_id))
+            .order_by(Finding.last_seen_at.desc(), Finding.id)
+            .limit(_MAX_SYNC_REQUEST_EXPORT_ROWS + 1)
+        )
+    ).all()
+    if len(rows) > _MAX_SYNC_REQUEST_EXPORT_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "synchronous finding exports are limited to "
+                f"{_MAX_SYNC_REQUEST_EXPORT_ROWS} rows"
+            ),
+        )
+    body = "".join(
+        json.dumps(ocsf_detection_finding(row), separators=(",", ":")) + "\n"
+        for row in rows
+    )
+    return StreamingResponse(iter([body]), media_type="application/x-ndjson")
+
+
+@router.get("/findings/{finding_id}", response_model=FindingView)
+async def get_finding(
+    finding_id: UUID,
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> FindingView:
+    return FindingView.model_validate(
+        await _owned_finding(session, user, finding_id, lock=False)
+    )
+
+
+@router.patch("/findings/{finding_id}", response_model=FindingView)
+async def update_finding(
+    finding_id: UUID,
+    patch: FindingPatch,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> FindingView:
+    finding = await _owned_finding(session, user, finding_id, lock=True)
+    before = _FINDING_STATUSES[finding.status_id]
+    target = STATUS_IDS[patch.status]
+    if finding.status_id == STATUS_RESOLVED and target != STATUS_RESOLVED:
+        if await session.scalar(
+            select(Finding.id).where(
+                Finding.organization_id == finding.organization_id,
+                Finding.rule_id == finding.rule_id,
+                Finding.subject_key == finding.subject_key,
+                Finding.status_id != STATUS_RESOLVED,
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Another open finding exists for this subject",
+            )
+    if target != finding.status_id:
+        finding.status_id = target
+        resolved = target == STATUS_RESOLVED
+        finding.resolved_at = datetime.now(timezone.utc) if resolved else None
+        finding.resolved_by = str(user.id) if resolved else None
+        await _audit(
+            session,
+            user,
+            "tenant.finding_status_changed",
+            str(finding.id),
+            details={
+                "rule_id": finding.rule_id,
+                **change_details({"status": before}, {"status": patch.status}),
+            },
+        )
+        await session.commit()
+        await session.refresh(finding)
+    return FindingView.model_validate(finding)
+
+
+async def _owned_finding(
+    session: AsyncSession, user: User, finding_id: UUID, *, lock: bool
+) -> Finding:
+    statement = select(Finding).where(
+        Finding.id == finding_id, Finding.organization_id == _tenant_id(user)
+    )
+    finding = await session.scalar(
+        statement.with_for_update(of=Finding) if lock else statement
+    )
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return finding
+
+
 @router.get(
     "/requests/export",
     response_class=StreamingResponse,
@@ -2283,6 +2809,9 @@ async def export_requests(
         ResponseWarning | None,
         Query(description="Only requests that carried this warning code."),
     ] = None,
+    system_prompt_hash: Annotated[
+        str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
+    ] = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -2301,6 +2830,7 @@ async def export_requests(
         tag=tag,
         cost_center=cost_center,
         warning=warning,
+        system_prompt_hash=system_prompt_hash,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
@@ -2431,6 +2961,82 @@ async def export_requests(
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="shim_requests.csv"'},
     )
+
+
+@router.get("/usage/mine", response_model=MyUsageView)
+async def my_usage(
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> MyUsageView:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(
+        start or end_at.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    )
+    _validate_sync_window(start_at, end_at)
+    keys = {
+        key_id: (name, prefix)
+        for key_id, name, prefix in await session.execute(
+            select(ApiKey.id, ApiKey.name, ApiKey.prefix).where(
+                ApiKey.organization_id == _tenant_id(user),
+                _own_or_administered_key(user),
+            )
+        )
+    }
+    read_models = BillingReadModels()
+    window = {
+        "tenant_id": TenantId(_tenant_id(user)),
+        "start_at": start_at,
+        "end_at": end_at,
+        "api_key_ids": list(keys),
+    }
+    daily = await read_models.daily_usage(session, **window)
+    if len(daily) > MAX_BILLING_DAILY_ROWS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"synchronous usage is limited to {MAX_BILLING_DAILY_ROWS} rows",
+        )
+    by_model = await read_models.breakdown(
+        session, **window, group_by="model", limit=None
+    )
+    by_key = await read_models.breakdown(
+        session, **window, group_by="api_key_id", limit=None
+    )
+    return MyUsageView(
+        period=BillingPeriodView(start=start_at, end=end_at),
+        totals=UsageTotalsView(**_usage_totals(by_model)),
+        daily=[
+            UsageDayView(date=day, **_usage_totals(list(rows)))
+            for day, rows in itertools.groupby(daily, key=lambda row: row.usage_date)
+        ],
+        by_model=[
+            UsageModelView(model=row.key, **_usage_totals([row])) for row in by_model
+        ],
+        by_api_key=[
+            UsageKeyView(
+                api_key_id=UUID(row.key),
+                name=keys[UUID(row.key)][0],
+                prefix=keys[UUID(row.key)][1],
+                **_usage_totals([row]),
+            )
+            for row in by_key
+        ],
+    )
+
+
+def _usage_totals(rows: Sequence[BillingBreakdown | DailyUsage]) -> dict[str, Any]:
+    unpriced = sum(row.unpriced_requests for row in rows)
+    return {
+        "requests": sum(row.request_count for row in rows),
+        "input_tokens": sum(row.prompt_tokens for row in rows),
+        "output_tokens": sum(row.completion_tokens for row in rows),
+        "cost_usd": None
+        if unpriced
+        else sum((row.cost_usd for row in rows), Decimal()),
+        "cost_complete": not unpriced,
+        "unpriced_requests": unpriced,
+    }
 
 
 @router.get("/billing/usage", response_model=BillingUsageView)
@@ -2621,6 +3227,7 @@ def _request_filters(
     tag: str | None,
     cost_center: str | None,
     warning: ResponseWarning | None = None,
+    system_prompt_hash: str | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -2673,6 +3280,10 @@ def _request_filters(
         filters.append(RequestLog.request_id == request_id)
     if pii_detected is not None:
         filters.append(RequestLog.pii_detected == pii_detected)
+    if system_prompt_hash is not None:
+        filters.append(
+            RequestLog.details["system_prompt_hash"].as_string() == system_prompt_hash
+        )
     if normalized_tag is not None:
         tag_values = func.jsonb_array_elements_text(
             func.coalesce(RequestLog.tags, sql_cast([], JSONB))
@@ -3015,6 +3626,62 @@ async def _owned_api_key(
     return row
 
 
+async def _owned_service_account(
+    session: AsyncSession, user: User, account_id: UUID
+) -> User:
+    account = await session.scalar(
+        select(User)
+        .where(
+            User.id == account_id,
+            User.organization_id == _tenant_id(user),
+            User.kind == "service",
+            User.is_active.is_(True),
+        )
+        .with_for_update(of=User)
+    )
+    if account is None:
+        raise HTTPException(status_code=404, detail="Service account not found")
+    return account
+
+
+async def _revoke_service_account_keys(session: AsyncSession, account: User) -> None:
+    await session.execute(
+        update(ServiceAccountCredential)
+        .where(
+            ServiceAccountCredential.user_id == account.id,
+            ServiceAccountCredential.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
+
+
+async def _created_service_account(
+    session: AsyncSession,
+    account: User,
+    credential: ServiceAccountCredential,
+    plaintext: str,
+) -> CreatedServiceAccount:
+    await session.refresh(credential)
+    return CreatedServiceAccount(
+        **_service_account_row(account, credential).model_dump(), plaintext=plaintext
+    )
+
+
+def _service_account_row(
+    account: User, credential: ServiceAccountCredential
+) -> ServiceAccountView:
+    return ServiceAccountView(
+        id=account.id,
+        name=account.full_name,
+        role=cast(Literal["admin", "auditor"], account.role),
+        prefix=credential.prefix,
+        expires_at=credential.expires_at,
+        last_used_at=credential.last_used_at,
+        created_by=credential.created_by,
+        created_at=credential.created_at,
+    )
+
+
 async def _owned_member(
     session: AsyncSession,
     user: User,
@@ -3033,6 +3700,7 @@ async def _owned_member(
                 User.id == member_id,
                 User.organization_id == tenant_id,
                 User.is_active.is_(True),
+                User.kind == "human",
             )
             .with_for_update(of=User)
         )
@@ -3130,6 +3798,39 @@ async def _owned_budget(
     if row is None:
         raise HTTPException(status_code=404, detail="Budget not found")
     return row
+
+
+async def _budget_views(
+    session: AsyncSession, budgets: list[CostBudget]
+) -> list[BudgetView]:
+    team_ids = {
+        UUID(budget.scope_value)
+        for budget in budgets
+        if budget.scope_type == "team_id" and budget.scope_value
+    }
+    names = (
+        {
+            str(team_id): name
+            for team_id, name in await session.execute(
+                select(Team.id, Team.name).where(
+                    Team.organization_id == budgets[0].organization_id,
+                    Team.id.in_(team_ids),
+                )
+            )
+        }
+        if team_ids
+        else {}
+    )
+    return [
+        BudgetView.model_validate(budget).model_copy(
+            update={
+                "scope_label": names.get(budget.scope_value or "")
+                if budget.scope_type == "team_id"
+                else None
+            }
+        )
+        for budget in budgets
+    ]
 
 
 async def _validate_targets(targets: list[NotificationTargetInput]) -> None:

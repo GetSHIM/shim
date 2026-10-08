@@ -116,3 +116,34 @@ def test_budget_evaluation_interval_defaults_to_five_minutes(
         ).BUDGET_EVALUATION_INTERVAL_SECONDS
         == 300
     )
+
+
+@pytest.mark.parametrize(
+    ("seconds", "valid"), [(59, False), (60, True), (86_400, True), (86_401, False)]
+)
+def test_findings_evaluation_interval_is_bounded(seconds: int, valid: bool) -> None:
+    def build() -> Settings:
+        return Settings(
+            **ENTERPRISE_REQUIRED_VALUES,
+            FINDINGS_EVALUATION_INTERVAL_SECONDS=seconds,
+            _env_file=None,
+        )
+
+    if valid:
+        assert build().FINDINGS_EVALUATION_INTERVAL_SECONDS == seconds
+    else:
+        with pytest.raises(ValidationError):
+            build()
+
+
+def test_findings_evaluation_interval_defaults_to_fifteen_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FINDINGS_EVALUATION_INTERVAL_SECONDS", raising=False)
+
+    assert (
+        Settings(
+            **ENTERPRISE_REQUIRED_VALUES, _env_file=None
+        ).FINDINGS_EVALUATION_INTERVAL_SECONDS
+        == 900
+    )

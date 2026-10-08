@@ -21,6 +21,11 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
+- [Automate management with a service account](#automate-management-with-a-service-account)
+- [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
+- [Read and export findings](#read-and-export-findings)
+- [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
+- [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
 ## Attribute spend to teams
 
@@ -81,12 +86,14 @@ Notes:
 Get a Slack message or a webhook call when spend or tokens cross a share of a monthly limit.
 
 1. `POST /api/v1/management/cost/budgets` (owner or admin) with:
-   - `scope_type`: `org`, `tag` or `team`, and `scope_value` for the last two.
-     `tag` matches requests carrying that `X-Shim-Tag` tag; `team` matches the
-     key's billing label `team`, not its `team_id`. `scope_value` is normalized
-     the way those labels are: `Payments` is stored and matched as `payments`,
-     and a value outside letters, digits, `.`, `_`, `:` and `-` (at most
-     `COST_TAG_MAX_LENGTH`) answers 422.
+   - `scope_type`: `org`, `tag`, `team` or `team_id`, and `scope_value` for the
+     last three. `tag` matches requests carrying that `X-Shim-Tag` tag; `team`
+     matches the key's billing label `team`; `team_id` matches the key's team,
+     whatever its label, and takes the team's `id` (422 "Unknown team" for a
+     malformed id or one outside your organization). For `tag` and `team`,
+     `scope_value` is normalized the way those labels are: `Payments` is stored
+     and matched as `payments`, and a value outside letters, digits, `.`, `_`,
+     `:` and `-` (at most `COST_TAG_MAX_LENGTH`) answers 422.
    - `limit_usd`, `limit_tokens`, or both, each greater than 0.
    - `alert_thresholds`: one to 10 unique fractions greater than 0 and at most
      5; `0.8` means 80 percent and `1.5` means 150 percent. Default
@@ -116,6 +123,8 @@ curl -X POST http://localhost:8000/api/v1/management/cost/budgets/evaluate \
 
 The evaluate call answers `period` (`YYYY-MM`) and one result per enabled budget
 with `budget_id`, `fraction`, `fired` (thresholds crossed now) and `enqueued`.
+A budget's `scope_label` is the team's current name for a `team_id` scope, and
+`null` otherwise or when the team no longer exists.
 
 Notes:
 
@@ -128,6 +137,9 @@ Notes:
   sha256=<hex HMAC-SHA256 of the raw body with the secret>`, the same scheme as
   compliance forward targets. `payload.percent_used` keeps full precision;
   Slack receives a text message with the percentage rounded to a whole number.
+- A `team_id` budget counts requests that recorded the key's team, which every
+  request does since team ids were added to request records; older requests do
+  not count. Renaming the team changes only `scope_label`.
 - Budgets stored before these checks, with a zero limit, no threshold or no
   target, still evaluate and simply never alert; a `PATCH` that sends one of
   those values answers 422.
@@ -450,3 +462,142 @@ Notes:
   public price catalog is unpriced, so a provider spending limit refuses it with
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
+
+## Automate management with a service account
+
+Give a CI pipeline or an agent its own management key instead of a person's token.
+
+1. As the owner, `POST /api/v1/management/service-accounts` with `name`, `role`
+   (`admin` or `auditor`) and `expires_in_days` (1 to 365). It answers 201 with
+   the account's `id` and the key in `plaintext`, shown once.
+2. Call any management route the role allows with `Authorization: Bearer <key>`.
+3. Rotate with `POST /api/v1/management/service-accounts/{id}/rotate`; the old key
+   stops at once. Delete with `DELETE /api/v1/management/service-accounts/{id}`.
+
+```console
+SERVICE_KEY=$(curl -s -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "terraform", "role": "admin", "expires_in_days": 90}' | jq -r .plaintext)
+
+curl -X POST http://localhost:8000/api/v1/management/api-keys \
+  -H "Authorization: Bearer $SERVICE_KEY" -H 'Content-Type: application/json' \
+  -d '{"name": "payments-service"}'
+```
+
+Notes:
+
+- A service account cannot become owner, accept invitations, manage service
+  accounts or change members' roles. An auditor service account is read-only.
+- Any key failure answers 401 `INVALID_API_KEY`. The key is not a gateway key:
+  model routes refuse it, and gateway keys do not open management routes.
+- The audit log marks its actions `actor_type: service`. Details are in
+  [team access](team-access.md#service-accounts).
+
+## See what changed after a prompt change
+
+Compare how answers ended before and after your system prompt changed.
+
+1. As an owner, admin or auditor, list the versions:
+   `GET /api/v1/management/prompt-versions?start=…&end=…` (default the last 7
+   days, at most 31), optionally with `api_key_id` or `model`.
+2. Each version is a `system_prompt_hash` with `first_seen`, `last_seen`,
+   `requests`, `outcomes` (`complete`, `truncated`, `empty`, `refused`,
+   `filtered`), `failed` and `p95_shim_latency_ms`. Newest first.
+3. List one version's requests with `GET /api/v1/management/requests?system_prompt_hash=…`.
+
+```console
+curl 'http://localhost:8000/api/v1/management/prompt-versions?start=2026-10-01T00:00:00Z' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: the hash is keyed per installation and tenant and never reveals the
+prompt; prompt text is not stored. Requests without system instructions are one
+item with `system_prompt_hash: null`. Details are in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#system-instruction-hashing).
+
+## Read and export findings
+
+Let shim tell you about retry storms, repeated spend, unused deployments and
+models that truncate or refuse answers.
+
+1. As an owner, admin or auditor, list open findings:
+   `GET /api/v1/management/findings?status=new`. Each one has a summary,
+   evidence, impact and the fix.
+2. Acknowledge or close one as an owner or admin:
+   `PATCH /api/v1/management/findings/{id}` with `{"status": "in_progress"}`,
+   `"suppressed"` or `"resolved"`.
+3. Feed your SIEM or data lake from `GET /api/v1/management/findings/export`,
+   one OCSF Detection Finding per line.
+
+```console
+curl 'http://localhost:8000/api/v1/management/findings?status=new' \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl http://localhost:8000/api/v1/management/findings/export \
+  -H "Authorization: Bearer $USER_TOKEN" -o findings.ndjson
+```
+
+Notes: the reconciliation worker evaluates the rules every
+`FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
+thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Collect the monthly evidence file
+
+Hand an auditor last month's gateway evidence without generating anything by hand.
+
+1. Run the ai_act worker (`python -m shim_enterprise.workers.ai_act`). On the
+   first pass of each month it writes the previous month's PDF for every
+   organization with traffic in that month.
+2. Optionally add a [forward target](#send-tenant-alerts): it is told when the
+   file is ready.
+3. As an owner, admin or auditor, list the files with
+   `GET /api/v1/compliance/evidence/monthly` and download one with
+   `GET /api/v1/compliance/evidence/monthly/{YYYY-MM}`.
+
+```console
+curl http://localhost:8000/api/v1/compliance/evidence/monthly \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -OJ http://localhost:8000/api/v1/compliance/evidence/monthly/2026-09 \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes:
+
+- Each list item has `period`, `kind`, `format`, `size_bytes`, `sha256` and
+  `generated_at`. The download carries `X-Content-SHA256`; compare it with the
+  list. Every download is recorded as `tenant.evidence_downloaded`.
+- To see the month so far, an operator runs
+  `python ee/scripts/generate_monthly_evidence.py --organization <uuid> --period <current YYYY-MM>`
+  in the enterprise image, then downloads it with `?kind=monthly_partial`. Each
+  kind and month is written once; the script refuses a second run.
+- What the file contains and does not contain is in
+  [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).
+
+## Prepare for ISO/IEC 42001
+
+See which Annex A controls your gateway traffic evidences, and record your own
+statement for the rest. Needs the enterprise plan.
+
+1. As an owner or admin, declare the controls shim cannot measure:
+   `PUT /api/v1/compliance/readiness/iso42001/declarations/{control_id}` with
+   `status` and an optional `note`.
+2. As an owner, admin or auditor, produce the report:
+   `POST /api/v1/compliance/reports/readiness`.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/compliance/readiness/iso42001/declarations/A.3.2 \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"status": "implemented", "note": "AI roles are assigned in the RACI of 2026-09."}'
+
+curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"framework": "iso42001", "start": "2026-07-01T00:00:00Z", "end": "2026-09-30T23:59:59Z", "format": "csv"}' \
+  -o iso42001_readiness.csv
+```
+
+Notes: the CSV has `control_id`, `title`, `source` (`measured`, `input` or
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`;
+the PDF holds the same 38 rows. The report is not an audit or a certification.
+Sources, rules and the numbering caveat are in
+[decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

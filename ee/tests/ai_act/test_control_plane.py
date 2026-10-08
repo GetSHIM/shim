@@ -540,7 +540,7 @@ async def test_oversight_changes_triggers_and_evidence_reads_are_audited(
     ]
     assert all(event["actor"] == str(user.id) for event in events)
     created = extra["compliance.oversight_policy_created"]
-    assert set(created) == {"subject_id", "after"}
+    assert set(created) == {"subject_id", "actor_type", "after"}
     assert created["after"]["trigger"] == {"pii_detected": True}
     updated = extra["compliance.oversight_policy_updated"]
     assert (updated["before"], updated["after"]) == (
@@ -550,6 +550,7 @@ async def test_oversight_changes_triggers_and_evidence_reads_are_audited(
     assert extra["compliance.oversight_policy_deleted"]["before"]["enabled"] is False
     assert extra["compliance.audit_anchored"] == {
         "subject_id": str(tenant_id),
+        "actor_type": "user_jwt",
         "anchor_date": yesterday.isoformat(),
         "row_count": 0,
     }

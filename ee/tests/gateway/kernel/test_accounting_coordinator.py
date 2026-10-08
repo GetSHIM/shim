@@ -1440,10 +1440,14 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
         pii_detected=None,
         tag=None,
         cost_center=None,
+        system_prompt_hash=None,
         limit=10,
         offset=0,
         user=SimpleNamespace(
-            role="owner", organization_id=test_api_key.organization_id
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            organization_id=test_api_key.organization_id,
         ),
         session=db,
     )
@@ -1481,7 +1485,9 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     start = datetime.now(timezone.utc) - timedelta(days=1)
     end = datetime.now(timezone.utc) + timedelta(days=1)
     user = SimpleNamespace(
-        id=test_api_key.user_id, organization_id=test_api_key.organization_id
+        id=test_api_key.user_id,
+        organization_id=test_api_key.organization_id,
+        kind="human",
     )
     billing = await management.billing_usage(start, end, user, db)
     expected_cost = None if pricing_resolution == "unknown" else 0.00004
@@ -2648,7 +2654,7 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
         tag=None,
         cost_center=None,
         user=SimpleNamespace(
-            id=uuid4(), role="owner", organization_id=prepared.tenant_id
+            id=uuid4(), kind="human", role="owner", organization_id=prepared.tenant_id
         ),
         session=db,
     )

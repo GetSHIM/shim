@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     UUID as SqlUUID,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -40,6 +41,10 @@ class Organization(Base, TimestampMixin):
         CheckConstraint(
             "quota_monthly_token_limit IS NULL OR quota_monthly_token_limit >= 0",
             name="ck_organizations_quota_monthly_tokens",
+        ),
+        CheckConstraint(
+            "(archived_at IS NULL) = (archived_reason IS NULL)",
+            name="ck_organizations_archive_pair",
         ),
     )
 
@@ -78,6 +83,9 @@ class Organization(Base, TimestampMixin):
     allow_customer_provider_keys: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # Set when the only user joined another organization; nobody belongs to it again.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_reason: Mapped[str | None] = mapped_column(String(32))
 
     users: Mapped[list[User]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"
@@ -108,6 +116,11 @@ class User(Base, TimestampMixin):
         ),
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
         Index("ix_users_organization_id", "organization_id"),
+        CheckConstraint("kind IN ('human', 'service')", name="ck_users_kind"),
+        CheckConstraint(
+            "kind = 'human' OR role IN ('admin', 'auditor')",
+            name="ck_users_service_role",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -129,12 +142,48 @@ class User(Base, TimestampMixin):
     role: Mapped[str] = mapped_column(
         String(16), nullable=False, default="member", server_default="member"
     )
+    kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="human", server_default="human"
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="users")
     api_keys: Mapped[list[ApiKey]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         foreign_keys="[ApiKey.user_id]",
+    )
+
+
+class ServiceAccountCredential(Base):
+    """One-way verifier of a service account's management key."""
+
+    __tablename__ = "service_account_credentials"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "user_id"],
+            ["users.organization_id", "users.id"],
+            name="fk_service_account_credentials_tenant_user",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("key_hash", name="uq_service_account_credentials_key_hash"),
+        Index("ix_service_account_credentials_user_id", "user_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 
