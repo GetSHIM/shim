@@ -572,8 +572,11 @@ class BudgetInput(BaseModel):
         if self.scope_type != "org":
             if not self.scope_value:
                 raise ValueError("scoped budgets require scope_value")
-            if self.scope_type != "team_id":
-                self.scope_value = _validate_attribution(self.scope_value)
+            self.scope_value = (
+                str(UUID(self.scope_value))
+                if self.scope_type == "team_id"
+                else _validate_attribution(self.scope_value)
+            )
         if self.limit_usd is None and self.limit_tokens is None:
             raise ValueError("a budget requires a cost or token limit")
         return self
@@ -2181,18 +2184,13 @@ async def create_budget(
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
-    if payload.scope_type == "team_id":
-        try:
-            team_id = UUID(payload.scope_value or "")
-        except ValueError:
-            team_id = None
-        if team_id is None or not await session.scalar(
-            select(Team.id).where(
-                Team.id == team_id, Team.organization_id == _tenant_id(user)
-            )
-        ):
-            raise HTTPException(status_code=422, detail="Unknown team")
-        payload.scope_value = str(team_id)
+    if payload.scope_type == "team_id" and not await session.scalar(
+        select(Team.id).where(
+            Team.id == UUID(payload.scope_value or ""),
+            Team.organization_id == _tenant_id(user),
+        )
+    ):
+        raise HTTPException(status_code=422, detail="Unknown team")
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(
         _tenant_id(user), payload.notify_targets

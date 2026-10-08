@@ -337,7 +337,11 @@ def _tenant_payload(
 
 
 def _budget_text(payload: dict) -> str:
-    scope = payload.get("scope_value") or payload.get("scope_type")
+    scope = (
+        payload.get("scope_label")
+        or payload.get("scope_value")
+        or payload.get("scope_type")
+    )
     return (
         f"shim budget {scope}: {payload.get('percent_used', 0):.0f}% used in "
         f"{payload.get('period')}"
