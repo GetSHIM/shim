@@ -317,7 +317,14 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             side_effect=(
                 SimpleNamespace(one=lambda: summary_row),
                 SimpleNamespace(
-                    all=lambda: [(row, Decimal("0.12500000"), {"TR_NATIONAL_ID": 1})]
+                    all=lambda: [
+                        (
+                            row,
+                            Decimal("0.12500000"),
+                            {"TR_NATIONAL_ID": 1},
+                            {"probe": {"n": 1}, "versions": {"probe": "1"}},
+                        )
+                    ]
                 ),
             )
         ),
@@ -391,8 +398,13 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "blocked_entities",
         "bulk_disclosure",
         "response_entities",
+        "response_analysis",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert page.items[0].response_analysis == {
+        "probe": {"n": 1},
+        "versions": {"probe": "1"},
+    }
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
     assert page.items[0].repeat_chain_length is None
@@ -630,7 +642,16 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=1),
         execute=AsyncMock(
-            return_value=SimpleNamespace(all=lambda: [(row, Decimal("0.000001"), None)])
+            return_value=SimpleNamespace(
+                all=lambda: [
+                    (
+                        row,
+                        Decimal("0.000001"),
+                        None,
+                        {"versions": {"probe": "1"}, "probe": {"n": 1}},
+                    )
+                ]
+            )
         ),
         commit=AsyncMock(),
     )
@@ -676,6 +697,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["monitored_entities"] == ""
     assert exported["blocked_entities"] == '{"SECRET": 1}'
     assert exported["response_entities"] == ""
+    assert exported["response_analysis"] == '{"probe":{"n":1},"versions":{"probe":"1"}}'
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"

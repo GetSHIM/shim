@@ -90,6 +90,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         target=None,
         deployment_kind="unknown",
         response_scan="off",
+        response_analysis=(),
         unpriced=False,
         deployment_price=None,
         stream=False,
@@ -2937,3 +2938,78 @@ async def test_finalization_passes_the_answer_facts_and_a_refund_records_none(
         "tool_call_names",
         "reasoning_seen",
     } & set(lifecycle.lifecycle_metadata)
+
+
+@pytest.mark.asyncio
+async def test_a_response_analysis_updates_only_its_own_tenants_lifecycle(
+    db, test_api_key, caplog
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    def lifecycle():
+        return db.execute(
+            select(RequestLifecycle)
+            .where(RequestLifecycle.request_id == prepared.request_id)
+            .execution_options(populate_existing=True)
+        )
+
+    reserved = dict((await lifecycle()).scalar_one().lifecycle_metadata)
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    stranger = _prepared()
+    stranger.request_id = prepared.request_id
+    missing = _prepared()
+    missing.tenant_id = prepared.tenant_id
+    missing.request_id = f"req_missing_{uuid4().hex}"
+    await usage.record_response_analysis(
+        prepared, {"probe": {"n": 1}, "versions": {"probe": "1"}}
+    )
+    await usage.record_response_analysis(
+        stranger, {"probe": {"n": 9}, "versions": {"probe": "1"}}
+    )
+    await usage.record_response_analysis(
+        missing, {"probe": {"n": 2}, "versions": {"probe": "1"}}
+    )
+
+    metadata = (await lifecycle()).scalar_one().lifecycle_metadata
+    assert metadata == {
+        **reserved,
+        "response_analysis": {"probe": {"n": 1}, "versions": {"probe": "1"}},
+    }
+    assert "Response analysis record failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_response_analysis_record_is_logged_and_dropped(caplog) -> None:
+    @asynccontextmanager
+    async def broken_scope():
+        raise ConnectionError("database at private-host down")
+        yield
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), broken_scope)
+
+    await usage.record_response_analysis(_prepared(), {"versions": {}})
+
+    assert "Response analysis record failed type=ConnectionError" in caplog.text
+    assert "private-host" not in caplog.text

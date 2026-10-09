@@ -15,6 +15,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Attribute spend to teams](#attribute-spend-to-teams)
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
+- [Change the gateway settings](#change-the-gateway-settings)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -225,6 +226,39 @@ Turning a switch off, or moving a type down the order `block`, `mask`,
 one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the
 forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-details).
+
+## Change the gateway settings
+
+Turn the gateway's own switches on or off for your tenant. Every switch is off by
+default; privacy switches stay under [privacy settings](#change-the-privacy-settings).
+
+1. Read them with `GET /api/v1/management/gateway-settings` (owner, admin or
+   auditor): `settings` with every field, `revision` (0 until the first change),
+   `updated_at`, `updated_by`, `available_analyzers`, and `unavailable`, which
+   names a field that is "off, needs X" because an optional part is missing.
+2. Send only what you change in `PATCH /api/v1/management/gateway-settings`
+   (owner or admin). The answer is the same body as the GET.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"response_analysis": []}'
+```
+
+Notes: an unknown or repeated analyzer name, `null` for a field, or a field
+that does not exist is 422. Names are stored in the order the analyzers run. A
+change records `tenant.gateway_settings_updated` with the before and after of
+the changed fields and increments `revision`; a PATCH that changes nothing
+writes no event and keeps the revision. A change the setting's direction
+classifies as relaxing also records `tenant.gateway_protection_relaxed`
+([decision evidence](POLICY_DECISIONS.md#management-change-details));
+`response_analysis` only measures, so it is neutral. Gateways read the settings
+from a cache that lives at most 300 seconds; a change clears it at once.
+Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
 
 ## Read the daily privacy card
 

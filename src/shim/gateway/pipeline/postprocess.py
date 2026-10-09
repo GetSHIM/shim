@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from functools import partial
 import logging
 from datetime import datetime, timezone
 from time import perf_counter
@@ -15,8 +17,14 @@ from opentelemetry import trace
 from starlette.background import BackgroundTask
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
+from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.pipeline.admission import candidate_count
+from shim.gateway.pipeline.analysis import (
+    AnalysisContext,
+    AnalysisToolCall,
+    run_analyzers,
+)
 from shim.gateway.pipeline.privacy import scan_response
 from shim.gateway.pipeline.provider_execution import ProviderNonStream, ProviderStream
 from shim.gateway.streaming import (
@@ -26,10 +34,14 @@ from shim.gateway.streaming import (
     StreamTerminalStatus,
 )
 from shim.gateway.streaming.meter import (
+    KEPT_ANSWER_CHARACTERS,
+    KEPT_TOOL_CALLS,
     StreamUsageSnapshot,
     answer_characters,
     answer_markers,
+    answer_text,
     answer_texts,
+    answer_tool_calls,
     cache_split,
     completion_outcome,
     native_finish_reasons,
@@ -48,21 +60,31 @@ from shim.observability.metrics import (
 )
 from shim.observability.tracing import safe_attributes
 from shim.privacy.classification import content_ref
-from shim.privacy.pii_scrubber import MAX_ANALYZABLE_TEXT_LENGTH, PIIScrubberService
+from shim.privacy.pii_scrubber import PIIScrubberService
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.stage import TraceValue
 
 logger = logging.getLogger(__name__)
 
-# Response scans queue here, not on the loop's default executor that the
-# request-path scrub and secret fetches share, so a burst of large answers
-# cannot delay another request's privacy stage.
+# After-answer work (response scans, analyzers) queues here, not on the loop's
+# default executor that the request-path scrub and secret fetches share, so a
+# burst of large answers cannot delay another request's privacy stage.
 # ponytail: the GIL still costs event-loop time while a scan runs; a process
 # pool is the upgrade path. One idle worker, joined at interpreter exit.
 _RESPONSE_SCAN_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="response-scan"
 )
+
+
+# What the after-answer task reads; built only while the scan or an analyzer is on.
+@dataclass(frozen=True, slots=True)
+class _Answer:
+    scan_text: str
+    text: str
+    truncated: bool
+    tool_calls: tuple[AnalysisToolCall, ...]
+    completion_outcome: str | None
 
 
 class _ManagedStreamingResponse(StreamingResponse):
@@ -98,30 +120,67 @@ class ResponsePostprocessor:
             for task in pending:
                 task.cancel()
 
-    def _start_response_scan(
-        self, prepared: PreparedInference, text: str
+    def _start_after_answer(
+        self, prepared: PreparedInference, answer: _Answer
     ) -> asyncio.Task[None]:
-        task = asyncio.create_task(self._scan_response(prepared, text))
+        task = asyncio.create_task(self._after_answer(prepared, answer))
         self._finalization_tasks.add(task)
         task.add_done_callback(self._finalization_tasks.discard)
         return task
 
-    async def _scan_response(self, prepared: PreparedInference, text: str) -> None:
+    async def _after_answer(self, prepared: PreparedInference, answer: _Answer) -> None:
+        loop = asyncio.get_running_loop()
+        if prepared.response_scan == "count":
+            try:
+                result = await loop.run_in_executor(
+                    _RESPONSE_SCAN_EXECUTOR,
+                    scan_response,
+                    answer.scan_text,
+                    prepared,
+                    PIIScrubberService(),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Response privacy scan failed type=%s", type(exc).__name__
+                )
+                result = {"response_entities": None, "error": True}
+            try:
+                await self.usage.record_response_privacy(prepared, result)
+            except Exception as exc:
+                logger.error(
+                    "Response privacy record failed type=%s", type(exc).__name__
+                )
+        if not prepared.response_analysis:
+            return
+        context = AnalysisContext(
+            request_id=str(prepared.request_id),
+            protocol=prepared.protocol,
+            model=prepared.model,
+            payload=prepared.payload,
+            answer_text=answer.text,
+            answer_truncated=answer.truncated,
+            tool_calls=answer.tool_calls,
+            completion_outcome=answer.completion_outcome,
+            restore=partial(
+                PIIScrubberService().deanonymize,
+                verification_map=prepared.privacy.verification_map
+                if prepared.privacy is not None
+                else {},
+            ),
+        )
+        analyzers = [
+            analyzer
+            for analyzer in ANALYZERS
+            if analyzer.name in prepared.response_analysis
+        ]
         try:
-            result = await asyncio.get_running_loop().run_in_executor(
-                _RESPONSE_SCAN_EXECUTOR,
-                scan_response,
-                text,
-                prepared,
-                PIIScrubberService(),
+            results = await loop.run_in_executor(
+                _RESPONSE_SCAN_EXECUTOR, run_analyzers, analyzers, context
             )
+            if results is not None:
+                await self.usage.record_response_analysis(prepared, results)
         except Exception as exc:
-            logger.warning("Response privacy scan failed type=%s", type(exc).__name__)
-            result = {"response_entities": None, "error": True}
-        try:
-            await self.usage.record_response_privacy(prepared, result)
-        except Exception as exc:
-            logger.error("Response privacy record failed type=%s", type(exc).__name__)
+            logger.error("Response analysis failed type=%s", type(exc).__name__)
 
     async def finalize(
         self,
@@ -272,14 +331,30 @@ class ResponsePostprocessor:
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
         record_settled_usage(prepared, terminal.usage)
         await self.usage.finalize(prepared, terminal)
-        if prepared.response_scan == "count":
-            text = "\n".join(answer_texts(response.payload, tool_arguments=True))
+        scan = prepared.response_scan == "count"
+        if lifecycle_status == "completed" and (scan or prepared.response_analysis):
+            text = answer_text(response.payload) if prepared.response_analysis else ""
+            calls = (
+                answer_tool_calls(response.payload)
+                if prepared.response_analysis
+                else ()
+            )
+            answer = _Answer(
+                scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
+                if scan
+                else "",
+                text=text[:KEPT_ANSWER_CHARACTERS],
+                truncated=len(text) > KEPT_ANSWER_CHARACTERS
+                or len(calls) > KEPT_TOOL_CALLS,
+                tool_calls=calls[:KEPT_TOOL_CALLS],
+                completion_outcome=terminal.usage.completion_outcome,
+            )
 
-            async def scan_after_send() -> None:
-                await self._start_response_scan(prepared, text)
+            async def after_send() -> None:
+                await self._start_after_answer(prepared, answer)
 
             # Starlette runs this after the body is sent.
-            gateway_response.background = BackgroundTask(scan_after_send)
+            gateway_response.background = BackgroundTask(after_send)
         return gateway_response
 
     def create_stream_session(
@@ -289,7 +364,7 @@ class ResponsePostprocessor:
         if prepared.admission is None:
             raise ValueError("admission state is required")
         provider_started_at = perf_counter()
-        scan = prepared.response_scan == "count"
+        keep = prepared.response_scan == "count" or bool(prepared.response_analysis)
         meter = StreamMeter(
             provider=str(prepared.provider),
             requested_model=prepared.pricing_model,
@@ -298,7 +373,7 @@ class ResponsePostprocessor:
             prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,
-            answer_text_limit=MAX_ANALYZABLE_TEXT_LENGTH + 1 if scan else 0,
+            keep_answer=keep,
         )
 
         async def record_stream_start() -> None:
@@ -315,9 +390,19 @@ class ResponsePostprocessor:
             )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
-            if scan:
+            if keep and terminal.terminal_status == "completed":
+                kept = "".join(meter.answer_text)
                 # Detached: the stream body ends only after this finalizer returns.
-                self._start_response_scan(prepared, "".join(meter.answer_text))
+                self._start_after_answer(
+                    prepared,
+                    _Answer(
+                        scan_text=kept,
+                        text=kept[:KEPT_ANSWER_CHARACTERS],
+                        truncated=meter.answer_truncated,
+                        tool_calls=meter.kept_tool_calls(),
+                        completion_outcome=terminal.usage.completion_outcome,
+                    ),
+                )
 
         def observe_terminal(terminal_status: str) -> None:
             status = {

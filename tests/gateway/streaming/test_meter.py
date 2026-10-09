@@ -7,9 +7,12 @@ import pytest
 
 from shim.billing.pricing import UNSPECIFIED_PROVIDER_MODEL
 from shim.gateway.streaming import StreamMeter
+from shim.gateway.pipeline.analysis import AnalysisToolCall
 from shim.gateway.streaming.meter import (
     answer_characters,
     answer_markers,
+    answer_text,
+    answer_tool_calls,
     completion_outcome,
     native_finish_reasons,
     reasoning_seen,
@@ -941,3 +944,360 @@ def test_a_plain_stream_snapshot_has_no_names_and_no_reasoning() -> None:
         snapshot.tool_call_names,
         snapshot.reasoning_seen,
     ) == (2, (), False)
+
+
+@pytest.mark.parametrize(
+    ("payload", "text", "calls"),
+    [
+        (
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "first",
+                            "refusal": "not answer text",
+                            "tool_calls": [
+                                {"function": {"name": "lookup", "arguments": '{"a":1}'}}
+                            ],
+                        }
+                    },
+                    {
+                        "message": {
+                            "content": "second",
+                            "function_call": {"name": "legacy", "arguments": "{}"},
+                        }
+                    },
+                ]
+            },
+            "first\nsecond",
+            (AnalysisToolCall("lookup", '{"a":1}'), AnalysisToolCall("legacy", "{}")),
+        ),
+        (
+            {
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "content": [{"type": "reasoning_text", "text": "hidden"}],
+                    },
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "hel"},
+                            {"type": "refusal", "refusal": "no"},
+                            {"type": "output_text", "text": "lo"},
+                        ],
+                    },
+                    {"type": "function_call", "name": "lookup", "arguments": '{"a":1}'},
+                    {
+                        "type": "custom_tool_call",
+                        "name": "grammar",
+                        "input": "raw input",
+                    },
+                ]
+            },
+            "hello",
+            (
+                AnalysisToolCall("lookup", '{"a":1}'),
+                AnalysisToolCall("grammar", "raw input"),
+            ),
+        ),
+        (
+            {
+                "content": [
+                    {"type": "thinking", "thinking": "hidden"},
+                    {"type": "text", "text": "hel"},
+                    {
+                        "type": "tool_use",
+                        "name": "lookup",
+                        "input": {"şehir": "İzmir", "n": 1},
+                    },
+                    {"type": "text", "text": "lo"},
+                ]
+            },
+            "hello",
+            (AnalysisToolCall("lookup", '{"şehir":"İzmir","n":1}'),),
+        ),
+        (
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "thought", "thought": True},
+                                {"text": "one"},
+                            ]
+                        }
+                    },
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "two"},
+                                {"functionCall": {"name": "lookup", "args": {"a": 1}}},
+                            ]
+                        }
+                    },
+                ]
+            },
+            "thoughtone\ntwo",
+            (AnalysisToolCall("lookup", '{"a":1}'),),
+        ),
+    ],
+)
+def test_answer_text_and_tool_calls_per_protocol(payload, text, calls) -> None:
+    assert answer_text(payload) == text
+    assert answer_tool_calls(payload) == calls
+
+
+def test_answer_tool_call_names_are_cut_to_64() -> None:
+    [call] = answer_tool_calls(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": "n" * 80, "arguments": "{}"}}
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert call.name == "n" * 64
+
+
+def _kept(provider: str, *events: dict) -> StreamMeter:
+    stream_meter = StreamMeter(
+        provider=provider,
+        requested_model="gpt-5.6-luna",
+        prompt_tokens_estimated=5,
+        keep_answer=True,
+    )
+    stream_meter.observe_sse(_sse(*events))
+    return stream_meter
+
+
+def test_a_kept_chat_stream_has_its_text_and_parallel_calls_by_index() -> None:
+    def call(index: int, **function) -> dict:
+        return {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": index, "function": function}]}}
+            ]
+        }
+
+    stream_meter = _kept(
+        "openai",
+        {"choices": [{"delta": {"content": "hel"}}]},
+        {"choices": [{"delta": {"content": "lo"}}]},
+        call(0, name="lookup", arguments=""),
+        call(1, name="book", arguments='{"x"'),
+        call(0, arguments='{"a"'),
+        call(1, arguments=":2}"),
+        call(0, arguments=":1}"),
+    )
+
+    assert "".join(stream_meter.answer_text) == 'hello{"x"{"a":2}:1}'
+    assert stream_meter.kept_tool_calls() == (
+        AnalysisToolCall("lookup", '{"a":1}'),
+        AnalysisToolCall("book", '{"x":2}'),
+    )
+    assert stream_meter.answer_truncated is False
+
+
+def test_a_kept_responses_stream_follows_output_index() -> None:
+    stream_meter = _kept(
+        "openai",
+        {"type": "response.output_text.delta", "output_index": 0, "delta": "hi"},
+        {
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {"type": "function_call", "name": "lookup", "arguments": ""},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 1,
+            "delta": '{"a"',
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "output_index": 1,
+            "delta": ":1}",
+        },
+        {
+            "type": "response.output_item.added",
+            "output_index": 2,
+            "item": {"type": "custom_tool_call", "name": "grammar"},
+        },
+        {
+            "type": "response.custom_tool_call_input.delta",
+            "output_index": 2,
+            "delta": "raw",
+        },
+    )
+
+    assert stream_meter.kept_tool_calls() == (
+        AnalysisToolCall("lookup", '{"a":1}'),
+        AnalysisToolCall("grammar", "raw"),
+    )
+
+
+def test_a_kept_anthropic_stream_follows_block_index_and_skips_thinking() -> None:
+    stream_meter = _kept(
+        "anthropic",
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "hidden"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "hi"},
+        },
+        {
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {"type": "tool_use", "name": "lookup", "input": {}},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 2,
+            "delta": {"type": "input_json_delta", "partial_json": '{"a"'},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 2,
+            "delta": {"type": "input_json_delta", "partial_json": ":1}"},
+        },
+    )
+
+    assert "hidden" not in "".join(stream_meter.answer_text)
+    assert stream_meter.kept_tool_calls() == (AnalysisToolCall("lookup", '{"a":1}'),)
+
+
+def test_a_kept_gemini_stream_keeps_whole_calls() -> None:
+    stream_meter = _kept(
+        "google",
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"functionCall": {"name": "lookup", "args": {"a": 1}}}
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"functionCall": {"name": "lookup", "args": {"a": 2}}}
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    assert stream_meter.kept_tool_calls() == (
+        AnalysisToolCall("lookup", '{"a":1}'),
+        AnalysisToolCall("lookup", '{"a":2}'),
+    )
+
+
+def test_kept_calls_and_arguments_are_bounded() -> None:
+    many = _kept(
+        "openai",
+        *(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": index, "function": {"name": f"t{index}"}}
+                            ]
+                        }
+                    }
+                ]
+            }
+            for index in range(70)
+        ),
+    )
+    long = _kept(
+        "openai",
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {"name": "t", "arguments": "x" * 600_000},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": "y" * 600_000}}
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    assert len(many.kept_tool_calls()) == 64 and many.answer_truncated
+    assert (
+        long.kept_tool_calls()[0].arguments == "x" * 600_000 and long.answer_truncated
+    )
+
+
+def test_kept_text_is_bounded_with_one_character_for_the_scan() -> None:
+    stream_meter = _kept(
+        "openai",
+        {"choices": [{"delta": {"content": "a" * 999_999}}]},
+        {"choices": [{"delta": {"content": "bbb"}}]},
+    )
+
+    assert len("".join(stream_meter.answer_text)) == 1_000_001
+    assert stream_meter.answer_truncated is True
+
+
+def test_nothing_is_kept_without_keep_answer() -> None:
+    stream_meter = meter()
+    stream_meter.observe_sse(
+        _sse(
+            {"choices": [{"delta": {"content": "hello"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"name": "t", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    assert stream_meter.answer_text == []
+    assert stream_meter.kept_tool_calls() == ()

@@ -15,6 +15,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
 - [Read warnings](#read-warnings)
+- [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -433,6 +434,34 @@ catalog entry, never a longer model name matched by prefix. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
 
+## Analyse answers after delivery
+
+Have named analyzers read each completed answer after it reached the caller and
+record what they measured, never what was written.
+
+1. Set `SHIM_RESPONSE_ANALYSIS` to a comma-separated list (or a JSON list) of
+   analyzer names and restart the gateway. It is empty by default, and an empty
+   list keeps nothing and adds no work.
+2. Read a third JSONL line for each completed request:
+
+```json
+{"version":4,"event":"response_analysis","request_id":"req_…","results":{"<name>":{…},"versions":{"<name>":"1"}}}
+```
+
+Analyzers run in the order shim defines, after the last byte of a JSON answer or
+after a stream ended, in one background task shared with
+`PII_RESPONSE_SCAN=count`; the answer, its first token and its timing are
+unchanged. They see the masked request and up to 1,000,000 characters of the
+answer and its tool calls. Results hold counts, labels, ids, protocol field
+names and JSON pointers, never request or answer text and never a restored
+value. An analyzer that fails records `{"error": true}`, and a result larger
+than 4,096 characters records `{"error": true, "reason": "too_large"}`; the
+others still run. A request that failed or was refused gets no analysis.
+
+Notes: an unknown name stops the gateway at start-up with the setting and the
+name in the message; a repeated name is dropped. This release defines no
+analyzer yet. `shim_response_analysis_total{analyzer, result}` counts the runs.
+
 ## Stream long generations and read usage
 
 Stream long answers without losing exact token accounting.
@@ -517,6 +546,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_local_usage_dropped_total` | `reason` |
 | `shim_time_to_first_token_seconds` (histogram, streams only) | `provider`, `model` |
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
+| `shim_response_analysis_total` | `analyzer`, `result` |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

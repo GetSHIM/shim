@@ -221,6 +221,11 @@ COMPLETION_OUTCOMES_TOTAL = Counter(
     "Settled requests by provider and completion outcome.",
     ("provider", "outcome"),
 )
+RESPONSE_ANALYSIS_TOTAL = Counter(
+    "shim_response_analysis_total",
+    "After-answer analyzer runs by analyzer and result (ok, none, error).",
+    ("analyzer", "result"),
+)
 LOCAL_USAGE_DROPPED_TOTAL = Counter(
     "shim_local_usage_dropped_total",
     "Non-durable local usage events dropped by the bounded writer.",

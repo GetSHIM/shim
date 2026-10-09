@@ -9,6 +9,7 @@ import json
 import re
 from types import MethodType, SimpleNamespace
 from typing import get_args, get_type_hints
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -46,6 +47,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         ),
         deployment_kind="unknown",
         response_scan="off",
+        response_analysis=(),
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -557,10 +559,22 @@ async def test_pending_response_scans_never_hold_the_request_path_threads(
         scanned.append(text)
         return {"response_entities": {}, "truncated": False}
 
+    import shim.gateway.pipeline.postprocess as module
+
     processor, prepared, usage = _scan_processor(monkeypatch, scan)
+    prepared.response_scan = "count"
     # More than the default executor's largest pool, min(32, cpu_count + 4).
     for index in range(40):
-        processor._start_response_scan(prepared, str(index))
+        processor._start_after_answer(
+            prepared,
+            module._Answer(
+                scan_text=str(index),
+                text="",
+                truncated=False,
+                tool_calls=(),
+                completion_outcome="complete",
+            ),
+        )
     await asyncio.sleep(0.05)
 
     # What the next request's privacy stage does while the scans are pending.
@@ -1109,3 +1123,232 @@ async def test_reject_and_fail_lines_carry_the_defaults() -> None:
             event["tool_call_names"],
             event["reasoning_seen"],
         ) == (None, None, [], False)
+
+
+class _Probe:
+    """An analyzer that records what it saw and can wait for a test to let it finish."""
+
+    name = "probe"
+    version = "7"
+
+    def __init__(self, release=None, fails: bool = False, order=None) -> None:
+        self.release = release
+        self.fails = fails
+        self.order = order if order is not None else []
+        self.seen: list = []
+
+    def analyze(self, ctx):
+        if self.release is not None:
+            self.release.wait(5)
+        self.order.append("analyze")
+        self.seen.append(ctx)
+        if self.fails:
+            raise RuntimeError("probe down")
+        return {"answer_characters": len(ctx.answer_text), "calls": len(ctx.tool_calls)}
+
+
+def _analysis_processor(monkeypatch, probe, scan=None):
+    import shim.gateway.pipeline.postprocess as module
+
+    processor, prepared, usage = _scan_processor(monkeypatch, scan)
+    monkeypatch.setattr(module, "ANALYZERS", (probe,))
+    prepared.response_analysis = ("probe",)
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        verification_map={"<EMAIL_ADDRESS_a1b2c3d4>": "private@example.com"},
+    )
+    usage.record_response_analysis = AsyncMock()
+    return processor, prepared, usage
+
+
+_ANALYZED_PAYLOAD = {
+    "choices": [
+        {
+            "message": {
+                "content": "Write to <EMAIL_ADDRESS_a1b2c3d4>",
+                "tool_calls": [
+                    {"function": {"name": "send", "arguments": '{"to": "x"}'}}
+                ],
+            },
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_json_answer_is_sent_before_its_analysis_runs(monkeypatch) -> None:
+    from fastapi.responses import JSONResponse
+
+    from shim.gateway.pipeline.analysis import AnalysisToolCall
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    order: list[str] = []
+    probe = _Probe(order=order)
+    processor, prepared, usage = _analysis_processor(monkeypatch, probe)
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(_ANALYZED_PAYLOAD, None), stream_session=None
+    )
+
+    async def send(message):
+        order.append(message["type"])
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    assert order == [] and "x-shim-latency-ms" in response.headers
+    usage.finalize.assert_awaited_once()
+    await response({"type": "http", "method": "POST"}, receive, send)
+    assert response.body == JSONResponse(_ANALYZED_PAYLOAD).body
+    assert order == ["http.response.start", "http.response.body", "analyze"]
+    assert not processor._finalization_tasks
+
+    [context] = probe.seen
+    assert context.answer_text == "Write to <EMAIL_ADDRESS_a1b2c3d4>"
+    assert context.restore(context.answer_text) == "Write to private@example.com"
+    assert context.tool_calls == (AnalysisToolCall("send", '{"to": "x"}'),)
+    assert (context.protocol, context.completion_outcome) == ("chat", "complete")
+    assert context.payload is prepared.payload and context.answer_truncated is False
+    usage.record_response_analysis.assert_awaited_once_with(
+        prepared,
+        {"probe": {"answer_characters": 33, "calls": 1}, "versions": {"probe": "7"}},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing", ["scan", "analyzer"])
+async def test_the_scan_and_the_analyzers_share_one_task_and_fail_alone(
+    monkeypatch, failing
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    def scan(_text, _prepared, _scrubber):
+        if failing == "scan":
+            raise RuntimeError("scan down")
+        return {"response_entities": {}, "truncated": False}
+
+    processor, prepared, usage = _analysis_processor(
+        monkeypatch, _Probe(fails=failing == "analyzer"), scan
+    )
+    prepared.response_scan = "count"
+    started = []
+    start = processor._start_after_answer
+    monkeypatch.setattr(
+        processor,
+        "_start_after_answer",
+        lambda *args: started.append(args) or start(*args),
+    )
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(_ANALYZED_PAYLOAD, None), stream_session=None
+    )
+    await response.background()
+
+    assert len(started) == 1
+
+    usage.record_response_privacy.assert_awaited_once_with(
+        prepared,
+        {"response_entities": None, "error": True}
+        if failing == "scan"
+        else {"response_entities": {}, "truncated": False},
+    )
+    usage.record_response_analysis.assert_awaited_once_with(
+        prepared,
+        {
+            "probe": {"error": True}
+            if failing == "analyzer"
+            else {"answer_characters": 33, "calls": 1},
+            "versions": {"probe": "7"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_did_not_complete_gets_no_after_answer_task(
+    monkeypatch,
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    processor, prepared, usage = _analysis_processor(monkeypatch, _Probe())
+    prepared.response_scan = "count"
+    prepared.protocol = "responses"
+
+    response = await processor.finalize(
+        prepared,
+        ProviderNonStream({"status": "failed", "output": [], "usage": {}}, None),
+        stream_session=None,
+    )
+
+    assert usage.finalize.await_args.args[1].terminal_status == "provider_error"
+    assert response.background is None and not processor._finalization_tasks
+
+
+@pytest.mark.asyncio
+async def test_a_stream_is_neither_held_nor_changed_by_its_analysis(
+    monkeypatch,
+) -> None:
+    import threading
+
+    from shim.gateway.pipeline.analysis import AnalysisToolCall
+    from shim.gateway.pipeline.provider_execution import ProviderStream
+
+    release = threading.Event()
+    probe = _Probe(release)
+    processor, prepared, usage = _analysis_processor(monkeypatch, probe)
+    prepared.stream = True
+    chunks = [
+        b'data: {"choices":[{"index":0,"delta":{"content":"Write to "}}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"name":"send","arguments":"{}"}}]}}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"content":"<EMAIL_ADDRESS_a1b2c3d4>"},'
+        b'"finish_reason":"stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    async def events():
+        for chunk in chunks:
+            yield chunk
+
+    received: dict[tuple[str, ...], list[bytes]] = {}
+    for analysis in ((), ("probe",)):
+        prepared.response_analysis = analysis
+        session = processor.create_stream_session(prepared)
+        await processor.finalize(
+            prepared,
+            ProviderStream(events(), None, AsyncMock()),
+            stream_session=session,
+        )
+        received[analysis] = [chunk async for chunk in session]
+        if not analysis:
+            assert session.meter.answer_text == []
+            assert not processor._finalization_tasks
+
+    assert received[()] == received[("probe",)] == chunks
+    assert len(processor._finalization_tasks) == 1 and probe.seen == []
+    release.set()
+    await processor.drain()
+    [context] = probe.seen
+    assert context.answer_text == "Write to {}<EMAIL_ADDRESS_a1b2c3d4>"
+    assert context.tool_calls == (AnalysisToolCall("send", "{}"),)
+    usage.record_response_analysis.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_response_analysis_writes_its_own_jsonl_line() -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+
+    await usage.record_response_analysis(
+        _prepared(), {"probe": {"n": 1}, "versions": {"probe": "7"}}
+    )
+    await usage.aclose()
+
+    assert json.loads(stream.getvalue()) == {
+        "version": 4,
+        "event": "response_analysis",
+        "request_id": "req_local",
+        "results": {"probe": {"n": 1}, "versions": {"probe": "7"}},
+    }
