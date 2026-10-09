@@ -158,6 +158,7 @@ async def test_nonstream_preserves_native_wire_store_and_restores_content(
         )
 
         assert isinstance(result, ProviderNonStream)
+        assert result.received_at_monotonic is not None
         assert result.request_id == "google_request_1"
         assert result.payload["candidates"][0]["content"]["parts"][0]["text"] == (
             "hello alice@example.com"

@@ -58,7 +58,7 @@ class StreamUsageSnapshot:
     completion_outcome: CompletionOutcome | None = None
     # Present only when the provider reported the cache split and usage is actual.
     cache_split: CacheSplit | None = None
-    # JSON only: from before the provider call to the parsed answer; streams carry ttft_ms.
+    # JSON only: the provider call alone, from its start to the parsed response; streams carry ttft_ms.
     provider_latency_ms: int | None = None
     answer_characters: int | None = None
     tool_call_names: tuple[str, ...] = ()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from time import perf_counter
 from typing import Any, cast
 
 import httpx
@@ -184,6 +185,7 @@ class GoogleExecution:
                     model=prepared.model,
                     contents=prepared.payload["contents"],
                 )
+            received_at = perf_counter()
             payload = restore_google_payload(
                 _dump_sdk(result),
                 prepared.privacy.verification_map,
@@ -197,6 +199,7 @@ class GoogleExecution:
             return ProviderNonStream(
                 payload=payload,
                 request_id=_request_id(result),
+                received_at_monotonic=received_at,
             )
         except asyncio.CancelledError:
             await circuit.release_probe()

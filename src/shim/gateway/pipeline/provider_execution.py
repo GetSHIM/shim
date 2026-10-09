@@ -43,6 +43,8 @@ class ProviderNonStream:
     payload: dict[str, Any]
     request_id: str | None
     latency_ms: float | None = None
+    # Set by the provider call when the response arrives, before any restore work.
+    received_at_monotonic: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +88,13 @@ class ProviderExecutionStage:
             _observe_provider(value, "provider_error", started_at)
             raise
         if isinstance(output, ProviderNonStream):
-            return replace(output, latency_ms=(perf_counter() - started_at) * 1_000)
+            # The provider call alone: from the provider-start mark to the response arriving.
+            if provider_started_at is None or output.received_at_monotonic is None:
+                return output
+            return replace(
+                output,
+                latency_ms=(output.received_at_monotonic - provider_started_at) * 1_000,
+            )
         return replace(output, started_at_monotonic=provider_started_at)
 
     def trace_metadata(

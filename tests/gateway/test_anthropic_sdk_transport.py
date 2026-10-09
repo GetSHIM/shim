@@ -277,6 +277,7 @@ async def test_nonstream_uses_native_sdk_and_restores_output(
         )
 
         assert isinstance(result, ProviderNonStream)
+        assert result.received_at_monotonic is not None
         assert result.request_id == "req_upstream"
         assert result.payload["content"][0]["text"] == "hello alice@example.com"
         assert seen["url"] == "https://upstream.test/v1/messages"

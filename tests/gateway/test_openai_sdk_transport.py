@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from io import StringIO
 import json
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -22,6 +23,7 @@ from shim.gateway.kernel.result import InferenceTiming, ProviderTarget
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
+    ProviderExecutionStage,
     ProviderNonStream,
     ProviderStream,
 )
@@ -1658,3 +1660,51 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_latency_is_the_provider_call_not_the_work_around_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=_response("resp_timed"))
+
+    async def slow(*args: object, **kwargs: object) -> None:
+        await asyncio.sleep(0.4)
+
+    class SlowCredentials(EnvironmentProviderCredentialResolver):
+        async def resolve(self, *args: object, **kwargs: object) -> str | None:
+            await slow()
+            return await super().resolve(*args, **kwargs)
+
+    chain_store = SimpleNamespace(save=slow)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http, chain_store)
+        execution.credential_resolver = SlowCredentials("openai", {})
+        stage = ProviderExecutionStage(
+            SimpleNamespace(
+                provider="openai",
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            execution,
+            SimpleNamespace(mark_provider_started=slow),
+        )
+
+        started = perf_counter()
+        result = await stage.run(
+            _prepared(
+                {"model": "gpt-5.6-luna", "input": "hi"},
+                tenant="11111111-1111-1111-1111-111111111111",
+            )
+        )
+        total = perf_counter() - started
+
+    assert isinstance(result, ProviderNonStream)
+    assert result.latency_ms is not None
+    # Credential resolution, the provider-start commit and the chain save (0.4 s each)
+    # sit outside the provider call, however loaded the machine is.
+    assert 50 <= result.latency_ms <= (total - 1.2) * 1_000
