@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
+import hmac
+import logging
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -35,7 +38,18 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPolicyLoader,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
+    keyed_repeat_digest,
 )
+from shim_enterprise.cache.loop_detection import LoopDetectionService
+from shim.gateway.contracts.context import (
+    AuditPolicy,
+    GatewayContext,
+    PrivacyPolicy,
+    TierPolicy,
+)
+from shim.gateway.contracts.ids import ProviderId
+from shim.gateway.pipeline.admission import AdmissionStage
+from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
@@ -238,6 +252,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
 ) -> None:
     repository = DurableAccountingRepository()
     request_id = f"req_diagnostics_{uuid4().hex}"
+    deployment_id = str(uuid4())
     started_at = datetime.now(timezone.utc)
     await repository.reserve_quota(
         db,
@@ -255,6 +270,8 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
             repeat_chain_length=2,
             system_prompt_hash="hmac-sha256:v1:" + "a" * 64,
             deployment_kind="internal",
+            deployment_id=deployment_id,
+            repeat_digest="b" * 64,
         ),
     )
     command = FinalizationCommand(
@@ -296,6 +313,8 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
     assert all(
         lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()
     )
+    assert lifecycle.lifecycle_metadata["deployment_id"] == deployment_id
+    assert lifecycle.lifecycle_metadata["repeat_digest"] == "b" * 64
     event = (
         await db.execute(
             select(OutboxEvent).where(
@@ -305,6 +324,8 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         )
     ).scalar_one()
     assert all(event.payload[key] == value for key, value in expected.items())
+    assert "deployment_id" not in event.payload
+    assert "repeat_digest" not in event.payload
 
     @asynccontextmanager
     async def session_scope():
@@ -2578,6 +2599,148 @@ async def test_parallel_admit_and_settle_cycles_for_one_tenant_do_not_deadlock(
         assert statuses == ["completed"] * 20
     finally:
         await _drop_tenant(factory, organization_id)
+
+
+async def _reserved_command(prepared, *, material: str | None = None):
+    if material is not None:
+        await LoopDetectionService(SimpleNamespace(redis=None)).check_exact_repeat(
+            str(prepared.tenant_id), material, limit=4, window_seconds=300
+        )
+    repository = SimpleNamespace(
+        reserve_quota=AsyncMock(return_value=SimpleNamespace(replayed=False))
+    )
+    prepared.source_endpoint = "/v1/chat/completions"
+    prepared.context.started_at = datetime.now(timezone.utc)
+    prepared.policy = SimpleNamespace(team=None)
+    await DurableAccountingCoordinator(
+        repository=repository,
+        policy_loader=SimpleNamespace(
+            quota=AsyncMock(return_value=QuotaPolicySnapshot("v1", None, None, None))
+        ),
+    ).reserve_quota(
+        prepared,
+        AdmissionState(
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            cost_center="untagged",
+            tags=(),
+        ),
+        SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock()),
+    )
+    return repository.reserve_quota.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_the_reservation_names_the_registry_deployment_only() -> None:
+    prepared = _prepared()
+    deployment_id = str(uuid4())
+    prepared.target = ProviderTarget(
+        deployment_id, "https://one.invalid", "one", "secret", 30, "1"
+    )
+
+    assert (await _reserved_command(prepared)).deployment_id == deployment_id
+    prepared.target = None
+    assert (await _reserved_command(prepared)).deployment_id is None
+
+
+@pytest.mark.asyncio
+async def test_the_repeat_digest_is_keyed_per_tenant_and_installation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-one")
+    prepared = _prepared()
+    value = (await _reserved_command(prepared, material="same material")).repeat_digest
+
+    assert value is not None and len(value) == 64
+    assert value == value.lower() and int(value, 16) >= 0
+    assert value != hashlib.sha256(b"same material").hexdigest()
+    again = await _reserved_command(prepared, material="same material")
+    assert again.repeat_digest == value
+    other = await _reserved_command(prepared, material="other material")
+    assert other.repeat_digest != value
+    assert (await _reserved_command(prepared)).repeat_digest is None
+    other_tenant = _prepared()
+    assert (
+        await _reserved_command(other_tenant, material="same material")
+    ).repeat_digest not in {None, value}
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "installation-key-two")
+    assert (
+        await _reserved_command(prepared, material="same material")
+    ).repeat_digest not in {None, value}
+
+
+def test_the_repeat_digest_derivation_is_pinned() -> None:
+    assert keyed_repeat_digest(
+        b"k" * 32, "11111111-1111-1111-1111-111111111111", "a" * 64
+    ) == ("9ce1858e4e008e90f5295b2135972c3b95ecde4bf58b70b1ed752128f7209cb5")
+
+
+@pytest.mark.asyncio
+async def test_the_detector_digest_reaches_the_reserved_row_in_one_task(
+    db, test_api_key, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    request_id = f"req_repeat_digest_{uuid4().hex}"
+    prepared = PreparedInference(
+        context=GatewayContext(
+            request_id=request_id,
+            tenant_id=test_api_key.organization_id,
+            actor_type="api_key",
+            api_key_id=test_api_key.id,
+            user_id=None,
+            endpoint="/v1/chat/completions",
+            started_at=datetime.now(timezone.utc),
+            tier_policy=TierPolicy(
+                rate_limit_rpm=60, rate_limit_tpm=None, monthly_token_limit=None
+            ),
+            privacy_policy=PrivacyPolicy(pii_mode="scrub"),
+            audit_policy=AuditPolicy(mode="off"),
+        ),
+        payload={
+            "model": "gpt-5.6-luna",
+            "messages": [{"role": "user", "content": "repeat digest probe"}],
+        },
+        provider=ProviderId("openai"),
+        protocol="chat",
+        model="gpt-5.6-luna",
+        stream=False,
+        policy=RequestPolicyContext(rate_limit_key_hash="key-hash", tier="free"),
+        pii_config=None,
+    )
+    detector = LoopDetectionService(
+        SimpleNamespace(redis=SimpleNamespace(eval=AsyncMock(side_effect=OSError)))
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    await AdmissionStage(
+        SimpleNamespace(headers={}),
+        DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=detector,
+        loop_repeat_limit=4,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    ).run(prepared)
+
+    lifecycle = await db.scalar(
+        select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+    )
+    detector_digest = detector.cache.redis.eval.await_args.args[2].split(":")[-1]
+    hash_key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
+    assert lifecycle is not None
+    assert lifecycle.lifecycle_metadata["repeat_digest"] == keyed_repeat_digest(
+        hash_key, str(test_api_key.organization_id), detector_digest
+    )
+    assert lifecycle.lifecycle_metadata["deployment_id"] is None
+    derived_key = hmac.new(
+        hash_key, b"shim-repeat-digest-v1", hashlib.sha256
+    ).hexdigest()
+    assert "Repeat window failed open" in caplog.text
+    assert detector_digest not in caplog.text
+    assert derived_key not in caplog.text
 
 
 @pytest.mark.asyncio

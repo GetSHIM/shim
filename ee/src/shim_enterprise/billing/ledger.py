@@ -203,6 +203,8 @@ class QuotaReservationCommand:
     repeat_chain_length: int | None = None
     system_prompt_hash: str | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
+    deployment_id: str | None = None
+    repeat_digest: str | None = None
     audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
     policy_verdicts: tuple[dict[str, Any], ...] = ()
 
@@ -357,6 +359,8 @@ class DurableAccountingRepository:
                     "repeat_chain_length": command.repeat_chain_length,
                     "system_prompt_hash": command.system_prompt_hash,
                     "deployment_kind": command.deployment_kind,
+                    "deployment_id": command.deployment_id,
+                    "repeat_digest": command.repeat_digest,
                     "audit_policy_mode": command.audit_policy_mode,
                     "policy_verdicts": list(command.policy_verdicts),
                 },
