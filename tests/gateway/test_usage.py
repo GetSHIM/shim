@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 import json
-import re
 from types import MethodType, SimpleNamespace
 from typing import get_args, get_type_hints
 
@@ -138,10 +137,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "policy_verdicts",
     }
     latency_ms = event.pop("shim_latency_ms")
-    stamp = event.pop("ts")
-    assert stamp == prepared.context.started_at.isoformat(
-        timespec="milliseconds"
-    ).replace("+00:00", "Z")
+    event.pop("ts")
     assert event == {
         "version": 4,
         "event": "request",
@@ -390,6 +386,43 @@ async def test_a_json_outcome_is_settled_only_for_an_answer(provider, payload, o
     assert usage.finalize.await_args.args[1].usage.completion_outcome == outcome
     # A failure is not counted, not even as "other".
     assert counted(outcome) == before + (outcome is not None)
+
+
+@pytest.mark.asyncio
+async def test_a_json_answer_reaches_the_snapshot_with_its_four_facts():
+    from unittest.mock import AsyncMock
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    payload = {
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": []},
+            {"type": "function_call", "name": "lookup", "arguments": "{}"},
+            {"type": "web_search_call", "id": "ws_1"},
+            {"type": "message", "content": [{"type": "output_text", "text": "hello"}]},
+        ],
+    }
+    prepared = _prepared()
+    prepared.protocol = "responses"
+    prepared.admission.maximum_output_tokens = 10
+    usage = SimpleNamespace(finalize=AsyncMock())
+
+    await module.ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    ).finalize(
+        prepared,
+        ProviderNonStream(payload, None, latency_ms=812.4),
+        stream_session=None,
+    )
+
+    snapshot = usage.finalize.await_args.args[1].usage
+    assert (
+        snapshot.provider_latency_ms,
+        snapshot.answer_characters,
+        snapshot.tool_call_names,
+        snapshot.reasoning_seen,
+    ) == (812, len("hello"), ("lookup", "web_search_call"), True)
 
 
 def _scan_processor(monkeypatch, scan):
@@ -1064,6 +1097,9 @@ async def test_the_request_line_carries_time_protocol_and_the_answer_facts(
     output = StringIO()
     prepared = _prepared()
     prepared.protocol, prepared.stream = protocol, stream
+    prepared.context.started_at = datetime(
+        2026, 10, 8, 9, 15, 2, 123_456, tzinfo=timezone.utc
+    )
     terminal = _terminal()
     lifecycle = LocalUsageLifecycle(output)
 
@@ -1076,7 +1112,7 @@ async def test_the_request_line_carries_time_protocol_and_the_answer_facts(
     event = json.loads(output.getvalue())
     assert event["version"] == 4
     assert event["stream"] is stream
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", event["ts"])
+    assert event["ts"] == "2026-10-08T09:15:02.123Z"
     assert (
         event["protocol"],
         event["provider_latency_ms"],

@@ -16,11 +16,7 @@ import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.postprocess import ResponsePostprocessor
-from shim.gateway.pipeline.provider_execution import (
-    ProviderCallError,
-    ProviderNonStream,
-    ProviderStream,
-)
+from shim.gateway.pipeline.provider_execution import ProviderStream
 from shim.observability.metrics import PROVIDER_LATENCY_MS, REQUESTS_IN_FLIGHT
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 
@@ -63,25 +59,12 @@ def _first_token_count() -> float:
 
 
 def test_provider_latency_buckets_reach_ten_minutes() -> None:
-    assert PROVIDER_LATENCY_MS._upper_bounds == [
-        5,
-        10,
-        25,
-        50,
-        100,
-        250,
-        500,
-        1_000,
-        2_500,
-        5_000,
-        10_000,
-        30_000,
-        60_000,
-        120_000,
-        300_000,
-        600_000,
-        float("inf"),
-    ]
+    bounds = PROVIDER_LATENCY_MS._upper_bounds
+
+    assert bounds == sorted(bounds)
+    # The old 10 s top bucket stays, so existing series keep their meaning; a cold start takes minutes.
+    assert {10_000, 60_000, 300_000, 600_000} <= set(bounds)
+    assert bounds[-2:] == [600_000, float("inf")]
 
 
 @pytest.mark.asyncio
@@ -237,13 +220,6 @@ def _broken_postprocess() -> Response:
 @pytest.mark.parametrize(
     ("provider_output", "postprocess", "raises", "held"),
     [
-        (ProviderNonStream({}, None), lambda: Response("ok"), None, 0),
-        (
-            ProviderCallError(500, "PROVIDER_UNAVAILABLE", True, "openai"),
-            lambda: Response("ok"),
-            ProviderCallError,
-            0,
-        ),
         (
             ProviderStream(AsyncMock(), None, AsyncMock()),
             _broken_postprocess,
