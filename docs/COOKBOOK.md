@@ -153,10 +153,11 @@ docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
 jq -cR 'fromjson? | select(.version == 4 and .event == "request") | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
 ```
 
-Each event has `version`, `event` (`request`), `request_id`, `provider`,
-`model`, `outcome`,
+Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
+`stream`, `provider`, `model`, `outcome`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
+`provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
 `bulk_disclosure`, `warnings` and `policy_verdicts`. The three count maps give values by
@@ -164,6 +165,17 @@ entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
 refused at admission or by a privacy block; other values name a failure.
+`ts` is the request's start in UTC (`2026-10-08T09:15:02.123Z`), so events can be
+grouped by hour. `protocol` is `openai_chat`, `openai_responses`,
+`anthropic_messages`, `anthropic_count_tokens` (only a refused or failed token
+count writes a line) or `gemini`, and `stream` says whether the caller streamed.
+`provider_latency_ms` is the milliseconds from before the provider call to the
+parsed answer of a JSON request (`null` for a stream, which has `ttft_ms`);
+`answer_characters` is the answer text's length without reasoning text;
+`tool_call_names` lists the tools the answer called; `reasoning_seen` is `true`
+when the answer carried reasoning or reported reasoning tokens, which distort a
+tokens-per-character ratio. A refused or failed line has `null`, `null`, `[]` and
+`false`.
 
 Notes: `estimated_cost_usd` is a decimal string that can use exponent form
 (`6.5E-7`), so parse it as a decimal; it is `null` for a model without a catalog
@@ -496,13 +508,15 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | --- | --- |
 | `requests_total` | `endpoint`, `status`, `tenant_tier` |
 | `provider_requests_total` | `provider`, `model`, `status` |
-| `provider_latency_ms` (histogram) | `provider`, `model` |
+| `provider_latency_ms` (histogram, buckets up to 600,000 ms) | `provider`, `model` |
 | `stream_terminal_state_total` | `terminal_state` |
 | `privacy_detection_total` | `entity_type` |
 | `shim_privacy_bulk_disclosures_total` | `provider` |
 | `shim_privacy_response_detection_total` | `entity_type` |
 | `shim_completion_outcomes_total` | `provider`, `outcome` |
 | `shim_local_usage_dropped_total` | `reason` |
+| `shim_time_to_first_token_seconds` (histogram, streams only) | `provider`, `model` |
+| `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

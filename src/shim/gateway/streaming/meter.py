@@ -57,6 +57,11 @@ class StreamUsageSnapshot:
     completion_outcome: CompletionOutcome | None = None
     # Present only when the provider reported the cache split and usage is actual.
     cache_split: CacheSplit | None = None
+    # JSON only: from before the provider call to the parsed answer; streams carry ttft_ms.
+    provider_latency_ms: int | None = None
+    answer_characters: int | None = None
+    tool_call_names: tuple[str, ...] = ()
+    reasoning_seen: bool = False
 
 
 class StreamMeter:
@@ -105,6 +110,8 @@ class StreamMeter:
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
         self.tool_call_seen = False
+        self.tool_names: set[str] = set()
+        self.reasoning_seen = False
         self.started_at_monotonic = started_at_monotonic
         self._monotonic_clock = monotonic_clock
         self.ttft_ms: float | None = None
@@ -209,6 +216,9 @@ class StreamMeter:
                 tool_call=self.tool_call_seen,
             ),
             cache_split=split,
+            answer_characters=self.emitted_answer_characters,
+            tool_call_names=_capped_names(self.tool_names),
+            reasoning_seen=self.reasoning_seen,
         )
 
     def _observe_sse_event(self, event_text: str) -> None:
@@ -245,6 +255,10 @@ class StreamMeter:
         refusal, tool_call = answer_markers(payload, event_type=payload_type)
         self.refusal_seen |= refusal
         self.tool_call_seen |= tool_call
+        if tool_call:
+            self.tool_names.update(tool_call_names(payload))
+        if not self.reasoning_seen:
+            self.reasoning_seen = reasoning_seen(payload, event_type=payload_type)
         fragments = self._output_delta_fragments(payload_type, payload)
         output_characters = sum(len(fragment) for fragment in fragments)
         reasoning_characters = _reasoning_characters(payload_type, payload)
@@ -809,6 +823,113 @@ def answer_markers(
                 for part in parts or ()
             )
     return refusal, tool_call
+
+
+def _containers(payload: Mapping[str, Any], *keys: str) -> list[Mapping[str, Any]]:
+    return [
+        payload,
+        *(value for key in keys if isinstance(value := payload.get(key), Mapping)),
+    ]
+
+
+def _capped_names(names: set[str] | tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted({name[:64] for name in names})[:64])
+
+
+def tool_call_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Tool names a JSON answer or one SSE event calls; a built-in call without one is named by its type."""
+
+    names: set[str] = set()
+    for container in _containers(
+        payload, "response", "message", "item", "content_block"
+    ):
+        for item in [
+            container,
+            *_mappings(container.get("output")),
+            *_mappings(container.get("content")),
+        ]:
+            kind = item.get("type")
+            if kind in ("tool_use", "server_tool_use"):
+                name = item.get("name")
+            elif isinstance(kind, str) and kind.endswith("_call"):
+                name = item.get("name") or kind
+            else:
+                continue
+            if isinstance(name, str) and name:
+                names.add(name)
+        for choice in _mappings(container.get("choices")):
+            for field in ("message", "delta"):
+                value = choice.get(field)
+                if not isinstance(value, Mapping):
+                    continue
+                calls = [
+                    call.get("function") for call in _mappings(value.get("tool_calls"))
+                ] + [value.get("function_call")]
+                names.update(
+                    call["name"]
+                    for call in calls
+                    if isinstance(call, Mapping)
+                    and isinstance(call.get("name"), str)
+                    and call["name"]
+                )
+        for candidate in _mappings(container.get("candidates")):
+            content = candidate.get("content")
+            for part in _mappings(
+                content.get("parts") if isinstance(content, Mapping) else None
+            ):
+                call = part.get("functionCall")
+                if isinstance(call, Mapping) and isinstance(call.get("name"), str):
+                    names.add(call["name"])
+    return _capped_names(names)
+
+
+_REASONING_TYPES = frozenset(
+    {"reasoning", "thinking", "redacted_thinking", "thinking_delta"}
+)
+
+
+def reasoning_seen(payload: Mapping[str, Any], *, event_type: str = "") -> bool:
+    """Whether a JSON answer or one SSE event carries reasoning or reports reasoning tokens."""
+
+    if event_type.startswith("response.reasoning"):
+        return True
+    for container in _containers(
+        payload, "response", "message", "item", "content_block", "delta"
+    ):
+        if any(
+            item.get("type") in _REASONING_TYPES
+            for item in [
+                container,
+                *_mappings(container.get("output")),
+                *_mappings(container.get("content")),
+            ]
+        ):
+            return True
+        for choice in _mappings(container.get("choices")):
+            for field in ("message", "delta"):
+                value = choice.get(field)
+                if isinstance(value, Mapping) and value.get("reasoning_content"):
+                    return True
+        for candidate in _mappings(container.get("candidates")):
+            content = candidate.get("content")
+            if isinstance(content, Mapping) and any(
+                part.get("thought") is True for part in _mappings(content.get("parts"))
+            ):
+                return True
+        for usage in (container.get("usage"), container.get("usageMetadata")):
+            if not isinstance(usage, Mapping):
+                continue
+            counts = [usage.get("thoughtsTokenCount")] + [
+                details.get("reasoning_tokens")
+                for details in (
+                    usage.get("completion_tokens_details"),
+                    usage.get("output_tokens_details"),
+                )
+                if isinstance(details, Mapping)
+            ]
+            if any((StreamMeter._nonnegative_int(count) or 0) > 0 for count in counts):
+                return True
+    return False
 
 
 def answer_characters(payload: Mapping[str, Any]) -> int:

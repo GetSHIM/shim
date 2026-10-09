@@ -12,6 +12,8 @@ from shim.gateway.streaming.meter import (
     answer_markers,
     completion_outcome,
     native_finish_reasons,
+    reasoning_seen,
+    tool_call_names,
 )
 
 
@@ -650,3 +652,292 @@ def test_initial_and_media_content_sets_ttft_without_changing_token_estimates(
     stream_meter.observe_sse(f"data: {json.dumps(payload)}\n\n".encode())
     assert stream_meter.snapshot().ttft_ms == 250.0
     assert stream_meter.snapshot().completion_tokens == 0
+
+
+def _sse(*events: dict) -> bytes:
+    return b"".join(f"data: {json.dumps(event)}\n\n".encode() for event in events)
+
+
+@pytest.mark.parametrize(
+    ("provider", "payload", "events", "expected"),
+    [
+        (
+            "openai",
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "lookup", "arguments": "{}"}},
+                                {"function": {"name": "book", "arguments": "{}"}},
+                            ],
+                            "function_call": {"name": "legacy"},
+                        }
+                    }
+                ]
+            },
+            [
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"name": "lookup", "arguments": ""},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": "{}"}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 1, "function": {"name": "book"}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {"function_call": {"name": "legacy"}}}]},
+            ],
+            ("book", "legacy", "lookup"),
+        ),
+        (
+            "openai",
+            {
+                "output": [
+                    {"type": "function_call", "name": "lookup", "arguments": "{}"},
+                    {"type": "web_search_call", "id": "ws_1"},
+                    {"type": "mcp_call", "name": "book"},
+                    {"type": "function_call_output", "output": "x"},
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "legacy"}],
+                    },
+                ]
+            },
+            [
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "function_call", "name": "lookup"},
+                },
+                {"type": "response.function_call_arguments.delta", "delta": "{}"},
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "web_search_call"},
+                },
+                {
+                    "type": "response.output_item.added",
+                    "item": {"type": "mcp_call", "name": "book"},
+                },
+            ],
+            ("book", "lookup", "web_search_call"),
+        ),
+        (
+            "anthropic",
+            {
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "tool_use", "name": "lookup", "input": {}},
+                    {"type": "server_tool_use", "name": "web_search", "input": {}},
+                ]
+            },
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "name": "lookup",
+                        "input": {},
+                    },
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": "{}"},
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "server_tool_use", "name": "web_search"},
+                },
+            ],
+            ("lookup", "web_search"),
+        ),
+        (
+            "google",
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "hi"},
+                                {"functionCall": {"name": "lookup", "args": {}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"functionCall": {"name": "lookup", "args": {}}}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+            ("lookup",),
+        ),
+    ],
+)
+def test_tool_call_names_read_json_and_stream_shapes(
+    provider, payload, events, expected
+) -> None:
+    stream_meter = meter(provider)
+    stream_meter.observe_sse(_sse(*events))
+
+    assert tool_call_names(payload) == expected
+    assert stream_meter.snapshot().tool_call_names == expected
+
+
+def test_tool_call_names_are_capped_sorted_and_unique() -> None:
+    calls = [
+        {"function": {"name": f"tool_{index:03d}" + "x" * 100}} for index in range(70)
+    ]
+    names = tool_call_names({"choices": [{"message": {"tool_calls": calls + calls}}]})
+
+    assert len(names) == 64
+    assert names == tuple(sorted(names))
+    assert {len(name) for name in names} == {64}
+    assert names[0].startswith("tool_000")
+    assert tool_call_names({"choices": [{"message": {"content": "hi"}}]}) == ()
+
+
+@pytest.mark.parametrize(
+    ("payload", "event_type"),
+    [
+        ({"output": [{"type": "reasoning", "summary": []}]}, ""),
+        (
+            {"type": "response.reasoning_summary_text.delta", "delta": "x"},
+            "response.reasoning_summary_text.delta",
+        ),
+        (
+            {"type": "response.output_item.added", "item": {"type": "reasoning"}},
+            "response.output_item.added",
+        ),
+        ({"content": [{"type": "thinking", "thinking": "x", "signature": "s"}]}, ""),
+        ({"content": [{"type": "redacted_thinking", "data": "x"}]}, ""),
+        (
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+            "content_block_start",
+        ),
+        (
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "thinking_delta", "thinking": "x"},
+            },
+            "content_block_delta",
+        ),
+        (
+            {"candidates": [{"content": {"parts": [{"text": "x", "thought": True}]}}]},
+            "",
+        ),
+        ({"choices": [{"message": {"content": "a", "reasoning_content": "x"}}]}, ""),
+        ({"choices": [{"delta": {"reasoning_content": "x"}}]}, ""),
+        ({"usage": {"completion_tokens_details": {"reasoning_tokens": 3}}}, ""),
+        (
+            {"response": {"usage": {"output_tokens_details": {"reasoning_tokens": 3}}}},
+            "",
+        ),
+        ({"usageMetadata": {"thoughtsTokenCount": 3}}, ""),
+    ],
+)
+def test_reasoning_seen_for_every_listed_shape(payload, event_type) -> None:
+    assert reasoning_seen(payload, event_type=event_type) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": [{"message": {"content": "a", "reasoning_content": None}}]},
+        {"usage": {"completion_tokens_details": {"reasoning_tokens": 0}}},
+        {"response": {"usage": {"output_tokens_details": {"reasoning_tokens": 0}}}},
+        {"usageMetadata": {"thoughtsTokenCount": 0}},
+        {"candidates": [{"content": {"parts": [{"text": "x", "thought": False}]}}]},
+        {"content": [{"type": "text", "text": "x"}]},
+    ],
+)
+def test_reasoning_seen_is_false_without_reasoning(payload) -> None:
+    assert reasoning_seen(payload) is False
+
+
+def test_a_stream_snapshot_carries_characters_names_and_reasoning() -> None:
+    stream_meter = meter("anthropic", "claude-haiku-5-5")
+    stream_meter.observe_sse(
+        _sse(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "hmm"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "hello"},
+            },
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {"type": "tool_use", "name": "lookup"},
+            },
+        )
+    )
+
+    snapshot = stream_meter.snapshot()
+
+    assert snapshot.answer_characters == len("hello")
+    assert snapshot.tool_call_names == ("lookup",)
+    assert snapshot.reasoning_seen is True
+    assert snapshot.provider_latency_ms is None
+
+
+def test_a_plain_stream_snapshot_has_no_names_and_no_reasoning() -> None:
+    stream_meter = meter()
+    stream_meter.observe_sse(_sse({"choices": [{"delta": {"content": "hi"}}]}))
+
+    snapshot = stream_meter.snapshot()
+
+    assert (
+        snapshot.answer_characters,
+        snapshot.tool_call_names,
+        snapshot.reasoning_seen,
+    ) == (2, (), False)

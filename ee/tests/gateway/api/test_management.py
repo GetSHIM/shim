@@ -381,6 +381,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "completion_outcome",
         "repeat_chain_length",
         "ttft_ms",
+        "provider_latency_ms",
         "cached_input_tokens",
         "warnings",
         "system_prompt_hash",
@@ -399,6 +400,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert "latency_ms" not in page.items[0].model_dump()
     assert "request_duration_ms" not in page.items[0].model_dump()
     assert page.items[0].ttft_ms is None
+    assert page.items[0].provider_latency_ms is None
     assert page.items[0].system_prompt_hash is None
     assert page.items[0].deployment_kind is None
     assert page.items[0].cost_complete is True
@@ -609,6 +611,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "completion_outcome": "truncated",
             "repeat_chain_length": 2,
             "ttft_ms": 42.5,
+            "provider_latency_ms": 812,
             "shim_latency_ms": 0,
             "deployment_kind": "internal",
             "pii_entities": {},
@@ -660,6 +663,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["completion_outcome"] == "truncated"
     assert exported["repeat_chain_length"] == "2"
     assert exported["ttft_ms"] == "42.5"
+    assert exported["provider_latency_ms"] == "812"
+    header = list(exported)
+    assert header.index("provider_latency_ms") == header.index("ttft_ms") + 1
     assert exported["deployment_kind"] == "internal"
     assert exported["system_prompt_hash"] == ""
     assert exported["shim_latency_ms"] == "0"

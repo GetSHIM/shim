@@ -11,6 +11,10 @@ provider attempt rule are unchanged.
 | `repeat_chain_length` | Number of matching request-content observations in the configured tenant repeat window, including this request (`1` for the first observation). | `null` when the detector has no observation, including Redis unavailability. |
 | `shim_latency_ms` | Integer milliseconds spent processing inside shim, excluding provider waits and generation; measured with a monotonic clock up to the terminal accounting handoff. Includes invocation preprocessing and response transformation; excludes provider SDK awaits, raw stream awaits, client suspension and transport close. Terminal persistence after the snapshot is outside the measurement. Provider-free scans use the same snapshot boundary. | `null` when unmeasured, including historical rows and recovery after process loss; measured zero remains zero. |
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
+| `provider_latency_ms` | Integer milliseconds of a JSON answer, from just before the provider call to the parsed native response. It includes the enterprise provider-start commit, the provider's time to first byte and generation, the transfer and the SDK's parse. | `null` for streams (they carry `ttft_ms`) and for rows written before it existed; not recorded for failed and rejected requests. |
+| `answer_characters` | Characters of answer text, the number `completion_outcome` reads: text and refusal fields and tool-call argument fragments on streams, without Anthropic thinking or OpenAI reasoning text. Gemini thought parts count, as for `completion_outcome`. | Not recorded for failed and rejected requests. |
+| `tool_call_names` | Sorted, unique tool names the answer called, at most 64 of at most 64 characters: chat `tool_calls[].function.name` and `function_call.name`; Responses output items whose type ends in `_call` (`name`, else the type, such as `web_search_call`); Anthropic `tool_use` and `server_tool_use`; Gemini `functionCall.name`. | `[]` when the answer called none; not recorded for failed and rejected requests. |
+| `reasoning_seen` | `true` when the answer carried reasoning (a Responses `reasoning` item or `response.reasoning*` event, an Anthropic `thinking` or `redacted_thinking` block, a Gemini `thought: true` part, a chat `reasoning_content` field) or reported reasoning tokens above 0 (`reasoning_tokens`, `thoughtsTokenCount`). Token-per-character ratios that include reasoning output are distorted. | `false` when none was seen; not recorded for failed and rejected requests. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
 
@@ -48,8 +52,9 @@ processing, includes upstream wait and output restoration, and does not count
 headers, SSE comments/heartbeats, roles, empty deltas, usage, or terminal events.
 Supported media events are OpenAI audio deltas and partial images, and Gemini
 inline media. Media contributes to TTFT without being counted as text tokens.
-Customer APIs and CSV exports expose only `shim_latency_ms`, which measures
-shim processing. Legacy full-cycle `latency_ms` remains internal persisted
+Customer APIs and CSV exports expose `shim_latency_ms`, which measures
+shim processing, and `provider_latency_ms`, which measures the provider call of a
+JSON answer. Legacy full-cycle `latency_ms` remains internal persisted
 evidence, including immutable signed audit records; it is not a product latency
 metric and is not exposed in request or audit API views.
 Overview and request summaries expose `p95_completed_shim_latency_ms`, computed
@@ -131,7 +136,9 @@ not `hmac-sha256:v1:` and 64 lowercase hex characters answers 422.
 
 Request fields enter `request_lifecycle.metadata` during quota reservation.
 Completion facts, TTFT and shim processing time join them in the terminal
-accounting transaction,
+accounting transaction, and so do `provider_latency_ms`, `answer_characters`,
+`tool_call_names` and `reasoning_seen` when the request settled with an answer
+(a refund writes none of the four),
 before audit/analytics outbox intent is constructed. Terminal replay preserves
 the first committed observations. Analytics delivery copies them into
 `request_logs.details` with the existing tenant/request idempotency constraint.
@@ -139,8 +146,9 @@ No table or column migration is needed for these existing JSONB fields.
 
 `GET /api/v1/management/requests` exposes the optional fields on each
 request; `/requests/export` includes the same fields in CSV (unknown values
-are empty cells, and finish-reason maps are JSON). Both expose only the shim
-latency measurement. Audit completion `extra`
+are empty cells, and finish-reason maps are JSON). `answer_characters`,
+`tool_call_names` and `reasoning_seen` stay in the lifecycle metadata only; the
+list and CSV carry `provider_latency_ms` (the column after `ttft_ms`). Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills.
 
@@ -179,7 +187,13 @@ with `system_prompt_hash` set only when `SYSTEM_PROMPT_HASH_KEY` is configured
 (null otherwise, and for a request without system instructions). It also carries `cost_center` (the
 first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
 tags); an event written before admission, such as a rejection, has
-`cost_center: null` and `tags: []`.
+`cost_center: null` and `tags: []`. Every request line also carries `ts` (the
+request's start, UTC ISO 8601 with milliseconds and `Z`), `protocol`
+(`openai_chat`, `openai_responses`, `anthropic_messages`,
+`anthropic_count_tokens`, which only rejected and failed token counts write, or
+`gemini`), `stream`, and the four answer facts above; a rejected or failed line
+has `provider_latency_ms: null`, `answer_characters: null`, `tool_call_names: []`
+and `reasoning_seen: false`.
 
 ## Responses continuation markers
 

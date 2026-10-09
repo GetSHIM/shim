@@ -21,6 +21,7 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderExecutionStage,
+    ProviderStream,
 )
 from shim.gateway.streaming import StreamSession
 from shim.gateway.usage import (
@@ -29,7 +30,11 @@ from shim.gateway.usage import (
     UsageLifecycle,
     UsageLimitExceeded,
 )
-from shim.observability.metrics import REQUESTS_TOTAL, bounded_label
+from shim.observability.metrics import (
+    REQUESTS_IN_FLIGHT,
+    REQUESTS_TOTAL,
+    bounded_label,
+)
 from shim.observability.tracing import start_span
 from shim.privacy.continuation import PrivacyContinuationStore
 
@@ -256,22 +261,38 @@ class GatewayKernel:
                 stream_session = self.postprocessor.create_stream_session(
                     prepared,
                 )
-            provider_output = await run_stage(
-                ProviderExecutionStage(
-                    invocation,
-                    execution,
-                    self.usage,
-                ),
-                prepared,
+            # A stream's session releases its own call at its terminal state.
+            in_flight = REQUESTS_IN_FLIGHT.labels(
+                provider=bounded_label("provider", invocation.provider)
             )
-            return await run_stage(
-                PostprocessStage(
-                    self.postprocessor,
+            in_flight.inc()
+            try:
+                provider_output = await run_stage(
+                    ProviderExecutionStage(
+                        invocation,
+                        execution,
+                        self.usage,
+                    ),
                     prepared,
-                    stream_session=stream_session,
-                ),
-                provider_output,
-            )
+                )
+            except BaseException:
+                in_flight.dec()
+                raise
+            if not isinstance(provider_output, ProviderStream):
+                in_flight.dec()
+            try:
+                return await run_stage(
+                    PostprocessStage(
+                        self.postprocessor,
+                        prepared,
+                        stream_session=stream_session,
+                    ),
+                    provider_output,
+                )
+            except BaseException:
+                if isinstance(provider_output, ProviderStream):
+                    in_flight.dec()
+                raise
         except BaseException as error:
             reason = (
                 "provider_rejected_without_usage"

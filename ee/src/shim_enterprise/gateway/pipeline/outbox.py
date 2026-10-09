@@ -210,6 +210,7 @@ _DIAGNOSTIC_FIELDS = (
     "completion_outcome",
     "repeat_chain_length",
     "ttft_ms",
+    "provider_latency_ms",
     "cached_input_tokens",
     "warnings",
     "shim_latency_ms",

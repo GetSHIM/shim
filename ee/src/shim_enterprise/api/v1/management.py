@@ -844,6 +844,14 @@ class RequestActivityView(BaseModel):
     ) = None
     repeat_chain_length: int | None = Field(default=None, ge=1)
     ttft_ms: float | None = Field(default=None, ge=0)
+    provider_latency_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "JSON answers: milliseconds from before the provider call to the parsed "
+            "answer; null for streams and older rows."
+        ),
+    )
     warnings: list[ResponseWarning] | None = Field(
         default=None,
         description="X-Shim-Warnings codes the request carried; null on older rows.",
@@ -2943,6 +2951,7 @@ async def export_requests(
                 "completion_outcome",
                 "repeat_chain_length",
                 "ttft_ms",
+                "provider_latency_ms",
                 "cached_input_tokens",
                 "warnings",
                 "system_prompt_hash",
@@ -2985,6 +2994,7 @@ async def export_requests(
                     details.get("completion_outcome"),
                     details.get("repeat_chain_length"),
                     details.get("ttft_ms"),
+                    details.get("provider_latency_ms"),
                     details.get("cached_input_tokens"),
                     ",".join(details.get("warnings") or []),
                     details.get("system_prompt_hash"),
