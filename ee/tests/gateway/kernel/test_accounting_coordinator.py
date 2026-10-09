@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -2729,8 +2730,7 @@ async def test_the_repeat_digest_is_keyed_per_tenant_and_installation(
     prepared = _prepared()
     value = (await _reserved_command(prepared, material="same material")).repeat_digest
 
-    assert value is not None and len(value) == 64
-    assert value == value.lower() and int(value, 16) >= 0
+    assert value is not None and re.fullmatch(r"[0-9a-f]{64}", value)
     assert value != hashlib.sha256(b"same material").hexdigest()
     again = await _reserved_command(prepared, material="same material")
     assert again.repeat_digest == value
