@@ -68,6 +68,7 @@ class Settings(CommunitySettings):
         Field(default_factory=dict)
     )
     OIDC_TEAM_GROUP_MAP: dict[str, dict[str, str]] = Field(default_factory=dict)
+    OIDC_GROUP_CUSTOM_ROLE_MAP: dict[str, str] = Field(default_factory=dict)
     OIDC_SESSION_SECONDS: int = Field(default=28_800, ge=60, le=86_400)
     OIDC_REVALIDATE_SECONDS: int = Field(default=60, ge=10, le=300)
     OIDC_API_AUDIENCE: str | None = None

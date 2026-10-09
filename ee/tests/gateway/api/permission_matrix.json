@@ -53,6 +53,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "DELETE /api/v1/management/roles/{role_id}": {
+  "admin": "403 Permission required: roles.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: roles.manage",
+  "owner": "404",
+  "service_admin": "403 Permission required: roles.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: roles.manage"
+ },
  "DELETE /api/v1/management/service-accounts/{account_id}": {
   "admin": "403 Organization owner required",
   "auditor": "403 Auditor access is read-only",
@@ -349,6 +358,15 @@
   "service_admin": "200",
   "service_auditor": "200",
   "team_admin": "200"
+ },
+ "GET /api/v1/management/roles": {
+  "admin": "403 Permission required: roles.manage",
+  "auditor": "403 Permission required: roles.manage",
+  "member": "403 Permission required: roles.manage",
+  "owner": "200",
+  "service_admin": "403 Permission required: roles.manage",
+  "service_auditor": "403 Permission required: roles.manage",
+  "team_admin": "403 Permission required: roles.manage"
  },
  "GET /api/v1/management/service-accounts": {
   "admin": "200",
@@ -674,6 +692,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "POST /api/v1/management/roles": {
+  "admin": "403 Permission required: roles.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: roles.manage",
+  "owner": "422",
+  "service_admin": "403 Permission required: roles.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: roles.manage"
+ },
  "POST /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
   "auditor": "403 Auditor access is read-only",
@@ -754,6 +781,15 @@
   "service_admin": "404",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
+ },
+ "PUT /api/v1/management/roles/{role_id}": {
+  "admin": "403 Permission required: roles.manage",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: roles.manage",
+  "owner": "422",
+  "service_admin": "403 Permission required: roles.manage",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: roles.manage"
  },
  "PUT /api/v1/management/settings/pii": {
   "admin": "200",

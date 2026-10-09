@@ -22,6 +22,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
@@ -510,6 +511,41 @@ Notes:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
+
+## Give someone exactly the access they need
+
+Let a finance colleague read billing without seeing privacy settings or holding
+gateway keys.
+
+1. As the owner, create a role with the permissions it needs:
+   `POST /api/v1/management/roles` with `slug`, `name` and `permissions`
+   ([the permission table](team-access.md#permissions)). It needs a plan with
+   team access.
+2. Give it to a member: `PATCH /api/v1/management/team/members/{member_id}` with
+   `{"role": "member", "custom_role_id": "<role id>"}`.
+3. The member's `GET /api/v1/management/auth/me` now lists exactly the role's
+   `permissions`.
+
+```console
+ROLE_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/roles \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug": "billing-viewer", "name": "Billing viewer", "permissions": ["usage.read"]}' | jq -r .id)
+
+curl -X PATCH "http://localhost:8000/api/v1/management/team/members/$MEMBER_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"role\": \"member\", \"custom_role_id\": \"$ROLE_ID\"}"
+```
+
+Notes:
+
+- A role without `keys.own` cannot go to someone who holds an active gateway
+  key: the PATCH answers 409 `ROLE_HOLDERS_HAVE_KEYS`. Revoke the keys first.
+- Owner-only permissions (`roles.manage`, `config.manage`) and the ones that
+  open content or decide approvals cannot be part of a custom role (422).
+- `"custom_role_id": null` takes the role away; deleting a role someone holds
+  answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
+  instead ([on-prem identity](ON_PREM_IDENTITY.md)).
+- Details are in [team access](team-access.md#custom-roles).
 
 ## See what changed after a prompt change
 

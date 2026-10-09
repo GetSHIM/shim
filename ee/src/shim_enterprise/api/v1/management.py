@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -45,11 +45,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from shim_enterprise.api.enterprise_deps import (
+    ADMIN_REQUIRED,
+    OWNER_REQUIRED,
+    READER_REQUIRED,
     get_current_user,
     get_invite_user,
-    get_org_admin,
-    get_org_owner,
-    get_org_reader,
+    require,
 )
 from shim.billing.attribution import normalize_attribution
 from shim.gateway.kernel.result import ResponseWarning
@@ -113,6 +114,7 @@ from shim_enterprise.tenants.models import (
     ModelDeployment,
     OrganizationInvite,
     Organization,
+    OrganizationRole,
     ProviderSecret,
     ServiceAccountCredential,
     TierDefinition,
@@ -124,12 +126,15 @@ from shim_enterprise.tenants.deployments import (
     require_model_aliases,
     validate_deployment_url,
 )
-from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
-from shim_enterprise.tenants.teams import (
-    ORGANIZATION_READERS,
-    member_team_ids,
-    require_team,
+from shim_enterprise.tenants.permissions import (
+    BUILTIN_ROLE_PERMISSIONS,
+    PERMISSIONS,
+    RESERVED_PERMISSIONS,
+    Permission,
+    user_permissions,
 )
+from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
+from shim_enterprise.tenants.teams import member_team_ids, require_team
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import (
@@ -200,6 +205,7 @@ _COMPLETION_OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
 _TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
 _MAX_SYNC_BUDGETS = 100
 _MAX_SYNC_BUDGET_DELIVERIES = 100
+_MAX_CUSTOM_ROLES = 20
 
 
 class UserView(BaseModel):
@@ -208,6 +214,8 @@ class UserView(BaseModel):
     full_name: str | None
     organization_name: str
     role: Literal["owner", "admin", "member", "auditor"]
+    custom_role: str | None
+    permissions: list[Permission]
     is_active: bool
     is_verified: bool
     created_at: datetime
@@ -468,9 +476,12 @@ class TeamMemberView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: EmailStr
+    email: EmailStr | None = Field(
+        description="Null for team administrators without the members.read permission."
+    )
     full_name: str | None
     role: Literal["owner", "admin", "member", "auditor"]
+    custom_role: str | None = None
     is_active: bool
     created_at: datetime
 
@@ -502,6 +513,40 @@ class AcceptTeamInvite(BaseModel):
 
 class TeamRolePatch(BaseModel):
     role: Literal["owner", "admin", "member", "auditor"]
+    custom_role_id: UUID | None = None
+
+
+class CustomRoleInput(BaseModel):
+    slug: str = Field(pattern=r"^[a-z][a-z0-9-]{1,31}$")
+    name: str = Field(min_length=1, max_length=100)
+    permissions: list[str] = Field(max_length=len(PERMISSIONS))
+
+    @field_validator("slug")
+    @classmethod
+    def _not_builtin(cls, value: str) -> str:
+        if value in BUILTIN_ROLE_PERMISSIONS:
+            raise ValueError(f"{value} is a built-in role")
+        return value
+
+    @field_validator("permissions")
+    @classmethod
+    def _grantable(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if item not in PERMISSIONS - RESERVED_PERMISSIONS:
+                raise ValueError(f"Permission not allowed in a custom role: {item}")
+        return sorted(set(value))
+
+
+class CustomRoleView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    slug: str
+    name: str
+    permissions: list[Permission]
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class NotificationTargetInput(BaseModel):
@@ -1041,7 +1086,7 @@ async def update_profile(
     before: dict[str, Any] = {}
     after: dict[str, Any] = {}
     if patch.organization_name is not None:
-        _require_role(user, "owner", "admin")
+        await _require_permission(session, user, "settings.write")
         tenant = await session.get(Organization, _tenant_id(user))
         if tenant is None:
             raise HTTPException(status_code=403, detail="Tenant does not exist")
@@ -1091,34 +1136,33 @@ async def get_subscription(
 async def list_team_members(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
-) -> list[User]:
-    # Team admins pick members to add from this list; ordinary members do not see it.
-    if user.role not in ORGANIZATION_READERS and not await session.scalar(
+) -> list[TeamMemberView]:
+    # Team admins pick members to add from this list, without their e-mail addresses.
+    with_email = "members.read" in await user_permissions(session, user)
+    if not with_email and not await session.scalar(
         select(member_team_ids(user, administer=True).exists())
     ):
         raise HTTPException(
             status_code=403, detail="Organization reader or team admin required"
         )
-    return list(
-        (
-            await session.execute(
-                select(User)
-                .where(
-                    User.organization_id == _tenant_id(user),
-                    User.is_active.is_(True),
-                    User.kind == "human",
-                )
-                .order_by(User.created_at, User.id)
+    members = (
+        await session.scalars(
+            select(User)
+            .where(
+                User.organization_id == _tenant_id(user),
+                User.is_active.is_(True),
+                User.kind == "human",
             )
+            .order_by(User.created_at, User.id)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    roles = await _roles_by_id(session, _tenant_id(user))
+    return [_member_view(member, roles, with_email=with_email) for member in members]
 
 
 @router.get("/team/invites", response_model=list[TeamInviteView])
 async def list_team_invites(
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[OrganizationInvite]:
     return list(
@@ -1141,11 +1185,13 @@ async def list_team_invites(
 )
 async def create_team_invite(
     payload: TeamInviteInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedTeamInvite:
     _require_person(user)
-    if user.role == "admin" and payload.role != "member":
+    if payload.role != "member" and "roles.manage" not in await user_permissions(
+        session, user
+    ):
         raise HTTPException(status_code=403, detail="Only owners can invite admins")
     tenant_id = _tenant_id(user)
     await _require_entitlement(session, tenant_id, "team_rbac")
@@ -1204,7 +1250,7 @@ async def create_team_invite(
 )
 async def revoke_team_invite(
     invite_id: UUID,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     tenant_id = _tenant_id(user)
@@ -1229,7 +1275,9 @@ async def revoke_team_invite(
         raise HTTPException(
             status_code=409, detail="Accepted invitations cannot be revoked"
         )
-    if user.role == "admin" and invite.role != "member":
+    if invite.role != "member" and "roles.manage" not in await user_permissions(
+        session, user
+    ):
         raise HTTPException(
             status_code=403, detail="Only owners can revoke admin invites"
         )
@@ -1309,6 +1357,7 @@ async def accept_team_invite(
         user, secrets_to_delete, budget_targets = moved
     else:
         user.role = invite.role
+        user.custom_role_id = None
         user.is_active = True
     invite.accepted_at = now
     await _audit(session, user, "tenant.team_invite_accepted", str(invite.id))
@@ -1324,14 +1373,34 @@ async def accept_team_invite(
 async def update_team_member(
     member_id: UUID,
     patch: TeamRolePatch,
-    user: User = Depends(get_org_owner),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
-) -> User:
+) -> TeamMemberView:
+    custom_role_id = patch.custom_role_id
+    if "custom_role_id" in patch.model_fields_set:
+        if settings.AUTH_MODE == "oidc":
+            raise HTTPException(
+                status_code=409, detail="Manage this role in the identity provider"
+            )
+        if custom_role_id is not None and patch.role != "member":
+            raise HTTPException(
+                status_code=422, detail="A custom role needs the member role"
+            )
     member = await _owned_member(session, user, member_id)
+    if "custom_role_id" not in patch.model_fields_set and patch.role == "member":
+        custom_role_id = member.custom_role_id
     if member.role == "owner" and patch.role != "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    roles = await _roles_by_id(session, _tenant_id(user))
+    if custom_role_id is not None:
+        if custom_role_id not in roles:
+            raise HTTPException(status_code=404, detail="Role not found")
+        if "keys.own" not in roles[custom_role_id].permissions:
+            await _refuse_key_holders(session, User.id == member.id)
     previous_role = member.role
+    previous_custom_role_id = member.custom_role_id
     member.role = patch.role
+    member.custom_role_id = custom_role_id
     await _audit(
         session,
         user,
@@ -1339,9 +1408,20 @@ async def update_team_member(
         str(member.id),
         details={"before": previous_role, "after": patch.role},
     )
+    if previous_custom_role_id != custom_role_id:
+        await _audit(
+            session,
+            user,
+            "tenant.member_custom_role_changed",
+            str(member.id),
+            details={
+                "before": _role_slug(roles, previous_custom_role_id),
+                "after": _role_slug(roles, custom_role_id),
+            },
+        )
     await session.commit()
     await session.refresh(member)
-    return member
+    return _member_view(member, roles, with_email=True)
 
 
 @router.delete(
@@ -1351,17 +1431,134 @@ async def update_team_member(
 )
 async def remove_team_member(
     member_id: UUID,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     _require_person(user)
     member = await _owned_member(session, user, member_id)
-    if user.role == "admin" and member.role != "member":
+    if member.role != "member" and "roles.manage" not in await user_permissions(
+        session, user
+    ):
         raise HTTPException(status_code=403, detail="Only owners can remove admins")
     if member.role == "owner":
         await _protect_last_owner(session, _tenant_id(user))
     await _deactivate(session, member)
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
+    await session.commit()
+
+
+@router.get("/roles", response_model=list[CustomRoleView])
+async def list_custom_roles(
+    user: User = Depends(require("roles.manage")),
+    session: AsyncSession = Depends(get_db),
+) -> list[OrganizationRole]:
+    await _require_entitlement(session, _tenant_id(user), "team_rbac")
+    return sorted(
+        (await _roles_by_id(session, _tenant_id(user))).values(),
+        key=lambda role: role.slug,
+    )
+
+
+@router.post("/roles", response_model=CustomRoleView, status_code=201)
+async def create_custom_role(
+    payload: CustomRoleInput,
+    user: User = Depends(require("roles.manage")),
+    session: AsyncSession = Depends(get_db),
+) -> OrganizationRole:
+    tenant_id = _tenant_id(user)
+    await _require_entitlement(session, tenant_id, "team_rbac")
+    if len(await _roles_by_id(session, tenant_id, lock=True)) >= _MAX_CUSTOM_ROLES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An organization can have at most {_MAX_CUSTOM_ROLES} custom roles",
+        )
+    role = await session.scalar(
+        insert(OrganizationRole)
+        .values(
+            organization_id=tenant_id,
+            created_by=str(user.id),
+            **payload.model_dump(),
+        )
+        .on_conflict_do_nothing()
+        .returning(OrganizationRole)
+    )
+    if role is None:
+        raise HTTPException(status_code=409, detail="A role with this slug exists")
+    await _audit(
+        session,
+        user,
+        "tenant.custom_role_created",
+        str(role.id),
+        details={"after": payload.model_dump()},
+    )
+    await session.commit()
+    return role
+
+
+@router.put("/roles/{role_id}", response_model=CustomRoleView)
+async def update_custom_role(
+    role_id: UUID,
+    payload: CustomRoleInput,
+    user: User = Depends(require("roles.manage")),
+    session: AsyncSession = Depends(get_db),
+) -> OrganizationRole:
+    tenant_id = _tenant_id(user)
+    await _require_entitlement(session, tenant_id, "team_rbac")
+    role = (await _roles_by_id(session, tenant_id, lock=True)).get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if "keys.own" not in payload.permissions:
+        await _refuse_key_holders(session, User.custom_role_id == role.id)
+    changes = payload.model_dump()
+    before = {field: getattr(role, field) for field in changes}
+    for field, value in changes.items():
+        setattr(role, field, value)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="A role with this slug exists"
+        ) from exc
+    await _audit(
+        session,
+        user,
+        "tenant.custom_role_updated",
+        str(role.id),
+        details=change_details(before, changes),
+    )
+    await session.commit()
+    await session.refresh(role)
+    return role
+
+
+@router.delete("/roles/{role_id}", status_code=204, response_model=None)
+async def delete_custom_role(
+    role_id: UUID,
+    user: User = Depends(require("roles.manage")),
+    session: AsyncSession = Depends(get_db),
+) -> None:
+    tenant_id = _tenant_id(user)
+    await _require_entitlement(session, tenant_id, "team_rbac")
+    role = (await _roles_by_id(session, tenant_id, lock=True)).get(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="Role not found")
+    if await session.scalar(
+        select(User.id).where(
+            User.organization_id == tenant_id, User.custom_role_id == role.id
+        )
+    ):
+        raise HTTPException(
+            status_code=409, detail="Role is assigned; unassign it before deleting"
+        )
+    await session.delete(role)
+    await _audit(
+        session,
+        user,
+        "tenant.custom_role_deleted",
+        str(role.id),
+        details={"before": {"slug": role.slug, "permissions": role.permissions}},
+    )
     await session.commit()
 
 
@@ -1372,7 +1569,7 @@ async def remove_team_member(
 )
 async def create_service_account(
     payload: ServiceAccountInput,
-    user: User = Depends(get_org_owner),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedServiceAccount:
     account_id = uuid4()
@@ -1414,7 +1611,7 @@ async def create_service_account(
 
 @router.get("/service-accounts", response_model=list[ServiceAccountView])
 async def list_service_accounts(
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ServiceAccountView]:
     if user.kind == "service":
@@ -1441,7 +1638,7 @@ async def list_service_accounts(
 )
 async def rotate_service_account(
     account_id: UUID,
-    user: User = Depends(get_org_owner),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedServiceAccount:
     account = await _owned_service_account(session, user, account_id)
@@ -1477,7 +1674,7 @@ async def rotate_service_account(
 )
 async def delete_service_account(
     account_id: UUID,
-    user: User = Depends(get_org_owner),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     account = await _owned_service_account(session, user, account_id)
@@ -1493,7 +1690,7 @@ async def list_teams(
     session: AsyncSession = Depends(get_db),
 ) -> list[Team]:
     statement = select(Team).where(Team.organization_id == _tenant_id(user))
-    if user.role not in ORGANIZATION_READERS:
+    if not {"usage.read", "teams.manage"} & await user_permissions(session, user):
         statement = statement.where(Team.id.in_(member_team_ids(user)))
     return list((await session.scalars(statement.order_by(Team.name, Team.id))).all())
 
@@ -1501,7 +1698,7 @@ async def list_teams(
 @router.post("/teams", response_model=TeamView, status_code=201)
 async def create_team(
     payload: TeamInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("teams.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Team:
     statement = (
@@ -1531,7 +1728,7 @@ async def create_team(
 async def update_team(
     team_id: UUID,
     payload: TeamInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("teams.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Team:
     team = await require_team(session, user, team_id, administer=True)
@@ -1618,7 +1815,7 @@ async def set_membership(
     if payload.role == "team_admin" or (
         existing is not None and existing.role == "team_admin"
     ):
-        _require_role(user, "owner", "admin")
+        await _require_permission(session, user, "teams.manage")
     statement = insert(TeamMembership).values(
         organization_id=user.organization_id,
         team_id=team_id,
@@ -1679,7 +1876,7 @@ async def remove_membership(
             status_code=409, detail="Manage this membership in the identity provider"
         )
     if membership.role == "team_admin":
-        _require_role(user, "owner", "admin")
+        await _require_permission(session, user, "teams.manage")
     await session.delete(membership)
     await _audit(
         session,
@@ -1700,7 +1897,7 @@ async def list_api_keys(
         ApiKey.organization_id == tenant_id,
         ApiKey.is_active.is_(True),
     )
-    if user.role not in ORGANIZATION_READERS:
+    if not {"usage.read", "keys.manage"} & await user_permissions(session, user):
         statement = statement.where(_own_or_administered_key(user))
     now = datetime.now(timezone.utc)
     return [
@@ -1713,16 +1910,17 @@ async def list_api_keys(
 @router.post("/api-keys", response_model=CreatedApiKey)
 async def create_api_key(
     payload: ApiKeyInput,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require("keys.own", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
     _tenant_id(user)
-    _require_role(user, "owner", "admin", "member")
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
     if payload.team_id is not None:
-        await require_team(session, user, payload.team_id)
-    elif user.role == "member" and await session.scalar(member_team_ids(user).limit(1)):
+        await require_team(session, user, payload.team_id, scope="keys.manage")
+    elif "keys.manage" not in await user_permissions(
+        session, user
+    ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
     await require_model_aliases(session, _tenant_id(user), payload.allowed_models)
     plaintext, api_key = await create_tenant_api_key(
@@ -1787,11 +1985,11 @@ async def update_api_key(
     api_key = await _owned_api_key(session, user, api_key_id)
     if {"team_id", "allowed_models"} & patch.model_fields_set:
         if api_key.team_id is None:
-            _require_role(user, "owner", "admin")
+            await _require_permission(session, user, "keys.manage")
         else:
             await require_team(session, user, api_key.team_id, administer=True)
     if "team_id" in patch.model_fields_set and patch.team_id != api_key.team_id:
-        _require_role(user, "owner", "admin")
+        await _require_permission(session, user, "keys.manage")
         if patch.team_id is not None:
             await require_team(session, user, patch.team_id, administer=True)
     if "allowed_models" in patch.model_fields_set:
@@ -1830,7 +2028,7 @@ async def revoke_api_key(
 
 @router.get("/providers", response_model=list[ProviderSecretView])
 async def list_provider_secrets(
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("providers.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ProviderSecret]:
     statement = select(ProviderSecret).where(
@@ -1846,7 +2044,7 @@ async def list_provider_secrets(
 )
 async def create_provider_secret(
     payload: ProviderSecretInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("providers.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     tenant_id = _tenant_id(user)
@@ -1890,7 +2088,7 @@ async def create_provider_secret(
 async def update_provider_secret(
     secret_id: UUID,
     patch: ProviderSecretPatch,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("providers.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
@@ -1950,7 +2148,7 @@ async def update_provider_secret(
 async def verify_provider_secret(
     secret_id: UUID,
     request: Request,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("providers.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
@@ -2019,7 +2217,7 @@ async def verify_provider_secret(
 )
 async def delete_provider_secret(
     secret_id: UUID,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("providers.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     row = await _owned_provider_secret(session, user, secret_id)
@@ -2037,7 +2235,7 @@ async def delete_provider_secret(
 
 @router.get("/settings/pii", response_model=PrivacySettings)
 async def get_privacy_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require("settings.read")),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
     row = await ensure_privacy_defaults(session, _tenant_id(user))
@@ -2050,7 +2248,7 @@ async def get_privacy_settings(
 async def update_privacy_settings(
     patch: PrivacyPatch,
     request: Request,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("settings.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
     tenant_id = _tenant_id(user)
@@ -2119,7 +2317,7 @@ async def update_privacy_settings(
 
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
 async def get_provider_key_settings(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require("settings.read")),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
     tenant = await session.get(Organization, _tenant_id(user))
@@ -2131,7 +2329,7 @@ async def get_provider_key_settings(
 @router.put("/settings/provider-keys", response_model=ProviderKeySettings)
 async def update_provider_key_settings(
     payload: ProviderKeySettings,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("settings.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
     tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
@@ -2181,7 +2379,7 @@ async def tier_info(
 async def list_budgets(
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[BudgetView]:
     statement = (
@@ -2203,7 +2401,7 @@ async def list_budgets(
 @router.post("/cost/budgets", response_model=BudgetView)
 async def create_budget(
     payload: BudgetInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("budgets.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
     if payload.scope_type == "team_id" and not await session.scalar(
@@ -2251,7 +2449,7 @@ async def create_budget(
 async def update_budget(
     budget_id: UUID,
     patch: BudgetPatch,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("budgets.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
     row = await _owned_budget(session, user, budget_id)
@@ -2306,7 +2504,7 @@ async def update_budget(
 )
 async def delete_budget(
     budget_id: UUID,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("budgets.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     row = await _owned_budget(session, user, budget_id)
@@ -2330,7 +2528,7 @@ async def delete_budget(
     },
 )
 async def evaluate_budgets(
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("budgets.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BudgetEvaluationView:
     budgets = list(
@@ -2405,7 +2603,7 @@ async def dashboard_overview(
         default=None,
         description="Exclusive UTC end; defaults to the current time.",
     ),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> OverviewDashboardView:
     generated_at = datetime.now(timezone.utc)
@@ -2516,6 +2714,8 @@ async def list_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
     )
+    if "usage.read" not in await user_permissions(session, user):
+        filters.append(_visible_requests(user))
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
     ).one()
@@ -2570,7 +2770,7 @@ async def list_prompt_versions(
         max_length=255,
         description="Case-insensitive model substring.",
     ),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> PromptVersionPage:
     end_at = _aware(end or datetime.now(timezone.utc))
@@ -2690,7 +2890,7 @@ async def list_findings(
     severity_id: int | None = Query(default=None, ge=1, le=5),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> FindingPage:
     filters = _finding_filters(user, status_filter, rule_id, severity_id)
@@ -2724,7 +2924,7 @@ async def export_findings(
     status_filter: FindingStatus | None = Query(default=None, alias="status"),
     rule_id: str | None = Query(default=None, min_length=1, max_length=64),
     severity_id: int | None = Query(default=None, ge=1, le=5),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     rows = (
@@ -2753,7 +2953,7 @@ async def export_findings(
 @router.get("/findings/{finding_id}", response_model=FindingView)
 async def get_finding(
     finding_id: UUID,
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> FindingView:
     return FindingView.model_validate(
@@ -2765,7 +2965,7 @@ async def get_finding(
 async def update_finding(
     finding_id: UUID,
     patch: FindingPatch,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("findings.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> FindingView:
     finding = await _owned_finding(session, user, finding_id, lock=True)
@@ -2884,6 +3084,8 @@ async def export_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
     )
+    if "usage.read" not in await user_permissions(session, user):
+        filters.append(_visible_requests(user))
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
         await session.scalar(
@@ -3098,7 +3300,7 @@ def _usage_totals(rows: Sequence[BillingBreakdown | DailyUsage]) -> dict[str, An
 async def billing_usage(
     start_date: datetime | None = Query(default=None),
     end_date: datetime | None = Query(default=None),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BillingUsageView:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -3147,7 +3349,7 @@ async def billing_breakdown(
         ),
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BillingBreakdownView:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -3185,7 +3387,7 @@ async def export_billing_breakdown(
     end_date: datetime | None = Query(default=None),
     group_by: BillingBreakdownGroup = Query(default="model"),
     format: Literal["csv", "pdf"] = Query(default="csv"),
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     end = _aware(end_date or datetime.now(timezone.utc))
@@ -3270,6 +3472,15 @@ def _own_or_administered_key(user: User) -> Any:
     )
 
 
+def _visible_requests(user: User) -> Any:
+    return RequestLog.api_key_id.in_(
+        select(ApiKey.id).where(
+            ApiKey.organization_id == _tenant_id(user),
+            _own_or_administered_key(user),
+        )
+    )
+
+
 def _request_filters(
     user: User,
     *,
@@ -3307,15 +3518,6 @@ def _request_filters(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant_id = _tenant_id(user)
     filters = [RequestLog.organization_id == tenant_id]
-    if user.role not in ORGANIZATION_READERS:
-        filters.append(
-            RequestLog.api_key_id.in_(
-                select(ApiKey.id).where(
-                    ApiKey.organization_id == tenant_id,
-                    _own_or_administered_key(user),
-                )
-            )
-        )
     if start_at is not None:
         filters.append(RequestLog.timestamp >= start_at)
     if end_at is not None:
@@ -3605,12 +3807,19 @@ async def _user_view(session: AsyncSession, user: User) -> UserView:
     tenant = await session.get(Organization, _tenant_id(user))
     if tenant is None:
         raise HTTPException(status_code=403, detail="Tenant does not exist")
+    role = (
+        await session.get(OrganizationRole, user.custom_role_id)
+        if user.custom_role_id is not None
+        else None
+    )
     return UserView(
         id=user.id,
         email=user.email,
         full_name=user.full_name,
         organization_name=tenant.name,
         role=cast(Literal["owner", "admin", "member", "auditor"], user.role),
+        custom_role=role.slug if role is not None else None,
+        permissions=sorted(await user_permissions(session, user)),
         is_active=user.is_active,
         is_verified=user.is_verified,
         created_at=user.created_at,
@@ -3622,7 +3831,9 @@ async def _owned_api_key(
     user: User,
     api_key_id: UUID,
 ) -> ApiKey:
-    _require_role(user, "owner", "admin", "member")
+    permissions = await user_permissions(session, user)
+    if not {"keys.own", "keys.manage"} & permissions:
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
     await session.scalar(
         select(Organization.id)
         .where(Organization.id == _tenant_id(user))
@@ -3636,7 +3847,7 @@ async def _owned_api_key(
         )
         .with_for_update()
     )
-    if user.role not in {"owner", "admin"}:
+    if "keys.manage" not in permissions:
         statement = statement.where(
             or_(
                 (ApiKey.user_id == user.id)
@@ -3706,6 +3917,56 @@ def _service_account_row(
     )
 
 
+async def _roles_by_id(
+    session: AsyncSession, tenant_id: UUID, *, lock: bool = False
+) -> dict[UUID, OrganizationRole]:
+    if lock:
+        # Role writes take the tenant lock that member and key changes take.
+        await session.execute(
+            select(Organization.id)
+            .where(Organization.id == tenant_id)
+            .with_for_update(of=Organization)
+        )
+    roles = await session.scalars(
+        select(OrganizationRole).where(OrganizationRole.organization_id == tenant_id)
+    )
+    return {role.id: role for role in roles}
+
+
+def _role_slug(
+    roles: Mapping[UUID, OrganizationRole], role_id: UUID | None
+) -> str | None:
+    role = roles.get(role_id) if role_id is not None else None
+    return role.slug if role is not None else None
+
+
+def _member_view(
+    member: User, roles: Mapping[UUID, OrganizationRole], *, with_email: bool
+) -> TeamMemberView:
+    return TeamMemberView(
+        id=member.id,
+        email=member.email if with_email else None,
+        full_name=member.full_name,
+        role=cast(Literal["owner", "admin", "member", "auditor"], member.role),
+        custom_role=_role_slug(roles, member.custom_role_id),
+        is_active=member.is_active,
+        created_at=member.created_at,
+    )
+
+
+# The gateway checks only the base role, so only keys.own holders may hold active keys.
+async def _refuse_key_holders(session: AsyncSession, holders: Any) -> None:
+    users = await session.scalar(
+        select(func.count(func.distinct(ApiKey.user_id)))
+        .join(User, User.id == ApiKey.user_id)
+        .where(ApiKey.is_active.is_(True), holders)
+    )
+    if users:
+        raise HTTPException(
+            status_code=409, detail={"code": "ROLE_HOLDERS_HAVE_KEYS", "users": users}
+        )
+
+
 async def _owned_member(
     session: AsyncSession,
     user: User,
@@ -3761,9 +4022,11 @@ def _require_person(user: User) -> None:
         )
 
 
-def _require_role(user: User, *roles: str) -> None:
-    if user.role not in roles:
-        raise HTTPException(status_code=403, detail="Organization admin required")
+async def _require_permission(
+    session: AsyncSession, user: User, permission: Permission
+) -> None:
+    if permission not in await user_permissions(session, user):
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
 
 
 async def _require_entitlement(
@@ -4088,7 +4351,7 @@ class ModelDeploymentView(ModelDeploymentInput):
 
 @router.get("/model-deployments", response_model=list[ModelDeploymentView])
 async def list_model_deployments(
-    user: User = Depends(get_org_reader),
+    user: User = Depends(require("deployments.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
     return (
@@ -4109,7 +4372,7 @@ async def list_model_deployments(
 @router.post("/model-deployments", response_model=ModelDeploymentView, status_code=201)
 async def create_model_deployment(
     payload: ModelDeploymentInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
     secret = await _owned_provider_secret(session, user, payload.provider_secret_id)
@@ -4140,7 +4403,7 @@ async def create_model_deployment(
 async def update_model_deployment(
     deployment_id: UUID,
     payload: ModelDeploymentInput,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
     # Locked, like the health result, so neither write can overwrite the other.
@@ -4177,7 +4440,7 @@ async def update_model_deployment(
 async def check_model_deployment_health(
     deployment_id: UUID,
     request: Request,
-    user: User = Depends(get_org_admin),
+    user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
     row = await _owned_model_deployment(session, user, deployment_id)

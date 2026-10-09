@@ -27,6 +27,7 @@ remains available with `AUTH_MODE=supabase`; the OIDC path needs neither
 | `OIDC_GROUPS_CLAIM` | Top-level group array claim; defaults to `groups` |
 | `OIDC_GROUP_ROLE_MAP` | JSON, e.g. `{"/shim/owners":"owner","/shim/users":"member"}` |
 | `OIDC_TEAM_GROUP_MAP` | Optional JSON group-to-team mapping, e.g. `{"/shim/platform":{"team_id":"<UUID>","role":"team_admin"}}`; teams must already belong to the configured organization |
+| `OIDC_GROUP_CUSTOM_ROLE_MAP` | Optional JSON group-to-[custom role](team-access.md#custom-roles) slug mapping, e.g. `{"/shim/finance":"billing-viewer"}`; applies only to users whose built-in role is `member` |
 | `OIDC_SESSION_SECONDS` | Absolute session lifetime; default 28,800, maximum 86,400 |
 | `OIDC_REVALIDATE_SECONDS` | Refresh/group revalidation interval; default 60, maximum 300 |
 | `OIDC_API_AUDIENCE` | Optional, distinct API audience for direct bearer access; absent disables it |
@@ -77,7 +78,12 @@ cannot select an arbitrary organization. Changing the configured tenant does
 not migrate existing identities. A locally deactivated user stays deactivated.
 
 Only mapped groups grant access. The strongest configured role wins; owner,
-admin, member, then auditor. User-supplied profile metadata does not grant roles.
+admin, member, then auditor. A `member` whose groups map to custom roles
+through `OIDC_GROUP_CUSTOM_ROLE_MAP` gets the first slug in sorted order that
+exists in the organization, at every login; with none, or with another built-in
+role, the custom role is cleared. A slug the organization does not have is
+ignored and logged without its name. A custom role given at login does not
+revoke gateway keys the user already holds. User-supplied profile metadata does not grant roles.
 Group removal/downgrade is applied on session refresh, at most
 `OIDC_REVALIDATE_SECONDS` after the identity provider reflects the change.
 Providers must return a newly signed ID token with current groups on refresh.
