@@ -409,6 +409,7 @@ enterprise = [
   "ee/tests/gateway/api/test_enterprise_errors.py",
   "ee/tests/gateway/api/test_management.py",
   "ee/tests/gateway/api/test_management_overview.py",
+  "ee/tests/gateway/api/test_permission_matrix.py",
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
