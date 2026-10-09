@@ -822,16 +822,110 @@ def test_tool_call_names_read_json_and_stream_shapes(
 
 
 def test_tool_call_names_are_capped_sorted_and_unique() -> None:
-    calls = [
-        {"function": {"name": f"tool_{index:03d}" + "x" * 100}} for index in range(70)
-    ]
+    calls = [{"function": {"name": f"tool_{index:03d}"}} for index in range(70)]
     names = tool_call_names({"choices": [{"message": {"tool_calls": calls + calls}}]})
 
     assert len(names) == 64
     assert names == tuple(sorted(names))
-    assert {len(name) for name in names} == {64}
-    assert names[0].startswith("tool_000")
+    assert names[0] == "tool_000"
     assert tool_call_names({"choices": [{"message": {"content": "hi"}}]}) == ()
+
+
+_REJECTED_TOOL_NAMES = [
+    "a\nb john.doe@example.com",
+    "john.doe@example.com",
+    "nul\x00byte",
+    "trailing\n",
+    "with space",
+    "x" * 65,
+]
+
+
+def _tool_name_payloads(name: str) -> list[tuple[str, dict, dict]]:
+    """Each protocol's JSON answer and stream event calling one tool by name."""
+
+    return [
+        (
+            "openai",
+            {"choices": [{"message": {"tool_calls": [{"function": {"name": name}}]}}]},
+            {"choices": [{"delta": {"function_call": {"name": name}}}]},
+        ),
+        (
+            "openai",
+            {"output": [{"type": "function_call", "name": name}]},
+            {
+                "type": "response.output_item.added",
+                "item": {"type": "function_call", "name": name},
+            },
+        ),
+        (
+            "anthropic",
+            {"content": [{"type": "tool_use", "name": name}]},
+            {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "name": name},
+            },
+        ),
+        (
+            "google",
+            {
+                "candidates": [
+                    {"content": {"parts": [{"functionCall": {"name": name}}]}}
+                ]
+            },
+            {
+                "candidates": [
+                    {"content": {"parts": [{"functionCall": {"name": name}}]}}
+                ]
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize("name", _REJECTED_TOOL_NAMES)
+def test_tool_names_the_providers_do_not_allow_are_dropped_not_stored(name) -> None:
+    for provider, payload, event in _tool_name_payloads(name):
+        stream_meter = meter(provider)
+        stream_meter.observe_sse(_sse(event))
+
+        assert tool_call_names(payload) == ()
+        assert stream_meter.snapshot().tool_call_names == ()
+
+
+def test_gemini_function_calls_without_a_name_are_dropped() -> None:
+    event = {"candidates": [{"content": {"parts": [{"functionCall": {"name": ""}}]}}]}
+    stream_meter = meter("google")
+    stream_meter.observe_sse(_sse(event))
+
+    assert tool_call_names(event) == ()
+    assert stream_meter.snapshot().tool_call_names == ()
+
+
+@pytest.mark.parametrize(
+    "name", ["lookup", "get-weather", "mcp.server:tool_1", "x" * 64]
+)
+def test_tool_names_in_the_provider_character_set_are_kept(name) -> None:
+    for provider, payload, event in _tool_name_payloads(name):
+        stream_meter = meter(provider)
+        stream_meter.observe_sse(_sse(event))
+
+        assert tool_call_names(payload) == (name,)
+        assert stream_meter.snapshot().tool_call_names == (name,)
+
+
+def test_a_stream_keeps_at_most_sixty_four_tool_names_in_memory() -> None:
+    stream_meter = meter()
+    stream_meter.observe_sse(
+        _sse(
+            *(
+                {"choices": [{"delta": {"function_call": {"name": f"tool_{index}"}}}]}
+                for index in range(500)
+            )
+        )
+    )
+
+    assert len(stream_meter.tool_names) == 64
+    assert len(stream_meter.snapshot().tool_call_names) == 64
 
 
 @pytest.mark.parametrize(

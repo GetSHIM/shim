@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -256,7 +257,9 @@ class StreamMeter:
         self.refusal_seen |= refusal
         self.tool_call_seen |= tool_call
         if tool_call:
-            self.tool_names.update(tool_call_names(payload))
+            for name in tool_call_names(payload):
+                if len(self.tool_names) < 64:
+                    self.tool_names.add(name)
         if not self.reasoning_seen:
             self.reasoning_seen = reasoning_seen(payload, event_type=payload_type)
         fragments = self._output_delta_fragments(payload_type, payload)
@@ -832,8 +835,12 @@ def _containers(payload: Mapping[str, Any], *keys: str) -> list[Mapping[str, Any
     ]
 
 
+# Model-supplied and already PII-restored, so only the character set providers allow is kept.
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
 def _capped_names(names: set[str] | tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(sorted({name[:64] for name in names})[:64])
+    return tuple(sorted(name for name in names if _TOOL_NAME.fullmatch(name))[:64])
 
 
 def tool_call_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
