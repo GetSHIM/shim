@@ -13,6 +13,8 @@ provider attempt rule are unchanged.
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
+| `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
+| `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal material, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
 first class that matches, in this order, wins, including across several choices
@@ -41,6 +43,20 @@ sorts JSON keys, applies NFKC normalization, and collapses whitespace. The
 window and any process/Redis state loss affect comparability. A denied request
 that never acquires a durable lifecycle has no diagnostic projection; its
 policy-decision event owns denial evidence.
+
+`repeat_digest` links a repeat to the request it repeats even when it arrives
+after the loop window, for example a retry after the SDK's 600-second timeout,
+which starts a new `repeat_chain_length` at 1. It is
+`HMAC-SHA256(key, "<tenant id>:<detector digest>")` with
+`key = HMAC-SHA256(COMPLIANCE_HASH_SALT or SECRET_KEY, "shim-repeat-digest-v1")`,
+so two tenants sending the same prompt get different values, and rotating
+`COMPLIANCE_HASH_SALT` breaks the linkage across the rotation. It is computed
+even when Redis is unavailable. The unkeyed digest never reaches PostgreSQL, the
+outbox, logs, spans or metrics.
+
+`deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
+`request_lifecycle.metadata` and not in the analytics row, the request list, its
+CSV or the audit completion. Community JSONL does not carry them.
 
 TTFT is gateway observation time, not the model's internal computation time or
 the client's first-byte time. It excludes request admission and input privacy

@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import cache
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -48,6 +50,7 @@ from shim_enterprise.billing.ledger import (
     TerminalAction,
 )
 from shim_enterprise.billing.models import RequestLifecycle
+from shim_enterprise.cache.loop_detection import take_repeat_digest
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
@@ -342,6 +345,10 @@ class DurableAccountingCoordinator:
         session: AsyncSession,
     ) -> ReservationResult:
         policy: QuotaPolicySnapshot | None = None
+        hash_key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode(
+            "utf-8"
+        )
+        loop_digest = take_repeat_digest(str(prepared.tenant_id))
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
@@ -372,13 +379,18 @@ class DurableAccountingCoordinator:
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,
-                        system_prompt_hash=system_prompt_hash(
-                            prepared,
-                            (
-                                settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY
-                            ).encode("utf-8"),
-                        ),
+                        system_prompt_hash=system_prompt_hash(prepared, hash_key),
                         deployment_kind=prepared.deployment_kind,
+                        deployment_id=(
+                            prepared.target.deployment_id if prepared.target else None
+                        ),
+                        repeat_digest=(
+                            None
+                            if loop_digest is None
+                            else keyed_repeat_digest(
+                                hash_key, str(prepared.tenant_id), loop_digest
+                            )
+                        ),
                         policy=policy,
                         audit_policy_mode=prepared.context.audit_policy.mode,
                         policy_verdicts=tuple(
@@ -1220,6 +1232,19 @@ def scan_usage_status(count: int, limit: int, now: datetime) -> ScanUsageStatus:
         scans_remaining=-1 if limit == -1 else max(0, limit - count),
         resets_at=None if limit == -1 else next_month.isoformat(),
     )
+
+
+@cache
+def _repeat_digest_key(base_key: bytes) -> bytes:
+    return hmac.new(base_key, b"shim-repeat-digest-v1", hashlib.sha256).digest()
+
+
+def keyed_repeat_digest(base_key: bytes, tenant_id: str, digest: str) -> str:
+    return hmac.new(
+        _repeat_digest_key(base_key),
+        f"{tenant_id}:{digest}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _provider_reconciliation_due_at(started_at: datetime, provider: str) -> datetime:
