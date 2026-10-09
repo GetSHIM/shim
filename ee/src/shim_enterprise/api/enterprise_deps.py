@@ -330,16 +330,16 @@ async def get_current_user(
     return user
 
 
-def require(permission: Permission, *, legacy_detail: str | None = None):
-    """A route guard that answers 403 unless the caller holds the permission."""
+def require(*permissions: Permission, legacy_detail: str | None = None):
+    """A route guard that answers 403 unless the caller holds one of the permissions."""
 
     async def guard(
         user: User = Depends(get_current_user),
         session: AsyncSession = Depends(get_db),
     ) -> User:
-        if permission not in await user_permissions(session, user):
+        if not set(permissions) & await user_permissions(session, user):
             raise HTTPException(
-                403, legacy_detail or f"Permission required: {permission}"
+                403, legacy_detail or f"Permission required: {' or '.join(permissions)}"
             )
         return user
 

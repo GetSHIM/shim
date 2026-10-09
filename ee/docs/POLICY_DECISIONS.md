@@ -136,6 +136,58 @@ gets the audit event only.
 Turning a switch back on, or raising a type's action, records only
 `tenant.privacy_policy_updated`.
 
+## Policy versions and plans
+
+Six resources are managed: every write to them records a version, a plan can
+change them, and a restore can put them back.
+
+| Resource | Item | Fields | Write paths | Relaxing when |
+| --- | --- | --- | --- | --- |
+| `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
+| `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
+| `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
+| `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |
+| `budgets` | budget id | scope, limits, thresholds, `enabled` (never notification targets) | `POST`, `PATCH`, `DELETE /cost/budgets` | deleted; a limit raised or removed; disabled |
+| `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled |
+
+A field moved the other way is `tightening`, anything else `neutral`; a change
+with both a relaxing and a tightening field is `relaxing`, and so is a plan with
+one relaxing change. Lowering cost (a lower budget, a disabled deployment) counts
+as tightening. Provider credentials, connectors, forward targets, members,
+invitations, service accounts, key issue, rotation and revocation, memberships,
+finding status and readiness declarations are not managed.
+
+Each managed write takes the organization row lock and, when its items changed,
+inserts one `policy_versions` row in the same transaction: the next `version`
+number, `previous` and `snapshot` (the before and after state of only the items
+it changed, `null` for an item that did not exist), `source` (`api` for a direct
+write, `plan`, `restore`, and later `mcp`, `file`, `auto`, `import`,
+`proposal`), `risk`, the actor and its type. A write that changes nothing records
+no version. The audit details of these writes gain `policy_version`, the version
+they belong to; a write without a version carries none.
+
+A plan (`policy_plans`) is a change set with each change's before and after
+state, risk and estimated impact, created as `draft` and expiring after 7 days.
+Applying it checks that every item still has the stored before-state
+(`PLAN_STALE` otherwise), writes every change through the same code as the
+direct routes, records one version and marks the plan `applied`. Impact counts
+`request_lifecycle` rows of the window (`started_at`) that the change would
+have affected: requests carrying an entity type whose action changes (`null`
+for a type that was `off`, since it was never detected), a key's requests for
+models it would no longer allow, a deployment's requests, and requests above a
+lowered team limit. A budget reports its month-to-date use against the new
+limit, and an oversight policy has no estimate.
+
+Restoring a version applies a plan with source `restore` that puts every item a
+version touched back to its state at that version. A revoked key, a team
+created after it (teams cannot be deleted) and a re-created budget's
+notification targets are listed in `not_restored`; a deployment created after it
+is disabled and listed in `approximated`. Plans applied after the version become
+`rolled_back`. Audit actions: `tenant.policy_plan_created`,
+`tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
+and `tenant.policy_version_restored` (`target_version`, `plan_id`,
+`policy_version`).
+
 ## Audit evidence bundle
 
 `GET /api/v1/compliance/audit/bundle?start=…&end=…` exports the tenant's audit

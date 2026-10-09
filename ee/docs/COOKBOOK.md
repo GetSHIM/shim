@@ -23,6 +23,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
+- [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
@@ -546,6 +547,54 @@ Notes:
   answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
   instead ([on-prem identity](ON_PREM_IDENTITY.md)).
 - Details are in [team access](team-access.md#custom-roles).
+
+## Plan, apply and undo a change
+
+See what a policy change would have affected before it takes effect, apply it in
+one step, and take it back in one step.
+
+1. Create a plan (`plans.create`, owners and admins):
+   `POST /api/v1/management/policy/plans` with up to 100 `changes`. A change is
+   `{"resource", "item", "set": {...}}` to update, `"item": null` to create, or
+   `{"resource", "item", "delete": true}`. The answer lists each change's
+   `before`, `after`, `risk` and `impact` over the last `window_days` (default 7,
+   at most 31).
+2. Apply it (`plans.apply`): `POST /api/v1/management/policy/plans/{id}/apply`.
+   A 409 `PLAN_STALE` names the items someone changed since the plan was made;
+   create a new plan.
+3. Undo: `POST /api/v1/management/policy/versions/{version}/restore` with an
+   optional `reason`; restoring `current - 1` undoes the last change. Read the
+   versions with `GET /api/v1/management/policy/versions` and the current state
+   with `GET /api/v1/management/policy/state` (owners, admins and auditors).
+
+```console
+PLAN_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/policy/plans \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "watch e-mail before masking it",
+       "changes": [{"resource": "privacy", "item": "_",
+                    "set": {"entity_actions": {"EMAIL_ADDRESS": "monitor"}}}]}' | jq -r .id)
+
+curl -X POST "http://localhost:8000/api/v1/management/policy/plans/$PLAN_ID/apply" \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/policy/versions/4/restore \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "back to masking"}'
+```
+
+Notes:
+
+- Every write to privacy settings, teams, key model and team policies,
+  deployments, budgets and oversight policies records a version, whether it came
+  through a plan or not, so a tenant that never plans can still undo.
+- A plan expires after 7 days; an expired, applied or rolled-back plan answers
+  409 `PLAN_STATE_CONFLICT` on apply. The body is at most 256 KB.
+- A restore cannot bring back a revoked key or delete a team, and a re-created
+  budget has no notification targets: those are listed in `not_restored`. A
+  deployment registered after the version is disabled instead of deleted
+  (`approximated`).
+- The resources, what counts as relaxing and the audit details are in
+  [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
 
 ## See what changed after a prompt change
 

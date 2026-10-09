@@ -541,7 +541,7 @@ async def test_oversight_changes_triggers_and_evidence_reads_are_audited(
     ]
     assert all(event["actor"] == str(user.id) for event in events)
     created = extra["compliance.oversight_policy_created"]
-    assert set(created) == {"subject_id", "actor_type", "after"}
+    assert set(created) == {"subject_id", "actor_type", "after", "policy_version"}
     assert created["after"]["trigger"] == {"pii_detected": True}
     updated = extra["compliance.oversight_policy_updated"]
     assert (updated["before"], updated["after"]) == (

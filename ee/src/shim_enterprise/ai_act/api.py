@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Literal
-from uuid import UUID
+from typing import Any, Literal, cast
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -70,10 +80,24 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     require,
 )
-from shim_enterprise.api.v1.management import _require_entitlement
+from shim_enterprise.api.v1.management import (
+    _only,
+    _require_entitlement,
+    _uuids,
+    _validated,
+)
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.policy.plans import (
+    Impact,
+    Risk,
+    State,
+    lock_tenant,
+    no_impact,
+    record_managed_write,
+    version_detail,
+)
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import Organization, User
@@ -624,27 +648,21 @@ async def create_oversight_policy(
     ),
     session: AsyncSession = Depends(get_db),
 ) -> OversightPolicyRead:
-    _validate_policy_trigger(payload.trigger)
-    tenant_id = await _tenant_for_write(session, current_user)
-    policy = OversightPolicy(
-        organization_id=tenant_id,
-        name=payload.name,
-        enabled=payload.enabled,
-        mode="flag",
-        trigger=payload.trigger,
-        ttl_seconds=payload.ttl_seconds or settings.OVERSIGHT_DEFAULT_TTL_SECONDS,
-        default_on_timeout=payload.default_on_timeout,
-    )
-    session.add(policy)
-    await session.flush()
-    await _audit(
+    after = OVERSIGHT_POLICIES.validate(None, None, payload.model_dump())
+    tenant_id, item = await _tenant_for_write(session, current_user), str(uuid4())
+    await lock_tenant(session, tenant_id)
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.oversight_policy_created",
-        str(policy.id),
-        details=change_details(None, _policy_facts(policy)),
-    )
+        tenant_id,
+        [(OVERSIGHT_POLICIES, item, None, after)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session, current_user, tenant_id, item, None, after, policy_version=version
+        )
     await session.commit()
+    policy = await _tenant_policy(session, tenant_id, UUID(item))
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
 
@@ -681,20 +699,28 @@ async def update_oversight_policy(
     tenant_id = current_user.organization_id
     if tenant_id is None:
         raise HTTPException(status_code=404, detail="Oversight policy not found.")
+    await lock_tenant(session, tenant_id)
     policy = await _tenant_policy(session, tenant_id, policy_id)
-    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
-    if "trigger" in updates:
-        _validate_policy_trigger(updates["trigger"])
     before = _policy_facts(policy)
-    for field, value in updates.items():
-        setattr(policy, field, value)
-    await _audit(
+    after = OVERSIGHT_POLICIES.validate(
+        str(policy_id), before, payload.model_dump(exclude_unset=True)
+    )
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.oversight_policy_updated",
-        str(policy.id),
-        details=change_details(before, _policy_facts(policy)),
-    )
+        tenant_id,
+        [(OVERSIGHT_POLICIES, str(policy_id), before, after)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session,
+            current_user,
+            tenant_id,
+            str(policy_id),
+            before,
+            after,
+            policy_version=version,
+        )
     await session.commit()
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
@@ -714,15 +740,24 @@ async def delete_oversight_policy(
     tenant_id = current_user.organization_id
     if tenant_id is None:
         raise HTTPException(status_code=404, detail="Oversight policy not found.")
-    policy = await _tenant_policy(session, tenant_id, policy_id)
-    await _audit(
+    await lock_tenant(session, tenant_id)
+    before = _policy_facts(await _tenant_policy(session, tenant_id, policy_id))
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.oversight_policy_deleted",
-        str(policy.id),
-        details=change_details(_policy_facts(policy), None),
-    )
-    await session.delete(policy)
+        tenant_id,
+        [(OVERSIGHT_POLICIES, str(policy_id), before, None)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session,
+            current_user,
+            tenant_id,
+            str(policy_id),
+            before,
+            None,
+            policy_version=version,
+        )
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -851,3 +886,124 @@ async def trigger_anchor(
         row_count=anchor.row_count,
         external_ref=anchor.external_ref,
     )
+
+
+_POLICY_FIELDS = (
+    "name",
+    "enabled",
+    "mode",
+    "trigger",
+    "ttl_seconds",
+    "default_on_timeout",
+)
+
+
+class _OversightPolicyResource:
+    name = "oversight_policies"
+    creatable = True
+    deletable = True
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        statement = select(OversightPolicy).where(
+            OversightPolicy.organization_id == organization_id
+        )
+        if item_ids is not None:
+            statement = statement.where(OversightPolicy.id.in_(_uuids(item_ids)))
+        return {
+            str(policy.id): _policy_facts(policy)
+            for policy in await session.scalars(statement)
+        }
+
+    def validate(
+        self, item_id: str | None, before: State | None, proposed: State
+    ) -> State:
+        _only(proposed, _POLICY_FIELDS)
+        if before is None:
+            created = cast(
+                OversightPolicyCreate, _validated(OversightPolicyCreate, proposed)
+            )
+            _validate_policy_trigger(created.trigger)
+            return {
+                **created.model_dump(include=set(_POLICY_FIELDS)),
+                "ttl_seconds": created.ttl_seconds
+                or settings.OVERSIGHT_DEFAULT_TTL_SECONDS,
+            }
+        updates = _validated(OversightPolicyUpdate, proposed).model_dump(
+            exclude_unset=True, exclude_none=True
+        )
+        if "trigger" in updates:
+            _validate_policy_trigger(updates["trigger"])
+        return {**before, **updates}
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        if before is None:
+            assert after is not None
+            policy = OversightPolicy(
+                id=UUID(item_id), organization_id=organization_id, **after
+            )
+            session.add(policy)
+            await session.flush()
+            action = "compliance.oversight_policy_created"
+        else:
+            policy = await _tenant_policy(session, organization_id, UUID(item_id))
+            if after is None:
+                action = "compliance.oversight_policy_deleted"
+            else:
+                for field, value in after.items():
+                    setattr(policy, field, value)
+                action = "compliance.oversight_policy_updated"
+        await _audit(
+            session,
+            actor,
+            action,
+            item_id,
+            details={
+                **change_details(
+                    before, None if after is None else _policy_facts(policy)
+                ),
+                **version_detail(policy_version),
+            },
+        )
+        if after is None:
+            await session.delete(policy)
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        if after is None or (
+            before is not None and before["enabled"] and not after["enabled"]
+        ):
+            return "relaxing"
+        if after["enabled"] and (before is None or not before["enabled"]):
+            return "tightening"
+        return "neutral"
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days, "review queue runs after the request")
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        return None
+
+
+OVERSIGHT_POLICIES = _OversightPolicyResource()

@@ -302,7 +302,8 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
         enabled=True,
     )
     user = SimpleNamespace(organization_id=uuid4())
-    session = SimpleNamespace(delete=AsyncMock())
+    # execute takes the tenant lock every managed write holds.
+    session = SimpleNamespace(delete=AsyncMock(), execute=AsyncMock())
     monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
 
     with pytest.raises(HTTPException, match="require migration"):
@@ -461,12 +462,11 @@ async def test_budget_list_returns_422_for_invalid_persisted_config() -> None:
 
 @pytest.mark.asyncio
 async def test_budget_patch_distinguishes_omitted_and_null_limits(
-    monkeypatch: pytest.MonkeyPatch,
+    db, test_user_with_org
 ) -> None:
-    tenant_id = uuid4()
-    row = SimpleNamespace(
-        id=uuid4(),
-        organization_id=tenant_id,
+    test_user_with_org.role = "admin"
+    row = CostBudget(
+        organization_id=test_user_with_org.organization_id,
         scope_type="org",
         scope_value=None,
         period="monthly",
@@ -475,43 +475,25 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
         alert_thresholds=[0.8, 1.0],
         notify_targets=[],
         enabled=True,
-        created_at=datetime.now(timezone.utc),
     )
-    user = SimpleNamespace(organization_id=tenant_id)
-    session = SimpleNamespace(
-        commit=AsyncMock(), rollback=AsyncMock(), refresh=AsyncMock()
-    )
-    audit = AsyncMock()
-    monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
-    monkeypatch.setattr(management, "_audit", audit)
+    db.add(row)
+    await db.flush()
 
     async def apply(**values):
         return await management.update_budget(
-            row.id, management.BudgetPatch(**values), user, session
+            row.id, management.BudgetPatch(**values), test_user_with_org, db
         )
 
     assert (await apply(enabled=False)).id == row.id
-    assert row.limit_usd == Decimal("10")
-    assert row.limit_tokens == 100
-    session.commit.assert_awaited_once()
-
-    session.commit.reset_mock()
-    audit.reset_mock()
+    assert (row.limit_usd, row.limit_tokens) == (Decimal("10"), 100)
     assert (await apply(limit_usd=None)).id == row.id
-    assert row.limit_usd is None
-    assert row.limit_tokens == 100
-    session.commit.assert_awaited_once()
-
-    session.commit.reset_mock()
-    audit.reset_mock()
+    assert (row.limit_usd, row.limit_tokens) == (None, 100)
     with pytest.raises(HTTPException) as exc_info:
         await apply(limit_tokens=None)
 
     assert exc_info.value.status_code == 422
     assert exc_info.value.detail == "a budget requires a cost or token limit"
     assert row.limit_tokens == 100
-    session.commit.assert_not_awaited()
-    audit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -323,6 +323,51 @@
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/policy/plans": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: plans.create or audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: plans.create or audit.read"
+ },
+ "GET /api/v1/management/policy/plans/{plan_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: plans.create or audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "team_admin": "403 Permission required: plans.create or audit.read"
+ },
+ "GET /api/v1/management/policy/state": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: audit.read"
+ },
+ "GET /api/v1/management/policy/versions": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: audit.read"
+ },
+ "GET /api/v1/management/policy/versions/{version}": {
+  "admin": "422",
+  "auditor": "422",
+  "member": "403 Permission required: audit.read",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "422",
+  "team_admin": "403 Permission required: audit.read"
+ },
  "GET /api/v1/management/prompt-versions": {
   "admin": "200",
   "auditor": "200",
@@ -673,6 +718,33 @@
   "service_admin": "404",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/policy/plans": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
+ },
+ "POST /api/v1/management/policy/plans/{plan_id}/apply": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.apply",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.apply"
+ },
+ "POST /api/v1/management/policy/versions/{version}/restore": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
  },
  "POST /api/v1/management/providers": {
   "admin": "422",

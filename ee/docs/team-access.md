@@ -29,11 +29,13 @@ write nor own gateway keys.
 | `members.manage` | Invite, list and revoke invites, remove members, list service accounts | x | x | | |
 | `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
 | `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
-| `audit.read` | Compliance overview, audit log, bundle, verify, reports, and reads of connectors, forward targets, oversight and readiness | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state | x | x | | x |
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |
-| `plans.create`, `plans.apply`, `plans.approve` | Policy plans | x | x | | |
+| `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them | x | x | | |
+| `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
+| `plans.approve` | Approve or reject a pending plan | x | x | | |
 | `requests.approve` | Decide request approvals | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
 | `config.manage` | Signing keys and file mode | x | | | |
