@@ -8593,6 +8593,19 @@
             ],
             "title": "Provider Finish Reasons"
           },
+          "provider_latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "JSON answers: milliseconds from before the provider call to the parsed answer; null for streams and older rows.",
+            "title": "Provider Latency Ms"
+          },
           "repeat_chain_length": {
             "anyOf": [
               {

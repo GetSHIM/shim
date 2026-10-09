@@ -33,13 +33,17 @@ from shim.gateway.streaming.meter import (
     cache_split,
     completion_outcome,
     native_finish_reasons,
+    reasoning_seen,
     settled_outcome,
+    tool_call_names,
 )
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
     COMPLETION_OUTCOMES_TOTAL,
     PROVIDER_LATENCY_MS,
     PROVIDER_REQUESTS_TOTAL,
+    REQUESTS_IN_FLIGHT,
+    TIME_TO_FIRST_TOKEN_SECONDS,
     bounded_label,
 )
 from shim.observability.tracing import safe_attributes
@@ -209,9 +213,10 @@ class ResponsePostprocessor:
         completed_at = datetime.now(timezone.utc)
         finish_reasons = native_finish_reasons(response.payload, provider=provider)
         refusal, tool_call = answer_markers(response.payload)
+        characters = answer_characters(response.payload)
         outcome = completion_outcome(
             finish_reasons,
-            output_characters=answer_characters(response.payload),
+            output_characters=characters,
             refusal=refusal,
             tool_call=tool_call,
         )
@@ -244,6 +249,14 @@ class ResponsePostprocessor:
                     if self.output_hash_salt is not None
                     else None
                 ),
+                provider_latency_ms=(
+                    round(response.latency_ms)
+                    if response.latency_ms is not None
+                    else None
+                ),
+                answer_characters=characters,
+                tool_call_names=tool_call_names(response.payload),
+                reasoning_seen=reasoning_seen(response.payload),
             ),
             completed_at=completed_at,
             error_code=(
@@ -322,6 +335,9 @@ class ResponsePostprocessor:
                 provider=bounded_label("provider", prepared.provider),
                 model=bounded_label("model", prepared.model),
             ).observe((perf_counter() - provider_started_at) * 1000)
+            REQUESTS_IN_FLIGHT.labels(
+                provider=bounded_label("provider", prepared.provider)
+            ).dec()
 
         return StreamSession(
             meter=meter,
@@ -385,6 +401,11 @@ def record_settled_usage(
             provider=bounded_label("provider", prepared.provider),
             outcome=bounded_label("outcome", usage.completion_outcome),
         ).inc()
+    if usage.ttft_ms is not None:
+        TIME_TO_FIRST_TOKEN_SECONDS.labels(
+            provider=bounded_label("provider", prepared.provider),
+            model=bounded_label("model", prepared.model),
+        ).observe(usage.ttft_ms / 1000)
     span = trace.get_current_span()
     if not span.is_recording():
         return

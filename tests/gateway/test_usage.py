@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import StringIO
 import json
+import re
 from types import MethodType, SimpleNamespace
+from typing import get_args, get_type_hints
 
 import pytest
 
 from shim.gateway.streaming import StreamFinalization
 from shim.gateway.kernel.result import InferenceTiming, PreparedInference
 from shim.gateway.streaming.meter import StreamUsageSnapshot
-from shim.gateway.usage import LocalUsageLifecycle
+from shim.gateway.usage import JSONL_PROTOCOLS, LocalUsageLifecycle
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 
 
@@ -24,6 +27,8 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         timing=InferenceTiming(),
         request_id="req_local",
         provider="openai",
+        protocol="chat",
+        stream=False,
         model=model,
         pricing_model=model,
         target=None,
@@ -100,6 +105,9 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "version",
         "event",
         "request_id",
+        "ts",
+        "protocol",
+        "stream",
         "provider",
         "model",
         "outcome",
@@ -117,6 +125,10 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "provider_finish_reasons",
         "completion_outcome",
         "ttft_ms",
+        "provider_latency_ms",
+        "answer_characters",
+        "tool_call_names",
+        "reasoning_seen",
         "repeat_chain_length",
         "cost_center",
         "tags",
@@ -126,10 +138,16 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "policy_verdicts",
     }
     latency_ms = event.pop("shim_latency_ms")
+    stamp = event.pop("ts")
+    assert stamp == prepared.context.started_at.isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
     assert event == {
         "version": 4,
         "event": "request",
         "request_id": "req_local",
+        "protocol": "openai_chat",
+        "stream": False,
         "provider": "openai",
         "model": "gpt-5.6-luna",
         "outcome": "completed",
@@ -146,6 +164,10 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "provider_finish_reasons": None,
         "completion_outcome": "complete",
         "ttft_ms": None,
+        "provider_latency_ms": None,
+        "answer_characters": None,
+        "tool_call_names": [],
+        "reasoning_seen": False,
         "repeat_chain_length": 1,
         "cost_center": "risk",
         "tags": ["risk", "batch"],
@@ -1004,3 +1026,86 @@ def test_the_system_prompt_hash_keeps_its_pinned_digests(protocol, deployment, d
     assert system_prompt_hash(prepared, b"pinned-system-prompt-hash-key-0000") == (
         f"hmac-sha256:v1:{digest}"
     )
+
+
+def test_the_jsonl_protocol_map_covers_every_kernel_protocol() -> None:
+    protocols = get_args(get_type_hints(PreparedInference)["protocol"])
+
+    assert set(JSONL_PROTOCOLS) == set(protocols)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "stream", "snapshot", "expected"),
+    [
+        (
+            "chat",
+            False,
+            {
+                "provider_latency_ms": 812,
+                "answer_characters": 5,
+                "tool_call_names": ("lookup",),
+            },
+            ("openai_chat", 812, 5, ["lookup"], False),
+        ),
+        (
+            "responses",
+            True,
+            {"ttft_ms": 40.0, "answer_characters": 263, "reasoning_seen": True},
+            ("openai_responses", None, 263, [], True),
+        ),
+        ("messages", False, {}, ("anthropic_messages", None, None, [], False)),
+        ("generate_content", True, {}, ("gemini", None, None, [], False)),
+    ],
+)
+async def test_the_request_line_carries_time_protocol_and_the_answer_facts(
+    protocol, stream, snapshot, expected
+) -> None:
+    output = StringIO()
+    prepared = _prepared()
+    prepared.protocol, prepared.stream = protocol, stream
+    terminal = _terminal()
+    lifecycle = LocalUsageLifecycle(output)
+
+    await lifecycle.finalize(
+        prepared,
+        replace(terminal, usage=replace(terminal.usage, **snapshot)),
+    )
+
+    await lifecycle.aclose()
+    event = json.loads(output.getvalue())
+    assert event["version"] == 4
+    assert event["stream"] is stream
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", event["ts"])
+    assert (
+        event["protocol"],
+        event["provider_latency_ms"],
+        event["answer_characters"],
+        event["tool_call_names"],
+        event["reasoning_seen"],
+    ) == expected
+
+
+@pytest.mark.asyncio
+async def test_reject_and_fail_lines_carry_the_defaults() -> None:
+    output = StringIO()
+    counted = _prepared()
+    counted.protocol = "count_tokens"
+    failed = _prepared()
+    lifecycle = LocalUsageLifecycle(output)
+
+    await lifecycle.reject(counted)
+    await lifecycle.fail(failed, reason="request_aborted")
+
+    await lifecycle.aclose()
+    rejected, aborted = (json.loads(line) for line in output.getvalue().splitlines())
+    assert rejected["protocol"] == "anthropic_count_tokens"
+    assert aborted["protocol"] == "openai_chat"
+    for event in (rejected, aborted):
+        assert event["version"] == 4
+        assert (
+            event["provider_latency_ms"],
+            event["answer_characters"],
+            event["tool_call_names"],
+            event["reasoning_seen"],
+        ) == (None, None, [], False)

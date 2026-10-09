@@ -982,6 +982,10 @@ class DurableUsageLifecycle:
                         provider_finish_reasons=usage.provider_finish_reasons,
                         completion_outcome=usage.completion_outcome,
                         ttft_ms=usage.ttft_ms,
+                        provider_latency_ms=usage.provider_latency_ms,
+                        answer_characters=usage.answer_characters,
+                        tool_call_names=usage.tool_call_names,
+                        reasoning_seen=usage.reasoning_seen,
                         cached_input_tokens=None
                         if usage.cache_split is None
                         else sum(usage.cache_split),

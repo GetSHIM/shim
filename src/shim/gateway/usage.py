@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timezone
 import hmac
 import json
 import logging
@@ -15,11 +16,20 @@ from typing import Any, Literal, Protocol, TextIO, TypeAlias
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.kernel.result import AdmissionState, PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
+from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.observability.metrics import LOCAL_USAGE_DROPPED_TOTAL
 
 
 logger = logging.getLogger(__name__)
 
+# The request line's `protocol`, keyed by the kernel's protocol.
+JSONL_PROTOCOLS = {
+    "chat": "openai_chat",
+    "responses": "openai_responses",
+    "messages": "anthropic_messages",
+    "count_tokens": "anthropic_count_tokens",
+    "generate_content": "gemini",
+}
 
 UsageFailureReason: TypeAlias = Literal[
     "admission_aborted",
@@ -213,6 +223,7 @@ class LocalUsageLifecycle:
             completion_outcome=usage.completion_outcome,
             shim_latency_ms=terminal.shim_latency_ms,
             cache_split=usage.cache_split,
+            usage=usage,
         )
 
     async def fail(
@@ -265,13 +276,18 @@ class LocalUsageLifecycle:
         ttft_ms: float | None = None,
         completion_outcome: str | None = None,
         cache_split: CacheSplit | None = None,
+        usage: StreamUsageSnapshot | None = None,
     ) -> None:
         admission = prepared.admission
         privacy = prepared.privacy
+        started_at = prepared.context.started_at.astimezone(timezone.utc)
         event = {
             "version": 4,
             "event": "request",
             "request_id": str(prepared.request_id),
+            "ts": started_at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "protocol": JSONL_PROTOCOLS[prepared.protocol],
+            "stream": prepared.stream,
             "provider": str(prepared.provider),
             "model": model,
             "outcome": outcome,
@@ -287,6 +303,10 @@ class LocalUsageLifecycle:
             "provider_finish_reasons": provider_finish_reasons,
             "completion_outcome": completion_outcome,
             "ttft_ms": ttft_ms,
+            "provider_latency_ms": usage.provider_latency_ms if usage else None,
+            "answer_characters": usage.answer_characters if usage else None,
+            "tool_call_names": list(usage.tool_call_names) if usage else [],
+            "reasoning_seen": usage.reasoning_seen if usage else False,
             "repeat_chain_length": (
                 admission.repeat_chain_length if admission is not None else None
             ),

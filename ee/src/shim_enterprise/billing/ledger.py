@@ -271,6 +271,10 @@ class FinalizationCommand:
     provider_finish_reasons: dict[str, str] | None = None
     completion_outcome: str | None = None
     ttft_ms: float | None = None
+    provider_latency_ms: int | None = None
+    answer_characters: int | None = None
+    tool_call_names: tuple[str, ...] = ()
+    reasoning_seen: bool = False
     cached_input_tokens: int | None = None
     warnings: tuple[str, ...] = ()
     shim_latency_ms: int | None = None
@@ -618,6 +622,17 @@ class DurableAccountingRepository:
                 "cached_input_tokens": command.cached_input_tokens,
                 "warnings": list(command.warnings),
                 "shim_latency_ms": command.shim_latency_ms,
+                # Only a settled answer carries a snapshot; refunds record none of these.
+                **(
+                    {
+                        "provider_latency_ms": command.provider_latency_ms,
+                        "answer_characters": command.answer_characters,
+                        "tool_call_names": list(command.tool_call_names),
+                        "reasoning_seen": command.reasoning_seen,
+                    }
+                    if command.quota_action is TerminalAction.SETTLE
+                    else {}
+                ),
             }
         if command.policy_verdicts is not None and not all_replayed:
             lifecycle.lifecycle_metadata = {
