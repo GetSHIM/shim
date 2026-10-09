@@ -195,6 +195,23 @@ request's start, UTC ISO 8601 with milliseconds and `Z`), `protocol`
 has `provider_latency_ms: null`, `answer_characters: null`, `tool_call_names: []`
 and `reasoning_seen: false`.
 
+`response_analysis` holds the results of the after-answer analyzers the tenant
+turned on in its [gateway settings](COOKBOOK.md#change-the-gateway-settings),
+by analyzer name, plus `versions` (each analyzer's version), for example
+`{"shape": {...}, "versions": {"shape": "1"}}`. An analyzer that raised is
+`{"error": true}`; one whose result would exceed 4,096 characters of compact JSON
+is `{"error": true, "reason": "too_large"}`; one with nothing to record is left
+out, and when none recorded anything the key is absent. Results are counts,
+labels, ids, protocol field names and JSON pointers, never text from the request
+or the answer. The pass runs only for completed requests, after the answer was
+delivered, in the same task as the response scan, and writes the key into the
+lifecycle metadata in its own short transaction; a failed write is logged by
+type and dropped. The request list reads it from the lifecycle row and the CSV
+writes it as compact JSON with sorted keys. The community JSONL writes a third
+line per request, `event: "response_analysis"`, with the same object as
+`results`. `shim_response_analysis_total{analyzer, result}` counts each run as
+`ok`, `none` or `error`.
+
 ## Responses continuation markers
 
 Enterprise writes an encrypted continuation marker to Redis for every Responses

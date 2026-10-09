@@ -177,15 +177,27 @@ def test_enterprise_unlimited_mapping_preserves_existing_bool_semantics() -> Non
 
 
 class _PolicyCache:
-    def __init__(self, pii_config: dict | None) -> None:
+    def __init__(self, pii_config: dict | None, gateway: dict | None = None) -> None:
         self.pii_config = pii_config
+        # Cached as {} unless a test asks for a miss.
+        self.gateway = {} if gateway is None else gateway
         self.stored: dict | None = None
+        self.stored_gateway: dict | None = None
+        self.gets = 0
 
     async def get_pii_config(self, _tenant_id: str) -> dict | None:
+        self.gets += 1
         return self.pii_config
 
     async def set_pii_config(self, _tenant_id: str, value: dict) -> None:
         self.stored = value
+
+    async def get_gateway_settings(self, _tenant_id: str) -> dict | None:
+        self.gets += 1
+        return self.gateway
+
+    async def set_gateway_settings(self, _tenant_id: str, value: dict) -> None:
+        self.stored_gateway = value
 
     async def get_tier_definition(self, _slug: str) -> dict:
         return {"features": {}}
@@ -343,3 +355,43 @@ async def test_privacy_settings_never_share_a_cache_entry_with_an_older_release(
     assert entries["config:pii:tenant"] == _SWITCHES
     await cache.invalidate_pii_config("tenant")
     assert list(entries) == ["config:pii:tenant"]
+
+
+@pytest.mark.asyncio
+async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shim_enterprise.tenants.gateway_settings as gateway_settings
+
+    monkeypatch.setattr(gateway_settings, "ANALYZER_NAMES", frozenset({"shape"}))
+    monkeypatch.setattr(gateway_settings, "ANALYZERS", (SimpleNamespace(name="shape"),))
+    api_key = SimpleNamespace(
+        organization_id=UUID(int=1),
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+    cache = _PolicyCache(_SWITCHES, gateway={"response_analysis": ["shape"]})
+    service = policy_module.TenantPolicyService(cache)
+    settings = []
+    original = service.resolve
+
+    async def resolve(*args):
+        settings.append(await original(*args))
+        return settings[-1]
+
+    service.resolve = resolve  # type: ignore[method-assign]
+    # A session object without execute: any database read would raise.
+    resolver = TenantRequestPolicyResolver(
+        service, Mock(return_value=SessionContext(object()))
+    )
+
+    resolved = await resolver.resolve(SimpleNamespace())
+
+    assert resolved.tenant_gateway_settings is settings[0].gateway_settings
+    assert resolved.response_analysis == ("shape",)
+    assert cache.gets == 2

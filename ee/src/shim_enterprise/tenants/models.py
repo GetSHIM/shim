@@ -451,6 +451,41 @@ class OrganizationPIIConfig(Base, TimestampMixin):
     organization: Mapped[Organization] = relationship(back_populates="pii_config")
 
 
+class OrganizationGatewaySettings(Base, TimestampMixin):
+    """Tenant gateway switches; no row means every switch at its off default."""
+
+    __tablename__ = "organization_gateway_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "revision >= 0", name="ck_organization_gateway_settings_revision"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_gateway_settings_organization_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_organization_gateway_settings_updated_by",
+            ondelete="SET NULL",
+        ),
+    )
+
+
 class ProviderSecret(Base, TimestampMixin):
     """Opaque tenant-bound reference to provider credentials in SecretStore."""
 

@@ -152,6 +152,10 @@ class PreparedInference:
     placeholder_key: SecretBytes | None = field(default=None, repr=False, compare=False)
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
+    response_analysis: tuple[str, ...] = ()
+    tenant_gateway_settings: object | None = field(
+        default=None, repr=False, compare=False
+    )
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None

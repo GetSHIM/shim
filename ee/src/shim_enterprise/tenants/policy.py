@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hmac
 from hashlib import sha256
@@ -11,7 +12,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from pydantic import SecretBytes
+from pydantic import SecretBytes, ValidationError
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,8 +27,10 @@ from shim.gateway.request_policy import (
     ResolvedRequestPolicy,
 )
 from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
     ApiKey,
+    OrganizationGatewaySettings,
     OrganizationPIIConfig,
     TierDefinition,
 )
@@ -106,6 +109,7 @@ class ResolvedTenantSettings:
     placeholder_mode: str = "random"
     bulk_threshold: int | None = 50
     response_scan: Literal["off", "count"] = "off"
+    gateway_settings: GatewaySettings = field(default_factory=GatewaySettings)
 
 
 class TenantPolicyService:
@@ -122,7 +126,28 @@ class TenantPolicyService:
         tenant_id = api_key.organization_id
         if tenant_id is None:
             raise ValueError("authenticated API key has no tenant owner")
-        pii_config = await self._pii_config(tenant_id, session)
+        cache_key = str(tenant_id)
+        # Both cache reads at once, so a hit adds no sequential round trip.
+        pii_cached, gateway_cached = await asyncio.gather(
+            self.cache.get_pii_config(cache_key),
+            self.cache.get_gateway_settings(cache_key),
+        )
+        pii_config = (
+            pii_cached
+            if pii_cached is not None
+            else await self._pii_config(tenant_id, session)
+        )
+        gateway = (
+            gateway_cached
+            if gateway_cached is not None
+            else await self._gateway_settings(tenant_id, session)
+        )
+        try:
+            gateway_settings = stored_settings(gateway)
+        except ValidationError as exc:
+            raise TenantPolicyConfigurationError(
+                "tenant gateway settings are invalid"
+            ) from exc
         tier = await self._tier_definition(api_key.tier, session)
         switches = dict(pii_config or {})
         # Every key but the five switches is a setting of its own.
@@ -140,7 +165,23 @@ class TenantPolicyService:
             placeholder_mode=placeholder_mode,
             bulk_threshold=bulk_threshold,
             response_scan=response_scan,
+            gateway_settings=gateway_settings,
         )
+
+    async def _gateway_settings(
+        self, tenant_id: UUID, session: AsyncSession
+    ) -> dict[str, Any]:
+        stored = (
+            await session.execute(
+                select(OrganizationGatewaySettings.settings).where(
+                    OrganizationGatewaySettings.organization_id == tenant_id
+                )
+            )
+        ).scalar_one_or_none()
+        # A missing row is cached as {}, so the defaults cost no query either.
+        value = dict(stored or {})
+        await self.cache.set_gateway_settings(str(tenant_id), value)
+        return value
 
     async def _pii_config(
         self,
@@ -148,9 +189,6 @@ class TenantPolicyService:
         session: AsyncSession,
     ) -> dict[str, Any] | None:
         cache_key = str(tenant_id)
-        cached = await self.cache.get_pii_config(cache_key)
-        if cached is not None:
-            return cached
         row = (
             await session.execute(
                 select(OrganizationPIIConfig).where(
@@ -266,5 +304,9 @@ class TenantRequestPolicyResolver:
                 else None,
                 bulk_threshold=tenant_settings.bulk_threshold,
                 response_scan=tenant_settings.response_scan,
+                response_analysis=tuple(
+                    tenant_settings.gateway_settings.response_analysis
+                ),
+                tenant_gateway_settings=tenant_settings.gateway_settings,
             )
         return resolved

@@ -898,6 +898,28 @@ class DurableUsageLifecycle:
             )
             await session.commit()
 
+    async def record_response_analysis(
+        self, prepared: PreparedInference, results: Mapping[str, Any]
+    ) -> None:
+        # The answer is long gone: a missing row or a failure is logged and dropped.
+        try:
+            async with self.session_factory() as session:
+                await RequestLifecycleRepository.update(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                    values={
+                        "lifecycle_metadata": RequestLifecycle.lifecycle_metadata.op(
+                            "||"
+                        )({"response_analysis": dict(results)})
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "Response analysis record failed type=%s", type(exc).__name__
+            )
+
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
     ) -> None:

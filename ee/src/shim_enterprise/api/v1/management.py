@@ -52,6 +52,7 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
+from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
     AuditIntent,
@@ -108,9 +109,17 @@ from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
+from shim_enterprise.tenants.gateway_settings import (
+    SETTING_AVAILABILITY,
+    GatewaySettings,
+    GatewaySettingsPatch,
+    classify_change,
+    stored_settings,
+)
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
+    OrganizationGatewaySettings,
     OrganizationInvite,
     Organization,
     ProviderSecret,
@@ -890,6 +899,24 @@ class RequestActivityView(BaseModel):
             "Distinct values the answer carried that the request did not, by "
             "entity type; null when the response scan was off or has not finished."
         ),
+    )
+    response_analysis: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Results of the after-answer analyzers by name, with their versions; "
+            "null when no analyzer ran or the pass has not finished."
+        ),
+    )
+
+
+class GatewaySettingsView(BaseModel):
+    settings: GatewaySettings
+    revision: int = Field(ge=0)
+    updated_at: datetime | None
+    updated_by: UUID | None
+    available_analyzers: list[str]
+    unavailable: dict[str, str] = Field(
+        description='Per field, why it is "off, needs X"; empty when everything is available.'
     )
 
 
@@ -2125,6 +2152,100 @@ async def update_privacy_settings(
     return row
 
 
+def _gateway_settings_view(
+    row: OrganizationGatewaySettings | None,
+) -> GatewaySettingsView:
+    return GatewaySettingsView(
+        settings=stored_settings(row.settings)
+        if row is not None
+        else GatewaySettings(),
+        revision=row.revision if row is not None else 0,
+        updated_at=row.updated_at if row is not None else None,
+        updated_by=row.updated_by if row is not None else None,
+        available_analyzers=[analyzer.name for analyzer in ANALYZERS],
+        unavailable={
+            field: reason
+            for field, available in SETTING_AVAILABILITY.items()
+            if (reason := available()) is not None
+        },
+    )
+
+
+@router.get("/gateway-settings", response_model=GatewaySettingsView)
+async def get_gateway_settings(
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> GatewaySettingsView:
+    return _gateway_settings_view(
+        await session.get(OrganizationGatewaySettings, _tenant_id(user))
+    )
+
+
+@router.patch("/gateway-settings", response_model=GatewaySettingsView)
+async def update_gateway_settings(
+    patch: GatewaySettingsPatch,
+    request: Request,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> GatewaySettingsView:
+    tenant_id = _tenant_id(user)
+    changes = patch.model_dump(exclude_unset=True)
+    row = await session.get(
+        OrganizationGatewaySettings, tenant_id, with_for_update=True
+    )
+    if row is None:
+        if GatewaySettings.model_validate(changes) == GatewaySettings():
+            return _gateway_settings_view(None)
+        await session.execute(
+            insert(OrganizationGatewaySettings)
+            .values(organization_id=tenant_id)
+            .on_conflict_do_nothing()
+        )
+        row = await session.get(
+            OrganizationGatewaySettings,
+            tenant_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        assert row is not None
+    before = stored_settings(row.settings)
+    after = GatewaySettings.model_validate({**before.model_dump(), **changes})
+    if after == before:
+        # Nothing to write; a row inserted above came from a concurrent first write.
+        return _gateway_settings_view(row)
+    row.settings = after.model_dump(mode="json", exclude_defaults=True)
+    row.revision += 1
+    row.updated_by = user.id
+    await _audit(
+        session,
+        user,
+        "tenant.gateway_settings_updated",
+        str(tenant_id),
+        details=change_details(
+            before.model_dump(mode="json"), after.model_dump(mode="json")
+        ),
+    )
+    direction, relaxed = classify_change(before, after)
+    if direction == "relaxing":
+        await _audit(
+            session,
+            user,
+            "tenant.gateway_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": relaxed},
+        )
+    await session.commit()
+    try:
+        cache: CacheService = request.app.state.cache
+        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
+    except Exception as exc:
+        logger.warning(
+            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+        )
+    await session.refresh(row)
+    return _gateway_settings_view(row)
+
+
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
 async def get_provider_key_settings(
     user: User = Depends(get_current_user),
@@ -2558,8 +2679,9 @@ async def list_requests(
                     for field in _DIAGNOSTIC_FIELDS
                 },
                 response_entities=response_entities,
+                response_analysis=response_analysis,
             )
-            for row, cost_usd, response_entities in rows
+            for row, cost_usd, response_entities, response_analysis in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -2962,10 +3084,11 @@ async def export_requests(
                 "blocked_entities",
                 "bulk_disclosure",
                 "response_entities",
+                "response_analysis",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities in rows:
+        for row, cost_usd, response_entities, response_analysis in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -3013,6 +3136,9 @@ async def export_requests(
                     ),
                     json.dumps(response_entities, sort_keys=True)
                     if response_entities is not None
+                    else None,
+                    json.dumps(response_analysis, sort_keys=True, separators=(",", ":"))
+                    if response_analysis is not None
                     else None,
                 )
             )
@@ -3513,6 +3639,9 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             # The response scan finishes after the analytics row is projected.
             RequestLifecycle.lifecycle_metadata["response_entities"].label(
                 "response_entities"
+            ),
+            RequestLifecycle.lifecycle_metadata["response_analysis"].label(
+                "response_analysis"
             ),
         )
         .outerjoin(

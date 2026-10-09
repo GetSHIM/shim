@@ -14,6 +14,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.privacy.policies import EntityAction, effective_entity_actions
 
 
@@ -58,6 +59,7 @@ class CommunitySettings(BaseSettings):
     SYSTEM_PROMPT_HASH_KEY: SecretStr | None = Field(default=None, min_length=32)
     PII_BULK_THRESHOLD: int = Field(default=50, ge=0)
     PII_RESPONSE_SCAN: Literal["off", "count"] = "off"
+    SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,
@@ -76,7 +78,12 @@ class CommunitySettings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     OTEL_SERVICE_NAME: str = "shim"
 
-    @field_validator("TRUSTED_PROXIES", "BACKEND_CORS_ORIGINS", mode="before")
+    @field_validator(
+        "TRUSTED_PROXIES",
+        "BACKEND_CORS_ORIGINS",
+        "SHIM_RESPONSE_ANALYSIS",
+        mode="before",
+    )
     @classmethod
     def parse_csv_list(cls, value: object) -> object:
         if isinstance(value, str):
@@ -85,6 +92,14 @@ class CommunitySettings(BaseSettings):
                 return json.loads(stripped)
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
+
+    @field_validator("SHIM_RESPONSE_ANALYSIS")
+    @classmethod
+    def known_analyzers_in_registry_order(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - ANALYZER_NAMES)
+        if unknown:
+            raise ValueError(f"unknown analyzer: {', '.join(unknown)}")
+        return [analyzer.name for analyzer in ANALYZERS if analyzer.name in value]
 
     @field_validator("PII_ENTITY_ACTIONS", mode="wrap")
     @classmethod

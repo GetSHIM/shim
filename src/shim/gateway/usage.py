@@ -61,6 +61,10 @@ class UsageLifecycle(Protocol):
         self, prepared: PreparedInference, result: Mapping[str, Any]
     ) -> None: ...
 
+    async def record_response_analysis(
+        self, prepared: PreparedInference, results: Mapping[str, Any]
+    ) -> None: ...
+
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
     ) -> None: ...
@@ -172,6 +176,18 @@ class LocalUsageLifecycle:
                 "event": "response_privacy",
                 "request_id": str(prepared.request_id),
                 **result,
+            }
+        )
+
+    async def record_response_analysis(
+        self, prepared: PreparedInference, results: Mapping[str, Any]
+    ) -> None:
+        self._emit(
+            {
+                "version": 4,
+                "event": "response_analysis",
+                "request_id": str(prepared.request_id),
+                "results": results,
             }
         )
 

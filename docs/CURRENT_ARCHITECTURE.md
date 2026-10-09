@@ -213,6 +213,18 @@ reuse the native executions with operator-approved destinations and stored
 credential references. Unpriced deployments remain explicit in accounting, and
 monetary caps reject them. See [`MODEL_DEPLOYMENTS.md`](../ee/docs/MODEL_DEPLOYMENTS.md).
 
+After a completed answer has been delivered (after the last body byte of a JSON
+answer, after a stream's finalization), one background task per request runs the
+opt-in response scan and the opt-in response analyzers
+(`src/shim/gateway/pipeline/analysis.py`, registry in
+`src/shim/gateway/analyzers/`) on a dedicated single-worker executor, then
+writes each record: community JSONL lines, enterprise lifecycle metadata in a
+short transaction of its own. The task is registered with the postprocessor and
+drained at shutdown. With both off nothing is kept and no task is created.
+Enterprise tenant switches live in `organization_gateway_settings`, one validated
+`GatewaySettings` model read next to the privacy settings and cached for 300
+seconds; core sees it only as `tenant_gateway_settings` on the request.
+
 Anthropic token counting shares authentication, registry authorization and
 privacy transformation. It persists nonbillable enterprise audit preflight and
 completion without quota/spend reservations or inference lifecycle settlement.

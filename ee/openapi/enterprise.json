@@ -4155,6 +4155,103 @@
         "title": "FunctionResponseScheduling",
         "type": "string"
       },
+      "GatewaySettings": {
+        "description": "The effective settings; a later PRD adds a field here, never a column.",
+        "properties": {
+          "response_analysis": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Response Analysis",
+            "type": "array"
+          }
+        },
+        "title": "GatewaySettings",
+        "type": "object"
+      },
+      "GatewaySettingsPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "response_analysis": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Analysis"
+          }
+        },
+        "title": "GatewaySettingsPatch",
+        "type": "object"
+      },
+      "GatewaySettingsView": {
+        "properties": {
+          "available_analyzers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Analyzers",
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/GatewaySettings"
+          },
+          "unavailable": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Per field, why it is \"off, needs X\"; empty when everything is available.",
+            "title": "Unavailable",
+            "type": "object"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "settings",
+          "revision",
+          "updated_at",
+          "updated_by",
+          "available_analyzers",
+          "unavailable"
+        ],
+        "title": "GatewaySettingsView",
+        "type": "object"
+      },
       "GenerateContentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -8428,6 +8525,19 @@
           "request_id": {
             "title": "Request Id",
             "type": "string"
+          },
+          "response_analysis": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Results of the after-answer analyzers by name, with their versions; null when no analyzer ran or the pass has not finished.",
+            "title": "Response Analysis"
           },
           "response_entities": {
             "anyOf": [
@@ -14659,6 +14769,76 @@
           }
         ],
         "summary": "Update Finding",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/gateway-settings": {
+      "get": {
+        "operationId": "get_gateway_settings_api_v1_management_gateway_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewaySettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      },
+      "patch": {
+        "operationId": "update_gateway_settings_api_v1_management_gateway_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GatewaySettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewaySettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Gateway Settings",
         "tags": [
           "management"
         ]
