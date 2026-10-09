@@ -588,6 +588,13 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            # A keyed hash of raw prompt text is still a
+                            # pseudonym of the personal data in it.
+                            **(
+                                {"repeat_digest": None}
+                                if privacy_facts["pii_detected"]
+                                else {}
+                            ),
                         }
                     ),
                 },

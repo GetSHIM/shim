@@ -348,6 +348,84 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("privacy", "kept"),
+    [
+        (PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False), True),
+        (
+            PrivacyOutcome(
+                action=PrivacyAction.SCRUBBED,
+                pii_detected=True,
+                verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
+                pii_entities={"EMAIL_ADDRESS": 1},
+            ),
+            False,
+        ),
+        (
+            PrivacyOutcome(
+                action=PrivacyAction.SCRUBBED,
+                pii_detected=True,
+                blocked_entities={"SECRET": 1},
+            ),
+            False,
+        ),
+    ],
+    ids=["clean", "scrubbed", "blocked"],
+)
+async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
+    db, test_api_key, privacy, kept
+) -> None:
+    repository = DurableAccountingRepository()
+    request_id = f"req_digest_pii_{uuid4().hex}"
+    deployment_id = str(uuid4())
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            deployment_id=deployment_id,
+            repeat_digest="b" * 64,
+        ),
+    )
+    prepared = SimpleNamespace(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        policy_verdicts=[],
+        privacy=privacy,
+    )
+    await DurableAccountingCoordinator().record_privacy(prepared, db)
+    command = FinalizationCommand(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        quota_action=TerminalAction.SETTLE,
+        prompt_tokens=20,
+        completion_tokens=3,
+        estimated=True,
+        lifecycle_status="client_disconnected",
+    )
+    await repository.finalize(db, command)
+    assert (await repository.finalize(db, command)).replayed
+    await db.flush()
+
+    metadata = (
+        await db.scalar(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).lifecycle_metadata
+    assert metadata["repeat_digest"] == ("b" * 64 if kept else None)
+    assert metadata["deployment_id"] == deployment_id
+
+
+@pytest.mark.asyncio
 async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
     db, test_api_key, monkeypatch
 ) -> None:
