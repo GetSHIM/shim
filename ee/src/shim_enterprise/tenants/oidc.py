@@ -10,7 +10,7 @@ import secrets
 import time
 from typing import Any
 from urllib.parse import urlencode, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
@@ -30,9 +30,10 @@ from starlette.middleware.sessions import SessionMiddleware
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import change_details, record_management_action
-from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.models import Organization, OrganizationRole, User
 from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["identity"])
 SESSION_COOKIE = "shim_session"
 ASYMMETRIC_ALGORITHMS = {
@@ -143,6 +144,33 @@ def identity_groups(claims: dict[str, Any]) -> list[str]:
     return groups
 
 
+async def _custom_role(session: AsyncSession, groups: list[str]) -> UUID | None:
+    slugs = sorted(
+        {
+            settings.OIDC_GROUP_CUSTOM_ROLE_MAP[group]
+            for group in groups
+            if group in settings.OIDC_GROUP_CUSTOM_ROLE_MAP
+        }
+    )
+    if not slugs:
+        return None
+    found = dict(
+        (
+            await session.execute(
+                select(OrganizationRole.slug, OrganizationRole.id).where(
+                    OrganizationRole.organization_id == settings.OIDC_ORGANIZATION_ID,
+                    OrganizationRole.slug.in_(slugs),
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )
+    if len(found) < len(slugs):
+        logger.warning("OIDC group maps to a custom role the organization lacks")
+    return next((found[slug] for slug in slugs if slug in found), None)
+
+
 async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> User:
     issuer, subject = claims.get("iss"), claims.get("sub")
     if (
@@ -171,6 +199,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         .with_for_update()
     ):
         raise HTTPException(503, "OIDC organization has not been provisioned")
+    custom_role_id = await _custom_role(session, groups) if role == "member" else None
     user = await session.scalar(
         select(User)
         .where(User.oidc_issuer == issuer, User.oidc_subject == subject)
@@ -199,6 +228,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
             email=email,
             full_name=name[:200] if isinstance(name, str) else None,
             role=role,
+            custom_role_id=custom_role_id,
             is_active=True,
             is_verified=True,
         )
@@ -208,6 +238,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
             403, "Identity membership is inactive or belongs to another organization"
         )
     user.role = role
+    user.custom_role_id = custom_role_id
     try:
         await session.flush()
         teams_before, teams_after = await synchronize_oidc_teams(

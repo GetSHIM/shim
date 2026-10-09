@@ -97,6 +97,9 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.personal_workspace_archived` | `removed`: rows deleted per table when the workspace's only user joined another organization; recorded in the archived workspace's chain |
 | `tenant.service_account_created` | `after`: `name`, `role` and `expires_at` of the new service account |
 | `tenant.service_account_rotated` / `_deleted` | none beyond the account id in `subject_id` |
+| `tenant.custom_role_created` / `tenant.custom_role_deleted` | `after` / `before`: `slug`, `name` and `permissions` of the role (`slug` and `permissions` on delete) |
+| `tenant.custom_role_updated` | `before` and `after` of the changed `slug`, `name` and `permissions` |
+| `tenant.member_custom_role_changed` | `before` and `after`: the member's custom role slug, `null` for none |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
 | `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
 | `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |

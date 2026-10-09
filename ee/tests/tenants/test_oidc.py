@@ -421,3 +421,64 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
         {"oidc_teams": {}},
         {"oidc_teams": {str(team.id): "member"}},
     )
+
+
+@pytest.mark.asyncio
+async def test_login_sets_and_clears_the_mapped_custom_role(
+    db, test_org, monkeypatch, oidc_config, caplog
+):
+    from shim_enterprise.tenants.models import OrganizationRole
+
+    roles = {
+        slug: OrganizationRole(
+            organization_id=test_org.id, slug=slug, name=slug, permissions=[]
+        )
+        for slug in ("b-viewer", "a-viewer")
+    }
+    db.add_all(roles.values())
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_GROUP_CUSTOM_ROLE_MAP",
+        {"/shim/b": "b-viewer", "/shim/a": "a-viewer", "/shim/old": "retired-role"},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="custom-role-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members", "/shim/b", "/shim/a", "/shim/old"],
+    )
+
+    user = await oidc.synchronize_user(db, claims)
+    assert user.custom_role_id == roles["a-viewer"].id
+    assert "custom role the organization lacks" in caplog.text
+    assert "retired-role" not in caplog.text
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/owners", "/shim/a"]})
+    assert (user.role, user.custom_role_id) == ("owner", None)
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/members", "/shim/b"]})
+    assert user.custom_role_id == roles["b-viewer"].id
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/members"]})
+    assert user.custom_role_id is None
+
+
+@pytest.mark.asyncio
+async def test_an_oidc_members_custom_role_is_set_in_the_identity_provider(
+    db, test_user_with_org, oidc_config
+):
+    from shim_enterprise.api.v1 import management
+
+    test_user_with_org.role = "owner"
+    with pytest.raises(HTTPException) as refused:
+        await management.update_team_member(
+            uuid4(),
+            management.TeamRolePatch(role="member", custom_role_id=None),
+            test_user_with_org,
+            db,
+        )
+
+    assert (refused.value.status_code, refused.value.detail) == (
+        409,
+        "Manage this role in the identity provider",
+    )

@@ -2,19 +2,53 @@
 
 Teams belong to one organization. A membership names an existing organization
 user and grants `member` or `team_admin` access to that team. An organization
-role remains `owner`, `admin`, `member`, or `auditor`; a team administrator is
-an organization member with a delegated membership, not another global role.
+role is `owner`, `admin`, `member`, or `auditor`, or a member's
+[custom role](#custom-roles); a team administrator is an organization member
+with a delegated membership, not another global role.
 
-| Role | Gateway keys | Teams and memberships | Organization changes |
-| --- | --- | --- | --- |
-| Owner | All organization keys and policies | Create teams, set quotas, assign team administrators | Existing owner permissions |
-| Admin | All organization keys and policies | Create teams, set quotas, assign team administrators | Existing admin permissions; cannot promote organization roles |
-| Team administrator | Own keys and keys assigned to administered teams; edit those team keys' model policies | Add/remove ordinary members in administered teams | None |
-| Member | Own keys; cannot loosen an existing key's model policy or reassign its access team | Read assigned teams | None |
-| Auditor | Read key metadata; cannot issue, rotate, revoke, or use keys | Read organization teams and memberships | Read only |
+## Permissions
 
-Auditors can also list the model registry (`GET /api/v1/management/model-deployments`);
-creating, changing and checking deployments stays with owners and admins.
+Every management route asks for one permission. A built-in role holds a fixed
+set; a role string the gateway does not know holds none, so it can neither
+write nor own gateway keys.
+
+| Permission | Allows | Owner | Admin | Member | Auditor |
+| --- | --- | --- | --- | --- | --- |
+| `settings.read` | Read the privacy and provider-key settings | x | x | x | x |
+| `settings.write` | Change those settings and the organization name | x | x | | |
+| `rules.read` | Read the rule set | x | x | | x |
+| `rules.write` | Change the rule set | x | x | | |
+| `deployments.read` | List the model registry | x | x | | x |
+| `deployments.manage` | Create, change and health-check deployments | x | x | | |
+| `providers.manage` | List, add, change, verify and delete provider credentials | x | x | | |
+| `budgets.manage` | Create, change, delete and evaluate budgets | x | x | | |
+| `teams.manage` | Create and change teams, grant or remove `team_admin` | x | x | | |
+| `keys.own` | Create and hold one's own gateway keys | x | x | x | |
+| `keys.manage` | Read and change every key, set `allowed_models` and `team_id` on keys without a team | x | x | | |
+| `members.read` | The member list with e-mail addresses | x | x | | x |
+| `members.manage` | Invite, list and revoke invites, remove members, list service accounts | x | x | | |
+| `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
+| `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, and reads of connectors, forward targets, oversight and readiness | x | x | | x |
+| `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
+| `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
+| `findings.manage` | Change a finding's status | x | x | | |
+| `plans.create`, `plans.apply`, `plans.approve` | Policy plans | x | x | | |
+| `requests.approve` | Decide request approvals | x | x | | |
+| `content.read` | Open stored request content | x | x | | |
+| `config.manage` | Signing keys and file mode | x | | | |
+
+A permission without a route yet grants nothing. Team-scoped authority is not a
+permission: a team administrator manages the keys and ordinary members of the
+teams they administer, and everyone manages their own keys.
+
+A write (any method but GET, HEAD and OPTIONS) by a user who holds only read
+permissions answers 403 "Auditor access is read-only", except the four report
+and verification POSTs readers may call (`/compliance/audit/verify` and
+`/compliance/reports/audit`, `kvkk` and `readiness`). Only a user whose role
+holds `keys.own` (owner, admin, member) can authenticate a gateway key.
+`GET /api/v1/management/auth/me` returns the caller's sorted `permissions` and
+`custom_role`, so a dashboard can decide what to show from one call.
 
 Inviting a teammate needs a plan with team access (`team_rbac`). On a plan
 without it, the invite answers 403 with a body that names the plans that have
@@ -113,7 +147,7 @@ required" on organization-wide reads.
 | Compliance connectors, findings, forward targets, oversight and oversight policies (`GET`) | Yes | 403 |
 | `/management/model-deployments` (`GET`) | Yes | 403 |
 | `/management/usage/mine` | Own keys and administered teams' keys | Own keys and administered teams' keys |
-| `/team/members` (names and emails of the organization's users) | Yes | Team administrators only; other members 403 |
+| `/team/members` (the organization's users, with `custom_role`) | Yes, with e-mail addresses | Team administrators only, with `email: null`; other members 403 |
 | `/auth/me`, `/subscription`, `/tier-info`, `GET /settings/pii`, `GET /settings/provider-keys`, `/teams`, `/api-keys` | Unchanged | Unchanged (keys and teams already scoped) |
 
 ## Attribution and migration
@@ -173,3 +207,38 @@ remain authoritative and IdP-managed grants must be changed at the provider.
 Run `uv run --locked python -m pytest -q ee/tests/tenants/test_teams.py` against
 the disposable enterprise database to verify authorization, rotation,
 membership synchronization and concurrent quota reservations.
+
+## Custom roles
+
+A custom role is a named set of permissions an owner gives to members, for
+example a finance colleague who reads billing and nothing else. It needs a plan
+with team access (`team_rbac`); every route below takes `roles.manage`, so only
+owners call them.
+
+| Route | What |
+| --- | --- |
+| `GET /api/v1/management/roles` | The organization's roles |
+| `POST /api/v1/management/roles` | `{slug, name, permissions}`; answers 201 |
+| `PUT /api/v1/management/roles/{role_id}` | Replaces slug, name and permissions |
+| `DELETE /api/v1/management/roles/{role_id}` | 409 while a user holds it |
+
+- `slug` is 2 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter,
+  and not a built-in role name; `name` is up to 100 characters. An organization
+  has at most 20 roles (409 beyond) and a slug once (409).
+- `permissions` may hold any permission above except `roles.manage`,
+  `config.manage`, `content.read`, `plans.approve` and `requests.approve`; any
+  other string answers 422 naming it.
+- `PATCH /api/v1/management/team/members/{member_id}` with `role: "member"` and
+  `custom_role_id` gives a member the role; `custom_role_id: null` takes it away,
+  and a role other than `member` clears it (422 when both are sent). The holder
+  then has exactly the role's permissions instead of the member set.
+- Only users whose permissions include `keys.own` may hold active gateway keys.
+  Giving a role without it to a user with an active key, or removing it from a
+  role whose holders have active keys, answers 409
+  `{"code": "ROLE_HOLDERS_HAVE_KEYS", "users": <count>}`: revoke those keys first.
+- Changes record `tenant.custom_role_created`, `tenant.custom_role_updated`
+  (before and after), `tenant.custom_role_deleted` and
+  `tenant.member_custom_role_changed` (before and after slug).
+- With `AUTH_MODE=oidc` the identity provider assigns custom roles through
+  `OIDC_GROUP_CUSTOM_ROLE_MAP` ([on-prem identity](ON_PREM_IDENTITY.md)), and the
+  PATCH answers 409 "Manage this role in the identity provider" for `custom_role_id`.

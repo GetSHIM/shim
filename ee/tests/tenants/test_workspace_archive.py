@@ -540,6 +540,7 @@ async def test_compliance_evidence_keeps_the_workspace_like_request_history(
 # Foreign keys that archiving neither deletes through nor rules out by R1, and why.
 _KEPT_ON_PURPOSE = {
     ("users", "organizations"): "the user moves; the workspace row stays",
+    ("users", "organization_roles"): "the moving owner holds no custom role",
     ("ai_act_audit_log", "organizations"): "the audit chain stays with the kept row",
     ("ai_act_audit_anchor", "organizations"): "anchors stay with the kept row",
     ("outbox_event", "organizations"): "undelivered appends stay and are delivered",

@@ -60,6 +60,7 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
 from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
@@ -164,7 +165,7 @@ class AccountingPolicyLoader:
                 User.id == api_key.user_id,
                 User.organization_id == api_key.organization_id,
                 User.is_active.is_(True),
-                User.role != "auditor",
+                User.role.in_(KEY_OWNER_ROLES),
             )
         )
         if owner is None:

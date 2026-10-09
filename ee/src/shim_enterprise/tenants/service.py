@@ -34,6 +34,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import Base
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -295,6 +296,7 @@ async def move_user_from_bootstrap(
 def _join(user: User, organization_id: UUID, role: str) -> None:
     user.organization_id = organization_id
     user.role = role
+    user.custom_role_id = None
     user.is_active = True
 
 
@@ -437,7 +439,7 @@ async def authenticate_api_key(
             ApiKey.is_active.is_(True),
             User.organization_id == ApiKey.organization_id,
             User.is_active.is_(True),
-            User.role != "auditor",
+            User.role.in_(KEY_OWNER_ROLES),
         )
     )
     api_key = (await session.execute(statement)).scalar_one_or_none()

@@ -2858,6 +2858,119 @@
         "title": "CreatedTeamInvite",
         "type": "object"
       },
+      "CustomRoleInput": {
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 25,
+            "title": "Permissions",
+            "type": "array"
+          },
+          "slug": {
+            "pattern": "^[a-z][a-z0-9-]{1,31}$",
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "permissions"
+        ],
+        "title": "CustomRoleInput",
+        "type": "object"
+      },
+      "CustomRoleView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "enum": [
+                "settings.read",
+                "settings.write",
+                "rules.read",
+                "rules.write",
+                "deployments.read",
+                "deployments.manage",
+                "providers.manage",
+                "budgets.manage",
+                "teams.manage",
+                "keys.own",
+                "keys.manage",
+                "members.read",
+                "members.manage",
+                "roles.manage",
+                "usage.read",
+                "audit.read",
+                "compliance.manage",
+                "findings.read",
+                "findings.manage",
+                "plans.create",
+                "plans.apply",
+                "plans.approve",
+                "requests.approve",
+                "content.read",
+                "config.manage"
+              ],
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "permissions",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CustomRoleView",
+        "type": "object"
+      },
       "DailyUsageView": {
         "properties": {
           "completion_tokens": {
@@ -10046,10 +10159,29 @@
             "title": "Created At",
             "type": "string"
           },
+          "custom_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role"
+          },
           "email": {
-            "format": "email",
-            "title": "Email",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for team administrators without the members.read permission.",
+            "title": "Email"
           },
           "full_name": {
             "anyOf": [
@@ -10095,6 +10227,18 @@
       },
       "TeamRolePatch": {
         "properties": {
+          "custom_role_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role Id"
+          },
           "role": {
             "enum": [
               "owner",
@@ -11081,6 +11225,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "custom_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role"
+          },
           "email": {
             "format": "email",
             "title": "Email",
@@ -11114,6 +11269,40 @@
             "title": "Organization Name",
             "type": "string"
           },
+          "permissions": {
+            "items": {
+              "enum": [
+                "settings.read",
+                "settings.write",
+                "rules.read",
+                "rules.write",
+                "deployments.read",
+                "deployments.manage",
+                "providers.manage",
+                "budgets.manage",
+                "teams.manage",
+                "keys.own",
+                "keys.manage",
+                "members.read",
+                "members.manage",
+                "roles.manage",
+                "usage.read",
+                "audit.read",
+                "compliance.manage",
+                "findings.read",
+                "findings.manage",
+                "plans.create",
+                "plans.apply",
+                "plans.approve",
+                "requests.approve",
+                "content.read",
+                "config.manage"
+              ],
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
           "role": {
             "enum": [
               "owner",
@@ -11131,6 +11320,8 @@
           "full_name",
           "organization_name",
           "role",
+          "custom_role",
+          "permissions",
           "is_active",
           "is_verified",
           "created_at"
@@ -16127,6 +16318,177 @@
           }
         ],
         "summary": "Export Requests",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/roles": {
+      "get": {
+        "operationId": "list_custom_roles_api_v1_management_roles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CustomRoleView"
+                  },
+                  "title": "Response List Custom Roles Api V1 Management Roles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Custom Roles",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_custom_role_api_v1_management_roles_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomRoleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomRoleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Custom Role",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/roles/{role_id}": {
+      "delete": {
+        "operationId": "delete_custom_role_api_v1_management_roles__role_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Custom Role",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "update_custom_role_api_v1_management_roles__role_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomRoleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomRoleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Custom Role",
         "tags": [
           "management"
         ]

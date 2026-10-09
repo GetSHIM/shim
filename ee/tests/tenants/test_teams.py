@@ -836,7 +836,7 @@ async def test_member_list_is_for_organization_readers_and_team_admins(
             response = await client.get("/team/members")
             statuses[name] = response.status_code
             if response.status_code == 200:
-                listed[name] = {row["email"] for row in response.json()}
+                listed[name] = response.json()
 
     assert statuses == {
         "owner": 200,
@@ -848,8 +848,14 @@ async def test_member_list_is_for_organization_readers_and_team_admins(
         "outsider": 200,
     }
     organization = {owner.email, *(user.email for user in users.values())}
-    assert all(listed[name] == organization for name in listed if name != "outsider")
-    assert listed["outsider"] == {outsider.email}
+    emails = {name: {row["email"] for row in rows} for name, rows in listed.items()}
+    assert emails["owner"] == emails["admin"] == emails["auditor"] == organization
+    # Team admins see who is in the organization, not their e-mail addresses.
+    assert emails["team admin"] == emails["outsider"] == {None}
+    assert {row["id"] for row in listed["team admin"]} == {
+        str(person.id) for person in (owner, *users.values())
+    }
+    assert [row["id"] for row in listed["outsider"]] == [str(outsider.id)]
 
 
 @pytest.mark.asyncio

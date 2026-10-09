@@ -8,6 +8,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.tenants.models import Organization, Team, TeamMembership, User
+from shim_enterprise.tenants.permissions import (
+    READ_PERMISSIONS,
+    Permission,
+    user_permissions,
+)
 
 ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
 
@@ -23,10 +28,17 @@ def member_team_ids(user: User, *, administer: bool = False):
 
 
 async def require_team(
-    session: AsyncSession, user: User, team_id: UUID, *, administer: bool = False
+    session: AsyncSession,
+    user: User,
+    team_id: UUID,
+    *,
+    administer: bool = False,
+    scope: Permission = "usage.read",
 ) -> Team:
+    """Return a team the user may see; `scope` names who sees every team."""
+    permissions = await user_permissions(session, user)
     if administer:
-        if user.role == "auditor":
+        if permissions <= READ_PERMISSIONS:
             raise HTTPException(
                 status_code=403, detail="Auditors have read-only access"
             )
@@ -39,7 +51,7 @@ async def require_team(
     statement = select(Team).where(
         Team.organization_id == user.organization_id, Team.id == team_id
     )
-    if user.role not in ORGANIZATION_READERS:
+    if ("teams.manage" if administer else scope) not in permissions:
         statement = statement.where(
             Team.id.in_(member_team_ids(user, administer=administer))
         )
