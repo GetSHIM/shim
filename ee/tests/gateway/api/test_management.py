@@ -1394,8 +1394,10 @@ async def test_budget_changes_record_changed_fields_and_target_origins(
     assert updated == {
         "before": {"limit_usd": "10", "enabled": True},
         "after": {"limit_usd": "20", "enabled": False},
+        "policy_version": 1,
     }
-    assert set(deleted) == {"before"}
+    assert set(deleted) == {"before", "policy_version"}
+    assert deleted["policy_version"] == 2
     assert deleted["before"]["notify_targets"] == [
         {"kind": "webhook", "endpoint_origin": "https://alerts.example"}
     ]

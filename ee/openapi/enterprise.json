@@ -1972,6 +1972,48 @@
         "title": "ChainStart",
         "type": "object"
       },
+      "ChangeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "delete": {
+            "default": false,
+            "title": "Delete",
+            "type": "boolean"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "set": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set"
+          }
+        },
+        "required": [
+          "resource"
+        ],
+        "title": "ChangeInput",
+        "type": "object"
+      },
       "ChatRequest": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -6967,6 +7009,251 @@
         "title": "PhishBlockThreshold",
         "type": "string"
       },
+      "PlanInput": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeInput"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Changes",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "title": "PlanInput",
+        "type": "object"
+      },
+      "PlanView": {
+        "properties": {
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "applied_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied By"
+          },
+          "applied_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Version"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "base_version": {
+            "title": "Base Version",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "created_by_actor_type": {
+            "title": "Created By Actor Type",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending_approval",
+              "applied",
+              "rejected",
+              "expired",
+              "rolled_back"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "submitted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted By"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "source",
+          "risk",
+          "reason",
+          "base_version",
+          "changes",
+          "context",
+          "created_by",
+          "created_by_actor_type",
+          "created_at",
+          "submitted_by",
+          "submitted_at",
+          "approved_by",
+          "approved_at",
+          "applied_by",
+          "applied_at",
+          "applied_version",
+          "expires_at"
+        ],
+        "title": "PlanView",
+        "type": "object"
+      },
+      "PolicyStateView": {
+        "properties": {
+          "resources": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "title": "Resources",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "resources"
+        ],
+        "title": "PolicyStateView",
+        "type": "object"
+      },
       "PrebuiltVoiceConfig": {
         "additionalProperties": false,
         "description": "Configuration for a prebuilt voice.",
@@ -8715,6 +9002,59 @@
           "$ref": "#/components/schemas/JsonValue"
         },
         "title": "ResponsesRequest",
+        "type": "object"
+      },
+      "RestoreInput": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "RestoreInput",
+        "type": "object"
+      },
+      "RestoreView": {
+        "properties": {
+          "approximated": {
+            "items": {
+              "$ref": "#/components/schemas/Unrestored"
+            },
+            "title": "Approximated",
+            "type": "array"
+          },
+          "not_restored": {
+            "items": {
+              "$ref": "#/components/schemas/Unrestored"
+            },
+            "title": "Not Restored",
+            "type": "array"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "plan",
+          "not_restored",
+          "approximated"
+        ],
+        "title": "RestoreView",
         "type": "object"
       },
       "Retrieval": {
@@ -10769,6 +11109,29 @@
         "title": "Type",
         "type": "string"
       },
+      "Unrestored": {
+        "properties": {
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "item",
+          "reason"
+        ],
+        "title": "Unrestored",
+        "type": "object"
+      },
       "UrlContext": {
         "additionalProperties": false,
         "description": "Tool to support URL context.",
@@ -11232,6 +11595,220 @@
           "anchors_checked"
         ],
         "title": "VerifyResult",
+        "type": "object"
+      },
+      "VersionSummary": {
+        "properties": {
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "items": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The items this version changed, by resource.",
+            "title": "Items",
+            "type": "object"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "created_at",
+          "source",
+          "created_by",
+          "actor_type",
+          "risk",
+          "plan_id",
+          "reason",
+          "items"
+        ],
+        "title": "VersionSummary",
+        "type": "object"
+      },
+      "VersionView": {
+        "properties": {
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "items": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The items this version changed, by resource.",
+            "title": "Items",
+            "type": "object"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "previous": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Previous",
+            "type": "object"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "snapshot": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "created_at",
+          "source",
+          "created_by",
+          "actor_type",
+          "risk",
+          "plan_id",
+          "reason",
+          "items",
+          "snapshot",
+          "previous"
+        ],
+        "title": "VersionView",
         "type": "object"
       },
       "VertexAISearch": {
@@ -15095,6 +15672,439 @@
         "summary": "Dashboard Overview",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans": {
+      "get": {
+        "operationId": "list_plans_api_v1_management_policy_plans_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "pending_approval",
+                    "applied",
+                    "rejected",
+                    "expired",
+                    "rolled_back"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PlanView"
+                  },
+                  "title": "Response List Plans Api V1 Management Policy Plans Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Plans",
+        "tags": [
+          "policy"
+        ]
+      },
+      "post": {
+        "operationId": "create_plan_api_v1_management_policy_plans_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 31,
+              "minimum": 1,
+              "title": "Window Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}": {
+      "get": {
+        "operationId": "get_plan_api_v1_management_policy_plans__plan_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/apply": {
+      "post": {
+        "operationId": "apply_plan_api_v1_management_policy_plans__plan_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Apply Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/state": {
+      "get": {
+        "operationId": "policy_state_api_v1_management_policy_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyStateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Policy State",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions": {
+      "get": {
+        "operationId": "list_versions_api_v1_management_policy_versions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/VersionSummary"
+                  },
+                  "title": "Response List Versions Api V1 Management Policy Versions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Versions",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions/{version}": {
+      "get": {
+        "operationId": "get_version_api_v1_management_policy_versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Version",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions/{version}/restore": {
+      "post": {
+        "operationId": "restore_version_api_v1_management_policy_versions__version__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Restore Version",
+        "tags": [
+          "policy"
         ]
       }
     },
