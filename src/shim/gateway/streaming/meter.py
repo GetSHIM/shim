@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
@@ -218,7 +218,7 @@ class StreamMeter:
             ),
             cache_split=split,
             answer_characters=self.emitted_answer_characters,
-            tool_call_names=_capped_names(self.tool_names),
+            tool_call_names=tuple(sorted(self.tool_names)),
             reasoning_seen=self.reasoning_seen,
         )
 
@@ -253,15 +253,13 @@ class StreamMeter:
         self.provider_finish_reasons.update(
             native_finish_reasons(payload, provider=self.provider) or {}
         )
-        refusal, tool_call = answer_markers(payload, event_type=payload_type)
-        self.refusal_seen |= refusal
-        self.tool_call_seen |= tool_call
-        if tool_call:
-            for name in tool_call_names(payload):
-                if len(self.tool_names) < 64:
-                    self.tool_names.add(name)
-        if not self.reasoning_seen:
-            self.reasoning_seen = reasoning_seen(payload, event_type=payload_type)
+        facts = answer_facts(payload, event_type=payload_type)
+        self.refusal_seen |= facts.refusal
+        self.tool_call_seen |= facts.tool_call
+        self.reasoning_seen |= facts.reasoning
+        for name in facts.tool_names:
+            if len(self.tool_names) < 64:
+                self.tool_names.add(name)
         fragments = self._output_delta_fragments(payload_type, payload)
         output_characters = sum(len(fragment) for fragment in fragments)
         reasoning_characters = _reasoning_characters(payload_type, payload)
@@ -782,28 +780,49 @@ def settled_outcome(
     return outcome if completed or outcome == "filtered" else None
 
 
-def answer_markers(
-    payload: Mapping[str, Any], *, event_type: str = ""
-) -> tuple[bool, bool]:
-    """Whether a JSON answer or one SSE event carries a refusal or a tool call."""
+class AnswerFacts(NamedTuple):
+    refusal: bool
+    tool_call: bool
+    # Model-supplied and already PII-restored, so only the character set providers allow is kept.
+    tool_names: tuple[str, ...]
+    reasoning: bool
+
+
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+_REASONING_TYPES = frozenset(
+    {"reasoning", "thinking", "redacted_thinking", "thinking_delta"}
+)
+
+
+def answer_facts(payload: Mapping[str, Any], *, event_type: str = "") -> AnswerFacts:
+    """One walk over a JSON answer or one SSE event: refusal, tool calls with their names, reasoning.
+
+    A built-in tool call without a name is named by its type.
+    """
 
     refusal = event_type.startswith("response.refusal")
+    reasoning = event_type.startswith("response.reasoning")
     tool_call = False
+    called: list[object] = []
     containers = [payload]
-    for key in ("response", "message", "item", "part", "content_block"):
+    for key in ("response", "message", "item", "part", "content_block", "delta"):
         value = payload.get(key)
         if isinstance(value, Mapping):
             containers.append(value)
     for container in containers:
         items = [container]
         for key in ("output", "content"):
-            value = container.get(key)
-            if isinstance(value, list):
-                items.extend(item for item in value if isinstance(item, Mapping))
+            items.extend(_mappings(container.get(key)))
         for item in items:
             kind = item.get("type")
             refusal |= kind == "refusal"
-            tool_call |= isinstance(kind, str) and kind.endswith(("_call", "tool_use"))
+            reasoning |= kind in _REASONING_TYPES
+            if isinstance(kind, str) and kind.endswith(("_call", "tool_use")):
+                tool_call = True
+                if kind in ("tool_use", "server_tool_use"):
+                    called.append(item.get("name"))
+                elif kind.endswith("_call"):
+                    called.append(item.get("name") or kind)
             parts = item.get("content")
             if item is not container and isinstance(parts, list):
                 refusal |= any(
@@ -813,130 +832,75 @@ def answer_markers(
         for choice in _mappings(container.get("choices")):
             for field in ("delta", "message"):
                 value = choice.get(field)
-                if isinstance(value, Mapping):
-                    refusal |= bool(value.get("refusal"))
-                    tool_call |= bool(
-                        value.get("tool_calls") or value.get("function_call")
-                    )
-        for candidate in _mappings(container.get("candidates")):
-            content = candidate.get("content")
-            parts = content.get("parts") if isinstance(content, Mapping) else None
-            tool_call |= any(
-                isinstance(part, Mapping) and "functionCall" in part
-                for part in parts or ()
-            )
-    return refusal, tool_call
-
-
-def _containers(payload: Mapping[str, Any], *keys: str) -> list[Mapping[str, Any]]:
-    return [
-        payload,
-        *(value for key in keys if isinstance(value := payload.get(key), Mapping)),
-    ]
-
-
-# Model-supplied and already PII-restored, so only the character set providers allow is kept.
-_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
-
-
-def _capped_names(names: set[str] | tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(sorted(name for name in names if _TOOL_NAME.fullmatch(name))[:64])
-
-
-def tool_call_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
-    """Tool names a JSON answer or one SSE event calls; a built-in call without one is named by its type."""
-
-    names: set[str] = set()
-    for container in _containers(
-        payload, "response", "message", "item", "content_block"
-    ):
-        for item in [
-            container,
-            *_mappings(container.get("output")),
-            *_mappings(container.get("content")),
-        ]:
-            kind = item.get("type")
-            if kind in ("tool_use", "server_tool_use"):
-                name = item.get("name")
-            elif isinstance(kind, str) and kind.endswith("_call"):
-                name = item.get("name") or kind
-            else:
-                continue
-            if isinstance(name, str) and name:
-                names.add(name)
-        for choice in _mappings(container.get("choices")):
-            for field in ("message", "delta"):
-                value = choice.get(field)
                 if not isinstance(value, Mapping):
                     continue
-                calls = [
-                    call.get("function") for call in _mappings(value.get("tool_calls"))
-                ] + [value.get("function_call")]
-                names.update(
-                    call["name"]
-                    for call in calls
-                    if isinstance(call, Mapping)
-                    and isinstance(call.get("name"), str)
-                    and call["name"]
-                )
+                refusal |= bool(value.get("refusal"))
+                reasoning |= bool(value.get("reasoning_content"))
+                function_call = value.get("function_call")
+                tool_call |= bool(value.get("tool_calls") or function_call)
+                for call in [
+                    *(c.get("function") for c in _mappings(value.get("tool_calls"))),
+                    function_call,
+                ]:
+                    if isinstance(call, Mapping):
+                        called.append(call.get("name"))
         for candidate in _mappings(container.get("candidates")):
             content = candidate.get("content")
             for part in _mappings(
                 content.get("parts") if isinstance(content, Mapping) else None
             ):
-                call = part.get("functionCall")
-                if isinstance(call, Mapping) and isinstance(call.get("name"), str):
-                    names.add(call["name"])
-    return _capped_names(names)
+                reasoning |= part.get("thought") is True
+                if "functionCall" in part:
+                    tool_call = True
+                    call = part["functionCall"]
+                    if isinstance(call, Mapping):
+                        called.append(call.get("name"))
+        if not reasoning:
+            for usage in (container.get("usage"), container.get("usageMetadata")):
+                if not isinstance(usage, Mapping):
+                    continue
+                counts = [usage.get("thoughtsTokenCount")] + [
+                    details.get("reasoning_tokens")
+                    for details in (
+                        usage.get("completion_tokens_details"),
+                        usage.get("output_tokens_details"),
+                    )
+                    if isinstance(details, Mapping)
+                ]
+                reasoning |= any(
+                    (StreamMeter._nonnegative_int(count) or 0) > 0 for count in counts
+                )
+    return AnswerFacts(
+        refusal,
+        tool_call,
+        tuple(
+            sorted(
+                {
+                    name
+                    for name in called
+                    if isinstance(name, str) and _TOOL_NAME.fullmatch(name)
+                }
+            )[:64]
+        ),
+        reasoning,
+    )
 
 
-_REASONING_TYPES = frozenset(
-    {"reasoning", "thinking", "redacted_thinking", "thinking_delta"}
-)
+def answer_markers(
+    payload: Mapping[str, Any], *, event_type: str = ""
+) -> tuple[bool, bool]:
+    """Whether a JSON answer or one SSE event carries a refusal or a tool call."""
+
+    facts = answer_facts(payload, event_type=event_type)
+    return facts.refusal, facts.tool_call
+
+
+def tool_call_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    return answer_facts(payload).tool_names
 
 
 def reasoning_seen(payload: Mapping[str, Any], *, event_type: str = "") -> bool:
-    """Whether a JSON answer or one SSE event carries reasoning or reports reasoning tokens."""
-
-    if event_type.startswith("response.reasoning"):
-        return True
-    for container in _containers(
-        payload, "response", "message", "item", "content_block", "delta"
-    ):
-        if any(
-            item.get("type") in _REASONING_TYPES
-            for item in [
-                container,
-                *_mappings(container.get("output")),
-                *_mappings(container.get("content")),
-            ]
-        ):
-            return True
-        for choice in _mappings(container.get("choices")):
-            for field in ("message", "delta"):
-                value = choice.get(field)
-                if isinstance(value, Mapping) and value.get("reasoning_content"):
-                    return True
-        for candidate in _mappings(container.get("candidates")):
-            content = candidate.get("content")
-            if isinstance(content, Mapping) and any(
-                part.get("thought") is True for part in _mappings(content.get("parts"))
-            ):
-                return True
-        for usage in (container.get("usage"), container.get("usageMetadata")):
-            if not isinstance(usage, Mapping):
-                continue
-            counts = [usage.get("thoughtsTokenCount")] + [
-                details.get("reasoning_tokens")
-                for details in (
-                    usage.get("completion_tokens_details"),
-                    usage.get("output_tokens_details"),
-                )
-                if isinstance(details, Mapping)
-            ]
-            if any((StreamMeter._nonnegative_int(count) or 0) > 0 for count in counts):
-                return True
-    return False
+    return answer_facts(payload, event_type=event_type).reasoning
 
 
 def answer_characters(payload: Mapping[str, Any]) -> int:
