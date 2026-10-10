@@ -492,6 +492,28 @@ async def test_plans_validate_each_change_with_the_routes_messages(db, origins) 
 
 
 @pytest.mark.asyncio
+async def test_a_restore_asks_only_for_what_it_changes(db) -> None:
+    owner = await _tenant(db)
+    restorer = await _holder(db, owner, "plans.create", "plans.apply", "settings.write")
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+    await _call(db, owner, "POST", "/api/v1/management/teams", json={"name": "late"})
+
+    restored = await _call(
+        db, restorer, "POST", f"{POLICY}/versions/0/restore", json={}
+    )
+
+    assert restored.status_code == 200, restored.text
+    assert [row["reason"] for row in restored.json()["not_restored"]] == [
+        "team_not_deletable"
+    ]
+    assert [change["resource"] for change in restored.json()["plan"]["changes"]] == [
+        "privacy"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_plan_is_refused_when_it_names_what_the_tenant_lacks_or_sets_nothing(
     db, origins
 ) -> None:

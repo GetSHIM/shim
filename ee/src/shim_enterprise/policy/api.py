@@ -573,7 +573,6 @@ async def restore_version(
             now = current.get(item)
             if target == now:
                 continue
-            await _authorize(session, user, resource)
             if now is None and not resource.creatable:
                 not_restored.append(
                     Unrestored(resource=name, item=item, reason="key_revoked")
@@ -596,6 +595,7 @@ async def restore_version(
                         resource=name, item=item, reason="deployment_not_deletable"
                     )
                 )
+            await _authorize(session, user, resource)
             try:
                 if target is not None:
                     # What the item's own route would refuse is skipped, not fatal.
