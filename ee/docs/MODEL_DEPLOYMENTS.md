@@ -61,6 +61,30 @@ placeholder with `pricing_resolution=unknown`, and usage reports carry
 completeness counters. A monetary provider limit rejects unpriced inference
 instead of treating it as free. Token and request quotas still apply.
 
+## The inventory
+
+`GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and
+auditors; default the last 30 days, at most 31) puts the registry and the
+traffic side by side. It is built from the gateway's own request records, not
+kept by hand:
+
+- one `registry` item per registered deployment, enabled or not, with its
+  requests in the window (by the deployment id each request recorded, or for
+  older rows by the alias), first and last request, distinct API keys and teams,
+  and `byok_requests` (requests that carried their own provider key);
+- one `catalog` item per provider and model that requests reached through the
+  provider's public endpoint (`deployment_kind: unknown`) after spend
+  reservation, with the same counts and `registered: false`.
+
+Registry items come first, then catalog items, each by requests; at most 500
+items, `truncated: true` beyond, plus totals. What the inventory cannot show:
+the names of unknown models that were refused (caller-controlled text is never
+recorded), and servers that receive no traffic through shim. Two findings act
+on it: [`gateway.unregistered_model`](FINDINGS.md#gatewayunregistered_model) and
+[`gateway.byok_usage`](FINDINGS.md#gatewaybyok_usage). The ISO/IEC 42001
+readiness report lists the inventory's catalog models as "Models in traffic
+outside the registry", so the two never disagree.
+
 ## Idle deployments
 
 An internal deployment that served between 1 and 299 requests in 30 days raises

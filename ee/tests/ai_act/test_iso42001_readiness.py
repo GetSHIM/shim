@@ -341,6 +341,7 @@ async def test_every_evidence_function_reads_only_its_tenant_and_window(db) -> N
             "tags": ["checkout"],
             "cost_center": "checkout",
             "team_id": str(team.id),
+            "deployment_kind": "unknown",
             "policy_verdicts": verdicts,
             "pii_entities": {"TR_NATIONAL_ID": 2},
         },
