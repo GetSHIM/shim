@@ -1,17 +1,31 @@
-"""The four gateway rules, their evaluation, and the OCSF form of a finding."""
+"""The gateway rules, their evaluation, and the OCSF form of a finding."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ARRAY, Text, func, select, type_coerce, update
-from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
+from sqlalchemy import (
+    ARRAY,
+    Text,
+    and_,
+    case,
+    cast,
+    func,
+    not_,
+    or_,
+    select,
+    type_coerce,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, insert
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
@@ -25,7 +39,9 @@ RETRY_STORM = "gateway.retry_storm"
 REPEAT_SPEND = "gateway.repeat_spend"
 UNUSED_DEPLOYMENT = "gateway.unused_deployment"
 ANSWER_QUALITY = "gateway.answer_quality"
+IDLE_INTERNAL_DEPLOYMENT = "gateway.idle_internal_deployment"
 RULE_VERSION = 1
+RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
 RETRY_BUCKET = timedelta(minutes=15)
 RETRY_BUCKETS = 4
@@ -37,6 +53,11 @@ ANSWER_QUALITY_WINDOW = timedelta(hours=24)
 ANSWER_QUALITY_MIN_REQUESTS = 50
 ANSWER_QUALITY_MIN_RATE = Decimal("0.05")
 AUTO_RESOLVE_AFTER = timedelta(days=7)
+# Covers the pinned SDKs' 600 s timeout plus backoff; a longer client timeout is not linked.
+REPEAT_LINK_WINDOW_SECONDS = 900
+IDLE_DEPLOYMENT_WINDOW_DAYS = 30
+IDLE_DEPLOYMENT_MIN_AGE_DAYS = 30
+IDLE_DEPLOYMENT_MAX_REQUESTS = 300
 EVIDENCE_REQUEST_IDS = 20
 
 STATUS_IDS = {"new": 1, "in_progress": 2, "suppressed": 3, "resolved": 4}
@@ -73,7 +94,25 @@ RULES: dict[str, tuple[str, int, str]] = {
         "answer; for empty or refused answers, review the prompt and the "
         "model choice.",
     ),
+    IDLE_INTERNAL_DEPLOYMENT: (
+        "Internal deployment is almost unused",
+        2,
+        "Disable the deployment or move its few callers to another deployment; "
+        "it can be enabled again in one write.",
+    ),
 }
+# A retry storm's fix follows the class most of its repeats belong to.
+STORM_FIXES = {
+    "after_timeout": "The client's timeout is shorter than the answers take: raise "
+    "the timeout or ask for fewer output tokens instead of sending the request again.",
+    "after_error": "The SDK retries after errors: honour Retry-After, lower "
+    "max_retries and add jittered backoff.",
+    "after_success": "The app sends the same request again after a successful "
+    "answer: deduplicate it in the app.",
+}
+REPEAT_CLASSES = ("after_timeout", "after_error", "after_success", "pending")
+_TIMED_OUT = ("client_disconnected", "timeout")
+_FAILED = ("provider_error", "failed", "rejected", "internal_error", "cancelled")
 
 _EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
@@ -86,88 +125,214 @@ class Detection:
     summary: str
     evidence: dict[str, Any]
     impact: dict[str, Any] | None = None
+    remediation: str | None = None
 
 
-def _request_ids(condition: Any) -> Any:
-    ordered = func.array_agg(
-        aggregate_order_by(RequestLifecycle.request_id, RequestLifecycle.started_at)
-    ).filter(condition)
+def _request_ids(
+    condition: Any,
+    request_id: Any = RequestLifecycle.request_id,
+    started_at: Any = RequestLifecycle.started_at,
+) -> Any:
+    ordered = func.array_agg(aggregate_order_by(request_id, started_at)).filter(
+        condition
+    )
     return type_coerce(ordered, ARRAY(Text))[1:EVIDENCE_REQUEST_IDS]
-
-
-# A request has at most one spend settlement (one spend reservation per request,
-# read with scalar_one_or_none by the ledger, and one settlement per reservation),
-# so this join never repeats a lifecycle row.
-_PRICED_SETTLEMENT = (
-    (UsageLedger.organization_id == RequestLifecycle.organization_id)
-    & (UsageLedger.request_id == RequestLifecycle.request_id)
-    & (UsageLedger.event_type == "spend_settlement")
-    & UsageLedger.event_metadata["pricing"]["pricing_resolution"]
-    .as_string()
-    .is_distinct_from("unknown")
-)
 
 
 def _repeated() -> Any:
     return RequestLifecycle.lifecycle_metadata["repeat_chain_length"].as_integer() >= 2
 
 
+def _repeats(tenant_id: UUID, start: datetime, end: datetime) -> Any:
+    # The link window before start lets a repeat at the window's edge find its predecessor.
+    digest = RequestLifecycle.lifecycle_metadata["repeat_digest"].as_string()
+
+    def previous(column: Any) -> Any:
+        return func.lag(column).over(
+            partition_by=(RequestLifecycle.api_key_id, digest),
+            order_by=(RequestLifecycle.started_at, RequestLifecycle.id),
+        )
+
+    return (
+        select(
+            RequestLifecycle.request_id,
+            RequestLifecycle.api_key_id,
+            RequestLifecycle.started_at,
+            RequestLifecycle.status,
+            digest.is_not(None).label("digested"),
+            _repeated().label("chained"),
+            previous(RequestLifecycle.request_id).label("previous_id"),
+            previous(RequestLifecycle.started_at).label("previous_at"),
+            previous(RequestLifecycle.status).label("previous_status"),
+        )
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at
+            >= start - timedelta(seconds=REPEAT_LINK_WINDOW_SECONDS),
+            RequestLifecycle.started_at < end,
+            RequestLifecycle.api_key_id.is_not(None),
+        )
+        .subquery("repeats")
+    )
+
+
+def _repeat_terms(rows: Any, tenant_id: UUID) -> SimpleNamespace:
+    settlement = aliased(UsageLedger)
+    previous = aliased(UsageLedger)
+    linked = and_(
+        rows.c.digested,
+        rows.c.previous_id.is_not(None),
+        rows.c.started_at - rows.c.previous_at
+        <= timedelta(seconds=REPEAT_LINK_WINDOW_SECONDS),
+    )
+    kind = case(
+        (rows.c.previous_status.in_(_TIMED_OUT), "after_timeout"),
+        (rows.c.previous_status.in_(_FAILED), "after_error"),
+        (rows.c.previous_status == "completed", "after_success"),
+        else_="pending",
+    )
+    gap = func.extract("epoch", rows.c.started_at - rows.c.previous_at)
+    pair = func.jsonb_build_object(
+        "repeat",
+        rows.c.request_id,
+        "previous",
+        rows.c.previous_id,
+        "class",
+        kind,
+        "gap_seconds",
+        func.round(gap),
+    )
+    # One settlement per request at most, so neither join repeats a row.
+    joined = rows.outerjoin(
+        settlement,
+        (settlement.organization_id == tenant_id)
+        & (settlement.request_id == rows.c.request_id)
+        & (settlement.event_type == "spend_settlement")
+        & settlement.event_metadata["pricing"]["pricing_resolution"]
+        .as_string()
+        .is_distinct_from("unknown"),
+    ).outerjoin(
+        previous,
+        (previous.organization_id == tenant_id)
+        & (previous.request_id == rows.c.previous_id)
+        & (previous.event_type == "spend_settlement"),
+    )
+    return SimpleNamespace(
+        rows=rows,
+        joined=joined,
+        linked=linked,
+        repeat=or_(linked, and_(not_(rows.c.digested), rows.c.chained)),
+        legacy=and_(not_(rows.c.digested), rows.c.chained),
+        kind=kind,
+        gap=gap,
+        billed=previous.id.is_not(None),
+        cost=settlement.cost_usd,
+        pairs=func.array_to_json(
+            type_coerce(
+                func.array_agg(aggregate_order_by(pair, rows.c.started_at)).filter(
+                    linked
+                ),
+                ARRAY(JSONB),
+            )[1:EVIDENCE_REQUEST_IDS],
+            type_=JSONB,
+        ),
+        classes=[
+            func.count().filter(linked, kind == name).label(name)
+            for name in REPEAT_CLASSES
+        ],
+    )
+
+
+async def linked_repeats(
+    session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime
+) -> list[Any]:
+    """Every repeat started in [start, end) linked to the request it repeats."""
+    terms = _repeat_terms(_repeats(tenant_id, start, end), tenant_id)
+    rows = terms.rows
+    return list(
+        await session.execute(
+            select(
+                rows.c.request_id,
+                rows.c.previous_id,
+                rows.c.api_key_id,
+                terms.gap.label("gap_seconds"),
+                rows.c.previous_status,
+                terms.kind.label("repeat_class"),
+                terms.billed.label("previous_billed"),
+                terms.cost.label("cost_usd"),
+            )
+            .select_from(terms.joined)
+            .where(rows.c.started_at >= start, terms.linked)
+            .order_by(rows.c.started_at, rows.c.request_id)
+        )
+    )
+
+
+def _classes(row: Any) -> dict[str, int]:
+    return {name: getattr(row, name) for name in REPEAT_CLASSES}
+
+
 async def _retry_storms(
     session: AsyncSession, tenant_id: UUID, now: datetime
 ) -> list[Detection]:
-    bucket = func.date_bin(RETRY_BUCKET, RequestLifecycle.started_at, _EPOCH)
     current = _EPOCH + (now - _EPOCH) // RETRY_BUCKET * RETRY_BUCKET
-    repeated = _repeated()
-    count = func.count().filter(repeated)
-    rows = await session.execute(
+    start = current - RETRY_BUCKET * (RETRY_BUCKETS - 1)
+    terms = _repeat_terms(_repeats(tenant_id, start, now), tenant_id)
+    rows = terms.rows
+    bucket = func.date_bin(RETRY_BUCKET, rows.c.started_at, _EPOCH)
+    count = func.count().filter(terms.repeat)
+    result = await session.execute(
         select(
-            RequestLifecycle.api_key_id,
+            rows.c.api_key_id,
             bucket.label("bucket"),
             count.label("repeated"),
-            func.count()
-            .filter(RequestLifecycle.status.in_(("client_disconnected", "timeout")))
-            .label("abandoned"),
+            func.count().filter(rows.c.status.in_(_TIMED_OUT)).label("abandoned"),
             func.coalesce(
-                func.sum(UsageLedger.cost_usd).filter(repeated), Decimal("0")
+                func.sum(terms.cost).filter(terms.repeat), Decimal("0")
             ).label("cost"),
-            _request_ids(repeated).label("request_ids"),
+            _request_ids(terms.repeat, rows.c.request_id, rows.c.started_at).label(
+                "request_ids"
+            ),
+            terms.pairs.label("pairs"),
+            *terms.classes,
         )
-        .select_from(RequestLifecycle)
-        .outerjoin(UsageLedger, _PRICED_SETTLEMENT)
-        .where(
-            RequestLifecycle.organization_id == tenant_id,
-            RequestLifecycle.started_at >= current - RETRY_BUCKET * (RETRY_BUCKETS - 1),
-            RequestLifecycle.started_at <= now,
-            RequestLifecycle.api_key_id.is_not(None),
-        )
-        .group_by(RequestLifecycle.api_key_id, bucket)
+        .select_from(terms.joined)
+        .where(rows.c.started_at >= start)
+        .group_by(rows.c.api_key_id, bucket)
         .having(count >= RETRY_STORM_MIN_REQUESTS)
-        .order_by(RequestLifecycle.api_key_id, count.desc(), bucket.desc())
+        .order_by(rows.c.api_key_id, count.desc(), bucket.desc())
     )
     worst: dict[UUID, Any] = {}
-    for row in rows:
+    for row in result:
         worst.setdefault(row.api_key_id, row)
-    return [
-        Detection(
-            rule_id=RETRY_STORM,
-            subject_key=f"api_key:{key_id}",
-            subject={"api_key_id": str(key_id)},
-            summary=(
-                f"One API key sent {row.repeated} repeated requests in the 15 minutes "
-                f"from {row.bucket:%Y-%m-%d %H:%M} UTC."
-            ),
-            evidence={
-                "window_start": row.bucket.isoformat(),
-                "window_minutes": 15,
-                "repeated_requests": row.repeated,
-                "threshold": RETRY_STORM_MIN_REQUESTS,
-                "abandoned_requests": row.abandoned,
-                "request_ids": list(row.request_ids or []),
-            },
-            impact={"cost_usd": str(row.cost), "requests": row.repeated},
+    detections = []
+    for key_id, row in worst.items():
+        classes = _classes(row)
+        cause = max(STORM_FIXES, key=lambda name: classes[name])
+        detections.append(
+            Detection(
+                rule_id=RETRY_STORM,
+                subject_key=f"api_key:{key_id}",
+                subject={"api_key_id": str(key_id)},
+                summary=(
+                    f"One API key sent {row.repeated} repeated requests in the 15 "
+                    f"minutes from {row.bucket:%Y-%m-%d %H:%M} UTC."
+                ),
+                evidence={
+                    "window_start": row.bucket.isoformat(),
+                    "window_minutes": 15,
+                    "repeated_requests": row.repeated,
+                    "threshold": RETRY_STORM_MIN_REQUESTS,
+                    "abandoned_requests": row.abandoned,
+                    "request_ids": list(row.request_ids or []),
+                    "classes": classes,
+                    "pairs": row.pairs or [],
+                },
+                impact={"cost_usd": str(row.cost), "requests": row.repeated},
+                remediation=STORM_FIXES[cause] if classes[cause] else None,
+            )
         )
-        for key_id, row in worst.items()
-    ]
+    return detections
 
 
 async def _repeat_spend(
@@ -176,33 +341,36 @@ async def _repeat_spend(
     month_start = now.astimezone(timezone.utc).replace(
         day=1, hour=0, minute=0, second=0, microsecond=0
     )
-    repeated = _repeated()
-    known = func.coalesce(func.sum(UsageLedger.cost_usd), Decimal("0"))
-    repeated_cost = func.coalesce(
-        func.sum(UsageLedger.cost_usd).filter(repeated), Decimal("0")
-    )
-    rows = await session.execute(
+    terms = _repeat_terms(_repeats(tenant_id, month_start, now), tenant_id)
+    rows = terms.rows
+    # A repeat of a refunded request did not double the bill.
+    counted = or_(and_(terms.linked, terms.billed), terms.legacy)
+    known = func.coalesce(func.sum(terms.cost), Decimal("0"))
+    repeated_cost = func.coalesce(func.sum(terms.cost).filter(counted), Decimal("0"))
+    result = await session.execute(
         select(
-            RequestLifecycle.api_key_id,
+            rows.c.api_key_id,
             known.label("known"),
             repeated_cost.label("repeated_cost"),
-            func.count().filter(repeated).label("repeated"),
-            _request_ids(repeated).label("request_ids"),
+            func.count().filter(counted).label("repeated"),
+            func.count().filter(terms.linked, terms.billed).label("billed"),
+            func.count()
+            .filter(terms.linked, not_(terms.billed), terms.kind != "pending")
+            .label("unbilled"),
+            _request_ids(counted, rows.c.request_id, rows.c.started_at).label(
+                "request_ids"
+            ),
+            terms.pairs.label("pairs"),
+            *terms.classes,
         )
-        .select_from(RequestLifecycle)
-        .outerjoin(UsageLedger, _PRICED_SETTLEMENT)
-        .where(
-            RequestLifecycle.organization_id == tenant_id,
-            RequestLifecycle.started_at >= month_start,
-            RequestLifecycle.started_at <= now,
-            RequestLifecycle.api_key_id.is_not(None),
-        )
-        .group_by(RequestLifecycle.api_key_id)
+        .select_from(terms.joined)
+        .where(rows.c.started_at >= month_start)
+        .group_by(rows.c.api_key_id)
         .having(
             repeated_cost >= REPEAT_SPEND_MIN_USD,
             repeated_cost >= known * REPEAT_SPEND_MIN_SHARE,
         )
-        .order_by(RequestLifecycle.api_key_id)
+        .order_by(rows.c.api_key_id)
     )
     return [
         Detection(
@@ -220,45 +388,84 @@ async def _repeat_spend(
                 "share": str(round(row.repeated_cost / row.known, 4)),
                 "repeated_requests": row.repeated,
                 "request_ids": list(row.request_ids or []),
+                "classes": _classes(row),
+                "billed_repeats": row.billed,
+                "unbilled_repeats": row.unbilled,
+                "pairs": row.pairs or [],
             },
             impact={"cost_usd": str(row.repeated_cost), "requests": row.repeated},
         )
-        for row in rows
+        for row in result
     ]
 
 
-async def _unused_deployments(
+async def _deployment_traffic(
     session: AsyncSession, tenant_id: UUID, now: datetime
-) -> list[Detection]:
-    since = now - UNUSED_DEPLOYMENT_AGE
+) -> tuple[list[Any], dict[str, Any]]:
+    since = now - timedelta(days=IDLE_DEPLOYMENT_WINDOW_DAYS)
     deployments = (
         await session.execute(
             select(
-                ModelDeployment.id, ModelDeployment.alias, ModelDeployment.created_at
+                ModelDeployment.id,
+                ModelDeployment.alias,
+                ModelDeployment.deployment_kind,
+                ModelDeployment.created_at,
             )
             .where(
                 ModelDeployment.organization_id == tenant_id,
                 ModelDeployment.enabled.is_(True),
-                ModelDeployment.created_at <= since,
+                ModelDeployment.created_at
+                <= now - timedelta(days=IDLE_DEPLOYMENT_MIN_AGE_DAYS),
             )
             .order_by(ModelDeployment.alias)
         )
     ).all()
     if not deployments:
-        return []
-    used = set(
-        await session.scalars(
-            select(RequestLifecycle.requested_model)
-            .where(
-                RequestLifecycle.organization_id == tenant_id,
-                RequestLifecycle.started_at >= since,
-                RequestLifecycle.requested_model.in_(
-                    [row.alias for row in deployments]
-                ),
-            )
-            .group_by(RequestLifecycle.requested_model)
-        )
+        return [], {}
+    metadata = RequestLifecycle.lifecycle_metadata
+    by_alias = (
+        select(ModelDeployment.id, ModelDeployment.alias)
+        .where(ModelDeployment.organization_id == tenant_id)
+        .subquery("by_alias")
     )
+    # Rows written before deployment ids were recorded fall back to the alias.
+    target = func.coalesce(
+        metadata["deployment_id"].as_string(), cast(by_alias.c.id, Text)
+    )
+    traffic = await session.execute(
+        select(
+            target.label("deployment_id"),
+            func.count().label("requests"),
+            func.count(
+                func.distinct(
+                    func.date(func.timezone("UTC", RequestLifecycle.started_at))
+                )
+            ).label("active_days"),
+            func.max(RequestLifecycle.started_at).label("last_request_at"),
+            func.count(func.distinct(RequestLifecycle.api_key_id)).label("api_keys"),
+            _request_ids(True).label("request_ids"),
+        )
+        .select_from(RequestLifecycle)
+        .outerjoin(
+            by_alias,
+            not_(metadata.has_key("deployment_id"))
+            & (RequestLifecycle.requested_model == by_alias.c.alias),
+        )
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at >= since,
+            RequestLifecycle.started_at <= now,
+            target.in_([str(row.id) for row in deployments]),
+        )
+        .group_by(target)
+    )
+    return list(deployments), {row.deployment_id: row for row in traffic}
+
+
+async def _unused_deployments(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    deployments, traffic = await _deployment_traffic(session, tenant_id, now)
     return [
         Detection(
             rule_id=UNUSED_DEPLOYMENT,
@@ -272,8 +479,47 @@ async def _unused_deployments(
             },
         )
         for row in deployments
-        if row.alias not in used
+        if str(row.id) not in traffic
     ]
+
+
+async def _idle_internal_deployments(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    deployments, traffic = await _deployment_traffic(session, tenant_id, now)
+    detections = []
+    for row in deployments:
+        used = traffic.get(str(row.id))
+        # External deployments hold no hardware of the tenant; zero traffic is unused.
+        if (
+            row.deployment_kind != "internal"
+            or used is None
+            or used.requests >= IDLE_DEPLOYMENT_MAX_REQUESTS
+        ):
+            continue
+        detections.append(
+            Detection(
+                rule_id=IDLE_INTERNAL_DEPLOYMENT,
+                subject_key=str(row.id),
+                subject={"deployment_id": str(row.id), "alias": row.alias},
+                summary=(
+                    f"Internal deployment {row.alias} served {used.requests} "
+                    f"requests in {IDLE_DEPLOYMENT_WINDOW_DAYS} days."
+                ),
+                evidence={
+                    "window_days": IDLE_DEPLOYMENT_WINDOW_DAYS,
+                    "requests": used.requests,
+                    "threshold": IDLE_DEPLOYMENT_MAX_REQUESTS,
+                    "active_days": used.active_days,
+                    "last_request_at": used.last_request_at.isoformat(),
+                    "api_keys": used.api_keys,
+                    "request_ids": list(used.request_ids or []),
+                    "hardware_cost": "not recorded",
+                },
+                impact={"cost_usd": None, "requests": used.requests},
+            )
+        )
+    return detections
 
 
 async def _answer_quality(
@@ -341,7 +587,13 @@ async def evaluate_organization(
 ) -> list[Detection]:
     detections = [
         detection
-        for rule in (_retry_storms, _repeat_spend, _unused_deployments, _answer_quality)
+        for rule in (
+            _retry_storms,
+            _repeat_spend,
+            _unused_deployments,
+            _idle_internal_deployments,
+            _answer_quality,
+        )
         for detection in await rule(session, tenant_id, now)
     ]
     for detection in detections:
@@ -349,7 +601,7 @@ async def evaluate_organization(
         statement = insert(Finding).values(
             organization_id=tenant_id,
             rule_id=detection.rule_id,
-            rule_version=RULE_VERSION,
+            rule_version=RULE_VERSIONS.get(detection.rule_id, RULE_VERSION),
             subject_key=detection.subject_key,
             subject=detection.subject,
             title=title,
@@ -360,7 +612,7 @@ async def evaluate_organization(
             evidence=detection.evidence,
             impact=detection.impact,
             remediation={
-                "text": fix,
+                "text": detection.remediation or fix,
                 "reversible": True,
                 "doc": f"ee/docs/FINDINGS.md#{detection.rule_id.replace('.', '')}",
             },
@@ -375,6 +627,8 @@ async def evaluate_organization(
                     "summary": statement.excluded.summary,
                     "evidence": statement.excluded.evidence,
                     "impact": statement.excluded.impact,
+                    "rule_version": statement.excluded.rule_version,
+                    "remediation": statement.excluded.remediation,
                     "updated_at": func.now(),
                 },
             )

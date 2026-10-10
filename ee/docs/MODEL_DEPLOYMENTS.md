@@ -61,6 +61,14 @@ placeholder with `pricing_resolution=unknown`, and usage reports carry
 completeness counters. A monetary provider limit rejects unpriced inference
 instead of treating it as free. Token and request quotas still apply.
 
+## Idle deployments
+
+An internal deployment that served between 1 and 299 requests in 30 days raises
+the low-severity finding `gateway.idle_internal_deployment`; one with no
+requests raises `gateway.unused_deployment`. Traffic is attributed by the
+deployment id each request records, so renaming an alias keeps its history. See
+[findings](FINDINGS.md#gatewayidle_internal_deployment).
+
 ## Verified compatibility
 
 `uv run --locked python -m pytest -q ee/tests/tenants/test_deployments.py`
