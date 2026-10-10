@@ -16,6 +16,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Read errors and retry](#read-errors-and-retry)
 - [Read warnings](#read-warnings)
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
+- [Check structured output](#check-structured-output)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -470,6 +471,46 @@ name in the message; a repeated name is dropped.
 | --- | --- |
 | `shape` | What the request is made of, to find oversized parts, tools no one calls and tool order that defeats the provider's prompt cache. Sizes are characters of the masked request, so a detected value counts as its placeholder: `message_count`, `system_chars`, `history_chars` (turns before the last user turn, tool results included), `last_user_chars`, `largest_part_chars`, `tool_result_count`, `tool_result_chars`, `largest_tool_result_chars`, `tool_count`, `tool_definition_chars` (the compact JSON of `tools`), `tools_offered` (names in the order sent; built-in tools as `builtin:<type>`), `tools_called_in_history` (calls replayed in the request), `tools_order_digest` and `tools_set_digest` (16 hex characters of sha256 over the names in order, and sorted: the same set in a new order changes only the first), `image_count`, `document_count`, `largest_image` (`bytes`, `width`, `height` of the largest inline image, read from its header) and `truncated`. Tool names are recorded in clear; tool definitions are never stored. At most 128 tool names of 64 characters each, 20,000 parts and 64 levels of nesting are read; beyond them `truncated` is true. A request offering many long tool names can exceed the 4,096-character result bound and record `too_large`. |
 | `language` | Whether the last user question and the answer are Turkish or English, to spot a Turkish question answered in English: `request` and `answer`, each `tr`, `en`, `other` or `unknown`, `answer_mixed`, and `request_words` and `answer_words`. A word and letter heuristic, no model: Turkish letters (`ğ`, `ı`, `ş` count most) and about 200 Turkish and 180 English function words, matched with and without Turkish letters, so `cok guzel, yardim eder misin` is Turkish. Code blocks, inline code, URLs, e-mail addresses and placeholders are removed first and the first 4,000 characters read. Fewer than 3 words or 12 letters is `unknown`; text mostly in other scripts, or in another Latin language, is `other`. The answer is `unknown` when the request asked for JSON output or the answer has no text. It knows Turkish and English only: Azerbaijani can read as Turkish, and two Turkish names in a short English sentence can mark it mixed. |
+| `schema` | Whether the answer, or each tool call, matches the schema the request asked for; see [Check structured output](#check-structured-output). |
+
+## Check structured output
+
+Learn how often answers and tool calls miss the format your app asked for,
+including on providers and local models that do not enforce it.
+
+1. Add `schema` to `SHIM_RESPONSE_ANALYSIS` and restart the gateway.
+2. Read `response_analysis.schema` in the `response_analysis` line: `expected`
+   (`json_schema`, `json_object`, `tool_args` or `none`), `valid` (`true`,
+   `false`, or `null` when it could not be decided), `error_path` (a JSON
+   Pointer into the answer, `/count` or `/tool_calls/1/count`), `error_keyword`
+   (`type`, `required`, `enum`, `parse`, `unknown_tool`, ...), `error_tool`,
+   `unsupported` and `unsupported_keywords`, `strict` (whether the provider was
+   asked to enforce the schema itself) and `reason`.
+
+What is read: OpenAI `response_format` and Responses `text.format`
+(`json_schema` or `json_object`), Anthropic `output_config.format` and
+`output_format`, Gemini `responseJsonSchema`, `responseSchema` (OpenAPI types)
+and `responseMimeType: application/json`, and each offered tool's parameters.
+With tool calls in the answer, every call is checked against its tool; a call
+to a tool that was not offered is `unknown_tool`, a built-in tool's call is
+skipped. A detected value inside the schema (an `enum` of e-mail addresses) is
+restored before the check, as the answer was.
+
+shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
+`const`, `properties`, `required`, `additionalProperties`, `minProperties`,
+`maxProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`,
+`minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
+`exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf` and `$ref` within
+the document. Any other keyword, `pattern` included, is listed in
+`unsupported_keywords` and makes `valid` `null` instead of guessing; `pattern`
+is never run, so a tenant's expression cannot stall the gateway. `valid` is
+`null` with a `reason` when the answer was truncated (`truncated`), refused,
+filtered or empty, when the answer or the schema is too large (`too_large`),
+when nesting or `$ref` chains pass 32 levels (`depth`) or 10,000 values
+(`nodes`), and when the schema itself is broken (`bad_schema`). The answer is
+never changed, retried or refused; the check runs after it was delivered.
+`error_path` names schema properties and array indices only, never a value or
+an unexpected key (that path ends in `/*`).
 
 ## Stream long generations and read usage
 

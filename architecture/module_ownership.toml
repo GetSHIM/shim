@@ -159,6 +159,7 @@ public = [
   "src/shim/gateway/admission.py",
   "src/shim/gateway/analyzers/__init__.py",
   "src/shim/gateway/analyzers/language.py",
+  "src/shim/gateway/analyzers/schema.py",
   "src/shim/gateway/analyzers/shape.py",
   "src/shim/gateway/api/__init__.py",
   "src/shim/gateway/api/errors.py",
@@ -193,6 +194,7 @@ public = [
   "src/shim/gateway/streaming/session.py",
   "src/shim/gateway/streaming/sse.py",
   "src/shim/gateway/usage.py",
+  "src/shim/jsonschema_subset.py",
   "src/shim/observability/__init__.py",
   "src/shim/observability/logging.py",
   "src/shim/observability/metrics.py",
@@ -231,6 +233,7 @@ public = [
   "tests/findings/test_schema_file.py",
   "tests/gateway/analysis/test_language.py",
   "tests/gateway/analysis/test_language_corpus.py",
+  "tests/gateway/analysis/test_schema.py",
   "tests/gateway/analysis/test_shape.py",
   "tests/gateway/api/test_anthropic_boundary.py",
   "tests/gateway/api/test_openai_boundary.py",
@@ -264,6 +267,7 @@ public = [
   "tests/rules/test_patterns.py",
   "tests/rules/test_rule_model.py",
   "tests/secrets/test_credentials.py",
+  "tests/test_jsonschema_subset.py",
 ]
 
 # Python files owned by commercially licensed capabilities.
