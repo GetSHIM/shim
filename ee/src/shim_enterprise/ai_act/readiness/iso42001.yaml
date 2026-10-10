@@ -295,6 +295,9 @@ controls:
     source: declared
     gap: No statement records how AI incidents are recorded and communicated to users and other interested parties.
     next_steps:
+      - type: in_shim
+        text: Record incidents and their notification deadlines in shim.
+        doc: COOKBOOK.md#record-an-incident
       - type: organization
         text: Define how AI incidents are recorded and who informs users, authorities and other interested parties.
   - id: A.8.5

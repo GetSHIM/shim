@@ -1635,6 +1635,125 @@
         "title": "Blob",
         "type": "object"
       },
+      "Breach": {
+        "additionalProperties": false,
+        "description": "The breach register fields; the organization's own text, never exported.",
+        "properties": {
+          "approx_records": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approx Records"
+          },
+          "approx_subjects": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approx Subjects"
+          },
+          "contact_person": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Person"
+          },
+          "data_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Categories"
+          },
+          "likely_consequences": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Likely Consequences"
+          },
+          "measures_planned": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measures Planned"
+          },
+          "measures_taken": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measures Taken"
+          },
+          "subjects_informed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjects Informed"
+          },
+          "subjects_informed_how": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjects Informed How"
+          }
+        },
+        "title": "Breach",
+        "type": "object"
+      },
       "BudgetEvaluationItem": {
         "properties": {
           "budget_id": {
@@ -2912,7 +3031,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 25,
+            "maxItems": 27,
             "title": "Permissions",
             "type": "array"
           },
@@ -2979,6 +3098,8 @@
                 "compliance.manage",
                 "findings.read",
                 "findings.manage",
+                "incidents.read",
+                "incidents.manage",
                 "plans.create",
                 "plans.apply",
                 "plans.approve",
@@ -5267,6 +5388,385 @@
         "title": "ImageSize",
         "type": "string"
       },
+      "IncidentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "aware_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the organization became aware; defaults to now.",
+            "title": "Aware At"
+          },
+          "breach": {
+            "$ref": "#/components/schemas/Breach"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "is_suspected_breach": {
+            "default": false,
+            "title": "Is Suspected Breach",
+            "type": "boolean"
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "severity_id": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Severity Id",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "severity_id"
+        ],
+        "title": "IncidentInput",
+        "type": "object"
+      },
+      "IncidentPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "IncidentPage",
+        "type": "object"
+      },
+      "IncidentPatch": {
+        "additionalProperties": false,
+        "description": "Only the fields sent change; each link list replaces the stored one.",
+        "properties": {
+          "aware_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aware At"
+          },
+          "breach": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Breach"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_suspected_breach": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Suspected Breach"
+          },
+          "links": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Links"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "severity_id": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "IncidentPatch",
+        "type": "object"
+      },
+      "IncidentView": {
+        "properties": {
+          "aware_at": {
+            "format": "date-time",
+            "title": "Aware At",
+            "type": "string"
+          },
+          "breach": {
+            "additionalProperties": true,
+            "title": "Breach",
+            "type": "object"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Entity types, providers, models and findings of the linked rows, computed on read; suggests data_categories, never written into breach.",
+            "title": "Evidence Summary"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_suspected_breach": {
+            "title": "Is Suspected Breach",
+            "type": "boolean"
+          },
+          "links": {
+            "additionalProperties": true,
+            "title": "Links",
+            "type": "object"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationView"
+            },
+            "title": "Notifications",
+            "type": "array"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "opened_by": {
+            "title": "Opened By",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "severity_id": {
+            "title": "Severity Id",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "severity_id",
+          "status",
+          "owner_user_id",
+          "opened_by",
+          "occurred_at",
+          "aware_at",
+          "is_suspected_breach",
+          "breach",
+          "links",
+          "resolved_at",
+          "closed_at",
+          "created_at",
+          "updated_at",
+          "notifications"
+        ],
+        "title": "IncidentView",
+        "type": "object"
+      },
       "Interval": {
         "additionalProperties": false,
         "description": "Represents a time interval, encoded as a Timestamp start (inclusive) and a Timestamp end (exclusive).\n\nThe start must be less than or equal to the end. When the start equals the\nend, the interval is empty (matches no time). When both start and end are\nunspecified, the interval matches any time.",
@@ -5371,6 +5871,42 @@
           }
         },
         "title": "LatLng",
+        "type": "object"
+      },
+      "Links": {
+        "additionalProperties": false,
+        "description": "References only: no content is copied from the linked rows.",
+        "properties": {
+          "audit_seqs": {
+            "items": {
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "title": "Audit Seqs",
+            "type": "array"
+          },
+          "finding_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Finding Ids",
+            "type": "array"
+          },
+          "request_ids": {
+            "items": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "title": "Links",
         "type": "object"
       },
       "McpServer": {
@@ -6191,6 +6727,31 @@
         "title": "MyUsageView",
         "type": "object"
       },
+      "NotificationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "not_required_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Required Reason"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "title": "NotificationInput",
+        "type": "object"
+      },
       "NotificationTargetInput": {
         "properties": {
           "endpoint": {
@@ -6253,6 +6814,82 @@
           "signed"
         ],
         "title": "NotificationTargetView",
+        "type": "object"
+      },
+      "NotificationView": {
+        "properties": {
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "not_required_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Required Reason"
+          },
+          "regime": {
+            "enum": [
+              "kvkk_board",
+              "kvkk_data_subjects",
+              "gdpr_authority"
+            ],
+            "title": "Regime",
+            "type": "string"
+          },
+          "reminded": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reminded",
+            "type": "array"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "submitted",
+              "not_required",
+              "overdue",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "submissions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Submissions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "regime",
+          "due_at",
+          "required",
+          "not_required_reason",
+          "state",
+          "submissions",
+          "reminded"
+        ],
+        "title": "NotificationView",
         "type": "object"
       },
       "OpenAIErrorDetail": {
@@ -10633,6 +11270,39 @@
         "title": "SpeechConfig",
         "type": "object"
       },
+      "StatusChange": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StatusChange",
+        "type": "object"
+      },
       "StreamHealth": {
         "properties": {
           "event_type": {
@@ -10761,6 +11431,79 @@
           }
         },
         "title": "StreamableHttpTransport",
+        "type": "object"
+      },
+      "SubmissionInput": {
+        "additionalProperties": false,
+        "description": "Information sent in stages; shim records it and sends nothing itself.",
+        "properties": {
+          "fields_sent": {
+            "items": {
+              "enum": [
+                "data_categories",
+                "approx_subjects",
+                "approx_records",
+                "likely_consequences",
+                "measures_taken",
+                "measures_planned",
+                "contact_person",
+                "subjects_informed",
+                "subjects_informed_how"
+              ],
+              "type": "string"
+            },
+            "title": "Fields Sent",
+            "type": "array"
+          },
+          "late_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Reason"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the information was sent; defaults to now.",
+            "title": "Submitted At"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "SubmissionInput",
         "type": "object"
       },
       "SubscriptionView": {
@@ -12116,6 +12859,8 @@
                 "compliance.manage",
                 "findings.read",
                 "findings.manage",
+                "incidents.read",
+                "incidents.manage",
                 "plans.create",
                 "plans.apply",
                 "plans.approve",
@@ -14186,6 +14931,565 @@
           }
         ],
         "summary": "Update Forward Target",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents": {
+      "get": {
+        "operationId": "list_incidents_api_v1_compliance_incidents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "in_progress",
+                    "on_hold",
+                    "resolved",
+                    "closed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 5,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "suspected_breach",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Suspected Breach"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Incidents",
+        "tags": [
+          "compliance"
+        ]
+      },
+      "post": {
+        "operationId": "open_incident_api_v1_compliance_incidents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Incident",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/export": {
+      "get": {
+        "operationId": "export_incidents_api_v1_compliance_incidents_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "in_progress",
+                    "on_hold",
+                    "resolved",
+                    "closed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 5,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "suspected_breach",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Suspected Breach"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {}
+            },
+            "description": "One OCSF Incident Finding per line."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Incidents",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}": {
+      "get": {
+        "operationId": "get_incident_api_v1_compliance_incidents__incident_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Incident",
+        "tags": [
+          "compliance"
+        ]
+      },
+      "patch": {
+        "operationId": "update_incident_api_v1_compliance_incidents__incident_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Incident",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/notifications/{regime}": {
+      "put": {
+        "operationId": "set_incident_notification_api_v1_compliance_incidents__incident_id__notifications__regime__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "regime",
+            "required": true,
+            "schema": {
+              "enum": [
+                "kvkk_board",
+                "kvkk_data_subjects",
+                "gdpr_authority"
+              ],
+              "title": "Regime",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Incident Notification",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/notifications/{regime}/submissions": {
+      "post": {
+        "operationId": "record_incident_submission_api_v1_compliance_incidents__incident_id__notifications__regime__submissions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "regime",
+            "required": true,
+            "schema": {
+              "enum": [
+                "kvkk_board",
+                "kvkk_data_subjects",
+                "gdpr_authority"
+              ],
+              "title": "Regime",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmissionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record Incident Submission",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/status": {
+      "post": {
+        "operationId": "change_incident_status_api_v1_compliance_incidents__incident_id__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change Incident Status",
         "tags": [
           "compliance"
         ]

@@ -62,6 +62,8 @@ _TABLE = {
     "compliance.manage": "owner admin",
     "findings.read": "owner admin auditor",
     "findings.manage": "owner admin",
+    "incidents.read": "owner admin auditor",
+    "incidents.manage": "owner admin",
     "plans.create": "owner admin",
     "plans.apply": "owner admin",
     "plans.approve": "owner admin",

@@ -20,6 +20,7 @@ from shim_enterprise.compliance.services.monthly_evidence import (
 )
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
+from shim_enterprise.incidents.service import remind_incident_deadlines
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.workers.readiness import write_heartbeat
@@ -35,6 +36,7 @@ class MaintenanceSummary:
     oversight_expired: int = 0
     archive_eligible: int = 0
     monthly_evidence: int = 0
+    incident_reminders: int = 0
     errors: int = 0
 
 
@@ -67,9 +69,14 @@ class AuditMaintenanceWorker:
         monthly, failed = await generate_due_monthly_evidence(
             self.session_factory, now=datetime.now(timezone.utc)
         )
+        # One short transaction per organization, like the monthly files.
+        reminders, reminder_failures = await remind_incident_deadlines(
+            self.session_factory, now=datetime.now(timezone.utc)
+        )
         return MaintenanceSummary(
             anchored_tenants=anchored,
-            errors=errors + failed,
+            errors=errors + failed + reminder_failures,
+            incident_reminders=reminders,
             oversight_created=int(created["created"]),
             oversight_expired=int(expired["expired"]),
             archive_eligible=int(archive["eligible"]),

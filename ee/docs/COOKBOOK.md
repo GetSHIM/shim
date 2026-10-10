@@ -28,6 +28,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Read and export findings](#read-and-export-findings)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
+- [Record an incident](#record-an-incident)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 - [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
@@ -698,6 +699,42 @@ raise `gateway.unregistered_model`, and keys sending their own provider key past
 a stored one raise `gateway.byok_usage` ([findings](FINDINGS.md)). Refused
 unknown model names and servers that never see traffic through shim are not in
 the inventory. Details are in [model deployments](MODEL_DEPLOYMENTS.md#the-inventory).
+
+## Record an incident
+
+Keep one record per incident, with its owner, its evidence and the KVKK 72-hour
+clock.
+
+1. As an owner or admin, open it with what you know, linking the requests or
+   findings involved:
+   `POST /api/v1/compliance/incidents`.
+2. If personal data may have been exposed, set `is_suspected_breach: true`: the
+   `kvkk_board` row gets a deadline 72 hours after `aware_at`, and
+   `kvkk_data_subjects` a row without one. Add `gdpr_authority` with
+   `PUT .../notifications/gdpr_authority` when GDPR applies.
+3. Read `GET /api/v1/compliance/incidents/{id}`: `evidence_summary` lists the
+   entity types and KVKK categories of the linked requests.
+4. Record each stage you send:
+   `POST .../notifications/kvkk_board/submissions` with the form or case number.
+5. Move the status as work goes on, and close it at the end.
+
+```console
+curl -X POST http://localhost:8000/api/v1/compliance/incidents \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "TCKN sent to a provider", "severity_id": 4, "is_suspected_breach": true,
+       "aware_at": "2026-10-10T09:00:00Z", "links": {"request_ids": ["req_…"]}}'
+
+curl -X POST http://localhost:8000/api/v1/compliance/incidents/$INCIDENT/notifications/kvkk_board/submissions \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reference": "KVKK-2026-0042", "fields_sent": ["data_categories", "approx_subjects"]}'
+```
+
+Notes: forward targets get a reminder 24 hours before a deadline and another
+once it passes without a submission. A submission after the deadline needs
+`late_reason`. shim files nothing with a regulator, and the deadlines are for
+your counsel to confirm. Auditors read and export
+(`GET /api/v1/compliance/incidents/export`, OCSF Incident Finding). Details are
+in [incidents](INCIDENTS.md).
 
 ## Collect the monthly evidence file
 

@@ -179,6 +179,33 @@
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/compliance/incidents": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/compliance/incidents/export": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/compliance/incidents/{incident_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Organization reader required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/compliance/oversight": {
   "admin": "200",
   "auditor": "200",
@@ -539,6 +566,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "PATCH /api/v1/compliance/incidents/{incident_id}": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
  "PATCH /api/v1/compliance/oversight/policies/{policy_id}": {
   "admin": "404",
   "auditor": "403 Auditor access is read-only",
@@ -621,6 +657,33 @@
   "team_admin": "403 Organization admin required"
  },
  "POST /api/v1/compliance/forward-targets": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/compliance/incidents": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/compliance/incidents/{incident_id}/notifications/{regime}/submissions": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/compliance/incidents/{incident_id}/status": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
   "member": "403 Organization admin required",
@@ -828,6 +891,15 @@
   "team_admin": "422"
  },
  "POST /api/v1/management/teams": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "PUT /api/v1/compliance/incidents/{incident_id}/notifications/{regime}": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
   "member": "403 Organization admin required",

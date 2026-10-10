@@ -29,6 +29,8 @@ Permission = Literal[
     "compliance.manage",
     "findings.read",
     "findings.manage",
+    "incidents.read",
+    "incidents.manage",
     "plans.create",
     "plans.apply",
     "plans.approve",
@@ -47,6 +49,7 @@ READ_PERMISSIONS: frozenset[Permission] = frozenset(
         "usage.read",
         "audit.read",
         "findings.read",
+        "incidents.read",
     }
 )
 RESERVED_PERMISSIONS: frozenset[Permission] = frozenset(

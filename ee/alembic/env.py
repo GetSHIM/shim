@@ -13,6 +13,7 @@ import shim_enterprise.ai_act.models  # noqa: F401
 import shim_enterprise.billing.models  # noqa: F401
 import shim_enterprise.compliance.models  # noqa: F401
 import shim_enterprise.findings.models  # noqa: F401
+import shim_enterprise.incidents.models  # noqa: F401
 import shim_enterprise.observability.analytics_projection  # noqa: F401
 import shim_enterprise.outbox.models  # noqa: F401
 import shim_enterprise.policy.models  # noqa: F401

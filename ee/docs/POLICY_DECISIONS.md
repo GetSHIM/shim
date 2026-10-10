@@ -326,6 +326,24 @@ the current month as `monthly_partial` (so a test never takes the closed
 month's place), a future month is refused, and so is a period that already has
 a file of that kind.
 
+## Incidents
+
+An [incident](INCIDENTS.md) is opened by a person. shim does not open one from
+a finding or an alert, because most of them are not incidents and a list full
+of them would hide the ones that are. The record holds references (finding ids,
+request ids, audit sequences) and the organization's own text; no request or
+answer content is copied into it, and the evidence summary is computed on each
+read from the linked rows.
+
+shim keeps the notification clock and reminds through forward targets. It never
+decides whether something is a breach, never files with the KVKK Board or any
+other authority, and never tells data subjects. The deadlines (72 hours from
+awareness for the KVKK Board and for a GDPR authority, none for data subjects)
+are fixed in code and documented for the organization's counsel to confirm.
+Audit rows carry field names, statuses, regimes and references, never `breach`
+text, and the OCSF export leaves out the contact person and the free-text
+breach fields.
+
 ## ISO/IEC 42001 readiness report
 
 `POST /api/v1/compliance/reports/readiness` with `{"framework": "iso42001",
