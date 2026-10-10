@@ -234,8 +234,10 @@ requests; a request beyond that is not analysed and the key stays absent.
 system and tool-result sizes, the tools it offered by name and in order, the
 tool calls it replayed, the order and set digests of the offered names, and
 image and document counts with the largest inline image's size. Sizes count the
-masked request, so a detected value counts as its placeholder. Tool names are
-stored in clear, which is what the switch is for; tool definitions are never
+request as the provider saw it: a value of a type that masks counts as its
+placeholder, one under `monitor` or `off` as written. Tool names are stored in
+clear, which is what the switch is for, and only as 1 to 64 of
+`A-Za-z0-9_.:-` (others are counted in `tool_names_dropped`); tool definitions are never
 stored or hashed. The keys are listed in the
 [community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery).
 
