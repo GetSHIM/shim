@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.tenants.models import Organization, Team, TeamMembership, User
-from shim_enterprise.tenants.permissions import READ_PERMISSIONS, user_permissions
+from shim_enterprise.tenants.permissions import user_permissions
 
 ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
 
@@ -38,7 +38,8 @@ async def require_team(
 ) -> Team:
     permissions = await user_permissions(session, user)
     if administer:
-        if permissions <= READ_PERMISSIONS:
+        # Team authority is a membership, not a permission; auditors stay read-only.
+        if user.role == "auditor":
             raise HTTPException(
                 status_code=403, detail="Auditors have read-only access"
             )

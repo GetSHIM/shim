@@ -102,7 +102,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.member_custom_role_changed` | `before` and `after`: the member's custom role slug, `null` for none |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
 | `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role`, `custom_role` (slug or null) and `oidc_teams` (team id to role) of the new user |
-| `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role`, `custom_role` or `oidc_teams` when a login changed them |
+| `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role`, `custom_role` or `oidc_teams` when a login changed them; `api_keys_revoked` when the login revoked the user's keys |
 | `compliance.connector_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `provider`, `status`, and the redacted `config` |
 | `compliance.connector_run_requested` | `provider`; recorded before the manual run starts |
 | `compliance.forward_target_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `kind`, `endpoint_origin`, `signed`, `min_severity`, `enabled`; an update adds `destination_rotated` (true when the endpoint or signing secret was replaced) |

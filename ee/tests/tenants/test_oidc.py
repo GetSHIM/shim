@@ -477,6 +477,68 @@ async def test_login_sets_and_clears_the_mapped_custom_role(
 
 
 @pytest.mark.asyncio
+async def test_a_login_that_takes_keys_own_away_revokes_the_users_keys(
+    db, test_org, monkeypatch, oidc_config, audit_events
+):
+    from shim_enterprise.tenants.models import ApiKey, OrganizationRole
+
+    db.add_all(
+        OrganizationRole(
+            organization_id=test_org.id, slug=slug, name=slug, permissions=granted
+        )
+        for slug, granted in (("keys", ["keys.own"]), ("reader", ["usage.read"]))
+    )
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_GROUP_CUSTOM_ROLE_MAP",
+        {"/shim/keys": "keys", "/shim/reader": "reader"},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="key-holder-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members"],
+    )
+    user = await oidc.synchronize_user(db, claims)
+    keys = [
+        ApiKey(
+            id=uuid4(),
+            organization_id=test_org.id,
+            user_id=user.id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-oidc",
+            tier="free",
+            is_active=True,
+        )
+        for _ in range(2)
+    ]
+    db.add_all(keys)
+    await db.flush()
+
+    await oidc.synchronize_user(
+        db, claims | {"groups": ["/shim/members", "/shim/keys"]}
+    )
+    kept = [key.is_active for key in keys]
+    await oidc.synchronize_user(
+        db, claims | {"groups": ["/shim/members", "/shim/reader"]}
+    )
+    for key in keys:
+        await db.refresh(key)
+
+    assert kept == [True, True]
+    assert [key.is_active for key in keys] == [False, False]
+    revoked = (await audit_events(test_org.id))[-1]["extra"]
+    assert revoked["api_keys_revoked"] == 2
+    assert (revoked["before"]["custom_role"], revoked["after"]["custom_role"]) == (
+        "keys",
+        "reader",
+    )
+
+
+@pytest.mark.asyncio
 async def test_an_oidc_members_custom_role_is_set_in_the_identity_provider(
     db, test_user_with_org, oidc_config
 ):

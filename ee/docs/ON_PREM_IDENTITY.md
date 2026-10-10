@@ -82,8 +82,10 @@ admin, member, then auditor. A `member` whose groups map to custom roles
 through `OIDC_GROUP_CUSTOM_ROLE_MAP` gets the first slug in sorted order that
 exists in the organization, at every login; with none, or with another built-in
 role, the custom role is cleared. A slug the organization does not have is
-ignored and logged without its name. A custom role given at login does not
-revoke gateway keys the user already holds. User-supplied profile metadata does not grant roles.
+ignored and logged without its name. A custom role without `keys.own` given at
+login revokes the gateway keys the user holds, in the same transaction; the
+`tenant.oidc_user_synchronized` audit event carries their count as
+`api_keys_revoked`. User-supplied profile metadata does not grant roles.
 Group removal/downgrade is applied on session refresh, at most
 `OIDC_REVALIDATE_SECONDS` after the identity provider reflects the change.
 Providers must return a newly signed ID token with current groups on refresh.
@@ -104,7 +106,7 @@ a configured owner group, then sign in again. No local password backdoor,
 email invitation, or implicit first-user privilege escalation is added. Human
 OIDC session revocation and application API-key revocation are separate
 lifecycles: removing a human from IdP groups does not revoke workload keys they
-created. Revoke workload keys through the administration API when retiring an
+created, unless the groups now give a custom role without `keys.own`. Revoke workload keys through the administration API when retiring an
 integration; local account deactivation also blocks its keys.
 
 To retire a person, a remaining organization owner calls
@@ -116,7 +118,8 @@ person's IdP groups as well; later IdP login cannot reactivate the local account
 To retire only an integration, call
 `DELETE /api/v1/management/api-keys/{api_key_id}`. Verify the retired key returns
 HTTP 401 on an authenticated gateway request before closing the offboarding
-record. A group-only change intentionally leaves workload keys usable.
+record. A group-only change intentionally leaves workload keys usable, except
+the custom-role case above.
 
 Keycloak: map a group-membership claim to both ID/access tokens and enable
 verified email for permitted users. Full group paths avoid colliding leaf names.

@@ -414,13 +414,13 @@
   "team_admin": "403 Permission required: roles.manage"
  },
  "GET /api/v1/management/service-accounts": {
-  "admin": "200",
-  "auditor": "403 Organization admin required",
-  "member": "403 Organization admin required",
+  "admin": "403 Organization owner required",
+  "auditor": "403 Organization owner required",
+  "member": "403 Organization owner required",
   "owner": "200",
-  "service_admin": "403 Service accounts cannot manage service accounts",
-  "service_auditor": "403 Organization admin required",
-  "team_admin": "403 Organization admin required"
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Organization owner required",
+  "team_admin": "403 Organization owner required"
  },
  "GET /api/v1/management/settings/pii": {
   "admin": "200",

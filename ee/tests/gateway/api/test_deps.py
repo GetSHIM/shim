@@ -469,7 +469,7 @@ async def test_identity_verifier_rejects_bad_tokens_but_propagates_outages() -> 
     ],
 )
 async def test_auditor_only_allows_read_only_posts(monkeypatch, path, allowed):
-    user = SimpleNamespace(role="auditor", is_active=True)
+    user = SimpleNamespace(role="auditor", custom_role_id=None, is_active=True)
     monkeypatch.setattr(
         enterprise_deps, "get_invite_user", AsyncMock(return_value=user)
     )

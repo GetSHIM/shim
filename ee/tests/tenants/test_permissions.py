@@ -32,6 +32,7 @@ from shim_enterprise.tenants.models import (
     Organization,
     OrganizationRole,
     Team,
+    TeamMembership,
     User,
 )
 from shim_enterprise.tenants.permissions import (
@@ -104,6 +105,23 @@ def test_a_custom_role_cannot_carry_a_reserved_or_unknown_permission(
         )
 
 
+def test_keys_manage_stays_with_owners_and_admins() -> None:
+    with pytest.raises(ValidationError, match="keys.manage"):
+        management.CustomRoleInput(
+            slug="keys", name="Keys", permissions=["keys.own", "keys.manage"]
+        )
+    stored = OrganizationRole(permissions=["keys.own", "keys.manage"])
+
+    assert effective_permissions(
+        User(role="member", custom_role_id=uuid4()), stored
+    ) == {"keys.own"}
+    assert {
+        role
+        for role, granted in BUILTIN_ROLE_PERMISSIONS.items()
+        if "keys.manage" in granted
+    } == {"owner", "admin"}
+
+
 @pytest.mark.parametrize("slug", ["owner", "a", "Viewer", "1viewer", "v" * 33])
 def test_a_custom_role_slug_is_short_lowercase_and_not_built_in(slug: str) -> None:
     with pytest.raises(ValidationError):
@@ -139,9 +157,21 @@ def test_every_management_route_asks_for_a_permission_or_is_listed() -> None:
 @pytest.mark.parametrize(
     ("user", "path", "allowed"),
     [
-        (SimpleNamespace(role="recommender"), "/api/v1/management/teams", False),
-        (SimpleNamespace(role="auditor"), "/api/v1/compliance/reports/kvkk", True),
-        (SimpleNamespace(role="member"), "/api/v1/management/api-keys", True),
+        (
+            SimpleNamespace(role="recommender", custom_role_id=None),
+            "/api/v1/management/teams",
+            False,
+        ),
+        (
+            SimpleNamespace(role="auditor", custom_role_id=None),
+            "/api/v1/compliance/reports/kvkk",
+            True,
+        ),
+        (
+            SimpleNamespace(role="member", custom_role_id=None),
+            "/api/v1/management/api-keys",
+            True,
+        ),
     ],
 )
 async def test_a_role_without_a_write_permission_is_refused_every_write(
@@ -204,30 +234,92 @@ async def _key(db, owner: User) -> str:
     return plaintext
 
 
-@pytest.mark.asyncio
-async def test_an_empty_custom_role_is_refused_every_write(db, monkeypatch) -> None:
-    organization = await _organization(db)
-    role = OrganizationRole(organization_id=organization.id, slug="empty", name="E")
-    db.add(role)
-    await db.flush()
-    holder = await _user(db, organization, "member", custom_role_id=role.id)
+async def _signed_in(
+    db, monkeypatch, caller: User, method: str, path: str, **kwargs
+) -> httpx.Response:
+    """A call through the real get_current_user, so the read-only rule applies."""
     monkeypatch.setattr(
-        enterprise_deps, "get_invite_user", AsyncMock(return_value=holder)
+        enterprise_deps, "get_invite_user", AsyncMock(return_value=caller)
     )
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/api/v1/management/api-keys",
-            "headers": [],
-        }
+    app = FastAPI()
+    app.include_router(management.router, prefix="/api/v1/management")
+    app.dependency_overrides[get_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.request(method, f"/api/v1/management{path}", **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_custom_role_keeps_its_own_and_team_scoped_writes(
+    db, monkeypatch
+) -> None:
+    organization = await _organization(db)
+    empty, reader, keys = (
+        OrganizationRole(
+            organization_id=organization.id, slug=slug, name=slug, permissions=granted
+        )
+        for slug, granted in (
+            ("empty", []),
+            ("reader", ["usage.read"]),
+            ("reader-keys", ["usage.read", "keys.own"]),
+        )
     )
+    team = Team(id=uuid4(), organization_id=organization.id, name="platform")
+    db.add_all([empty, reader, keys, team])
+    await db.flush()
+    nobody = await _user(db, organization, "member", custom_role_id=empty.id)
+    team_admin = await _user(db, organization, "member", custom_role_id=reader.id)
+    key_holder = await _user(db, organization, "member", custom_role_id=keys.id)
+    teammate = await _user(db, organization, "member")
+    db.add(
+        TeamMembership(
+            organization_id=organization.id,
+            team_id=team.id,
+            user_id=team_admin.id,
+            role="team_admin",
+        )
+    )
+    await db.flush()
+    await _key(db, team_admin)
+    await _key(db, key_holder)
+    owned = {
+        holder: await db.scalar(select(ApiKey.id).where(ApiKey.user_id == holder.id))
+        for holder in (team_admin, key_holder)
+    }
 
-    with pytest.raises(HTTPException) as refused:
-        await get_current_user(request, None, db)
+    async def call(caller: User, method: str, path: str, **kwargs) -> httpx.Response:
+        return await _signed_in(db, monkeypatch, caller, method, path, **kwargs)
 
-    assert refused.value.detail == "Auditor access is read-only"
-    assert await user_permissions(db, holder) == frozenset()
+    settings = await call(nobody, "PUT", "/settings/pii", json={})
+    key = await call(nobody, "POST", "/api-keys", json={"name": "k"})
+    profile = await call(nobody, "PUT", "/auth/me", json={"full_name": "Nobody"})
+    added = await call(
+        team_admin,
+        "PUT",
+        f"/teams/{team.id}/members/{teammate.id}",
+        json={"role": "member"},
+    )
+    removed = await call(
+        team_admin, "DELETE", f"/teams/{team.id}/members/{teammate.id}"
+    )
+    refused_rotation = await call(
+        team_admin, "POST", f"/api-keys/{owned[team_admin]}/rotate"
+    )
+    rotated = await call(key_holder, "POST", f"/api-keys/{owned[key_holder]}/rotate")
+
+    for refused in (settings, key):
+        assert (refused.status_code, refused.json()["detail"]) == (
+            403,
+            "Auditor access is read-only",
+        )
+    assert profile.status_code == 200 and profile.json()["full_name"] == "Nobody"
+    assert (added.status_code, removed.status_code) == (200, 204)
+    assert (refused_rotation.status_code, refused_rotation.json()["detail"]) == (
+        403,
+        "Organization admin required",
+    )
+    assert rotated.status_code == 200
 
 
 @pytest.mark.asyncio

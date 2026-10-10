@@ -944,7 +944,9 @@ def test_budget_thresholds_are_fractions_and_say_so() -> None:
 async def test_auditor_reads_the_model_registry_without_writing(
     monkeypatch: pytest.MonkeyPatch, role: str, method: str, status_code: int
 ) -> None:
-    user = SimpleNamespace(role=role, organization_id=uuid4(), is_active=True)
+    user = SimpleNamespace(
+        role=role, custom_role_id=None, organization_id=uuid4(), is_active=True
+    )
     monkeypatch.setattr(
         enterprise_deps, "get_invite_user", AsyncMock(return_value=user)
     )

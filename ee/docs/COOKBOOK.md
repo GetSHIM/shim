@@ -541,8 +541,9 @@ Notes:
 
 - A role without `keys.own` cannot go to someone who holds an active gateway
   key: the PATCH answers 409 `ROLE_HOLDERS_HAVE_KEYS`. Revoke the keys first.
-- Owner-only permissions (`roles.manage`, `config.manage`) and the ones that
-  open content or decide approvals cannot be part of a custom role (422).
+- Owner-only permissions (`roles.manage`, `config.manage`), `keys.manage` and
+  the ones that open content or decide approvals cannot be part of a custom
+  role (422).
 - `"custom_role_id": null` takes the role away; deleting a role someone holds
   answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
   instead ([on-prem identity](ON_PREM_IDENTITY.md)).

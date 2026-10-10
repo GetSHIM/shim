@@ -1633,7 +1633,7 @@ async def create_service_account(
 
 @router.get("/service-accounts", response_model=list[ServiceAccountView])
 async def list_service_accounts(
-    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ServiceAccountView]:
     if user.kind == "service":

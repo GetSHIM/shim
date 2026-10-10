@@ -22,7 +22,7 @@ import jwt
 from joserfc.errors import JoseError
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from redis.exceptions import RedisError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
@@ -30,7 +30,12 @@ from starlette.middleware.sessions import SessionMiddleware
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import change_details, record_management_action
-from shim_enterprise.tenants.models import Organization, OrganizationRole, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    OrganizationRole,
+    User,
+)
 from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
 logger = logging.getLogger(__name__)
@@ -249,6 +254,19 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         teams_before, teams_after = await synchronize_oidc_teams(
             session, user, groups, settings.OIDC_TEAM_GROUP_MAP
         )
+        revoked = 0
+        if custom_role is not None and "keys.own" not in custom_role.permissions:
+            # Only keys.own holders may hold active gateway keys.
+            revoked = len(
+                (
+                    await session.scalars(
+                        update(ApiKey)
+                        .where(ApiKey.user_id == user.id, ApiKey.is_active.is_(True))
+                        .values(is_active=False)
+                        .returning(ApiKey.id)
+                    )
+                ).all()
+            )
         before = {
             "role": previous_role,
             "custom_role": previous_custom_role.slug if previous_custom_role else None,
@@ -260,7 +278,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
             "oidc_teams": teams_after,
         }
         # An unchanged login writes nothing; the identity provider is the source.
-        if previous_role is None or before != after:
+        if previous_role is None or before != after or revoked:
             await record_management_action(
                 session,
                 user,
@@ -271,6 +289,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
                 details={
                     "source": "oidc",
                     **change_details(None if previous_role is None else before, after),
+                    **({"api_keys_revoked": revoked} if revoked else {}),
                 },
             )
         await session.commit()

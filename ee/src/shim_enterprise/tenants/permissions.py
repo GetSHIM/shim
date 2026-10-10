@@ -51,6 +51,8 @@ READ_PERMISSIONS: frozenset[Permission] = frozenset(
 )
 RESERVED_PERMISSIONS: frozenset[Permission] = frozenset(
     {
+        # The gateway lets only owners and admins hold keys on any team.
+        "keys.manage",
         "roles.manage",
         "config.manage",
         "content.read",
