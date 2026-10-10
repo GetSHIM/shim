@@ -1176,6 +1176,158 @@
       ],
       "known_gap": "tier 4, no PRD",
       "known_actual": []
+    },
+    {
+      "id": "ip-after-curl-verbose-flag",
+      "text": "curl -v 203.0.113.9",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "203.0.113.9"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-ping-verbose-flag",
+      "text": "ping -v 203.0.113.9",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "203.0.113.9"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-nmap-verbose-flag",
+      "text": "nmap -v 203.0.113.9",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "203.0.113.9"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-nc-verbose-flag",
+      "text": "nc -v 10.0.0.5 22",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.0.0.5"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-grep-invert-flag",
+      "text": "grep -v 203.0.113.9 hosts.txt",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "203.0.113.9"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-double-dash-v",
+      "text": "--v 10.0.0.5",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "10.0.0.5"
+        }
+      ]
+    },
+    {
+      "id": "ip-after-lone-v-word",
+      "text": "server v 192.168.1.1",
+      "expect": [
+        {
+          "entity": "IP_ADDRESS",
+          "value": "192.168.1.1"
+        }
+      ]
+    },
+    {
+      "id": "version-bare-v",
+      "text": "v1.2.3.4",
+      "expect": []
+    },
+    {
+      "id": "version-word-before-private-quad",
+      "text": "version 10.0.0.5",
+      "expect": []
+    },
+    {
+      "id": "phone-spaced-glued-to-word",
+      "text": "musteri-0532 123 45 67",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "0532 123 45 67"
+        }
+      ]
+    },
+    {
+      "id": "phone-plus-glued-to-word",
+      "text": "user-+905321234567",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "+905321234567"
+        }
+      ]
+    },
+    {
+      "id": "phone-plus-spaced-glued-to-cue",
+      "text": "contact-+1 415 555 2671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "+1 415 555 2671"
+        }
+      ]
+    },
+    {
+      "id": "phone-plus-parens-glued-underscore",
+      "text": "x_+1 (415) 555-2671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "+1 (415) 555-2671"
+        }
+      ]
+    },
+    {
+      "id": "not-phone-bare-run-glued-to-key",
+      "text": "id_4155552671",
+      "expect": []
+    },
+    {
+      "id": "not-phone-bare-run-glued-to-name",
+      "text": "user-4155552671",
+      "expect": []
+    },
+    {
+      "id": "phone-tr-dashed-glued-to-word",
+      "text": "musteri-0532-123-45-67",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "0532-123-45-67"
+        }
+      ]
+    },
+    {
+      "id": "phone-dashed-glued-to-word",
+      "text": "user-415-555-2671",
+      "expect": [
+        {
+          "entity": "PHONE_NUMBER",
+          "value": "415-555-2671"
+        }
+      ],
+      "known_gap": "reads as the dashed tail of a name, as claude-sonnet-4-5-20250929 does",
+      "known_actual": []
     }
   ]
 }
