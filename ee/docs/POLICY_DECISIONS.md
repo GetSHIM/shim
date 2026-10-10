@@ -85,8 +85,18 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. No kind is available in this release;
-`GET /rules` lists each kind with `available: false` and its reason.
+`match`. A new rule starts in `monitor`. The `term` and `pattern` kinds are
+available; `GET /rules` lists the others with `available: false` and the reason.
+
+Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
+same normalized text as the built-in detectors (percent-decoded, invisible
+characters removed, NFKC), and only for the rules in scope for the request.
+A rule match loses every overlap with a built-in detection, so built-in masking
+is never weakened; between rule matches the longer span wins, then the earlier.
+An enforced `mask` match is replaced by a `<LABEL_…>` placeholder and counted in
+`pii_entities` under its label; `block` and `require_approval` matches keep the
+text for the decision point. Rule matches never enter `monitored_entities` or
+`blocked_entities`. Protocol identifiers are not searched.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

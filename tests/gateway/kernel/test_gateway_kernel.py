@@ -796,10 +796,11 @@ class _RulesResolver:
 def _rule_set(*rules: tuple[str, str, str]):
     from shim.rules import Rule, RuleSet
 
+    # A kind with no matcher yet, so only the stub below records its matches.
     return RuleSet(
         revision=4,
         rules=tuple(
-            Rule(id=rule_id, name="n", kind="term", action=action, state=state)
+            Rule(id=rule_id, name="n", kind="record_set", action=action, state=state)
             for rule_id, action, state in rules
         ),
     )
@@ -813,7 +814,8 @@ def _matching_privacy(monkeypatch) -> None:
     async def run(self, value):
         prepared = await original(self, value)
         for rule in prepared.rules.rules if prepared.rules else ():
-            prepared.record_rule_match(rule, 2)
+            if rule.kind == "record_set":
+                prepared.record_rule_match(rule, 2)
         return prepared
 
     monkeypatch.setattr(privacy.PrivacyStage, "run", run)
@@ -910,7 +912,7 @@ async def test_an_enforced_block_refuses_before_any_provider_call(
     assert [match["rule_id"] for match in line["rule_matches"]] == ["alpha", "zeta"]
     assert line["rule_matches"][0] == {
         "rule_id": "alpha",
-        "kind": "term",
+        "kind": "record_set",
         "action": "block",
         "state": "enforced",
         "count": 2,
@@ -1134,3 +1136,106 @@ async def test_the_gate_sees_the_admitted_payload_and_the_provider_the_masked_on
     assert "alice@example.com" in json.dumps(request.admitted_payload)
     [sent] = calls
     assert "alice@example.com" not in sent.content.decode()
+
+
+def _term_rules(action: str = "mask", **values):
+    from shim.rules import validate_rule_set
+
+    rule = {
+        "id": "projects",
+        "name": "Projects",
+        "kind": "term",
+        "action": action,
+        "state": "enforced",
+        "match": {"terms": ["Atlas"]},
+        **values,
+    }
+    return validate_rule_set({"revision": 1, "rules": [rule]})
+
+
+_EVERY_SWITCH_OFF = {
+    "PII_ENTITY_ACTIONS": json.dumps(
+        dict.fromkeys(
+            [
+                "CREDIT_CARD",
+                "DB_URI",
+                "EMAIL_ADDRESS",
+                "FILE_PATH",
+                "IBAN_CODE",
+                "IP_ADDRESS",
+                "MAC_ADDRESS",
+                "PHONE_NUMBER",
+                "SECRET",
+                "TR_LICENSE_PLATE",
+                "TR_NATIONAL_ID",
+                "TR_VKN",
+                "US_SSN",
+            ],
+            "off",
+        )
+    )
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route", ["chat", "responses", "messages", "gemini", "count_tokens"]
+)
+async def test_an_enforced_term_is_masked_with_every_switch_off(
+    monkeypatch, route
+) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _term_rules(),
+        route,
+        text="Atlas'ın raporu",
+        settings=_EVERY_SWITCH_OFF,
+    )
+
+    assert response.status_code == 200
+    [sent] = calls
+    body = json.dumps(json.loads(sent.content), ensure_ascii=False)
+    assert "Atlas" not in body and "<TERM_" in body and "'ın raporu" in body
+    if route != "count_tokens":
+        [line] = lines
+        assert line["rule_matches"] == [
+            {
+                "rule_id": "projects",
+                "kind": "term",
+                "action": "mask",
+                "state": "enforced",
+                "count": 1,
+            }
+        ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "count_tokens", "gemini"])
+async def test_an_enforced_term_block_refuses_before_the_provider(
+    monkeypatch, route
+) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch, _term_rules("block"), route, text="Atlas'ın raporu"
+    )
+
+    assert (response.status_code, response.headers["x-shim-rule-id"]) == (
+        400,
+        "projects",
+    )
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED" and calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_term_rule_scoped_to_another_model_changes_nothing(monkeypatch) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _term_rules("block", scope={"models": ["some-other-model"]}),
+        "chat",
+        text="Atlas'ın raporu",
+    )
+
+    assert response.status_code == 200
+    [sent] = calls
+    assert "Atlas'ın raporu" in sent.content.decode()
+    [line] = lines
+    assert line["rule_matches"] == []

@@ -263,10 +263,10 @@ Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
 
 ## Write a tenant rule
 
-Keep your own rules beside the privacy settings: one set per tenant, replaced
-whole. No rule kind is available in this release, so the set can only be empty;
-the store, its revision and its audit trail work now, and each kind arrives
-with its own release.
+Keep your own words and codes out of prompts: project names, product codes,
+customer lists. One set per tenant, replaced whole, beside the privacy
+settings. Two kinds are available: `term` (a word list) and `pattern` (code
+shapes); the others are listed as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (owner, admin or auditor):
    `revision` (0 until the first change), `rules`, `updated_by`, `updated_at`,
@@ -282,13 +282,36 @@ curl -X PUT http://localhost:8000/api/v1/management/rules \
   -d '{"revision": 0, "rules": []}'
 ```
 
-A rule, once its kind is available:
+Two rules, a term list and a project-code template:
 
 ```json
-{"id": "project_names", "name": "Project code names", "kind": "term",
- "action": "block", "state": "monitor", "scope": {"models": []},
- "match": {"terms": ["..."]}}
+{"revision": 0, "rules": [
+  {"id": "project_names", "name": "Project code names", "kind": "term",
+   "action": "mask", "state": "monitor",
+   "match": {"terms": ["Atlas", "İzmir Proje"]}},
+  {"id": "project_codes", "name": "Project codes", "kind": "pattern",
+   "action": "block", "state": "monitor", "scope": {"models": ["gpt-5-nano"]},
+   "match": {"templates": ["PRJ-####"]}}
+]}
 ```
+
+| Kind | `match` | What it finds |
+| --- | --- | --- |
+| `term` | `terms` (up to 200 per rule, 2,000 per set, 3 to 128 characters each), `label` (default `TERM`), `suffixes` (`tr`, the default, or `none`) | Each term between word boundaries, in any letter case. Turkish `İ`, `I`, `ı` and `i` count as one letter, so `İzmir Proje` finds `IZMIR PROJE` and `ızmir  proje`. With `suffixes: "tr"`, a term of four characters or more also finds its Turkish case forms: after an apostrophe any ending (`Atlas'ın`, `Atlas’ta`), without one the plural, possessive and case endings (`Atlasın`, `Atlasları`, `ATLASIN`). Only the term is masked; the ending stays: `Atlasın` reaches the provider as `<TERM_…>ın`. |
+| `pattern` | `templates` (up to 32, 64 characters each), `regexes` (up to 32 per rule, 64 per set, 256 characters each), `label` (default `PATTERN`), `ignore_case` (default `true`) | A template is literal text where `#` is one digit, `@` one letter and `\` makes the next character literal, between word boundaries: `PRJ-####` finds `PRJ-1234` and `prj-1234`, not `PRJ-12345` or `XPRJ-1234`. A regex runs as written; one that can backtrack (a backreference, a quantified group holding a quantifier) or runs slowly on a test input is refused with 422 `RULE_PATTERN_UNSAFE`. |
+
+Not matched: consonant softening (`kitap`, `kitabı`), derivations (`Atlasçılık`),
+misspellings, a term inside a longer word (`XAtlas`), a short term with an ending
+but no apostrophe (`Ata` does not find `Atada`), and anything inside a value a
+built-in type already found (`atlas@example.com` stays an e-mail address). Tool
+names, ids and other protocol identifiers are not searched. The `label` names
+the placeholder, `<LABEL_…>`, which the provider sees: keep it generic.
+
+An enforced `mask` replaces the value with a placeholder that the answer gets
+back; `block` refuses the request with 400 `RULE_BLOCKED` before any provider
+call; `warn` adds `RULE_WARN`; `monitor`, or any rule in `state: "monitor"`, only
+counts. While an enforced `mask` or `block` rule applies to a request, images
+and files in it are refused, since they cannot be searched.
 
 Monitor first: a new rule must start in `state: "monitor"`, where a match is
 recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list
@@ -299,7 +322,7 @@ Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
 revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
-`RULE_MATCH_INVALID`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
 does not have) or `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
 413. Every change records `tenant.rules_updated` with ids, kinds and counts,
 never a term; weakening an enforced rule also records

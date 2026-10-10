@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import hashlib
 import hmac
 import json
@@ -31,6 +32,8 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     effective_entity_actions,
 )
+from shim.rules import validate_rule_set
+from shim.rules.content import ContentRules, content_rules
 
 
 DEFAULT_ACTIONS = effective_entity_actions()
@@ -1304,8 +1307,9 @@ def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
     ],
 )
 def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
+    many_terms = _content(_term_rule(*(f"Projekt{index:03d}" for index in range(200))))
     started = time.perf_counter()
-    scrubber.analyze(text, DEFAULT_ACTIONS)
+    scrubber.analyze(text, DEFAULT_ACTIONS, many_terms)
 
     # Unbounded, the email patterns took 20 s and more on 32 KB.
     assert time.perf_counter() - started < 5
@@ -1687,3 +1691,203 @@ def test_the_stronger_action_wins_an_overlap(
     assert all("john.doe@example.com" in value for value in unmasked)
     if masked:
         assert "john.doe@example.com" not in scrubbed
+
+
+def _term_rule(*terms: str, rule_id: str = "words", **values) -> dict:
+    return {
+        "id": rule_id,
+        "name": "n",
+        "kind": "term",
+        "action": "mask",
+        "state": "enforced",
+        "match": {"terms": list(terms)},
+        **values,
+    }
+
+
+def _content(*rules: dict) -> ContentRules:
+    found = content_rules(
+        validate_rule_set(
+            {"revision": 1, "rules": list(rules)}, approval_available=True
+        ),
+        lambda _rule: True,
+    )
+    assert found is not None
+    return found
+
+
+_OFF = dict.fromkeys(DEFAULT_ACTIONS, "off")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Rapor %41tlas%27%C4%B1n", "Rapor At\u200blas'ın", "Rapor Ａｔｌａｓ'ın"],
+)
+def test_a_rule_match_on_preprocessed_text_maps_back_to_its_source_span(
+    scrubber: PIIScrubberService, text: str
+) -> None:
+    found = _content(_term_rule("Atlas"))
+
+    scrubbed, mapping = scrubber.scrub(text, _OFF, content=found)
+
+    [(placeholder, value)] = mapping.items()
+    assert placeholder.startswith("<TERM_") and scrubbed.startswith(
+        f"Rapor {placeholder}"
+    )
+    assert "tlas" not in scrubbed.replace(placeholder, "")
+    assert scrubber.deanonymize(scrubbed, mapping) == text
+    assert found.values == {"words": {value}}
+
+
+def _corpus_samples() -> list[tuple[str, str, str]]:
+    corpus = json.loads(
+        (Path(__file__).parent / "corpus" / "detection-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    # The corpus has no MAC address or US SSN case yet.
+    samples: dict[str, tuple[str, str, str]] = {
+        "MAC_ADDRESS": ("MAC_ADDRESS", "MAC 00:1A:2B:3C:4D:5E", "00:1A:2B:3C:4D:5E"),
+        "US_SSN": ("US_SSN", "social security number 219-09-9999", "219-09-9999"),
+    }
+    for case in corpus["cases"]:
+        if "known_gap" in case:
+            continue
+        for item in case["expect"]:
+            if item["entity"] in DEFAULT_ACTIONS and len(item["value"]) > 3:
+                samples.setdefault(
+                    item["entity"], (item["entity"], case["text"], item["value"])
+                )
+    return sorted(samples.values())
+
+
+@pytest.mark.parametrize(("entity_type", "text", "value"), _corpus_samples())
+def test_a_built_in_detection_wins_every_overlap_with_a_rule(
+    scrubber: PIIScrubberService, entity_type: str, text: str, value: str
+) -> None:
+    inside = _content(
+        {
+            **_term_rule(),
+            "kind": "pattern",
+            "match": {"regexes": [re.escape(value[1:])[:256]]},
+        }
+    )
+
+    found = scrubber.analyze(text, DEFAULT_ACTIONS, inside)
+
+    assert (entity_type, value) in {
+        (item["type"], text[item["start"] : item["end"]]) for item in found
+    }
+    assert not any("rule_id" in item for item in found) and inside.values == {}
+
+
+def test_all_default_types_have_an_overlap_sample() -> None:
+    assert {sample[0] for sample in _corpus_samples()} == set(DEFAULT_ACTIONS)
+
+
+@pytest.mark.parametrize(
+    ("state", "action", "masked"),
+    [
+        ("monitor", "mask", False),
+        ("monitor", "block", False),
+        ("enforced", "monitor", False),
+        ("enforced", "warn", False),
+        ("enforced", "mask", True),
+        ("enforced", "block", False),
+        ("enforced", "require_approval", False),
+    ],
+)
+def test_only_an_enforced_mask_changes_the_text(
+    scrubber: PIIScrubberService, state: str, action: str, masked: bool
+) -> None:
+    found = _content(_term_rule("Atlas", state=state, action=action))
+
+    scrubbed, mapping = scrubber.scrub("Atlas'ın raporu", _OFF, content=found)
+
+    assert (scrubbed != "Atlas'ın raporu") is masked and bool(mapping) is masked
+    assert found.values == {"words": {"Atlas"}}
+
+
+def test_the_strongest_enforced_action_wins_and_the_label_comes_from_the_rule(
+    scrubber: PIIScrubberService,
+) -> None:
+    masks = _content(
+        _term_rule(
+            "Atlas", rule_id="b_mask", match={"terms": ["Atlas"], "label": "PROJECT"}
+        ),
+        _term_rule("Atlas", rule_id="a_warn", action="warn"),
+    )
+    blocks = _content(
+        _term_rule("Atlas", rule_id="masked"),
+        _term_rule("Atlas", rule_id="blocked", action="block"),
+    )
+
+    masked, _ = scrubber.scrub("Atlas", _OFF, content=masks)
+    kept, mapping = scrubber.scrub("Atlas", _OFF, content=blocks)
+
+    assert masked.startswith("<PROJECT_")
+    assert (kept, mapping) == ("Atlas", {})
+    assert blocks.values == {"masked": {"Atlas"}, "blocked": {"Atlas"}}
+
+
+def test_a_stable_placeholder_uses_the_label_and_the_suffix_stays(
+    scrubber: PIIScrubberService,
+) -> None:
+    key = placeholder_period_key(
+        b"r" * 32, "tenant-a", datetime(2026, 10, 1, tzinfo=timezone.utc)
+    )
+    digest = hmac.new(key, "TERM\x1fAtlas".encode(), hashlib.sha256).hexdigest()[:32]
+
+    scrubbed, mapping = scrubber.scrub(
+        "Atlasın bütçesi",
+        _OFF,
+        placeholder_key=key,
+        content=_content(_term_rule("Atlas")),
+    )
+
+    assert scrubbed == f"<TERM_{digest}>ın bütçesi"
+    assert scrubber.deanonymize(scrubbed, mapping) == "Atlasın bütçesi"
+
+
+def test_with_every_switch_off_a_payload_is_still_searched_for_rules(
+    scrubber: PIIScrubberService,
+) -> None:
+    found = _content(_term_rule("Atlas"))
+    payload = {
+        "model": "gpt-5-nano",
+        "messages": [{"role": "user", "content": "Atlas'ın raporu", "name": "Atlas"}],
+    }
+
+    scrubbed, mapping = scrub_payload(payload, _OFF, scrubber, content=found)
+
+    [placeholder] = mapping
+    assert scrubbed["messages"][0]["content"] == f"{placeholder}'ın raporu"
+    # Identifiers are not searched for tenant terms.
+    assert scrubbed["messages"][0]["name"] == "Atlas"
+    assert scrub_payload(payload, _OFF, scrubber) == (payload, {})
+
+
+def test_an_enforced_content_rule_refuses_opaque_media(
+    scrubber: PIIScrubberService,
+) -> None:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    scrub_payload(
+        payload, _OFF, scrubber, content=_content(_term_rule("Atlas", state="monitor"))
+    )
+    with pytest.raises(HTTPException) as refused:
+        scrub_payload(payload, _OFF, scrubber, content=_content(_term_rule("Atlas")))
+
+    assert refused.value.detail["code"] == "PRIVACY_POLICY_BLOCKED"

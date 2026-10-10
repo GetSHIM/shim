@@ -1,0 +1,785 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 2,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "entities": [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "CREDIT_CARD",
+    "IBAN_CODE",
+    "TR_NATIONAL_ID",
+    "TR_VKN",
+    "SECRET",
+    "DB_URI",
+    "FILE_PATH",
+    "IP_ADDRESS",
+    "MAC_ADDRESS",
+    "US_SSN",
+    "TR_LICENSE_PLATE",
+    "PERSON",
+    "LOCATION",
+    "TERM",
+    "PATTERN"
+  ],
+  "cases": [
+    {
+      "id": "term-atlas-00",
+      "text": "Rapor: Atlas hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-01",
+      "text": "Rapor: Atlas'ın hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-02",
+      "text": "Rapor: Atlas’ta hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-03",
+      "text": "Rapor: Atlasʼa hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-04",
+      "text": "Rapor: Atlasın hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-05",
+      "text": "Rapor: ATLASIN hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "ATLAS",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-06",
+      "text": "Rapor: atlasta hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-07",
+      "text": "Rapor: Atlasları hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-08",
+      "text": "Rapor: ATLAS'IN hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "ATLAS",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-atlas-no-atlasçılık",
+      "text": "Rapor: Atlasçılık hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-atlas-no-xatlas",
+      "text": "Rapor: XAtlas hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-atlas-no-atlasx",
+      "text": "Rapor: Atlasx hazır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-izmir-12",
+      "text": "Konu: IZMIR PROJE bütçesi",
+      "config": {
+        "rules": [
+          {
+            "id": "izmir",
+            "name": "izmir",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "İzmir Proje"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "IZMIR PROJE",
+          "rule_id": "izmir"
+        }
+      ]
+    },
+    {
+      "id": "term-izmir-13",
+      "text": "Konu: ıZMİR PROJE'si bütçesi",
+      "config": {
+        "rules": [
+          {
+            "id": "izmir",
+            "name": "izmir",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "İzmir Proje"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "ıZMİR PROJE",
+          "rule_id": "izmir"
+        }
+      ]
+    },
+    {
+      "id": "term-izmir-14",
+      "text": "Konu: izmir  proje bütçesi",
+      "config": {
+        "rules": [
+          {
+            "id": "izmir",
+            "name": "izmir",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "İzmir Proje"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "izmir  proje",
+          "rule_id": "izmir"
+        }
+      ]
+    },
+    {
+      "id": "term-izmir-15",
+      "text": "Konu: İZMİR PROJESİ bütçesi",
+      "config": {
+        "rules": [
+          {
+            "id": "izmir",
+            "name": "izmir",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "İzmir Proje"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "İZMİR PROJE",
+          "rule_id": "izmir"
+        }
+      ]
+    },
+    {
+      "id": "term-short-16",
+      "text": "Bugün Ata geldi",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Ata",
+          "rule_id": "ata"
+        }
+      ]
+    },
+    {
+      "id": "term-short-17",
+      "text": "Bugün Ata'nın geldi",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Ata",
+          "rule_id": "ata"
+        }
+      ]
+    },
+    {
+      "id": "term-short-18",
+      "text": "Bugün Atalar geldi",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-short-19",
+      "text": "Bugün Atada geldi",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-sisli-20",
+      "text": "Toplantı ŞİŞLİ KULE yapılacak",
+      "config": {
+        "rules": [
+          {
+            "id": "sisli",
+            "name": "sisli",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Şişli Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "ŞİŞLİ KULE",
+          "rule_id": "sisli"
+        }
+      ]
+    },
+    {
+      "id": "term-sisli-21",
+      "text": "Toplantı şişli kule'de yapılacak",
+      "config": {
+        "rules": [
+          {
+            "id": "sisli",
+            "name": "sisli",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Şişli Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "şişli kule",
+          "rule_id": "sisli"
+        }
+      ]
+    },
+    {
+      "id": "template-prj-22",
+      "text": "Kod PRJ-1234 kapandı",
+      "config": {
+        "rules": [
+          {
+            "id": "project_code",
+            "name": "project_code",
+            "kind": "pattern",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "templates": [
+                "PRJ-####"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "PATTERN",
+          "value": "PRJ-1234",
+          "rule_id": "project_code"
+        }
+      ]
+    },
+    {
+      "id": "template-prj-23",
+      "text": "Kod prj-1234 kapandı",
+      "config": {
+        "rules": [
+          {
+            "id": "project_code",
+            "name": "project_code",
+            "kind": "pattern",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "templates": [
+                "PRJ-####"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "PATTERN",
+          "value": "prj-1234",
+          "rule_id": "project_code"
+        }
+      ]
+    },
+    {
+      "id": "template-prj-24",
+      "text": "Kod PRJ-12345 kapandı",
+      "config": {
+        "rules": [
+          {
+            "id": "project_code",
+            "name": "project_code",
+            "kind": "pattern",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "templates": [
+                "PRJ-####"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "template-prj-25",
+      "text": "Kod XPRJ-1234 kapandı",
+      "config": {
+        "rules": [
+          {
+            "id": "project_code",
+            "name": "project_code",
+            "kind": "pattern",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "templates": [
+                "PRJ-####"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-inside-an-email-is-the-email",
+      "text": "Yaz: atlas@example.com",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "atlas@example.com"
+        }
+      ]
+    },
+    {
+      "id": "term-two-rules-one-term",
+      "text": "Atlas'ın raporu",
+      "config": {
+        "rules": [
+          {
+            "id": "first",
+            "name": "first",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          },
+          {
+            "id": "second",
+            "name": "second",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "ATLAS"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "first"
+        },
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "second"
+        }
+      ]
+    },
+    {
+      "id": "term-softened-stem",
+      "text": "Bu kitabı okudum",
+      "config": {
+        "rules": [
+          {
+            "id": "kitap",
+            "name": "kitap",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "kitap"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "kitab",
+          "rule_id": "kitap"
+        }
+      ],
+      "known_gap": "Consonant softening (kitap to kitabı) is not matched in suffix version 1.",
+      "known_actual": []
+    }
+  ]
+}
