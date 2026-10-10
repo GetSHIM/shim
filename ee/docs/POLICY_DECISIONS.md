@@ -198,7 +198,12 @@ with the route's message as the reason; the rest is restored. A deployment
 created after the version is disabled and listed in `approximated`. A restore
 sent with `expected_version` answers 409
 `{"code": "POLICY_VERSION_CHANGED", "version": <current>}` when the current
-version is no longer that one, and changes nothing. Plans applied after the version become
+version is no longer that one, and changes nothing. A restore, like a plan,
+holds at most 100 changes (422 beyond; restore a later version first), and a
+privacy field added after the restored version takes its default. Reading the
+current state (`/policy/state`) or one version's states needs, besides
+`audit.read`, the reads of what they show: `settings.read`, `usage.read` and
+`deployments.read` (403 naming the missing ones). Plans applied after the version become
 `rolled_back`. Audit actions: `tenant.policy_plan_created`,
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,

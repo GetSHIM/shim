@@ -38,11 +38,13 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import (
+    ColumnDefault,
     and_,
     case,
     cast as sql_cast,
     distinct,
     func,
+    inspect,
     or_,
     select,
     text,
@@ -123,6 +125,7 @@ from shim_enterprise.tenants.models import (
     ModelDeployment,
     OrganizationInvite,
     Organization,
+    OrganizationPIIConfig,
     OrganizationRole,
     ProviderSecret,
     ServiceAccountCredential,
@@ -4670,6 +4673,20 @@ def _privacy_tightened(before: Mapping[str, Any], after: Mapping[str, Any]) -> b
     )
 
 
+# A field newer than a stored version takes its column default when it is restored.
+_PRIVACY_DEFAULTS = {
+    field: default.arg(None) if default.is_callable else default.arg
+    for field in PrivacySettings.model_fields
+    if isinstance(
+        default := inspect(OrganizationPIIConfig).columns[field].default, ColumnDefault
+    )
+}
+
+
+def _privacy_settings(state: State) -> PrivacySettings:
+    return PrivacySettings.model_validate({**_PRIVACY_DEFAULTS, **state})
+
+
 class _PrivacyResource:
     name = "privacy"
     permission: Permission = "settings.write"
@@ -4714,8 +4731,9 @@ class _PrivacyResource:
         assert after is not None
         row = await ensure_privacy_defaults(session, organization_id)
         previous = PrivacySettings.model_validate(row).model_dump()
+        values = _privacy_settings(after)
         for field in PrivacySettings.model_fields:
-            setattr(row, field, after[field])
+            setattr(row, field, getattr(values, field))
         current = PrivacySettings.model_validate(row).model_dump()
         await _audit(
             session,
@@ -4750,8 +4768,8 @@ class _PrivacyResource:
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         assert before is not None and after is not None
-        previous = PrivacySettings.model_validate(before).model_dump()
-        current = PrivacySettings.model_validate(after).model_dump()
+        previous = _privacy_settings(before).model_dump()
+        current = _privacy_settings(after).model_dump()
         if _privacy_relaxed(previous, current):
             return "relaxing"
         return "tightening" if _privacy_tightened(previous, current) else "neutral"
@@ -4766,8 +4784,8 @@ class _PrivacyResource:
         window_days: int,
     ) -> Impact:
         assert before is not None and after is not None
-        previous = PrivacySettings.model_validate(before).effective_actions
-        current = PrivacySettings.model_validate(after).effective_actions
+        previous = _privacy_settings(before).effective_actions
+        current = _privacy_settings(after).effective_actions
         changed = sorted(kind for kind in current if current[kind] != previous[kind])
         if any(previous[kind] == "off" for kind in changed):
             return no_impact(window_days, "type was off; start with monitor")
@@ -5096,10 +5114,7 @@ class _ApiKeyResource:
                 organization_id,
                 window_days,
                 RequestLifecycle.api_key_id == UUID(item_id),
-                or_(
-                    RequestLifecycle.requested_model.is_(None),
-                    RequestLifecycle.requested_model.not_in(after["allowed_models"]),
-                ),
+                RequestLifecycle.requested_model.not_in(after["allowed_models"]),
             ),
             window_days,
         )
@@ -5456,7 +5471,7 @@ class _BudgetResource:
             limit_tokens=after["limit_tokens"],
         )
         now = datetime.now(timezone.utc)
-        usage = await BudgetEvaluator()._aggregate(
+        usage = await BudgetEvaluator().aggregate(
             session,
             budget,
             now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),

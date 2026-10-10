@@ -29,7 +29,7 @@ write nor own gateway keys.
 | `members.manage` | Invite, list and revoke invites, remove members | x | x | | |
 | `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
 | `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
-| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |

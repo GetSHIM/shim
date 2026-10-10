@@ -1585,7 +1585,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     assert overview_summary.settled_spend_usd == (
         None if pricing_resolution == "unknown" else Decimal("0.00004")
     )
-    budget_usage = await BudgetEvaluator()._aggregate(
+    budget_usage = await BudgetEvaluator().aggregate(
         db,
         SimpleNamespace(organization_id=test_api_key.organization_id, scope_type="org"),
         datetime.now(timezone.utc) - timedelta(days=1),

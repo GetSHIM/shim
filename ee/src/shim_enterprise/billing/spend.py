@@ -98,7 +98,7 @@ class BudgetEvaluator:
         thresholds = validate_budget_notification_config(budget)
         period_start = _month_start(now)
         period_key = _period_key(now)
-        usage = await self._aggregate(session, budget, period_start)
+        usage = await self.aggregate(session, budget, period_start)
         fraction = usage.fraction_of(budget)
         fired = await self._fired_thresholds(session, budget, period_key)
         candidates = sorted(
@@ -134,7 +134,7 @@ class BudgetEvaluator:
             "enqueued": len(enqueued),
         }
 
-    async def _aggregate(
+    async def aggregate(
         self,
         session: AsyncSession,
         budget: CostBudget,

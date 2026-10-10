@@ -1004,7 +1004,7 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
     now = datetime.now(timezone.utc)
 
     def row(
-        started_at: datetime, model: str = "gpt-5-mini", **metadata
+        started_at: datetime, model: str | None = "gpt-5-mini", **metadata
     ) -> RequestLifecycle:
         return RequestLifecycle(
             request_id=f"req_policy_{uuid4().hex}",
@@ -1027,6 +1027,7 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
             row(inside, model="policy-model", team_id=team["id"]),
             row(inside, model="other", deployment_id=deployment["id"]),
             row(outside, pii_entities={"EMAIL_ADDRESS": 1}, model="policy-model"),
+            row(inside, model=None),
         ]
     )
     await db.flush()
@@ -1092,6 +1093,14 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
     assert disable["requests"] == 2
     assert daily["requests"] == 2
     assert oversight["note"] == "review queue runs after the request"
+    budget = await impact(
+        {
+            "resource": "budgets",
+            "item": None,
+            "set": {"scope_type": "org", "limit_usd": "10"},
+        }
+    )
+    assert budget["note"] == "month-to-date use is 0 percent of the new limit"
     wide = await _call(
         db,
         owner,
@@ -1222,6 +1231,85 @@ async def test_a_plan_needs_the_permission_of_every_route_it_stands_in_for(
     assert own_key.json()["detail"]["errors"] == "Organization admin required"
     assert (await db.get(PolicyPlan, UUID(owners_plan["id"]))).status == "draft"
     assert len(await _versions(db, owner.organization_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_versions_are_read_only_with_the_reads_of_what_they_hold(db) -> None:
+    owner = await _tenant(db)
+    auditor = await _holder(db, owner, "audit.read")
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+
+    state = await _call(db, auditor, "GET", f"{POLICY}/state")
+    version = await _call(db, auditor, "GET", f"{POLICY}/versions/1")
+    listed = await _call(db, auditor, "GET", f"{POLICY}/versions")
+
+    for refused in (state, version):
+        assert (refused.status_code, refused.json()["detail"]) == (
+            403,
+            "Permission required: deployments.read and settings.read and usage.read",
+        )
+    assert listed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_version_numbers_and_restore_size_are_bounded(db) -> None:
+    owner = await _tenant(db)
+    huge = 2_147_483_648
+
+    paths = (
+        ("GET", f"{POLICY}/versions/{huge}"),
+        ("GET", f"{POLICY}/versions?before={huge}"),
+        ("POST", f"{POLICY}/versions/{huge}/restore"),
+    )
+    for method, path in paths:
+        response = await _call(db, owner, method, path, json={})
+        assert response.status_code == 422, path
+    for number in range(101):
+        created = await _call(
+            db,
+            owner,
+            "POST",
+            "/api/v1/compliance/oversight/policies",
+            json={"name": f"policy {number}", "trigger": {"pii_detected": True}},
+        )
+        assert created.status_code == 201, created.text
+    too_many = await _call(db, owner, "POST", f"{POLICY}/versions/0/restore", json={})
+
+    assert too_many.status_code == 422
+    assert too_many.json()["detail"] == "A plan holds at most 100 changes"
+    assert len(await _versions(db, owner.organization_id)) == 101
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_version_older_than_a_privacy_field_gives_its_default(
+    db,
+) -> None:
+    owner = await _tenant(db)
+    for body in ({"response_scan": "count"}, {"block_email": False}):
+        await _call(db, owner, "PUT", "/api/v1/management/settings/pii", json=body)
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_phone": False}
+    )
+    older = (await _versions(db, owner.organization_id))[1]
+    # As if response_scan were added after version 2 was written.
+    older.snapshot = {
+        "privacy": {
+            "_": {
+                key: value
+                for key, value in older.snapshot["privacy"]["_"].items()
+                if key != "response_scan"
+            }
+        }
+    }
+    await db.flush()
+
+    restored = await _call(db, owner, "POST", f"{POLICY}/versions/2/restore", json={})
+
+    assert restored.status_code == 200, restored.text
+    privacy = (await _call(db, owner, "GET", "/api/v1/management/settings/pii")).json()
+    assert (privacy["block_phone"], privacy["response_scan"]) == (True, "off")
 
 
 @pytest.mark.asyncio

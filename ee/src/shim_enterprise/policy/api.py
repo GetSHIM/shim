@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,10 @@ router = APIRouter(prefix="/management/policy", tags=["policy"])
 
 _PLAN_LIFETIME = timedelta(days=7)
 _MAX_PLAN_BYTES = 256 * 1024
+_MAX_CHANGES = 100
+_MAX_VERSION = 2_147_483_647
+# What /state and one version's states show besides audit.read.
+_STATE_READS = ("deployments.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
 _NOT_DELETABLE = {
@@ -60,7 +64,7 @@ class ChangeInput(BaseModel):
 
 
 class PlanInput(BaseModel):
-    changes: list[ChangeInput] = Field(min_length=1, max_length=100)
+    changes: list[ChangeInput] = Field(min_length=1, max_length=_MAX_CHANGES)
     reason: str | None = Field(default=None, max_length=500)
 
 
@@ -117,7 +121,7 @@ class RestoreInput(BaseModel):
     expected_version: int | None = Field(
         default=None,
         ge=0,
-        le=2_147_483_647,
+        le=_MAX_VERSION,
         description="The current version the caller read; 409 when it moved since.",
     )
 
@@ -160,6 +164,15 @@ async def _authorize(
     if resource.permission not in await user_permissions(session, actor):
         raise HTTPException(
             status_code=403, detail=f"Permission required: {resource.permission}"
+        )
+
+
+async def _require_state_reads(session: AsyncSession, user: User) -> None:
+    granted = await user_permissions(session, user)
+    missing = [permission for permission in _STATE_READS if permission not in granted]
+    if missing:
+        raise HTTPException(
+            status_code=403, detail=f"Permission required: {' and '.join(missing)}"
         )
 
 
@@ -472,7 +485,7 @@ async def apply_plan(
 @router.get("/versions", response_model=list[VersionSummary])
 async def list_versions(
     limit: int = Query(default=50, ge=1, le=200),
-    before: int | None = Query(default=None, ge=1),
+    before: int | None = Query(default=None, ge=1, le=_MAX_VERSION),
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -489,10 +502,11 @@ async def list_versions(
 
 @router.get("/versions/{version}", response_model=VersionView)
 async def get_version(
-    version: int,
+    version: int = Path(ge=0, le=_MAX_VERSION),
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    await _require_state_reads(session, user)
     row = await session.scalar(
         select(PolicyVersion).where(
             PolicyVersion.organization_id == _tenant(user),
@@ -509,6 +523,7 @@ async def policy_state(
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    await _require_state_reads(session, user)
     organization_id = _tenant(user)
     resources = {
         name: await resource.snapshot(session, organization_id, None)
@@ -521,9 +536,9 @@ async def policy_state(
 
 @router.post("/versions/{version}/restore", response_model=RestoreView)
 async def restore_version(
-    version: int,
     payload: RestoreInput,
     request: Request,
+    version: int = Path(ge=0, le=_MAX_VERSION),
     user: User = Depends(require("plans.create")),
     _: User = Depends(require("plans.apply")),
     session: AsyncSession = Depends(get_db),
@@ -611,6 +626,10 @@ async def restore_version(
             changes.append(
                 await _change(session, organization_id, name, item, now, target, 7)
             )
+    if len(changes) > _MAX_CHANGES:
+        raise HTTPException(
+            status_code=422, detail=f"A plan holds at most {_MAX_CHANGES} changes"
+        )
     plan = None
     cleanups: list[PostCommit] = []
     if changes:
