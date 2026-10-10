@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import io
 from importlib import resources
+from pathlib import Path
 import re
 from uuid import uuid4
 import zlib
@@ -82,6 +83,105 @@ def test_the_mapping_has_38_controls_with_sources_and_known_evidence() -> None:
     assert set(load_frameworks()) == {"ai_act", "gdpr", "iso27001", "kvkk", "soc2"}
 
 
+_TEXTS = {"gap": "g", "next_steps": [{"type": "organization", "text": "t"}]}
+
+
+def _anchor(heading: str) -> str:
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
+def test_every_control_has_a_gap_and_steps_that_resolve() -> None:
+    docs = Path(__file__).parents[2] / "docs"
+    anchors = {
+        path.name: {
+            _anchor(line.lstrip("#"))
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith("#")
+        }
+        for path in docs.glob("*.md")
+    }
+    forbidden = re.compile(r"compliant|certified|conformity|score|%", re.I)
+
+    for control in readiness.load_mapping().controls:
+        assert 0 < len(control.gap) <= readiness.GAP_LIMIT, control.identifier
+        assert not forbidden.search(control.gap), control.identifier
+        assert 1 <= len(control.next_steps) <= readiness.MAX_STEPS
+        types = [step.type for step in control.next_steps]
+        assert types == sorted(types, key=readiness.STEP_TYPES.index)
+        for step in control.next_steps:
+            assert 0 < len(step.text) <= readiness.STEP_LIMIT, control.identifier
+            assert not forbidden.search(step.text), control.identifier
+            if step.type == "in_shim":
+                assert step.doc is not None
+                name, _, anchor = step.doc.partition("#")
+                assert anchor in anchors[name], (control.identifier, step.doc)
+            else:
+                assert step.doc is None
+    a84 = readiness.load_mapping().control("A.8.4")
+    assert a84 is not None and [s.type for s in a84.next_steps] == ["organization"]
+
+
+def _step(**fields) -> dict:
+    return {"type": "organization", "text": "t", **fields}
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        {"next_steps": [_step()]},
+        {"gap": "g" * 301, "next_steps": [_step()]},
+        {"gap": "g", "next_steps": []},
+        {"gap": "g", "next_steps": [_step()] * 5},
+        {"gap": "g", "next_steps": [_step(type="vendor")]},
+        {"gap": "g", "next_steps": [_step(type="in_shim")]},
+        {"gap": "g", "next_steps": [_step(doc="COOKBOOK.md#x")]},
+        {"gap": "g", "next_steps": [_step(text="t" * 241)]},
+        {"gap": "g", "next_steps": ["organization: t"]},
+    ],
+)
+def test_a_control_without_valid_texts_is_refused_by_id(
+    monkeypatch: pytest.MonkeyPatch, texts
+) -> None:
+    mapping = {
+        "framework": "iso42001",
+        "verified_against_standard": False,
+        "controls": [{"id": "A.1", "title": "t", "source": "declared", **texts}],
+    }
+    monkeypatch.setattr(readiness.yaml, "safe_load", lambda _: mapping)
+    readiness.load_mapping.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="for A.1$"):
+            readiness.load_mapping()
+    finally:
+        readiness.load_mapping.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("source", "present", "declared", "status"),
+    [
+        ("measured", True, None, "ready"),
+        ("measured", False, None, "gap"),
+        ("measured", False, "implemented", "gap"),
+        ("input", True, "implemented", "ready"),
+        ("input", True, "not_applicable", "ready"),
+        ("input", True, "partial", "partial"),
+        ("input", True, None, "partial"),
+        ("input", True, "not_implemented", "gap"),
+        ("input", False, "implemented", "gap"),
+        ("input", False, None, "gap"),
+        ("declared", False, "implemented", "ready"),
+        ("declared", False, "not_applicable", "ready"),
+        ("declared", False, "partial", "partial"),
+        ("declared", False, "not_implemented", "gap"),
+        ("declared", False, None, "gap"),
+    ],
+)
+def test_the_status_follows_source_evidence_and_declaration(
+    source: str, present: bool, declared: str | None, status: str
+) -> None:
+    assert readiness.readiness_status(source, present, declared) == status
+
+
 @pytest.mark.parametrize(
     "broken",
     [
@@ -127,6 +227,11 @@ def test_a_broken_mapping_is_refused(monkeypatch: pytest.MonkeyPatch, broken) ->
         "framework": "iso42001",
         "verified_against_standard": False,
         "controls": [],
+    }
+    # Each case fails for its own reason, not for missing texts.
+    broken = {
+        **broken,
+        "controls": [{**_TEXTS, **item} for item in broken.get("controls", [])],
     }
     monkeypatch.setattr(readiness.yaml, "safe_load", lambda _: {**valid, **broken})
     readiness.load_mapping.cache_clear()
@@ -637,7 +742,7 @@ def test_a_2000_character_note_and_a_200_entry_inventory_render(note: str) -> No
     assert "(truncated, see CSV)" in text
     assert "provider-model-199" not in text
     # The CSV keeps every word.
-    assert table[-1][-1] == note
+    assert table[-1][7] == note
     assert all("provider-model-199" in row[4] for row in table[4:] if row[4])
 
 
@@ -659,3 +764,68 @@ def test_the_csv_leads_with_the_cover_and_the_unverified_sentence() -> None:
     assert unverified[3][0] == "control_id" and len(unverified) == 3 + 1 + 38
     assert verified[:2] == [[readiness.COVER], []]
     assert verified[2][0] == "control_id" and len(verified) == 2 + 1 + 38
+
+
+def _mixed_rows() -> list:
+    evidence = {"A.4.2": True, "A.2.2": True, "A.4.3": True, "A.9.4": True}
+    declared = {
+        "A.2.2": "implemented",
+        "A.9.4": "not_implemented",
+        "A.3.2": "implemented",
+        "A.2.3": "partial",
+        "A.8.4": "not_applicable",
+    }
+    return [
+        readiness.ReadinessRow(
+            control,
+            None
+            if control.evidence is None
+            else readiness.Evidence(evidence.get(control.identifier, False), "s"),
+            None
+            if control.identifier not in declared
+            else ReadinessDeclaration(status=declared[control.identifier], note=None),
+        )
+        for control in readiness.load_mapping().controls
+    ]
+
+
+def test_the_gap_list_holds_every_partial_and_gap_control_in_order() -> None:
+    rows = _mixed_rows()
+    now = datetime.now(timezone.utc)
+    ready = {"A.4.2", "A.2.2", "A.3.2", "A.8.4"}
+    order = [r.control.identifier for r in rows if r.control.identifier not in ready]
+    expected = [i for i in order if i not in {"A.2.3", "A.4.3"}] + ["A.2.3", "A.4.3"]
+
+    text = _pdf_text(
+        readiness.render_pdf(
+            rows, tenant_id=uuid4(), start=now, end=now, verified=False
+        )
+    )
+    verified_text = _pdf_text(
+        readiness.render_pdf(rows, tenant_id=uuid4(), start=now, end=now, verified=True)
+    )
+    table = list(
+        csv.reader(
+            io.StringIO(readiness.render_csv(rows, verified=False).decode("utf-8-sig"))
+        )
+    )
+
+    gap_list = text[text.index("Gap list and next steps") :]
+    listed = re.findall(r"(A\.[\d.]+\d) [^()]+ \((gap|partial)\)", gap_list)
+    assert [identifier for identifier, _ in listed] == expected
+    assert dict(listed)["A.2.3"] == "partial" and dict(listed)["A.5.2"] == "gap"
+    assert readiness.GAP_LIST_NOTE in gap_list
+    a43 = gap_list[gap_list.index("A.4.3 ") :]
+    assert a43.index("In shim: ") < a43.index("Organization: ")
+    assert readiness.UNVERIFIED in text and readiness.UNVERIFIED not in verified_text
+    header, *body = table[3:]
+    assert header == [*header[:8], "status", "next_steps"]
+    assert header[:8] == list(readiness._CSV_FIELDS[:8])
+    by_id = {row[0]: dict(zip(header, row)) for row in body}
+    assert {i for i, row in by_id.items() if row["status"] == "ready"} == ready
+    assert by_id["A.4.2"]["next_steps"] == ""
+    assert by_id["A.4.3"]["next_steps"].startswith("in_shim: Use the personal data")
+    assert " | organization: " in by_id["A.4.3"]["next_steps"]
+    forbidden = re.compile(r"compliant|certified|conformity|score|%", re.I)
+    assert not forbidden.search(gap_list)
+    assert not any(forbidden.search(row["next_steps"]) for row in by_id.values())
