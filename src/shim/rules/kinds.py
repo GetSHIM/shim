@@ -51,6 +51,7 @@ KINDS: dict[RuleKind, KindSpec] = {
 _SET_LIMITS = (
     ("terms_per_set", "term", "terms"),
     ("patterns_per_set", "pattern", "regexes"),
+    ("templates_per_set", "pattern", "templates"),
 )
 
 

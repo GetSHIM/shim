@@ -6,21 +6,17 @@ from typing import Any
 
 from shim.rules import ACTION_RANK, Rule, RuleSet
 
-_ADDITIVE_MATCH_KEYS = ("terms", "patterns")
+# Lists where another entry only finds more.
+_ADDITIVE_MATCH_KEYS = frozenset({"terms", "templates", "regexes"})
 
 
 def _match_only_grew(before: dict[str, Any], after: dict[str, Any]) -> bool:
-    if before.keys() != after.keys():
-        return False
-    for key, value in before.items():
-        if key in _ADDITIVE_MATCH_KEYS and isinstance(value, list):
-            if not isinstance(after[key], list) or any(
-                item not in after[key] for item in value
-            ):
-                return False
-        elif after[key] != value:
-            return False
-    return True
+    return before.keys() == after.keys() and all(
+        set(value) <= set(after[key])
+        if key in _ADDITIVE_MATCH_KEYS
+        else after[key] == value
+        for key, value in before.items()
+    )
 
 
 def _relaxes(before: Rule, after: Rule | None) -> bool:

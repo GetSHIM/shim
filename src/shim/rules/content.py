@@ -296,7 +296,7 @@ class Matchers:
                 found += self._walk(text, folded, start, end, ids)
         for edge in _CAMEL.finditer(text):
             run = _RUN.match(folded, edge.start() + 1)
-            if run is not None and folded[run.start() : run.start() + 3] in self.keys:
+            if run is not None and run.group()[:3] in self.keys:
                 found += self._walk(text, folded, run.start(), run.end(), ids)
         return found
 
@@ -368,7 +368,7 @@ def _accept(
             and (
                 not term.short
                 or text[start:end].isupper()
-                and text[end:run_end].islower()
+                and text[end : end + len(rest)].islower()
             )
         )
     )

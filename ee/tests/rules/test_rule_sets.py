@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 
 import shim_enterprise.tenants.policy as policy_module
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
-from shim.rules import KINDS, LIMITS, Rule, RuleSet
+from shim.rules import KINDS, LIMITS, Rule, RuleSet, validate_rule_set
 from shim.rules.model import RuleMatch
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.api.v1 import management
@@ -587,3 +587,33 @@ async def test_a_rule_this_release_cannot_run_is_shown_kept_and_never_unavailabl
         "RULE_ID_DUPLICATE",
         "rules[1].id",
     )
+
+
+_CODES = {
+    "id": "codes",
+    "name": "Codes",
+    "kind": "pattern",
+    "action": "block",
+    "state": "enforced",
+    "match": {"templates": ["PRJ-####"], "regexes": [r"INV\d{6}"]},
+}
+
+
+@pytest.mark.parametrize(
+    ("match", "relaxed"),
+    [
+        ({"templates": ["PRJ-####", "KOD-##"], "regexes": [r"INV\d{6}"]}, []),
+        ({"templates": ["PRJ-####"], "regexes": [r"INV\d{6}", r"FTR\d+"]}, []),
+        ({"templates": [], "regexes": [r"INV\d{6}"]}, ["rules.codes"]),
+        ({"templates": ["PRJ-####"], "regexes": [r"INV\d{5}"]}, ["rules.codes"]),
+    ],
+)
+def test_adding_templates_or_regexes_does_not_relax_and_removing_does(
+    match, relaxed
+) -> None:
+    def rule_set(values: dict) -> RuleSet:
+        return validate_rule_set(
+            {"revision": 1, "rules": [{**_CODES, "match": values}]}
+        )
+
+    assert classify_rule_changes(rule_set(_CODES["match"]), rule_set(match)) == relaxed

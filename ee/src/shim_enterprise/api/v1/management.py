@@ -220,6 +220,13 @@ _MAX_SYNC_WINDOW = timedelta(days=31)
 _MAX_SYNC_REQUEST_EXPORT_ROWS = 10_000
 _MAX_PROMPT_VERSIONS = 200
 _SYSTEM_PROMPT_HASH_PATTERN = r"^hmac-sha256:v1:[0-9a-f]{64}$"
+_RuleIdFilter = Annotated[
+    str | None,
+    Query(
+        pattern=r"^[a-z][a-z0-9_]{0,47}$",
+        description="Only requests a tenant rule with this id matched.",
+    ),
+]
 _COMPLETION_OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
 _TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
 _MAX_SYNC_BUDGETS = 100
@@ -2892,13 +2899,7 @@ async def list_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
-    rule_id: Annotated[
-        str | None,
-        Query(
-            pattern=r"^[a-z][a-z0-9_]{0,47}$",
-            description="Only requests a tenant rule with this id matched.",
-        ),
-    ] = None,
+    rule_id: _RuleIdFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -3267,13 +3268,7 @@ async def export_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
-    rule_id: Annotated[
-        str | None,
-        Query(
-            pattern=r"^[a-z][a-z0-9_]{0,47}$",
-            description="Only requests a tenant rule with this id matched.",
-        ),
-    ] = None,
+    rule_id: _RuleIdFilter = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:

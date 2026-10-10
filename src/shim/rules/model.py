@@ -48,6 +48,7 @@ LIMITS: dict[str, Any] = {
     "patterns_per_set": 64,
     "pattern_characters": 256,
     "templates_per_rule": 32,
+    "templates_per_set": 64,
     "template_characters": 64,
     "request_bytes": 1_000_000,
 }

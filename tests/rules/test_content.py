@@ -100,7 +100,7 @@ def test_a_pattern_match_is_refused_with_its_path(match, code, path) -> None:
     assert _refused(_rule("codes", "pattern", match=match)) == (code, path)
 
 
-def test_a_set_holds_at_most_2000_terms_and_64_regexes() -> None:
+def test_a_set_holds_at_most_2000_terms_64_regexes_and_64_templates() -> None:
     terms = [
         _term(
             *(f"term{rule:02d}x{index:03d}" for index in range(200)), rule_id=f"t{rule}"
@@ -120,6 +120,17 @@ def test_a_set_holds_at_most_2000_terms_and_64_regexes() -> None:
     assert _refused(*regexes, _pattern("extra", regexes=["x"])) == (
         "RULE_SET_INVALID",
         "rules[2].match.regexes",
+    )
+    templates = [
+        _pattern(
+            f"t{rule}", templates=[f"T{rule}-{index:02d}-#" for index in range(32)]
+        )
+        for rule in range(2)
+    ]
+    _set(*templates)
+    assert _refused(*templates, _pattern("extra", templates=["X-#"])) == (
+        "RULE_SET_INVALID",
+        "rules[2].match.templates",
     )
 
 
@@ -405,6 +416,8 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
         # A short term in capitals takes a lower-case ending without an apostrophe.
         ("BKM", "BKMnin"),
         ("BKM", "BKMye"),
+        ("BKM", "BKMninRaporu"),
+        ("e-Devlet", "yeniE-Devlet"),
         # Word edges: underscore, letter and digit, lower to upper case.
         ("Atlas", "atlas_rapor.xlsx"),
         ("Atlas", "Atlas2024"),
