@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import io
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
+from xml.sax.saxutils import escape
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,13 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim_enterprise.compliance.classification import classify, severity_rank
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.compliance.reporting import (
+    NOT_RECORDED_CELL,
     build_pdf,
-    entity_sums,
     evidence_table,
     lifecycle_window,
+    recorded_entity_sums,
     report_styles,
     safe_csv,
 )
+from shim_enterprise.tenants.models import Organization
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,14 +42,20 @@ class FindingEvidence:
     value_hash: str
 
 
+# Entity type, KVKK category, then masked, monitored, blocked and seen in answers;
+# None is an action no request in the window recorded.
+GatewayDetection = tuple[str, str, int | None, int | None, int | None, int | None]
+
+
 @dataclass(frozen=True, slots=True)
 class ExposureEvidence:
     tenant_id: UUID
+    organization_name: str
     connector_id: UUID | None
     start: datetime
     end: datetime
     findings: tuple[FindingEvidence, ...]
-    gateway_detections: tuple[tuple[str, str, int], ...] = ()
+    gateway_detections: tuple[GatewayDetection, ...] = ()
 
     def counts(self, attribute: str, *, limit: int | None = None) -> dict[str, int]:
         values = (
@@ -68,16 +77,30 @@ _CSV_FIELDS = (
     "model",
     "content_id",
     "value_hash",
+    "source",
+    "count",
 )
+# Lifecycle metadata map, CSV source and PDF column of each gateway action.
+_GATEWAY_ACTIONS = (
+    ("pii_entities", "gateway_masked", "Maskelenen"),
+    ("monitored_entities", "gateway_monitored", "İzlenen"),
+    ("blocked_entities", "gateway_blocked", "Durdurulan"),
+    ("response_entities", "gateway_response", "Yanıtta\ngörülen"),
+)
+_TITLE = "KVKK Kişisel Veri Maruziyet Kanıtı"
+_SEVERITIES = {"critical": "kritik", "high": "yüksek", "medium": "orta", "low": "düşük"}
 _GATEWAY_METHODOLOGY = (
-    "Counts are distinct values per request that the gateway detected and masked "
-    "before the request left, taken from the tenant's request records. No detected "
-    "value is stored."
+    "Sayılar, gateway'in istek kurumdan çıkmadan önce tespit ettiği farklı "
+    "değerlerin istek başına toplamıdır ve kurumun istek kayıtlarından alınır. "
+    "Maskelenen değer modele sahte bir değerle gitti, izlenen değer olduğu gibi "
+    "gitti, durdurulan istek modele hiç gitmedi. Yanıtta görülen, modelin "
+    "cevabında olup isteğin kendisinde olmayan değerlerdir. Tespit edilen hiçbir "
+    "değer saklanmaz."
 )
 _METHODOLOGY = (
-    "This evidence contains tenant-scoped detector metadata and salted value "
-    "hashes. Raw prompts, raw provider payloads, and raw detected values are not "
-    "included. Legal interpretation remains the customer's responsibility."
+    "Bu kanıt yalnız kuruma ait tespit üst verisini ve tuzlanmış değer özetlerini "
+    "içerir. Ham istekler, sağlayıcıya giden ham içerik ve tespit edilen ham "
+    "değerler yer almaz. Hukuki değerlendirme kurumun sorumluluğundadır."
 )
 MAX_SYNC_REPORT_FINDINGS = 10_000
 MAX_SYNC_REPORT_WINDOW = timedelta(days=31)
@@ -94,7 +117,6 @@ async def collect_exposure_evidence(
     start: datetime,
     end: datetime,
     connector_id: UUID | None,
-    with_gateway: bool = True,
 ) -> ExposureEvidence:
     if start > end:
         raise ValueError("report start must not be after end")
@@ -138,24 +160,39 @@ async def collect_exposure_evidence(
         )
         for row in rows
     )
-    if connector_id is not None or not with_gateway:
-        return ExposureEvidence(tenant_id, connector_id, start, end, findings)
-    detections = await session.execute(
-        entity_sums("pii_entities", lifecycle_window(tenant_id, start, end)).order_by(
-            "entity_type"
+    organization_name = (
+        await session.execute(
+            select(Organization.name).where(Organization.id == tenant_id)
         )
+    ).scalar_one()
+    evidence = ExposureEvidence(
+        tenant_id=tenant_id,
+        organization_name=organization_name,
+        connector_id=connector_id,
+        start=start,
+        end=end,
+        findings=findings,
     )
-    return ExposureEvidence(
-        tenant_id,
-        connector_id,
-        start,
-        end,
-        findings,
-        tuple(
-            (entity, classify(entity).kvkk_category, int(count))
-            for entity, count in detections.all()
-        ),
+    if connector_id is not None:
+        return evidence
+    window = lifecycle_window(tenant_id, start, end)
+    sums: list[dict[str, int] | None] = []
+    for key, _, _ in _GATEWAY_ACTIONS:
+        rows = await recorded_entity_sums(session, key, window)
+        sums.append(None if rows is None else {e: int(c) for e, c in rows})
+    entities = sorted({entity for counts in sums if counts for entity in counts})
+    detections = tuple(
+        cast(
+            GatewayDetection,
+            (
+                entity,
+                classify(entity).kvkk_category,
+                *(None if counts is None else counts.get(entity, 0) for counts in sums),
+            ),
+        )
+        for entity in entities
     )
+    return replace(evidence, gateway_detections=detections)
 
 
 def _render_csv(evidence: ExposureEvidence) -> bytes:
@@ -163,7 +200,34 @@ def _render_csv(evidence: ExposureEvidence) -> bytes:
     writer = csv.writer(output)
     writer.writerow(_CSV_FIELDS)
     for finding in evidence.findings:
-        writer.writerow(safe_csv(getattr(finding, field)) for field in _CSV_FIELDS)
+        writer.writerow(
+            [safe_csv(getattr(finding, field)) for field in _CSV_FIELDS[:-2]]
+            + ["connector", "1"]
+        )
+    gateway_rows = sorted(
+        (entity, source, count)
+        for entity, _, *counts in evidence.gateway_detections
+        for (_, source, _), count in zip(_GATEWAY_ACTIONS, counts, strict=True)
+        if count
+    )
+    for entity, source, count in gateway_rows:
+        classification = classify(entity)
+        writer.writerow(
+            safe_csv(value)
+            for value in (
+                None,
+                classification.severity,
+                entity,
+                classification.kvkk_category,
+                classification.gdpr_category,
+                None,
+                None,
+                None,
+                None,
+                source,
+                count,
+            )
+        )
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -171,85 +235,98 @@ def _count_rows(counts: dict[str, int]) -> list[list[str]]:
     return [[name, str(count)] for name, count in counts.items()] or [["—", "0"]]
 
 
-def _render_pdf(evidence: ExposureEvidence) -> bytes:
+def _kvkk_story(evidence: ExposureEvidence, styles: Any) -> list[Any]:
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer
 
-    styles = report_styles()
     scope = (
-        f"connector {evidence.connector_id}"
+        f"bağlayıcı {evidence.connector_id}"
         if evidence.connector_id is not None
-        else "all tenant connectors and the gateway"
+        else "tüm bağlayıcılar ve gateway"
     )
-    story = [
-        Paragraph("KVKK Exposure Evidence", styles["Title"]),
-        Paragraph(
-            f"Organization: {evidence.tenant_id}<br/>"
-            f"Period: {evidence.start.date()} – {evidence.end.date()}<br/>"
-            f"Generated: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}<br/>"
-            f"Scope: {scope}",
-            styles["Normal"],
-        ),
+    header = "<br/>".join(
+        escape(line)
+        for line in (
+            f"Kurum: {evidence.organization_name} ({evidence.tenant_id})",
+            f"Dönem: {evidence.start.date()} – {evidence.end.date()}",
+            f"Oluşturulma: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}",
+            f"Kapsam: {scope}",
+        )
+    )
+    severities = sorted(
+        evidence.counts("severity").items(),
+        key=lambda item: severity_rank(item[0]),
+        reverse=True,
+    )
+    return [
+        Paragraph(_TITLE, styles["Title"]),
+        Paragraph(header, styles["Normal"]),
         Spacer(1, 6 * mm),
-        Paragraph("Finding summary", styles["Heading2"]),
+        Paragraph("Bulgu özeti", styles["Heading2"]),
         Paragraph(
-            f"{len(evidence.findings)} metadata-only finding(s) in range.",
+            f"Dönemde yalnız üst veri içeren {len(evidence.findings)} bulgu var.",
             styles["Normal"],
         ),
         Spacer(1, 3 * mm),
         evidence_table(
-            _count_rows(
-                dict(
-                    sorted(
-                        evidence.counts("severity").items(),
-                        key=lambda item: severity_rank(item[0]),
-                        reverse=True,
-                    )
-                )
-            ),
-            ["Severity", "Count"],
+            _count_rows({_SEVERITIES.get(name, name): n for name, n in severities}),
+            ["Önem", "Adet"],
         ),
         Spacer(1, 5 * mm),
-        Paragraph("Entity types", styles["Heading2"]),
+        Paragraph("Varlık türleri", styles["Heading2"]),
         evidence_table(
             _count_rows(evidence.counts("entity_type", limit=15)),
-            ["Entity type", "Count"],
+            ["Varlık türü", "Adet"],
         ),
         Spacer(1, 5 * mm),
-        Paragraph("KVKK categories", styles["Heading2"]),
+        Paragraph("KVKK kategorileri", styles["Heading2"]),
         evidence_table(
             _count_rows(evidence.counts("kvkk_category")),
-            ["Category", "Count"],
+            ["Kategori", "Adet"],
         ),
         Spacer(1, 5 * mm),
-        Paragraph("Actors", styles["Heading2"]),
+        Paragraph("Kullanıcılar", styles["Heading2"]),
         evidence_table(
             _count_rows(evidence.counts("actor_email", limit=20)),
-            ["Actor", "Findings"],
+            ["Kullanıcı", "Bulgu"],
         ),
         *(
             []
             if evidence.connector_id is not None
             else [
                 Spacer(1, 5 * mm),
-                Paragraph("Gateway detections", styles["Heading2"]),
+                Paragraph("Gateway tespitleri", styles["Heading2"]),
                 Paragraph(_GATEWAY_METHODOLOGY, styles["Normal"]),
                 Spacer(1, 3 * mm),
                 evidence_table(
                     [
-                        [entity, category, str(count)]
-                        for entity, category, count in evidence.gateway_detections
+                        [
+                            entity,
+                            category,
+                            *(
+                                NOT_RECORDED_CELL if count is None else str(count)
+                                for count in counts
+                            ),
+                        ]
+                        for entity, category, *counts in evidence.gateway_detections
                     ]
-                    or [["—", "—", "0"]],
-                    ["Entity type", "KVKK category", "Count"],
+                    or [["—"] * 6],
+                    [
+                        "Varlık türü",
+                        "KVKK kategorisi",
+                        *(label for _, _, label in _GATEWAY_ACTIONS),
+                    ],
                 ),
             ]
         ),
         Spacer(1, 6 * mm),
-        Paragraph("Evidence boundary", styles["Heading2"]),
+        Paragraph("Kanıt sınırı", styles["Heading2"]),
         Paragraph(_METHODOLOGY, styles["Normal"]),
     ]
-    return build_pdf(story, "KVKK Exposure Evidence")
+
+
+def _render_pdf(evidence: ExposureEvidence) -> bytes:
+    return build_pdf(_kvkk_story(evidence, report_styles()), _TITLE)
 
 
 async def generate_report(
@@ -267,8 +344,6 @@ async def generate_report(
         start=start,
         end=end,
         connector_id=connector_id,
-        # The CSV stays connector findings only.
-        with_gateway=fmt != "csv",
     )
     date_suffix = end.strftime("%Y%m%d")
     if fmt == "csv":

@@ -235,14 +235,32 @@ the chain as its string, so every stored row re-hashes as written.
 ## KVKK exposure report
 
 `POST /api/v1/compliance/reports/kvkk` counts two sources. Compliance connector
-findings (provider compliance APIs) appear as before, one CSV row per finding.
-A tenant-wide PDF also has a "Gateway detections" section: per entity type, its
-KVKK category and the sum of the distinct values per request that the gateway
-detected and masked, taken from `request_lifecycle` records started in the
-window. The scope line then reads "all tenant connectors and the gateway". The
-section holds entity names, categories and counts only, and the header names the
-organization by its id. A connector-scoped report and the CSV keep their
-connector-only content.
+findings (provider compliance APIs) appear as before. The report is read by a
+Turkish data protection officer, so the PDF is in Turkish ("KVKK Kişisel Veri
+Maruziyet Kanıtı"); entity type ids such as `TR_NATIONAL_ID` stay ids, and
+severities print as kritik, yüksek, orta and düşük. The header line is
+`Kurum: <name> (<id>)`: the name is mutable, the id keeps the evidence
+unambiguous. Every value interpolated into the PDF's text is escaped, so a name
+such as `A & <B>` prints as written and cannot inject markup or a link.
+
+A tenant-wide report, one without `connector_id`, also counts the gateway. Its
+"Gateway tespitleri" section lists, per entity type and KVKK category, the sum
+over requests started in the window of the distinct values the gateway masked
+(`pii_entities`), monitored, blocked, and saw in answers (`response_entities`),
+from `request_lifecycle` metadata. A column no request in the window recorded
+(rows written by an older version) prints "bu sürümde kaydedilmiyor", never 0.
+The scope line then reads "tüm bağlayıcılar ve gateway".
+
+The CSV keeps its nine columns in order and adds `source` and `count` at the end,
+so a consumer reading by position keeps working. Connector rows have `source`
+`connector` and `count` 1. A tenant-wide CSV adds, after them, one row per entity
+type and gateway action with a non-zero count: `source` `gateway_masked`,
+`gateway_monitored`, `gateway_blocked` or `gateway_response`, severity and
+categories from the entity's classification, `count` the sum, and the
+per-finding columns empty, ordered by entity type then source. Filter on
+`source = connector` for the rows of earlier versions. A connector-scoped report
+holds that connector's findings only. The framework evidence report and the
+readiness report stay in English.
 
 ## Monthly evidence file
 
@@ -255,24 +273,42 @@ racing for the same month inserts nothing. Rendering runs off the event loop.
 An organization whose file fails counts as an error of the pass, so the worker
 writes no heartbeat and the next pass tries again.
 
-The PDF says on its cover that it is a measurement of gateway traffic, not an
-audit, an assessment or a certification. Each section names its source table
-and window:
+The PDF follows the [KVKK exposure report](#kvkk-exposure-report): Turkish
+text, the header `Kurum: <name> (<id>)`, and every interpolated value escaped.
+Its cover says it is a measurement of gateway traffic, not an audit, a
+certificate or a declaration of conformity. Each section names its source table
+and window ("Kaynak: <table>, dönem: <start> – <end>"):
 
-1. Traffic: requests and cost per provider and per model, from the spend and
-   quota settlements, with unknown prices shown as unknown, never as zero.
-2. What left: per provider and entity type, the values masked, monitored and
-   blocked, the count of bulk disclosures and the entity types found in
+1. Trafik: requests and cost per provider and per model, from the spend and
+   quota settlements, with unknown prices shown as "bilinmiyor", never as zero.
+2. Kurumdan ne çıktı: per provider and entity type, the values masked, monitored
+   and blocked, the count of bulk disclosures and the entity types found in
    answers, from `request_lifecycle` metadata. A field the gateway version did
-   not record reads "not recorded in this version".
-3. What was stopped: policy verdicts with outcome `deny`, by rule and reason code.
-4. Who changed what: management actions by action and actor type.
-5. Audit chain: the [server-side check](#audit-evidence-bundle) for the month,
-   from the latest daily anchor before it, or the reason it could not run.
-6. Findings: per rule, the [findings](FINDINGS.md) opened, open at the end and
+   not record reads "bu sürümde kaydedilmiyor".
+3. Ne durduruldu: policy verdicts with outcome `deny`, by rule and reason code.
+4. Kim neyi değiştirdi: management actions by action and actor type.
+5. Denetim zinciri: the [server-side check](#audit-evidence-bundle) for the
+   month, from the latest daily anchor before it, or the reason it could not run.
+6. Bulgular: per rule, the [findings](FINDINGS.md) opened, open at the end and
    resolved in the month.
+7. Kim neye erişti, in two parts:
+   - Kanıt ve içerik erişimi: the audited reads and exports listed above
+     (`compliance.kvkk_report_generated`, `compliance.audit_report_generated`,
+     `compliance.readiness_report_generated`, `compliance.audit_bundle_exported`,
+     `compliance.audit_verified`, `tenant.requests_exported`,
+     `tenant.billing_exported`, `tenant.evidence_downloaded`, and
+     `tenant.request_content_opened` once it exists) by action and actor: the
+     user id, the user's current role ("güncel rol") and "servis hesabı" for a
+     service account, never an e-mail. A month without such a row says "Bu ay
+     kayıtlı erişim yok." when the organization has an earlier one, and
+     "Okuma ve dışa aktarma kayıtları bu kurum için henüz tutulmuyor."
+     otherwise. Unaudited list views are not in it.
+   - Model erişimi: requests of the month by API key and team, with the
+     providers and up to 10 models each called; the 50 largest rows, the rest
+     summed as "diğer". Key and team names only, never a key id or secret.
 
 The file holds counts and names only: no prompt, answer, detected value or key.
+Files generated before a change keep their content and generator version.
 
 The same transaction queues one `evidence.monthly_ready` intent (idempotency key
 `evidence:<kind>:<period>`). The outbox worker turns it into one

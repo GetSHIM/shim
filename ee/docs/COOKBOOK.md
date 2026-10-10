@@ -390,11 +390,14 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/kvkk \
   -o kvkk_exposure.pdf
 ```
 
-Notes: a tenant-wide PDF, one without `connector_id`, adds a "Gateway
-detections" section: per entity type, its KVKK category and the sum over
-requests started in the window of the distinct values the gateway detected and
-masked in each. A connector-scoped report and every CSV hold compliance
-connector findings only. More than 10,000 findings answers 422. Details are in
+Notes: the PDF is in Turkish and names the organization as
+`Kurum: <name> (<id>)`. A tenant-wide report, one without `connector_id`, adds
+the gateway's counts per entity type: masked, monitored, blocked and seen in
+answers. The CSV ends with `source` and `count`: connector findings have
+`source` `connector`, and a tenant-wide CSV adds one `gateway_masked`,
+`gateway_monitored`, `gateway_blocked` or `gateway_response` row per entity type
+and action. Filter on `source` if a spreadsheet expects connector rows only.
+More than 10,000 findings answers 422. Details are in
 [decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
 
 ## Register a private model deployment
@@ -726,6 +729,9 @@ Notes:
   `python ee/scripts/generate_monthly_evidence.py --organization <uuid> --period <current YYYY-MM>`
   in the enterprise image, then downloads it with `?kind=monthly_partial`. Each
   kind and month is written once; the script refuses a second run.
+- The file is in Turkish. Section 7, "Kim neye erişti", answers who read or
+  exported evidence (audited actions by user id and current role) and which API
+  keys and teams called which models.
 - What the file contains and does not contain is in
   [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).
 
