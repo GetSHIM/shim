@@ -69,9 +69,29 @@ class Rule(_Frozen):
     match: dict[str, Any] = {}
 
 
+class UnusableRule(_Frozen):
+    """A stored rule this build cannot evaluate: an unknown kind, action or field.
+
+    It is kept, never dropped: enforced, it refuses the requests in its scope.
+    """
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
+    kind: str
+    action: str
+    state: str
+    # Every request when this build cannot read the stored scope.
+    scope: RuleScope = RuleScope()
+    stored: dict[str, Any]
+
+    @property
+    def enforced(self) -> bool:
+        return self.state != "monitor" and self.action not in {"monitor", "warn"}
+
+
 class RuleSet(_Frozen):
     revision: int = Field(ge=1)
     rules: tuple[Rule, ...] = Field(max_length=100)
+    unusable: tuple[UnusableRule, ...] = ()
 
 
 class RuleMatch(_Frozen):

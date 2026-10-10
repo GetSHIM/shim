@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 import asyncio
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -20,6 +20,8 @@ from uuid import UUID, uuid4
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
+from starlette.types import Message
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -59,8 +61,8 @@ from shim.rules import (
     LIMITS,
     Rule,
     RuleScope,
-    RuleSet,
     RuleSetError,
+    load_rule_set,
     validate_rule_set,
 )
 from shim.gateway.kernel.result import ResponseWarning
@@ -912,6 +914,10 @@ class RuleKindView(BaseModel):
 class RuleSetView(BaseModel):
     revision: int = Field(ge=0)
     rules: list[Rule]
+    unavailable_rules: list[dict[str, Any]] = Field(
+        description="Stored rules this release cannot run, as stored. A PUT keeps "
+        "them; an enforced one refuses the requests in its scope with RULE_BLOCKED."
+    )
     updated_by: str | None
     updated_at: datetime | None
     limits: dict[str, Any]
@@ -2169,10 +2175,16 @@ async def update_privacy_settings(
 
 
 def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
+    stored = (
+        load_rule_set(row.revision, row.rules)
+        if row is not None and row.rules
+        else None
+    )
     return RuleSetView(
         revision=row.revision if row is not None else 0,
-        rules=[Rule.model_validate(rule) for rule in row.rules]
-        if row is not None
+        rules=list(stored.rules) if stored is not None else [],
+        unavailable_rules=[rule.stored for rule in stored.unusable]
+        if stored is not None
         else [],
         updated_by=row.updated_by if row is not None else None,
         updated_at=row.updated_at if row is not None else None,
@@ -2220,21 +2232,40 @@ async def get_rules(
     return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))
 
 
-@router.put("/rules", response_model=RuleSetView)
+class _RuleSetPutRoute(APIRoute):
+    """Counts the body's bytes as they arrive, so a chunked body cannot pass the limit."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def bounded(request: Request) -> Response:
+            receive, size = request.receive, 0
+
+            async def counted() -> Message:
+                nonlocal size
+                message = await receive()
+                size += len(message.get("body", b""))
+                if size > LIMITS["request_bytes"]:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={
+                            "code": "REQUEST_TOO_LARGE",
+                            "message": "A rule set is at most 1,000,000 bytes.",
+                        },
+                    )
+                return message
+
+            return await handler(Request(request.scope, counted))
+
+        return bounded
+
+
 async def replace_rules(
     payload: RuleSetPut,
     request: Request,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
-    if int(request.headers.get("content-length") or 0) > LIMITS["request_bytes"]:
-        raise HTTPException(
-            status_code=413,
-            detail={
-                "code": "REQUEST_TOO_LARGE",
-                "message": "A rule set is at most 1,000,000 bytes.",
-            },
-        )
     tenant_id = _tenant_id(user)
     await session.execute(
         insert(OrganizationRuleSet)
@@ -2264,42 +2295,50 @@ async def replace_rules(
             status_code=422,
             detail={"code": error.code, "path": error.path, "message": str(error)},
         ) from None
-    before = (
-        RuleSet.model_validate({"revision": row.revision, "rules": row.rules})
-        if row.revision > 0
-        else None
-    )
+    before = load_rule_set(row.revision, row.rules) if row.rules else None
     stored = {rule.id: rule for rule in before.rules} if before is not None else {}
-    keys = {key for rule in after.rules for key in rule.scope.api_key_ids}
-    teams = {team for rule in after.rules for team in rule.scope.team_ids}
-    known_keys = (
-        {
-            str(key)
-            for key in await session.scalars(
-                select(ApiKey.id).where(
-                    ApiKey.organization_id == tenant_id, ApiKey.id.in_(keys)
+    # This release cannot read them, so it keeps them as they are.
+    kept = before.unusable if before is not None else ()
+    if len(after.rules) + len(kept) > LIMITS["rules_per_set"]:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RULE_SET_INVALID",
+                "path": "rules",
+                "message": "A rule set holds at most 100 rules, with the "
+                f"{len(kept)} this release cannot run.",
+            },
+        )
+    known: dict[str, set[str]] = {}
+    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
+        ids = {value for rule in after.rules for value in getattr(rule.scope, field)}
+        known[field] = (
+            {
+                str(value)
+                for value in await session.scalars(
+                    select(model.id).where(
+                        model.organization_id == tenant_id, model.id.in_(ids)
+                    )
                 )
-            )
-        }
-        if keys
-        else set()
-    )
-    known_teams = (
-        {
-            str(team)
-            for team in await session.scalars(
-                select(Team.id).where(
-                    Team.organization_id == tenant_id, Team.id.in_(teams)
-                )
-            )
-        }
-        if teams
-        else set()
-    )
+            }
+            if ids
+            else set()
+        )
+    kept_ids = {rule.id for rule in kept}
     for index, rule in enumerate(after.rules):
-        for field, known in (("api_key_ids", known_keys), ("team_ids", known_teams)):
+        if rule.id in kept_ids:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "RULE_ID_DUPLICATE",
+                    "path": f"rules[{index}].id",
+                    "message": f"rule id {rule.id} is held by a stored rule this "
+                    "release cannot run.",
+                },
+            )
+        for field, values in known.items():
             for position, value in enumerate(getattr(rule.scope, field)):
-                if value not in known:
+                if value not in values:
                     raise HTTPException(
                         status_code=422,
                         detail={
@@ -2357,7 +2396,9 @@ async def replace_rules(
             actor_email=user.email,
             event_id=event_id,
         )
-    row.rules = [rule.model_dump(mode="json") for rule in after.rules]
+    row.rules = [rule.model_dump(mode="json") for rule in after.rules] + [
+        rule.stored for rule in kept
+    ]
     row.revision = after.revision
     row.updated_by = str(user.id)
     await session.commit()
@@ -2368,6 +2409,15 @@ async def replace_rules(
         logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
     await session.refresh(row)
     return _rule_set_view(row)
+
+
+router.add_api_route(
+    "/rules",
+    replace_rules,
+    methods=["PUT"],
+    response_model=RuleSetView,
+    route_class_override=_RuleSetPutRoute,
+)
 
 
 def _gateway_settings_view(

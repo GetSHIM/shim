@@ -269,9 +269,12 @@ settings. Two kinds are available: `term` (a word list) and `pattern` (code
 shapes); the others are listed as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (owner, admin or auditor):
-   `revision` (0 until the first change), `rules`, `updated_by`, `updated_at`,
-   `limits`, and `kinds`, where each kind says whether it is `available`, its
-   `actions`, and why not when it is not.
+   `revision` (0 until the first change), `rules`, `unavailable_rules`,
+   `updated_by`, `updated_at`, `limits`, and `kinds`, where each kind says
+   whether it is `available`, its `actions`, and why not when it is not.
+   `unavailable_rules` holds stored rules this release cannot run, written by a
+   later one: a `PUT` keeps them and cannot reuse their ids
+   ([what they do](POLICY_DECISIONS.md#tenant-rules)).
 2. Send the whole set back with `PUT /api/v1/management/rules` (owner or
    admin), with the `revision` you read. The answer is the same body as the GET,
    at the next revision.

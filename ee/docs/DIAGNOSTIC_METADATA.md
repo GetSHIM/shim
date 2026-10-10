@@ -217,8 +217,9 @@ matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
 when the rule's evaluation failed), blocks first and then by id, at most 32;
 `rule_matches_truncated` says whether more matched. Both are written with the
 privacy facts, so a refused request has them too. They are `[]` and `false`
-when the tenant has rules and none matched, and absent for a tenant without
-rules. A match is ids and counts, never the matched text. The request list and
+when a rule matcher ran and nothing matched, and absent when none ran: no
+rules, no rule in scope for the request, or only rules this release cannot
+run (those show as a `rule.<id>` verdict). A match is ids and counts, never the matched text. The request list and
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
+from itertools import islice
 import json
 from typing import TYPE_CHECKING, Literal
 
 from shim.observability.metrics import RULE_MATCHES_TOTAL, bounded_label
 from shim.privacy.policies import EntityAction
-from shim.rules.model import Rule, RuleAction, RuleMatch
+from shim.rules.model import Rule, RuleAction, RuleMatch, UnusableRule
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
@@ -37,9 +38,12 @@ _RULE_TO_ENTITY: dict[RuleAction, EntityAction] = {
     "require_approval": "block",
 }
 MAX_RECORDED_MATCHES = 32
+Outcome = Literal["allow", "mask", "deny", "error"]
 
 
-def in_scope(rule: Rule, prepared: PreparedInference, tags: Iterable[str]) -> bool:
+def in_scope(
+    rule: Rule | UnusableRule, prepared: PreparedInference, tags: Iterable[str]
+) -> bool:
     """Every non-empty scope list must hold the request's value."""
 
     scope = rule.scope
@@ -94,10 +98,10 @@ def ordered_matches(matches: Sequence[RuleMatch]) -> list[RuleMatch]:
 def match_records(prepared: PreparedInference) -> dict[str, object]:
     """A record's rule_matches (at most 32) and whether more matched.
 
-    Absent without a rule set; [] when one was evaluated and nothing matched.
+    Absent unless a matcher ran; [] when one ran and nothing matched.
     """
 
-    if prepared.rules is None or not prepared.rules.rules:
+    if not prepared.rules_evaluated:
         return {}
     ordered = ordered_matches(prepared.rule_matches)
     return {
@@ -109,8 +113,19 @@ def match_records(prepared: PreparedInference) -> dict[str, object]:
     }
 
 
-def _verdict(match: RuleMatch) -> tuple[Literal["allow", "mask", "deny", "error"], str]:
+def _fails_closed(match: RuleMatch) -> bool:
+    # The gateway cannot show the value stayed in, as with privacy fail-closed.
+    return match.state == "enforced" and match.action in {
+        "mask",
+        "block",
+        "require_approval",
+    }
+
+
+def _verdict(match: RuleMatch) -> tuple[Outcome, str]:
     if match.error:
+        if _fails_closed(match):
+            return "deny", "RULE_BLOCKED"
         return "error", "RULE_EVALUATION_TIMEOUT"
     if match.action == "monitor":
         return "allow", "RULE_MONITORED"
@@ -123,62 +138,81 @@ def _verdict(match: RuleMatch) -> tuple[Literal["allow", "mask", "deny", "error"
     return "allow", f"RULE_{match.action.upper()}"
 
 
-def rule_version(prepared: PreparedInference, rule_id: str) -> str:
+def record_rule_verdicts(
+    prepared: PreparedInference, verdicts: Mapping[str, tuple[Outcome, str]]
+) -> None:
+    """One rule.<id> verdict per rule, the first 32 in the given order."""
+
     assert prepared.rules is not None
-    rule = next(rule for rule in prepared.rules.rules if rule.id == rule_id)
-    canonical = json.dumps(
-        {
-            "id": rule.id,
-            "revision": prepared.rules.revision,
-            "rule": rule.model_dump(mode="json"),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return sha256(canonical.encode()).hexdigest()
+    stored = {
+        rule.id: rule.stored
+        if isinstance(rule, UnusableRule)
+        else rule.model_dump(mode="json")
+        for rule in (*prepared.rules.rules, *prepared.rules.unusable)
+    }
+    for rule_id, (outcome, reason) in islice(verdicts.items(), MAX_RECORDED_MATCHES):
+        canonical = json.dumps(
+            {
+                "id": rule_id,
+                "revision": prepared.rules.revision,
+                "rule": stored[rule_id],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        prepared.record_verdict(
+            f"rule.{rule_id}",
+            stage="rules",
+            outcome=outcome,
+            reason_code=reason,
+            policy_version=sha256(canonical.encode()).hexdigest(),
+        )
 
 
 def settle_matches(prepared: PreparedInference) -> tuple[list[str], list[str]]:
     """Record the rule verdicts of a request; return the enforced block and approval rule ids.
 
-    An evaluation error in an enforced mask or block rule is a block of that rule (fail closed);
-    any other error is recorded and the request continues.
+    Fail closed: an evaluation error in an enforced mask, block or require_approval rule,
+    and an enforced rule in scope that this build cannot evaluate, block the request.
+    Any other error is recorded and the request continues.
     """
 
     assert prepared.rules is not None
     matches = ordered_matches(prepared.rule_matches)
-    for match in matches[:MAX_RECORDED_MATCHES]:
-        outcome, reason = _verdict(match)
-        prepared.record_verdict(
-            f"rule.{match.rule_id}",
-            stage="rules",
-            outcome=outcome,
-            reason_code=reason,
-            policy_version=rule_version(prepared, match.rule_id),
-        )
-    prepared.record_verdict(
-        "rules.evaluated",
-        stage="rules",
-        outcome="allow",
-        reason_code="RULES_EVALUATED",
-        policy_version=sha256(str(prepared.rules.revision).encode()).hexdigest(),
+    verdicts = {match.rule_id: _verdict(match) for match in matches}
+    tags = prepared.admission.tags if prepared.admission is not None else ()
+    unusable = sorted(
+        rule.id
+        for rule in prepared.rules.unusable
+        if rule.enforced and in_scope(rule, prepared, tags)
     )
-    blocked: set[str] = set()
-    approval: set[str] = set()
+    blocks: dict[str, tuple[Outcome, str]] = dict.fromkeys(
+        unusable, ("deny", "RULE_BLOCKED")
+    )
+    record_rule_verdicts(prepared, blocks | verdicts)
+    if prepared.rules_evaluated:
+        prepared.record_verdict(
+            "rules.evaluated",
+            stage="rules",
+            outcome="allow",
+            reason_code="RULES_EVALUATED",
+            policy_version=sha256(str(prepared.rules.revision).encode()).hexdigest(),
+        )
+    blocked = [
+        *unusable,
+        *(rule_id for rule_id, (outcome, _) in verdicts.items() if outcome == "deny"),
+    ]
+    approval: list[str] = []
     for match in matches:
         RULE_MATCHES_TOTAL.labels(
             kind=bounded_label("rule_kind", match.kind),
             action=bounded_label("rule_action", match.action),
             state=bounded_label("rule_state", match.state),
         ).inc()
-        if match.state != "enforced":
-            continue
-        if match.action == "block" or (match.error and match.action == "mask"):
-            blocked.add(match.rule_id)
-        elif match.error:
-            continue
-        elif match.action == "require_approval":
-            approval.add(match.rule_id)
-        elif match.action == "warn":
-            prepared.warn("RULE_WARN")
+        if match.state == "enforced" and not match.error:
+            if match.action == "require_approval":
+                approval.append(match.rule_id)
+            elif match.action == "warn":
+                prepared.warn("RULE_WARN")
     return sorted(blocked), sorted(approval)

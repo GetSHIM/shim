@@ -8,7 +8,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from shim.rules.content import PatternMatch, TermMatch
-from shim.rules.model import LIMITS, RuleAction, RuleKind, RuleSet, RuleSetError
+from shim.rules.model import (
+    LIMITS,
+    Rule,
+    RuleAction,
+    RuleKind,
+    RuleScope,
+    RuleSet,
+    RuleSetError,
+    UnusableRule,
+)
 
 RulePoint = Literal["resolver", "admission", "privacy", "settings"]
 
@@ -45,10 +54,14 @@ _SET_LIMITS = (
 )
 
 
-def _path(loc: tuple[int | str, ...]) -> str:
-    return "".join(
-        f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc
-    ).lstrip(".")
+def _refusal(code: str, prefix: str, error: ValidationError) -> RuleSetError:
+    first = error.errors()[0]
+    path = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in first["loc"]
+    )
+    if first["type"] == "rule_pattern_unsafe":
+        code = "RULE_PATTERN_UNSAFE"
+    return RuleSetError(code, f"{prefix}{path}".lstrip("."), first["msg"])
 
 
 def validate_rule_set(
@@ -57,10 +70,7 @@ def validate_rule_set(
     try:
         rule_set = RuleSet.model_validate(payload)
     except ValidationError as error:
-        first = error.errors()[0]
-        raise RuleSetError(
-            "RULE_SET_INVALID", _path(first["loc"]), first["msg"]
-        ) from None
+        raise _refusal("RULE_SET_INVALID", "", error) from None
     seen: set[str] = set()
     totals = dict.fromkeys((name for name, _, _ in _SET_LIMITS), 0)
     rules = []
@@ -88,13 +98,8 @@ def validate_rule_set(
         try:
             match = spec.match.model_validate(rule.match)
         except ValidationError as error:
-            first = error.errors()[0]
-            raise RuleSetError(
-                "RULE_PATTERN_UNSAFE"
-                if first["type"] == "rule_pattern_unsafe"
-                else "RULE_MATCH_INVALID",
-                f"rules[{index}].match.{_path(first['loc'])}".rstrip("."),
-                first["msg"],
+            raise _refusal(
+                "RULE_MATCH_INVALID", f"rules[{index}].match", error
             ) from None
         stored = match.model_dump(mode="json")
         for name, kind, key in _SET_LIMITS:
@@ -107,4 +112,42 @@ def validate_rule_set(
                         f"a rule set holds at most {LIMITS[name]:,} {key}",
                     )
         rules.append(rule.model_copy(update={"match": stored}))
-    return rule_set.model_copy(update={"rules": tuple(rules)})
+    return RuleSet(revision=rule_set.revision, rules=tuple(rules))
+
+
+def load_rule_set(revision: int, stored: list[dict[str, Any]]) -> RuleSet:
+    """A stored set as this build runs it, for a build older than the one that wrote it.
+
+    A rule this build cannot evaluate is kept aside as unusable, never dropped.
+    """
+
+    rules: list[Rule] = []
+    unusable: list[UnusableRule] = []
+    for index, raw in enumerate(stored):
+        try:
+            rules += validate_rule_set(
+                {"revision": revision, "rules": [raw]}, approval_available=True
+            ).rules
+            continue
+        except RuleSetError:
+            pass
+        try:
+            try:
+                scope = RuleScope.model_validate(raw.get("scope", {}))
+            except ValidationError:
+                scope = RuleScope()
+            unusable.append(
+                UnusableRule(
+                    id=raw["id"],
+                    kind=str(raw.get("kind")),
+                    action=raw["action"],
+                    state=raw["state"],
+                    scope=scope,
+                    stored=raw,
+                )
+            )
+        except (AttributeError, KeyError, ValidationError):
+            raise RuleSetError(
+                "RULE_SET_INVALID", f"rules[{index}]", "a stored rule cannot be read"
+            ) from None
+    return RuleSet(revision=revision, rules=tuple(rules), unusable=tuple(unusable))

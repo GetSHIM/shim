@@ -310,7 +310,12 @@ class PrivacyStage:
                         len(content.values.get(rule.id, ())),
                         error=rule.id in content.errors,
                     )
-        return replace(value, payload=safe_payload, privacy=privacy)
+        return replace(
+            value,
+            payload=safe_payload,
+            privacy=privacy,
+            rules_evaluated=content is not None,
+        )
 
     def trace_metadata(
         self,

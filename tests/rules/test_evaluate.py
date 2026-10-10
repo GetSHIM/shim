@@ -11,9 +11,11 @@ from shim.rules.evaluate import (
     entity_action,
     match_records,
     ordered_matches,
+    record_rule_verdicts,
     settle_matches,
     strongest,
 )
+from shim.rules.kinds import load_rule_set
 
 KEY = UUID("11111111-1111-1111-1111-111111111111")
 TEAM = "22222222-2222-2222-2222-222222222222"
@@ -28,6 +30,8 @@ def _prepared(**values) -> SimpleNamespace:
             "deployment_kind": "unknown",
             "protocol": "chat",
             "rules": None,
+            "rules_evaluated": True,
+            "admission": None,
             "rule_matches": [],
             "policy_verdicts": [],
             "warnings": [],
@@ -148,8 +152,8 @@ def test_records_put_blocks_first_then_ids_and_cap_at_32() -> None:
         "rule_matches": [],
         "rule_matches_truncated": False,
     }
-    assert match_records(_prepared()) == {}
-    assert match_records(_prepared(rules=RuleSet(revision=1, rules=()))) == {}
+    assert match_records(_prepared(rules_evaluated=False)) == {}
+    assert match_records(_prepared(rules=evaluated, rules_evaluated=False)) == {}
     assert [
         m.rule_id
         for m in ordered_matches(
@@ -165,6 +169,8 @@ def test_settling_records_verdicts_warnings_and_returns_refusals() -> None:
         "warned",
         "would_block",
         "broken_mask",
+        "broken_block",
+        "broken_hold",
         "broken_warn",
         "approval",
     )
@@ -177,13 +183,19 @@ def test_settling_records_verdicts_warnings_and_returns_refusals() -> None:
         _match("warned", action="warn"),
         _match("would_block", state="monitor"),
         _match("broken_mask", action="mask", error=True, count=0),
+        _match("broken_block", error=True, count=0),
+        _match("broken_hold", action="require_approval", error=True, count=0),
         _match("broken_warn", action="warn", error=True, count=0),
         _match("approval", action="require_approval"),
     ]
 
     blocked, approval = settle_matches(prepared)
 
-    assert (blocked, approval) == (["blocked", "broken_mask"], ["approval"])
+    # An error in an enforced rule that would change or hold the text fails closed.
+    assert (blocked, approval) == (
+        ["blocked", "broken_block", "broken_hold", "broken_mask"],
+        ["approval"],
+    )
     assert prepared.warnings == ["RULE_WARN"]
     verdicts = {
         verdict.rule_id: (verdict.outcome, verdict.reason_code)
@@ -194,7 +206,9 @@ def test_settling_records_verdicts_warnings_and_returns_refusals() -> None:
         "rule.masked": ("mask", "RULE_MASKED"),
         "rule.warned": ("allow", "RULE_WARN"),
         "rule.would_block": ("allow", "RULE_WOULD_BLOCK"),
-        "rule.broken_mask": ("error", "RULE_EVALUATION_TIMEOUT"),
+        "rule.broken_mask": ("deny", "RULE_BLOCKED"),
+        "rule.broken_block": ("deny", "RULE_BLOCKED"),
+        "rule.broken_hold": ("deny", "RULE_BLOCKED"),
         "rule.broken_warn": ("error", "RULE_EVALUATION_TIMEOUT"),
         "rule.approval": ("allow", "RULE_REQUIRE_APPROVAL"),
         "rules.evaluated": ("allow", "RULES_EVALUATED"),
@@ -243,3 +257,60 @@ def test_verdicts_are_capped_at_32_rules() -> None:
         len([v for v in prepared.policy_verdicts if v.rule_id.startswith("rule.")])
         == 32
     )
+
+
+def test_without_a_matcher_run_nothing_is_recorded() -> None:
+    prepared = _prepared(
+        rules=RuleSet(revision=1, rules=(_rule("a"),)), rules_evaluated=False
+    )
+
+    assert settle_matches(prepared) == ([], [])
+    assert prepared.policy_verdicts == [] and match_records(prepared) == {}
+
+
+def test_an_enforced_rule_this_build_cannot_run_blocks_and_others_are_skipped() -> None:
+    def stored(rule_id: str, **values) -> dict:
+        return {
+            "id": rule_id,
+            "name": "n",
+            "kind": "geo_fence",
+            "action": "block",
+            "state": "enforced",
+            **values,
+        }
+
+    prepared = _prepared(
+        rules=load_rule_set(
+            2,
+            [
+                stored("geo"),
+                stored("future_mask", kind="destination", action="mask"),
+                stored("watched", state="monitor"),
+                stored("warned", action="warn"),
+                stored("elsewhere", scope={"models": ["gpt-5"]}),
+                stored("odd_scope", scope={"regions": ["eu"]}),
+            ],
+        ),
+        rules_evaluated=False,
+    )
+
+    assert settle_matches(prepared) == (["future_mask", "geo", "odd_scope"], [])
+    assert {
+        verdict.rule_id: (verdict.outcome, verdict.reason_code)
+        for verdict in prepared.policy_verdicts
+    } == dict.fromkeys(
+        ["rule.geo", "rule.future_mask", "rule.odd_scope"], ("deny", "RULE_BLOCKED")
+    )
+
+
+def test_rule_verdicts_are_capped_at_32() -> None:
+    ids = [f"r{index:02d}" for index in range(40)]
+    prepared = _prepared(
+        rules=RuleSet(revision=1, rules=tuple(_rule(rule_id) for rule_id in ids))
+    )
+
+    record_rule_verdicts(prepared, dict.fromkeys(ids, ("deny", "APPROVAL_REQUIRED")))
+
+    assert [verdict.rule_id for verdict in prepared.policy_verdicts] == [
+        f"rule.{rule_id}" for rule_id in ids[:32]
+    ]

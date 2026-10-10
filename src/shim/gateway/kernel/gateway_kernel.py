@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import HTTPException
 from starlette.responses import Response, JSONResponse
@@ -39,7 +39,7 @@ from shim.observability.metrics import (
 from shim.observability.tracing import start_span
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.rules.approval import ApprovalGate, ApprovalRequest
-from shim.rules.evaluate import rule_version, settle_matches
+from shim.rules.evaluate import record_rule_verdicts, settle_matches
 
 from .runtime import run_stage
 from .result import PreparedInference
@@ -233,7 +233,7 @@ class GatewayKernel:
                         f"{', '.join(sorted(prepared.privacy.blocked_entities))}.",
                     },
                 )
-            if prepared.rules is not None and prepared.rules.rules:
+            if prepared.rules is not None:
                 prepared, refusal = await self._decide_rules(
                     prepared, invocation, admitted_payload
                 )
@@ -343,7 +343,9 @@ class GatewayKernel:
         if approval and not blocked and not counting and self.approval_gate is None:
             # A cached set can still hold such a rule after the gate went away: fail closed.
             blocked = approval
-            _rule_verdicts(prepared, approval, "deny", "RULE_BLOCKED")
+            record_rule_verdicts(
+                prepared, dict.fromkeys(approval, ("deny", "RULE_BLOCKED"))
+            )
         if blocked:
             if not counting:
                 await self.usage.record_privacy(prepared)
@@ -360,7 +362,9 @@ class GatewayKernel:
             return prepared, None
         first = approval[0]
         if counting:
-            _rule_verdicts(prepared, approval, "deny", "APPROVAL_REQUIRED")
+            record_rule_verdicts(
+                prepared, dict.fromkeys(approval, ("deny", "APPROVAL_REQUIRED"))
+            )
             return prepared, HTTPException(
                 status_code=403,
                 detail={
@@ -381,7 +385,9 @@ class GatewayKernel:
             decision = await self.approval_gate.check(prepared, request)
         except Exception as exc:
             logger.warning("Approval gate failed type=%s", type(exc).__name__)
-            _rule_verdicts(prepared, approval, "error", "APPROVAL_UNAVAILABLE")
+            record_rule_verdicts(
+                prepared, dict.fromkeys(approval, ("error", "APPROVAL_UNAVAILABLE"))
+            )
             await self.usage.record_privacy(prepared)
             return prepared, HTTPException(
                 status_code=503,
@@ -393,7 +399,9 @@ class GatewayKernel:
             )
         prepared = replace(prepared, approval_id=decision.approval_id)
         if decision.outcome == "approved":
-            _rule_verdicts(prepared, approval, "allow", "RULE_APPROVED")
+            record_rule_verdicts(
+                prepared, dict.fromkeys(approval, ("allow", "RULE_APPROVED"))
+            )
             return prepared, None
         code, message = {
             "required": (
@@ -411,7 +419,7 @@ class GatewayKernel:
                 "Too many requests are waiting for approval.",
             ),
         }[decision.outcome]
-        _rule_verdicts(prepared, approval, "deny", code)
+        record_rule_verdicts(prepared, dict.fromkeys(approval, ("deny", code)))
         await self.usage.record_privacy(prepared)
         headers = {"X-Shim-Rule-Id": first, "x-should-retry": "false"}
         detail: dict[str, Any] = {"code": code, "message": message}
@@ -432,19 +440,3 @@ class GatewayKernel:
             raise
         except Exception as exc:
             logger.error("Usage recovery failed type=%s", type(exc).__name__)
-
-
-def _rule_verdicts(
-    prepared: PreparedInference,
-    rule_ids: list[str],
-    outcome: Literal["allow", "deny", "error"],
-    reason_code: str,
-) -> None:
-    for rule_id in rule_ids:
-        prepared.record_verdict(
-            f"rule.{rule_id}",
-            stage="rules",
-            outcome=outcome,
-            reason_code=reason_code,
-            policy_version=rule_version(prepared, rule_id),
-        )

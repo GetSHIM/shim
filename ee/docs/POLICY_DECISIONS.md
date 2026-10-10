@@ -31,7 +31,7 @@ also remains outside tenant decision evidence.
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
 | `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
-| `rules.evaluated` | The tenant's rule set was evaluated (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent for a tenant without rules. |
+| `rules.evaluated` | A rule matcher ran for the request (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent when none ran: no rules, none in scope, or only rules this release cannot run. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
 
 `allow` means that individual check passed; it does not imply that the entire
@@ -109,14 +109,26 @@ wins when both refuse. The verdict of each matched rule:
 | enforced `mask` | `mask` | `RULE_MASKED` |
 | enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
 | enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
-| evaluation timed out | `error` | `RULE_EVALUATION_TIMEOUT` |
+| evaluation timed out, enforced `mask`, `block` or `require_approval` | `deny` | `RULE_BLOCKED` |
+| evaluation timed out, any other rule | `error` | `RULE_EVALUATION_TIMEOUT` |
+| stored rule this release cannot run, enforced, in scope | `deny` | `RULE_BLOCKED` |
 
-Fail closed: an enforced `block` or `mask` rule whose evaluation fails blocks the
-request with `RULE_BLOCKED`; an enforced `require_approval` rule without an
-approval gate is a block too, and a gate that cannot be reached answers 503
-`APPROVAL_UNAVAILABLE` with no provider call. Any other evaluation error is
-recorded and the request continues. Token counting never asks for approval: it
-answers 403 `APPROVAL_REQUIRED`.
+Fail closed: an enforced `mask`, `block` or `require_approval` rule whose
+evaluation fails blocks the request with `RULE_BLOCKED`, recorded `rejected`
+like any rule block (its `rule_matches` entry carries `error: true`); an
+enforced `require_approval` rule without an approval gate is a block too, and a
+gate that cannot be reached answers 503 `APPROVAL_UNAVAILABLE` with no provider
+call. Any other evaluation error is recorded and the request continues. Token
+counting never asks for approval: it answers 403 `APPROVAL_REQUIRED`.
+
+A release older than the one that wrote a rule set may find a rule it cannot
+run: a kind it has no matcher for, or an action, field or scope list it does not
+know. Such a rule is kept, never dropped, and never makes the tenant
+unavailable. In state `enforced` with an action other than `monitor` or `warn`
+it refuses every request in its scope with `RULE_BLOCKED` (a scope the release
+cannot read is every request); otherwise it is skipped. The gateway logs each
+one once per revision, by id. `GET /rules` lists them as stored under
+`unavailable_rules`, and a `PUT` keeps them as they are.
 
 The request record carries `rule_matches` (rule id, kind, action, state, count;
 at most 32, blocks first) and `rule_matches_truncated`; see
