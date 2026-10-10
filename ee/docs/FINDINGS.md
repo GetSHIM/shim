@@ -1,7 +1,7 @@
 # Gateway findings
 
 A finding is the gateway's conclusion about one subject (an API key, a
-deployment alias or a model): what was checked, how serious it is, the evidence,
+deployment or a model): what was checked, how serious it is, the evidence,
 the impact and the fix. Findings are derived from request records shim already
 keeps (`request_lifecycle` and the spend ledger); no prompt or answer text is read.
 
@@ -37,8 +37,9 @@ not archived, once at start and then every `FINDINGS_EVALUATION_INTERVAL_SECONDS
 failure is logged with its type and the next organization still runs.
 
 - A rule that fires creates a finding, or updates the open one: `last_seen_at`,
-  `occurrences`, `summary`, `evidence` and `impact`. A suppressed finding stays
-  suppressed while it keeps firing.
+  `occurrences`, `summary`, `evidence`, `impact`, `rule_version` and
+  `remediation`, so an open finding of an earlier rule version moves to the new
+  one in place. A suppressed finding stays suppressed while it keeps firing.
 - `occurrences` counts evaluations that fired, not incidents. A rule looks back
   over a window longer than the evaluation interval, so one incident is counted
   once per evaluation that still sees it: at the default interval of 15
@@ -70,12 +71,38 @@ otherwise the last time it was seen), `severity_id`, `status_id`,
 `first_seen_time` and `last_seen_time`. The rule, subject, occurrences,
 evidence, impact and remediation are under `unmapped`.
 
+## Linked repeats
+
+A repeat is linked to the request it repeats when both came from the same API
+key with the same `repeat_digest` ([diagnostic metadata](DIAGNOSTIC_METADATA.md))
+and it started at most 900 seconds after the previous one. The link window covers
+the pinned OpenAI and Anthropic SDKs' 600-second timeout plus backoff, so a retry
+after a client timeout is linked even though it falls outside the 300-second
+loop window; a client whose timeout is longer than 900 seconds is not linked.
+The loop window, its counting and its 429 are unchanged. Nothing is written to
+request records: links are computed when the rules run.
+
+Each linked repeat has a class from how the previous request ended:
+
+| Previous request | Class |
+| --- | --- |
+| `client_disconnected`, `timeout` | `after_timeout` |
+| `provider_error`, `failed`, `rejected`, `internal_error`, `cancelled` | `after_error` |
+| `completed` | `after_success` |
+| still running | `pending` (left out of impact, classed again on a later pass) |
+
+Requests without a digest (written before the digest existed, or without prompt
+material) are never linked; the rules count them through `repeat_chain_length`
+as before. Repeated identical requests sent on purpose, such as an evaluation
+batch, look the same: suppress the finding when the pattern is intended.
+
 ## gateway.retry_storm
 
 **Checks.** For each API key, the four fixed 15-minute buckets of the last hour,
-aligned to the quarter hour in UTC (the current one included). It fires when
-one bucket holds at least 20 requests with `repeat_chain_length` of 2 or more.
-Severity medium.
+aligned to the quarter hour in UTC (the current one included). A request counts
+when it is a [linked repeat](#linked-repeats), or, when it has no repeat digest,
+when its `repeat_chain_length` is 2 or more. It fires when one bucket holds at
+least 20 of them. Severity medium. Rule version 2.
 
 **Why.** A client that resends the same request quickly is usually retrying
 without backoff. Every repeat is a billable provider call, and a storm can
@@ -83,31 +110,39 @@ trip provider rate limits for the whole tenant.
 
 **Evidence and impact.** The bucket start, the repeated request count, the
 threshold, how many of the key's requests in that bucket ended
-`client_disconnected` or `timeout` (`abandoned_requests`), and up to 20 request
-ids. Impact is the known cost and the count of the repeated requests.
-`repeat_chain_length` counts identical content in the loop window; it is not
-proof that a client retried ([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
+`client_disconnected` or `timeout` (`abandoned_requests`), up to 20 request
+ids, `classes` (linked repeats per class) and up to 20 `pairs`
+(`{"repeat", "previous", "class", "gap_seconds"}`). Impact is the known cost and
+the count of the repeated requests. `repeat_chain_length` counts identical
+content in the loop window; it is not proof that a client retried
+([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
 
-**Fix.** Make the client back off: honour `Retry-After`, add jittered
-exponential backoff and cap retries. When abandoned requests co-occur, the
-client's timeout is shorter than the model's answer time; raise it instead of
-retrying.
+**Fix.** Follows the class most of the bucket's linked repeats belong to:
+`after_timeout`, raise the client's timeout or ask for fewer output tokens;
+`after_error`, honour `Retry-After`, lower `max_retries` and back off;
+`after_success`, deduplicate the request in the app. Without linked repeats:
+make the client back off (`Retry-After`, jittered exponential backoff, capped
+retries), and raise its timeout when abandoned requests co-occur.
 
 **Resolves** after 7 days without a firing bucket.
 
 ## gateway.repeat_spend
 
-**Checks.** For each API key, month to date (UTC), the known cost of requests
-with `repeat_chain_length` of 2 or more. It fires when that cost is at least
-1 USD and at least 10 percent of the key's known spend. Unpriced requests count
-toward neither. Severity medium.
+**Checks.** For each API key, month to date (UTC), the known cost of
+[linked repeats](#linked-repeats) whose previous request was billed (it has a
+spend settlement), plus, for requests without a repeat digest, the cost of
+those with `repeat_chain_length` of 2 or more. It fires when that cost is at
+least 1 USD and at least 10 percent of the key's known spend. Unpriced requests
+count toward neither. Severity medium. Rule version 2.
 
 **Why.** Repeated identical requests that cost a tenth of a key's spend are
-money spent twice for the same answer.
+money spent twice for the same answer. A repeat of a request that failed and
+was refunded did not double the bill, so it is not counted as waste.
 
 **Evidence and impact.** The period start, the repeated cost, the known spend,
-their share, the repeated request count and up to 20 request ids. Impact is
-the repeated cost and count.
+their share, the repeated request count, up to 20 request ids, `classes`,
+`billed_repeats`, `unbilled_repeats` (repeats of refunded or unbilled requests,
+never in the impact) and up to 20 `pairs`. Impact is the repeated cost and count.
 
 **Fix.** Retry only on retryable errors, deduplicate in the client, or cache
 answers the client asks for again.
@@ -118,8 +153,10 @@ with fewer repeats.
 ## gateway.unused_deployment
 
 **Checks.** Enabled [registered deployments](MODEL_DEPLOYMENTS.md) created at
-least 30 days ago that had no request with their alias as the model in the last
-30 days. Severity low.
+least 30 days ago that served no request in the last 30 days. A request belongs
+to a deployment by the `deployment_id` it recorded, so a renamed alias keeps its
+traffic; requests written before deployment ids were recorded count by their
+model name equal to the alias. Severity low. Rule version 2.
 
 **Why.** An unused deployment keeps a stored credential and an approved
 destination alive for nobody.
@@ -130,6 +167,30 @@ destination alive for nobody.
 
 **Resolves** 7 days after the deployment receives a request again or is
 disabled or deleted.
+
+## gateway.idle_internal_deployment
+
+**Checks.** Enabled deployments of kind `internal` created at least 30 days ago
+that served between 1 and 299 requests in the last 30 days (about ten a day),
+attributed as for `gateway.unused_deployment`. Zero requests is
+`gateway.unused_deployment`, so the two never fire together. External
+deployments are never subjects: they hold no hardware of the tenant. Severity
+low. Subject: the deployment id and alias.
+
+**Why.** An internal model that serves a trickle of requests still holds its
+servers and accelerators.
+
+**Evidence and impact.** The requests in the window, the threshold, active days
+(distinct UTC dates with traffic), the last request time, distinct API keys, up
+to 20 request ids and `hardware_cost: "not recorded"`. Impact is the request
+count; its cost stays `null` until a hardware cost is recorded for the
+deployment.
+
+**Fix.** Disable the deployment or move its few callers to another deployment;
+it can be enabled again in one write.
+
+**Resolves** 7 days after it stops firing: the deployment is disabled, gets
+busier, or has no traffic at all.
 
 ## gateway.answer_quality
 

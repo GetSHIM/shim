@@ -17,7 +17,13 @@ from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings import service
 from shim_enterprise.findings.models import Finding
-from shim_enterprise.tenants.models import ModelDeployment, Organization, ProviderSecret
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ModelDeployment,
+    Organization,
+    ProviderSecret,
+    User,
+)
 
 NOW = datetime(2026, 10, 8, 12, 7, tzinfo=timezone.utc)
 BUCKET = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
@@ -148,8 +154,12 @@ async def test_retry_storm_fires_at_twenty_repeats_in_one_quarter_hour(
         "threshold": 20,
         "abandoned_requests": 2,
         "request_ids": ids,
+        # Rows without a repeat digest count through repeat_chain_length and are never linked.
+        "classes": dict.fromkeys(service.REPEAT_CLASSES, 0),
+        "pairs": [],
     }
     assert storm.impact == {"cost_usd": "0.20000000", "requests": 20}
+    assert storm.remediation is None
 
 
 @pytest.mark.parametrize(
@@ -631,3 +641,432 @@ def test_ocsf_activity_follows_the_finding_lifecycle() -> None:
     assert activity(status_id=1, occurrences=2) == (2, 200402)
     assert activity(status_id=3, occurrences=1) == (2, 200402)
     assert activity(status_id=4, occurrences=1) == (3, 200403)
+
+
+async def _with_digest(db, request_ids: dict[str, str]) -> None:
+    await db.flush()
+    for request_id, digest in request_ids.items():
+        row = await db.scalar(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+        row.lifecycle_metadata = {**row.lifecycle_metadata, "repeat_digest": digest}
+    await db.flush()
+
+
+async def _pairs(db, key, start: datetime, end: datetime) -> list[tuple]:
+    return [
+        (row.request_id, row.previous_id, row.repeat_class, row.previous_billed)
+        for row in await service.linked_repeats(db, key.organization_id, start, end)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_links_to_the_previous_request_inside_the_link_window(
+    db, test_api_key
+) -> None:
+    other_key = ApiKey(
+        id=uuid4(),
+        organization_id=test_api_key.organization_id,
+        user_id=test_api_key.user_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-oth",
+        tier=test_api_key.tier,
+        is_active=True,
+    )
+    db.add(other_key)
+    await db.flush()
+    start = BUCKET
+    before = _request(db, test_api_key, start - timedelta(seconds=100))
+    first = _request(db, test_api_key, start + timedelta(seconds=10))
+    at_limit = _request(db, test_api_key, start + timedelta(seconds=910))
+    too_late = _request(db, test_api_key, start + timedelta(seconds=1811))
+    other_digest = _request(db, test_api_key, start + timedelta(seconds=20))
+    other = _request(db, other_key, start + timedelta(seconds=30))
+    undigested = _request(db, test_api_key, start + timedelta(seconds=40), repeat=2)
+    await _with_digest(
+        db,
+        {
+            before: "d1",
+            first: "d1",
+            at_limit: "d1",
+            too_late: "d1",
+            other_digest: "d2",
+            other: "d1",
+        },
+    )
+
+    pairs = await _pairs(db, test_api_key, start, start + timedelta(hours=1))
+
+    assert pairs == [
+        (first, before, "after_success", False),
+        (at_limit, first, "after_success", False),
+    ]
+    assert undigested not in {pair[0] for pair in pairs}
+
+
+@pytest.mark.asyncio
+async def test_rows_started_together_link_in_id_order(db, test_api_key) -> None:
+    ids = [_request(db, test_api_key, BUCKET) for _ in range(2)]
+    await _with_digest(db, dict.fromkeys(ids, "same"))
+    rows = (
+        (
+            await db.execute(
+                select(RequestLifecycle.request_id)
+                .where(RequestLifecycle.request_id.in_(ids))
+                .order_by(RequestLifecycle.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    pairs = await _pairs(db, test_api_key, BUCKET, BUCKET + timedelta(minutes=1))
+
+    assert [(pair[0], pair[1]) for pair in pairs] == [(rows[1], rows[0])]
+
+
+@pytest.mark.parametrize(
+    ("status", "repeat_class"),
+    [
+        ("client_disconnected", "after_timeout"),
+        ("timeout", "after_timeout"),
+        ("provider_error", "after_error"),
+        ("failed", "after_error"),
+        ("rejected", "after_error"),
+        ("internal_error", "after_error"),
+        ("cancelled", "after_error"),
+        ("completed", "after_success"),
+        ("provider_started", "pending"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_repeat_is_classed_by_how_its_predecessor_ended(
+    db, test_api_key, status: str, repeat_class: str
+) -> None:
+    previous = _request(db, test_api_key, BUCKET, status=status)
+    repeat = _request(db, test_api_key, BUCKET + timedelta(seconds=5))
+    await _with_digest(db, {previous: "d", repeat: "d"})
+
+    assert await _pairs(db, test_api_key, BUCKET, NOW) == [
+        (repeat, previous, repeat_class, False)
+    ]
+
+
+async def _other_tenant_key(db, key) -> ApiKey:
+    organization = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(organization)
+    await db.flush()
+    user = User(
+        id=uuid4(),
+        organization_id=organization.id,
+        email=f"other-{uuid4().hex}@example.com",
+        role="owner",
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+    other = ApiKey(
+        id=uuid4(),
+        organization_id=organization.id,
+        user_id=user.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-oth",
+        tier=key.tier,
+        is_active=True,
+    )
+    db.add(other)
+    await db.flush()
+    return other
+
+
+@pytest.mark.asyncio
+async def test_only_a_settled_predecessor_counts_as_billed(
+    db, test_api_key, test_user_with_org
+) -> None:
+    other_key = await _other_tenant_key(db, test_api_key)
+    other_org = SimpleNamespace(id=other_key.organization_id)
+    billed = _request(db, test_api_key, BUCKET, cost="0.10")
+    refunded = _request(db, test_api_key, BUCKET + timedelta(seconds=1))
+    elsewhere = _request(db, test_api_key, BUCKET + timedelta(seconds=2))
+    reservation, elsewhere_reservation = uuid4(), uuid4()
+    db.add_all(
+        [
+            UsageLedger(
+                id=reservation,
+                request_id=refunded,
+                organization_id=test_api_key.organization_id,
+                api_key_id=test_api_key.id,
+                requested_model="gpt-5-mini",
+                provider="openai",
+                provider_model="gpt-5-mini",
+                event_type="spend_reservation",
+                idempotency_key=f"{refunded}:spend:reservation",
+                cost_usd=Decimal("0.10"),
+                created_at=BUCKET,
+            ),
+            UsageLedger(
+                request_id=refunded,
+                organization_id=test_api_key.organization_id,
+                api_key_id=test_api_key.id,
+                requested_model="gpt-5-mini",
+                provider="openai",
+                provider_model="gpt-5-mini",
+                event_type="spend_refund",
+                idempotency_key=f"{refunded}:spend:refund",
+                reservation_event_id=reservation,
+                cost_usd=Decimal("0.10"),
+                created_at=BUCKET,
+            ),
+            *(
+                UsageLedger(
+                    id=event_id,
+                    request_id=elsewhere,
+                    organization_id=other_org.id,
+                    api_key_id=other_key.id,
+                    requested_model="gpt-5-mini",
+                    provider="openai",
+                    provider_model="gpt-5-mini",
+                    event_type=f"spend_{event}",
+                    idempotency_key=f"{elsewhere}:spend:{event}",
+                    reservation_event_id=reference,
+                    cost_usd=Decimal("0.10"),
+                    created_at=BUCKET,
+                )
+                for event_id, event, reference in (
+                    (elsewhere_reservation, "reservation", None),
+                    (uuid4(), "settlement", elsewhere_reservation),
+                )
+            ),
+        ]
+    )
+    repeats = {
+        previous: _request(db, test_api_key, BUCKET + timedelta(seconds=10 + index))
+        for index, previous in enumerate((billed, refunded, elsewhere))
+    }
+    await _with_digest(
+        db,
+        {
+            **{previous: f"d{index}" for index, previous in enumerate(repeats)},
+            **{repeat: f"d{index}" for index, repeat in enumerate(repeats.values())},
+        },
+    )
+
+    pairs = await _pairs(db, test_api_key, BUCKET, NOW)
+
+    assert {pair[1]: pair[3] for pair in pairs} == {
+        billed: True,
+        refunded: False,
+        elsewhere: False,
+    }
+
+
+@pytest.mark.parametrize("repeats", [20, 19])
+@pytest.mark.asyncio
+async def test_a_storm_of_linked_repeats_names_its_cause(
+    db, test_api_key, repeats: int
+) -> None:
+    previous = [
+        _request(
+            db, test_api_key, BUCKET + timedelta(seconds=index), status="provider_error"
+        )
+        for index in range(repeats)
+    ]
+    retried = [
+        _request(db, test_api_key, BUCKET + timedelta(seconds=index + 2))
+        for index in range(repeats)
+    ]
+    await _with_digest(
+        db,
+        {
+            **{request: f"d{index}" for index, request in enumerate(previous)},
+            **{request: f"d{index}" for index, request in enumerate(retried)},
+        },
+    )
+
+    storms = [
+        d for d in await _evaluate(db, test_api_key) if d.rule_id == service.RETRY_STORM
+    ]
+
+    if repeats < 20:
+        assert storms == []
+        return
+    (storm,) = storms
+    assert storm.evidence["repeated_requests"] == 20
+    assert storm.evidence["classes"] == {
+        "after_timeout": 0,
+        "after_error": 20,
+        "after_success": 0,
+        "pending": 0,
+    }
+    assert storm.evidence["pairs"][0] == {
+        "repeat": retried[0],
+        "previous": previous[0],
+        "class": "after_error",
+        "gap_seconds": 2,
+    }
+    assert len(storm.evidence["pairs"]) == 20
+    (finding,) = await _findings(db, test_api_key)
+    assert finding.rule_version == 2
+    assert finding.remediation["text"] == service.STORM_FIXES["after_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_version_one_finding_is_updated_in_place(db, test_api_key) -> None:
+    await _storm(db, test_api_key)
+    await _evaluate(db, test_api_key)
+    await db.execute(update(Finding).values(rule_version=1))
+
+    await _evaluate(db, test_api_key, NOW + timedelta(minutes=1))
+
+    (finding,) = await _findings(db, test_api_key)
+    assert (finding.rule_version, finding.occurrences) == (2, 2)
+    assert finding.remediation["text"] == service.RULES[service.RETRY_STORM][2]
+
+
+@pytest.mark.parametrize(("repeat_cost", "fires"), [("1.00", True), ("0.99", False)])
+@pytest.mark.asyncio
+async def test_repeat_spend_counts_only_repeats_of_billed_requests(
+    db, test_api_key, repeat_cost: str, fires: bool
+) -> None:
+    start = datetime(2026, 10, 1, 1, tzinfo=timezone.utc)
+    timed_out = _request(db, test_api_key, start, status="timeout", cost="0.50")
+    late_retry = _request(
+        db, test_api_key, start + timedelta(seconds=700), cost=repeat_cost
+    )
+    refunded = _request(
+        db, test_api_key, start + timedelta(hours=1), status="provider_error"
+    )
+    after_refund = _request(
+        db, test_api_key, start + timedelta(hours=1, seconds=5), cost="5"
+    )
+    _request(db, test_api_key, start + timedelta(hours=2), cost="3")
+    await _with_digest(
+        db, {timed_out: "a", late_retry: "a", refunded: "b", after_refund: "b"}
+    )
+
+    spends = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.REPEAT_SPEND
+    ]
+
+    if not fires:
+        assert spends == []
+        return
+    (spend,) = spends
+    assert spend.impact == {"cost_usd": "1.00000000", "requests": 1}
+    assert spend.evidence["request_ids"] == [late_retry]
+    assert (spend.evidence["billed_repeats"], spend.evidence["unbilled_repeats"]) == (
+        1,
+        1,
+    )
+    assert spend.evidence["classes"]["after_timeout"] == 1
+    assert spend.evidence["classes"]["after_error"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_alias_keeps_its_traffic(db, test_api_key) -> None:
+    alias = await _deployment(db, test_api_key, age=timedelta(days=60))
+    deployment = await db.scalar(
+        select(ModelDeployment).where(ModelDeployment.alias == alias)
+    )
+    request = _request(db, test_api_key, NOW - timedelta(days=1), model="old-alias")
+    await db.flush()
+    row = await db.scalar(
+        select(RequestLifecycle).where(RequestLifecycle.request_id == request)
+    )
+    row.lifecycle_metadata = {
+        **row.lifecycle_metadata,
+        "deployment_id": str(deployment.id),
+    }
+
+    detections = await _evaluate(db, test_api_key)
+
+    assert [d for d in detections if d.rule_id == service.UNUSED_DEPLOYMENT] == []
+
+
+async def _kind(db, alias: str, **values) -> ModelDeployment:
+    deployment = await db.scalar(
+        select(ModelDeployment).where(ModelDeployment.alias == alias)
+    )
+    for field, value in values.items():
+        setattr(deployment, field, value)
+    await db.flush()
+    return deployment
+
+
+@pytest.mark.parametrize(("requests", "fires"), [(1, True), (299, True), (300, False)])
+@pytest.mark.asyncio
+async def test_an_internal_deployment_with_little_traffic_is_idle(
+    db, test_api_key, requests: int, fires: bool
+) -> None:
+    alias = await _deployment(db, test_api_key, age=timedelta(days=40))
+    deployment = await _kind(db, alias)
+    for index in range(requests):
+        _request(db, test_api_key, NOW - timedelta(hours=index % 48), model=alias)
+
+    detections = await _evaluate(db, test_api_key)
+
+    idle = [d for d in detections if d.rule_id == service.IDLE_INTERNAL_DEPLOYMENT]
+    assert [d for d in detections if d.rule_id == service.UNUSED_DEPLOYMENT] == []
+    if not fires:
+        assert idle == []
+        return
+    (finding,) = idle
+    assert finding.subject_key == str(deployment.id)
+    assert finding.subject == {"deployment_id": str(deployment.id), "alias": alias}
+    assert finding.evidence["requests"] == requests
+    assert finding.evidence["active_days"] == (1 if requests == 1 else 3)
+    assert finding.evidence["api_keys"] == 1
+    assert finding.evidence["hardware_cost"] == "not recorded"
+    assert len(finding.evidence["request_ids"]) == min(requests, 20)
+    assert finding.impact == {"cost_usd": None, "requests": requests}
+    assert service.RULES[finding.rule_id][1] == 2
+
+
+@pytest.mark.asyncio
+async def test_external_young_disabled_and_unused_deployments_are_never_idle(
+    db, test_api_key
+) -> None:
+    external = await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _kind(db, external, deployment_kind="external")
+    young = await _deployment(db, test_api_key, age=timedelta(days=20))
+    disabled = await _deployment(
+        db, test_api_key, age=timedelta(days=40), enabled=False
+    )
+    unused = await _deployment(db, test_api_key, age=timedelta(days=40))
+    for alias in (external, young, disabled):
+        _request(db, test_api_key, NOW - timedelta(days=1), model=alias)
+
+    detections = await _evaluate(db, test_api_key)
+
+    assert [
+        d for d in detections if d.rule_id == service.IDLE_INTERNAL_DEPLOYMENT
+    ] == []
+    assert [
+        d.subject["alias"] for d in detections if d.rule_id == service.UNUSED_DEPLOYMENT
+    ] == [unused]
+
+
+@pytest.mark.asyncio
+async def test_another_tenants_traffic_never_counts_for_a_deployment(
+    db, test_api_key
+) -> None:
+    alias = await _deployment(db, test_api_key, age=timedelta(days=40))
+    deployment = await _kind(db, alias)
+    other_key = await _other_tenant_key(db, test_api_key)
+    request = _request(db, other_key, NOW - timedelta(days=1), model=alias)
+    await db.flush()
+    row = await db.scalar(
+        select(RequestLifecycle).where(RequestLifecycle.request_id == request)
+    )
+    row.lifecycle_metadata = {
+        **row.lifecycle_metadata,
+        "deployment_id": str(deployment.id),
+    }
+
+    detections = await _evaluate(db, test_api_key)
+
+    assert [d.rule_id for d in detections if d.subject.get("alias") == alias] == [
+        service.UNUSED_DEPLOYMENT
+    ]
