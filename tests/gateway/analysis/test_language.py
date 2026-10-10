@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from importlib.resources import files
 import json
+from time import perf_counter
 
 import pytest
 
-from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.gateway.analyzers.language import (
     LanguageAnalyzer,
-    _asks_for_json,
     _fold,
     _turkish_lower,
     label,
@@ -137,13 +137,13 @@ def test_the_request_text_is_the_last_user_turn_with_text(protocol, payload) -> 
     ],
 )
 def test_a_json_answer_is_unknown(protocol, payload) -> None:
-    assert _asks_for_json(payload, protocol) is True
     result = LanguageAnalyzer().analyze(_context(payload, protocol))
     assert (result["answer"], result["answer_words"]) == ("unknown", 0)
 
 
 def test_text_output_and_empty_answers() -> None:
-    assert _asks_for_json({"response_format": {"type": "text"}}, "chat") is False
+    text = _context({"response_format": {"type": "text"}})
+    assert LanguageAnalyzer().analyze(text)["answer"] == "en"
     assert LanguageAnalyzer().analyze(_context({}, answer=""))["answer"] == "unknown"
 
 
@@ -209,8 +209,37 @@ def test_the_word_lists_are_valid() -> None:
     )
 
 
-def test_the_analyzer_is_registered_after_shape() -> None:
-    names = [analyzer.name for analyzer in ANALYZERS]
+_HOSTILE = [
+    "a" * 100_000,
+    "a@" * 50_000,
+    "x@y" * 33_000,
+    "QUJD" * 25_000,
+    "`" + "a" * 100_000,
+    "http://" + "a" * 100_000,
+]
 
-    assert "language" in ANALYZER_NAMES
-    assert names.index("language") == names.index("shape") + 1
+
+@pytest.mark.parametrize("text", _HOSTILE, ids=range(len(_HOSTILE)))
+def test_whitespace_free_text_is_labelled_in_a_few_milliseconds(text) -> None:
+    started = perf_counter()
+    label(text)
+
+    assert perf_counter() - started < 0.02
+
+
+@pytest.mark.asyncio
+async def test_labelling_hostile_text_in_a_thread_leaves_the_loop_free() -> None:
+    gaps: list[float] = []
+
+    async def tick() -> None:
+        last = perf_counter()
+        for _ in range(20):
+            await asyncio.sleep(0.001)
+            gaps.append(perf_counter() - last)
+            last = perf_counter()
+
+    await asyncio.gather(
+        asyncio.to_thread(lambda: [label(text) for text in _HOSTILE * 5]), tick()
+    )
+
+    assert max(gaps) < 0.05
