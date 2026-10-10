@@ -666,6 +666,59 @@ async def test_a_team_key_is_created_only_for_an_owner_the_gateway_accepts(db) -
 
 
 @pytest.mark.asyncio
+async def test_a_key_moves_only_to_a_team_its_owner_may_hold_keys_on(db) -> None:
+    organization = await _organization(db)
+    team, other = (
+        Team(id=uuid4(), organization_id=organization.id, name=name)
+        for name in ("platform", "risk")
+    )
+    db.add_all([team, other])
+    await db.flush()
+    member = await _user(db, organization, "member")
+    admin = await _user(db, organization, "admin")
+    db.add(
+        TeamMembership(
+            organization_id=organization.id,
+            team_id=team.id,
+            user_id=member.id,
+            role="member",
+        )
+    )
+    await db.flush()
+    keys = {
+        holder: ApiKey(
+            id=uuid4(),
+            organization_id=organization.id,
+            user_id=holder.id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-move",
+            tier="free",
+            team_id=team.id,
+            is_active=True,
+        )
+        for holder in (member, admin)
+    }
+    db.add_all(keys.values())
+    await db.flush()
+
+    async def move(key: ApiKey, to: Team) -> httpx.Response:
+        return await _call(
+            db, admin, "PATCH", f"/api-keys/{key.id}", json={"team_id": str(to.id)}
+        )
+
+    refused = await move(keys[member], other)
+    moved = await move(keys[admin], other)
+
+    assert (refused.status_code, refused.json()["detail"]) == (
+        403,
+        "API-key owner is not a member of this team",
+    )
+    assert moved.status_code == 200
+    await db.refresh(keys[member])
+    assert keys[member].team_id == team.id
+
+
+@pytest.mark.asyncio
 async def test_a_custom_role_with_members_read_sees_the_member_list(
     db,
 ) -> None:

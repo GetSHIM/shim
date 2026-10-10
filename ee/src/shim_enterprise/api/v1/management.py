@@ -4063,6 +4063,14 @@ async def _key_for_change(
         await _require_permission(session, user, "keys.manage")
         if changes["team_id"] is not None:
             await require_team(session, user, changes["team_id"], administer=True)
+            # The gateway refuses a team key whose owner may not hold it.
+            owner = await session.get(User, api_key.user_id)
+            if owner is None or not await may_hold_team_key(
+                session, owner, changes["team_id"]
+            ):
+                raise HTTPException(
+                    status_code=403, detail="API-key owner is not a member of this team"
+                )
     return api_key
 
 
