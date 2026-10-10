@@ -3,15 +3,18 @@ from __future__ import annotations
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.routing import APIRoute
 from pydantic import ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 
+from ee.tests.gateway.api.test_permission_matrix import (
+    dependency_calls,
+    management_routes,
+)
 from shim_enterprise.api import enterprise_deps
 from shim_enterprise.api.enterprise_deps import (
     get_current_user,
@@ -28,6 +31,7 @@ from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
     OrganizationRole,
+    Team,
     User,
 )
 from shim_enterprise.tenants.permissions import (
@@ -106,30 +110,10 @@ def test_a_custom_role_slug_is_short_lowercase_and_not_built_in(slug: str) -> No
         management.CustomRoleInput(slug=slug, name="Viewer", permissions=[])
 
 
-def _routes(routes) -> list[tuple[str, str, APIRoute]]:
-    found = []
-    for route in routes:
-        if type(route).__name__ == "_IncludedRouter":
-            found += _routes(route.effective_candidates())
-        elif type(route).__name__ == "_EffectiveRouteContext":
-            if isinstance(route.original_route, APIRoute):
-                found += [
-                    (method, route.path, route.original_route)
-                    for method in route.original_route.methods
-                ]
-        elif isinstance(route, APIRoute):
-            found += [(method, route.path, route) for method in route.methods]
-    return [item for item in found if item[1].startswith("/api/v1/")]
-
-
-def _unguarded(app: FastAPI) -> list[str]:
+def unguarded_routes(app: FastAPI) -> list[str]:
     unguarded = []
-    for method, path, route in _routes(app.routes):
-        calls, pending = set(), list(route.dependant.dependencies)
-        while pending:
-            dependency = pending.pop()
-            calls.add(dependency.call)
-            pending += dependency.dependencies
+    for method, path, route in management_routes(app.routes):
+        calls = dependency_calls(route)
         authenticated = calls & {get_current_user, get_invite_user}
         guarded = calls & _GUARDS or any(
             getattr(call, "__qualname__", "") == "require.<locals>.guard"
@@ -142,15 +126,13 @@ def _unguarded(app: FastAPI) -> list[str]:
 
 def test_every_management_route_asks_for_a_permission_or_is_listed() -> None:
     app = create_enterprise_app()
-    assert _unguarded(app) == []
-    listed = {(method, path) for method, path, _ in _routes(app.routes)}
-    assert set(ANY_USER_ROUTES) <= listed
+    assert unguarded_routes(app) == []
 
     @app.get("/api/v1/management/unguarded-fixture")
     async def fixture(user: User = Depends(get_current_user)) -> None:
         return None
 
-    assert _unguarded(app) == ["GET /api/v1/management/unguarded-fixture"]
+    assert unguarded_routes(app) == ["GET /api/v1/management/unguarded-fixture"]
 
 
 @pytest.mark.asyncio
@@ -438,6 +420,24 @@ async def test_a_member_holds_a_custom_role_by_the_assignment_rules(
 
 
 @pytest.mark.asyncio
+async def test_a_removed_member_no_longer_holds_their_custom_role(db) -> None:
+    organization = await _organization(db)
+    owner = await _user(db, organization, "owner")
+    role = OrganizationRole(
+        organization_id=organization.id, slug="viewer", name="Viewer"
+    )
+    db.add(role)
+    await db.flush()
+    holder = await _user(db, organization, "member", custom_role_id=role.id)
+
+    removed = await _call(db, owner, "DELETE", f"/team/members/{holder.id}")
+    deleted = await _call(db, owner, "DELETE", f"/roles/{role.id}")
+
+    assert (removed.status_code, deleted.status_code) == (204, 204)
+    assert (holder.is_active, holder.custom_role_id) == (False, None)
+
+
+@pytest.mark.asyncio
 async def test_a_role_cannot_lose_keys_own_while_its_holders_have_keys(db) -> None:
     organization = await _organization(db)
     owner = await _user(db, organization, "owner")
@@ -490,6 +490,86 @@ async def test_a_custom_role_without_keys_own_cannot_create_a_key(db) -> None:
         403,
         "Organization admin required",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_key_is_created_only_while_its_owner_holds_keys_own_under_the_lock(
+    db,
+) -> None:
+    organization = await _organization(db)
+    keys, reader = (
+        OrganizationRole(
+            organization_id=organization.id, slug=slug, name=slug, permissions=granted
+        )
+        for slug, granted in (("keys", ["keys.own"]), ("reader", ["usage.read"]))
+    )
+    db.add_all([keys, reader])
+    await db.flush()
+    demoted = await _user(db, organization, "member", custom_role_id=keys.id)
+    reassigned = await _user(db, organization, "member", custom_role_id=keys.id)
+    for holder in (demoted, reassigned):
+        assert "keys.own" in await user_permissions(db, holder)
+    # Role changes that commit between the route guard and the tenant lock.
+    await db.execute(
+        update(OrganizationRole)
+        .where(OrganizationRole.id == keys.id)
+        .values(permissions=["usage.read"])
+        .execution_options(synchronize_session=False)
+    )
+    await db.execute(
+        update(User)
+        .where(User.id == reassigned.id)
+        .values(custom_role_id=reader.id)
+        .execution_options(synchronize_session=False)
+    )
+
+    for holder in (demoted, reassigned):
+        with pytest.raises(HTTPException) as refused:
+            await management.create_api_key(
+                management.ApiKeyInput(name="k"), holder, db
+            )
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "Organization admin required",
+        )
+    assert (
+        await db.scalar(
+            select(ApiKey.id).where(ApiKey.user_id.in_([demoted.id, reassigned.id]))
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_team_key_is_created_only_for_an_owner_the_gateway_accepts(db) -> None:
+    organization = await _organization(db)
+    team = Team(id=uuid4(), organization_id=organization.id, name="platform")
+    role = OrganizationRole(
+        organization_id=organization.id,
+        slug="key-admin",
+        name="Keys",
+        permissions=["keys.own", "keys.manage", "usage.read"],
+    )
+    db.add_all([team, role])
+    await db.flush()
+    outsider = await _user(db, organization, "member", custom_role_id=role.id)
+    admin = await _user(db, organization, "admin")
+    body = {"json": {"name": "k", "team_id": str(team.id)}}
+
+    refused = await _call(db, outsider, "POST", "/api-keys", **body)
+    created = await _call(db, admin, "POST", "/api-keys", **body)
+
+    assert (refused.status_code, refused.json()["detail"]) == (
+        403,
+        "API-key owner is not a member of this team",
+    )
+    assert created.status_code == 200
+    prepared = SimpleNamespace(
+        tenant_id=organization.id,
+        api_key_id=UUID(created.json()["id"]),
+        model="gpt-5-mini",
+    )
+    assert await AccountingPolicyLoader().quota(db, prepared) is not None
 
 
 @pytest.mark.asyncio

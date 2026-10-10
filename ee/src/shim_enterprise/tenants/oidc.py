@@ -10,7 +10,7 @@ import secrets
 import time
 from typing import Any
 from urllib.parse import urlencode, urlsplit
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from authlib.integrations.base_client import OAuthError
 from authlib.integrations.starlette_client import OAuth
@@ -144,7 +144,9 @@ def identity_groups(claims: dict[str, Any]) -> list[str]:
     return groups
 
 
-async def _custom_role(session: AsyncSession, groups: list[str]) -> UUID | None:
+async def _custom_role(
+    session: AsyncSession, groups: list[str]
+) -> OrganizationRole | None:
     slugs = sorted(
         {
             settings.OIDC_GROUP_CUSTOM_ROLE_MAP[group]
@@ -154,18 +156,15 @@ async def _custom_role(session: AsyncSession, groups: list[str]) -> UUID | None:
     )
     if not slugs:
         return None
-    found = dict(
-        (
-            await session.execute(
-                select(OrganizationRole.slug, OrganizationRole.id).where(
-                    OrganizationRole.organization_id == settings.OIDC_ORGANIZATION_ID,
-                    OrganizationRole.slug.in_(slugs),
-                )
+    found = {
+        role.slug: role
+        for role in await session.scalars(
+            select(OrganizationRole).where(
+                OrganizationRole.organization_id == settings.OIDC_ORGANIZATION_ID,
+                OrganizationRole.slug.in_(slugs),
             )
         )
-        .tuples()
-        .all()
-    )
+    }
     if len(found) < len(slugs):
         logger.warning("OIDC group maps to a custom role the organization lacks")
     return next((found[slug] for slug in slugs if slug in found), None)
@@ -199,13 +198,19 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         .with_for_update()
     ):
         raise HTTPException(503, "OIDC organization has not been provisioned")
-    custom_role_id = await _custom_role(session, groups) if role == "member" else None
+    custom_role = await _custom_role(session, groups) if role == "member" else None
+    custom_role_id = custom_role.id if custom_role is not None else None
     user = await session.scalar(
         select(User)
         .where(User.oidc_issuer == issuer, User.oidc_subject == subject)
         .with_for_update()
     )
     previous_role = user.role if user is not None else None
+    previous_custom_role = (
+        await session.get(OrganizationRole, user.custom_role_id)
+        if user is not None and user.custom_role_id is not None
+        else None
+    )
     if user is None:
         if claims.get("email_verified") is not True:
             raise HTTPException(403, "A verified email address is required")
@@ -244,8 +249,16 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         teams_before, teams_after = await synchronize_oidc_teams(
             session, user, groups, settings.OIDC_TEAM_GROUP_MAP
         )
-        before = {"role": previous_role, "oidc_teams": teams_before}
-        after = {"role": role, "oidc_teams": teams_after}
+        before = {
+            "role": previous_role,
+            "custom_role": previous_custom_role.slug if previous_custom_role else None,
+            "oidc_teams": teams_before,
+        }
+        after = {
+            "role": role,
+            "custom_role": custom_role.slug if custom_role is not None else None,
+            "oidc_teams": teams_after,
+        }
         # An unchanged login writes nothing; the identity provider is the source.
         if previous_role is None or before != after:
             await record_management_action(

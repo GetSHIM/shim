@@ -67,9 +67,9 @@ from shim_enterprise.tenants.models import (
     ProviderSecret,
     TierDefinition,
     Team,
-    TeamMembership,
     User,
 )
+from shim_enterprise.tenants.teams import may_hold_team_key
 from shim_enterprise.observability.enterprise_metrics import (
     QUOTA_RESERVATION_TOTAL,
     USAGE_SETTLEMENT_TOTAL,
@@ -172,13 +172,7 @@ class AccountingPolicyLoader:
             raise HTTPException(status_code=401, detail="Invalid API Key")
         team_policy = None
         if api_key.team_id is not None:
-            if owner.role not in {"owner", "admin"} and not await session.scalar(
-                select(TeamMembership.user_id).where(
-                    TeamMembership.organization_id == api_key.organization_id,
-                    TeamMembership.team_id == api_key.team_id,
-                    TeamMembership.user_id == owner.id,
-                )
-            ):
+            if not await may_hold_team_key(session, owner, api_key.team_id):
                 raise HTTPException(
                     status_code=403, detail="API-key owner is no longer a team member"
                 )

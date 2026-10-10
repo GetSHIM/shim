@@ -152,7 +152,11 @@ from shim_enterprise.tenants.permissions import (
     user_permissions,
 )
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
-from shim_enterprise.tenants.teams import member_team_ids, require_team
+from shim_enterprise.tenants.teams import (
+    may_hold_team_key,
+    member_team_ids,
+    require_team,
+)
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import (
@@ -1905,16 +1909,24 @@ async def create_api_key(
     user: User = Depends(require("keys.own", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
-    _tenant_id(user)
+    tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
+    # Role changes take the tenant lock, so the guard's answer is re-read under it.
+    await lock_tenant(session, tenant_id)
+    if "keys.own" not in await user_permissions(session, user, reload=True):
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
     if payload.team_id is not None:
-        await require_team(session, user, payload.team_id, scope="keys.manage")
+        await require_team(session, user, payload.team_id)
+        if not await may_hold_team_key(session, user, payload.team_id):
+            raise HTTPException(
+                status_code=403, detail="API-key owner is not a member of this team"
+            )
     elif "keys.manage" not in await user_permissions(
         session, user
     ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
-    await require_model_aliases(session, _tenant_id(user), payload.allowed_models)
+    await require_model_aliases(session, tenant_id, payload.allowed_models)
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -3917,8 +3929,9 @@ async def _owned_service_account(
 
 
 async def _deactivate(session: AsyncSession, member: User) -> None:
-    """Deactivate a user and the gateway keys it owns."""
+    """Deactivate a user and the gateway keys it owns, and free its custom role."""
     member.is_active = False
+    member.custom_role_id = None
     await session.execute(
         update(ApiKey)
         .where(ApiKey.user_id == member.id, ApiKey.is_active.is_(True))

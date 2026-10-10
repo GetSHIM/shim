@@ -91,7 +91,9 @@ deleted instead of archived, as before.
 Use **Workspace → Teams** to create a team, configure quotas, and assign
 members. Use **Gateway → Keys** to assign a key's access team and model list.
 Only organization owners/admins can move a key between teams. A member with
-team memberships must select a team when creating a key. Removing membership
+team memberships must select a team when creating a key, and can create a key
+only on a team they belong to (403 "API-key owner is not a member of this team"
+otherwise), the same rule the gateway applies to every request. Removing membership
 denies subsequent inference through that user's team keys; organization
 owners/admins retain organization-wide authority.
 
@@ -222,7 +224,7 @@ owners call them.
 | `GET /api/v1/management/roles` | The organization's roles |
 | `POST /api/v1/management/roles` | `{slug, name, permissions}`; answers 201 |
 | `PUT /api/v1/management/roles/{role_id}` | Replaces slug, name and permissions |
-| `DELETE /api/v1/management/roles/{role_id}` | 409 while a user holds it |
+| `DELETE /api/v1/management/roles/{role_id}` | 409 while a user holds it; removing a member frees the role |
 
 - `slug` is 2 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter,
   and not a built-in role name; `name` is up to 100 characters. An organization

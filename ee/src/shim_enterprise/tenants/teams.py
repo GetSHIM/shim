@@ -8,11 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.tenants.models import Organization, Team, TeamMembership, User
-from shim_enterprise.tenants.permissions import (
-    READ_PERMISSIONS,
-    Permission,
-    user_permissions,
-)
+from shim_enterprise.tenants.permissions import READ_PERMISSIONS, user_permissions
 
 ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
 
@@ -27,15 +23,19 @@ def member_team_ids(user: User, *, administer: bool = False):
     return statement
 
 
+async def may_hold_team_key(session: AsyncSession, owner: User, team_id: UUID) -> bool:
+    """The gateway's rule: owners and admins hold keys on any team, others on their own."""
+    return owner.role in {"owner", "admin"} or (
+        await session.scalar(
+            member_team_ids(owner).where(TeamMembership.team_id == team_id)
+        )
+        is not None
+    )
+
+
 async def require_team(
-    session: AsyncSession,
-    user: User,
-    team_id: UUID,
-    *,
-    administer: bool = False,
-    scope: Permission = "usage.read",
+    session: AsyncSession, user: User, team_id: UUID, *, administer: bool = False
 ) -> Team:
-    """Return a team the user may see; `scope` names who sees every team."""
     permissions = await user_permissions(session, user)
     if administer:
         if permissions <= READ_PERMISSIONS:
@@ -51,7 +51,7 @@ async def require_team(
     statement = select(Team).where(
         Team.organization_id == user.organization_id, Team.id == team_id
     )
-    if ("teams.manage" if administer else scope) not in permissions:
+    if ("teams.manage" if administer else "usage.read") not in permissions:
         statement = statement.where(
             Team.id.in_(member_team_ids(user, administer=administer))
         )

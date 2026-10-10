@@ -406,7 +406,7 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
         "subject_id": str(user.id),
         "actor_type": "user_jwt",
         "source": "oidc",
-        "after": {"role": "member", "oidc_teams": {}},
+        "after": {"role": "member", "custom_role": None, "oidc_teams": {}},
     }
     changes = [event["extra"] for event in events[1:]]
     assert [event["endpoint"] for event in events[1:]] == [
@@ -425,7 +425,7 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
 
 @pytest.mark.asyncio
 async def test_login_sets_and_clears_the_mapped_custom_role(
-    db, test_org, monkeypatch, oidc_config, caplog
+    db, test_org, monkeypatch, oidc_config, caplog, audit_events
 ):
     from shim_enterprise.tenants.models import OrganizationRole
 
@@ -461,6 +461,19 @@ async def test_login_sets_and_clears_the_mapped_custom_role(
     assert user.custom_role_id == roles["b-viewer"].id
     await oidc.synchronize_user(db, claims | {"groups": ["/shim/members"]})
     assert user.custom_role_id is None
+    changes = [
+        (
+            event["extra"].get("before", {}).get("custom_role"),
+            event["extra"]["after"].get("custom_role"),
+        )
+        for event in await audit_events(test_org.id)
+    ]
+    assert changes == [
+        (None, "a-viewer"),
+        ("a-viewer", None),
+        (None, "b-viewer"),
+        ("b-viewer", None),
+    ]
 
 
 @pytest.mark.asyncio
