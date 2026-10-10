@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -59,6 +59,19 @@ _LINK_ACTIONS = ("pii_entities", "monitored_entities", "blocked_entities")
 def due_at(regime: str, aware_at: datetime) -> datetime | None:
     hours = DEADLINE_HOURS[regime]
     return None if hours is None else aware_at + timedelta(hours=hours)
+
+
+def deadline_missed(
+    incident: Incident, rows: Sequence[IncidentNotification], now: datetime
+) -> bool:
+    """A required deadline passed with nothing submitted, or closing ended its chance."""
+    return any(
+        row.required
+        and not row.submissions
+        and row.due_at is not None
+        and (incident.status == "closed" or row.due_at <= now)
+        for row in rows
+    )
 
 
 def notification_state(row: IncidentNotification, now: datetime) -> NotificationState:
@@ -220,7 +233,9 @@ def ocsf_incident_finding(
 
 
 def _due_rows(now: datetime) -> tuple[Any, ...]:
+    """Rows still owed a reminder; the caller joins Incident."""
     return (
+        Incident.status != "closed",
         IncidentNotification.required.is_(True),
         IncidentNotification.due_at.is_not(None),
         IncidentNotification.due_at <= now + REMIND_BEFORE,
@@ -237,6 +252,7 @@ async def remind_incident_deadlines(
         tenant_ids = (
             await session.scalars(
                 select(IncidentNotification.organization_id)
+                .join(Incident, Incident.id == IncidentNotification.incident_id)
                 .where(*_due_rows(now))
                 .distinct()
                 .order_by(IncidentNotification.organization_id)
@@ -273,8 +289,8 @@ async def _remind_organization(
     ).all()
     written = 0
     for row, title in rows:
-        assert row.due_at is not None
-        stage = "missed" if row.due_at <= now else "24h"
+        due = cast(datetime, row.due_at)  # _due_rows leaves out rows without one.
+        stage = "missed" if due <= now else "24h"
         if stage in row.reminded:
             continue
         await OutboxWriter().append(
@@ -292,7 +308,7 @@ async def _remind_organization(
                     "incident_id": str(row.incident_id),
                     "title": title,
                     "regime": row.regime,
-                    "due_at": row.due_at.isoformat(),
+                    "due_at": due.isoformat(),
                     "stage": stage,
                 },
                 "status": "pending",

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from typing import get_args
 from uuid import uuid4
@@ -441,7 +442,6 @@ async def test_the_status_moves_and_a_closed_incident_is_final(db) -> None:
                     "POST", f"{path}/status", json={"status": target}
                 )
                 forbidden.append((start, target, response.status_code))
-        detail = (await client.request("GET", path)).json()
 
     assert walked == [
         (200, "in_progress"),
@@ -457,7 +457,6 @@ async def test_the_status_moves_and_a_closed_incident_is_final(db) -> None:
     assert len(forbidden) == len(STATUSES) ** 2 - sum(
         map(len, service.STATUS_MOVES.values())
     )
-    assert detail["status"] in STATUSES
 
 
 @pytest.mark.asyncio
@@ -536,6 +535,14 @@ async def test_every_write_is_audited_by_field_name_without_breach_text(
         "tenant.incident_notification_recorded",
     ]
     assert events[1]["extra"]["fields"] == ["breach", "title"]
+    merged = {"contact_person": secret, "likely_consequences": secret}
+    merged["measures_taken"] = secret
+    assert (
+        events[1]["extra"]["breach_sha256"]
+        == hashlib.sha256(
+            json.dumps(merged, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     assert (events[2]["extra"]["before"], events[2]["extra"]["after"]) == (
         "new",
         "in_progress",
@@ -867,8 +874,19 @@ async def test_a_reminder_reaches_every_enabled_forward_target(
     assert len(deliveries) == targets
     for delivery in deliveries:
         body = delivery.payload["body"]
-        assert body["kind"] == "incident_deadline_approaching"
+        assert body["kind"] == "incident_deadline_24h"
         assert (body["incident_id"], body["regime"]) == (incident_id, "kvkk_board")
+    assert _compliance_text(
+        {
+            "kind": "incident_deadline_24h",
+            "title": "TCKN in a prompt",
+            "regime": "kvkk_board",
+            "due_at": "2026-10-12T09:00:00+00:00",
+        }
+    ) == (
+        "shim incident TCKN in a prompt: the kvkk_board notification is due at "
+        "2026-10-12T09:00:00+00:00"
+    )
     assert _compliance_text(
         {
             "kind": "incident_deadline_missed",
@@ -880,3 +898,198 @@ async def test_a_reminder_reaches_every_enabled_forward_target(
         "shim incident TCKN in a prompt: the kvkk_board notification was due at "
         "2026-10-12T09:00:00+00:00 and has no submission"
     )
+
+
+async def _open(client: _Client, **fields) -> str:
+    response = await client.request(
+        "POST", json={"title": "t", "severity_id": 3, **fields}
+    )
+    assert response.status_code == 201, response.text
+    return f"/{response.json()['id']}"
+
+
+async def _close(client: _Client, path: str) -> httpx.Response:
+    for target in ("in_progress", "resolved"):
+        await client.request("POST", f"{path}/status", json={"status": target})
+    return await client.request("POST", f"{path}/status", json={"status": "closed"})
+
+
+@pytest.mark.asyncio
+async def test_a_status_note_is_refused_and_never_audited(db, audit_events) -> None:
+    organization, users = await _org(db)
+
+    async with _Client(db, users["admin"]) as client:
+        path = await _open(client)
+        noted = await client.request(
+            "POST", f"{path}/status", json={"status": "in_progress", "note": "Ayşe"}
+        )
+
+    events = await audit_events(organization.id)
+    assert noted.status_code == 422
+    assert [event["endpoint"] for event in events] == ["tenant.incident_opened"]
+    assert "Ayşe" not in json.dumps(events, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_a_date_without_an_offset_is_refused(db) -> None:
+    organization, users = await _org(db)
+    # Five hours ago in UTC, so only the missing offset can refuse it.
+    naive = (datetime.now(timezone.utc) - timedelta(hours=5)).replace(tzinfo=None)
+    naive = naive.isoformat()
+
+    async with _Client(db, users["admin"]) as client:
+        opened = await client.request(
+            "POST", json={"title": "t", "severity_id": 3, "aware_at": naive}
+        )
+        path = await _open(client, aware_at=_hours_ago(10), is_suspected_breach=True)
+        patched = await client.request(
+            "PATCH", path, json={"occurred_at": _hours_ago(12).removesuffix("+00:00")}
+        )
+        submitted = await client.request(
+            "POST",
+            f"{path}/notifications/kvkk_board/submissions",
+            json={"reference": "K-1", "submitted_at": naive},
+        )
+
+    assert [opened.status_code, patched.status_code, submitted.status_code] == [422] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_closed_incident_gets_no_reminder(db) -> None:
+    organization, users = await _org(db)
+    async with _Client(db, users["admin"]) as client:
+        path = await _open(client, aware_at=_hours_ago(73), is_suspected_breach=True)
+        assert (await _close(client, path)).status_code == 200
+
+    written = await service.remind_incident_deadlines(
+        _savepoints(await db.connection()), now=datetime.now(timezone.utc)
+    )
+
+    assert written == (0, 0)
+    assert await _reminders(db, organization.id) == []
+
+
+@pytest.mark.asyncio
+async def test_closing_past_an_unmet_deadline_is_allowed_and_flagged(
+    db, audit_events
+) -> None:
+    organization, users = await _org(db)
+
+    async with _Client(db, users["admin"]) as client:
+        missed = await _open(client, aware_at=_hours_ago(73), is_suspected_breach=True)
+        # The board was told in time; the data subjects row has no deadline.
+        met = await _open(client, aware_at=_hours_ago(10), is_suspected_breach=True)
+        await client.request(
+            "POST",
+            f"{met}/notifications/kvkk_board/submissions",
+            json={"reference": "K-1"},
+        )
+        before = (await client.request("GET", missed)).json()
+        closed_missed = await _close(client, missed)
+        closed_met = await _close(client, met)
+
+    closures = [
+        event["extra"]
+        for event in await audit_events(organization.id)
+        if event["endpoint"] == "tenant.incident_status_changed"
+        and event["extra"]["after"] == "closed"
+    ]
+    assert before["deadline_missed"] is True
+    assert closed_missed.status_code == closed_met.status_code == 200
+    assert closed_missed.json()["deadline_missed"] is True
+    assert closed_met.json()["deadline_missed"] is False
+    assert [closure["deadline_missed"] for closure in closures] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_breach_patch_merges_the_fields_sent(db) -> None:
+    organization, users = await _org(db)
+
+    async with _Client(db, users["admin"]) as client:
+        path = await _open(
+            client, breach={"likely_consequences": "a", "measures_taken": "b"}
+        )
+        merged = await client.request(
+            "PATCH", path, json={"breach": {"measures_taken": "c"}}
+        )
+        cleared = await client.request(
+            "PATCH", path, json={"breach": {"likely_consequences": None}}
+        )
+
+    assert merged.json()["breach"] == {
+        "likely_consequences": "a",
+        "measures_taken": "c",
+    }
+    assert cleared.json()["breach"] == {"measures_taken": "c"}
+
+
+@pytest.mark.asyncio
+async def test_notification_writes_move_the_incident_and_respect_their_row(
+    db,
+) -> None:
+    organization, users = await _org(db)
+    aware = datetime.now(timezone.utc) - timedelta(hours=80)
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    async def touched(path: str) -> bool:
+        return (
+            datetime.fromisoformat(
+                (await client.request("GET", path)).json()["updated_at"]
+            )
+            > old
+        )
+
+    async with _Client(db, users["admin"]) as client:
+        path = await _open(client, aware_at=aware.isoformat(), is_suspected_breach=True)
+        incident_id = path[1:]
+        age = text("UPDATE incidents SET updated_at = :old WHERE id = :id")
+        await db.execute(age, {"old": old, "id": incident_id})
+        await client.request(
+            "PUT",
+            f"{path}/notifications/kvkk_data_subjects",
+            json={"required": False, "not_required_reason": "Masked."},
+        )
+        after_put = await touched(path)
+        on_not_required = await client.request(
+            "POST",
+            f"{path}/notifications/kvkk_data_subjects/submissions",
+            json={"reference": "S-1"},
+        )
+        before_aware = await client.request(
+            "POST",
+            f"{path}/notifications/kvkk_board/submissions",
+            json={
+                "reference": "K-0",
+                "submitted_at": (aware - timedelta(minutes=1)).isoformat(),
+            },
+        )
+        # Backdated but still after the deadline: late without a reason.
+        late = await client.request(
+            "POST",
+            f"{path}/notifications/kvkk_board/submissions",
+            json={
+                "reference": "K-1",
+                "submitted_at": (aware + timedelta(hours=75)).isoformat(),
+            },
+        )
+        await db.execute(age, {"old": old, "id": incident_id})
+        on_time = await client.request(
+            "POST",
+            f"{path}/notifications/kvkk_board/submissions",
+            json={
+                "reference": "K-2",
+                "submitted_at": (aware + timedelta(hours=70)).isoformat(),
+            },
+        )
+        after_submission = await touched(path)
+        unrequire = await client.request(
+            "PUT",
+            f"{path}/notifications/kvkk_board",
+            json={"required": False, "not_required_reason": "Sent already."},
+        )
+
+    assert after_put and after_submission
+    assert on_not_required.status_code == 409
+    assert (before_aware.status_code, late.status_code) == (422, 422)
+    assert on_time.status_code == 201
+    assert unrequire.status_code == 409

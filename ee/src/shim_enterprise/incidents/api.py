@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +29,7 @@ from shim_enterprise.incidents.models import (
 from shim_enterprise.incidents.service import (
     BREACH_REGIMES,
     STATUS_MOVES,
+    deadline_missed,
     due_at,
     evidence_summary,
     link_problems,
@@ -96,8 +98,8 @@ class IncidentInput(BaseModel):
     description: str = Field(default="", max_length=2000)
     severity_id: int = Field(ge=1, le=5)
     owner_user_id: UUID | None = None
-    occurred_at: datetime | None = None
-    aware_at: datetime | None = Field(
+    occurred_at: AwareDatetime | None = None
+    aware_at: AwareDatetime | None = Field(
         default=None, description="When the organization became aware; defaults to now."
     )
     is_suspected_breach: bool = False
@@ -106,7 +108,7 @@ class IncidentInput(BaseModel):
 
 
 class IncidentPatch(BaseModel):
-    """Only the fields sent change; each link list replaces the stored one."""
+    """Only the fields sent change: breach fields merge, link lists replace."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -114,8 +116,8 @@ class IncidentPatch(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     severity_id: int | None = Field(default=None, ge=1, le=5)
     owner_user_id: UUID | None = None
-    occurred_at: datetime | None = None
-    aware_at: datetime | None = None
+    occurred_at: AwareDatetime | None = None
+    aware_at: AwareDatetime | None = None
     is_suspected_breach: bool | None = None
     breach: Breach | None = None
     links: Links | None = None
@@ -139,8 +141,8 @@ class IncidentPatch(BaseModel):
 class StatusChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # No free text: the change goes into the immutable audit chain.
     status: IncidentStatus
-    note: str | None = Field(default=None, max_length=1000)
 
 
 class NotificationInput(BaseModel):
@@ -161,7 +163,7 @@ class SubmissionInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    submitted_at: datetime | None = Field(
+    submitted_at: AwareDatetime | None = Field(
         default=None, description="When the information was sent; defaults to now."
     )
     reference: str = Field(min_length=1, max_length=200)
@@ -198,6 +200,10 @@ class IncidentView(BaseModel):
     created_at: datetime
     updated_at: datetime
     notifications: list[NotificationView]
+    deadline_missed: bool = Field(
+        description="A required notification's deadline passed, or the incident was "
+        "closed, before anything was submitted."
+    )
     evidence_summary: dict[str, Any] | None = Field(
         default=None,
         description="Entity types, providers, models and findings of the linked "
@@ -215,15 +221,11 @@ class IncidentPage(BaseModel):
 _INCIDENT_FIELDS = tuple(
     name
     for name in IncidentView.model_fields
-    if name not in {"notifications", "evidence_summary"}
+    if name not in {"notifications", "deadline_missed", "evidence_summary"}
 )
 _NOTIFICATION_FIELDS = tuple(
     name for name in NotificationView.model_fields if name != "state"
 )
-
-
-def _utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _check_dates(
@@ -294,6 +296,7 @@ def _view(
                 }
                 for row in notifications
             ],
+            "deadline_missed": deadline_missed(incident, notifications, now),
             "evidence_summary": summary,
         }
     )
@@ -452,9 +455,8 @@ async def open_incident(
     session: AsyncSession = Depends(get_db),
 ) -> IncidentView:
     now = datetime.now(timezone.utc)
-    aware_at = _utc(payload.aware_at or now)
-    occurred_at = None if payload.occurred_at is None else _utc(payload.occurred_at)
-    _check_dates(occurred_at, aware_at, now)
+    aware_at = payload.aware_at or now
+    _check_dates(payload.occurred_at, aware_at, now)
     await _check_references(
         session, user.organization_id, payload.links, payload.owner_user_id
     )
@@ -465,7 +467,7 @@ async def open_incident(
         severity_id=payload.severity_id,
         owner_user_id=payload.owner_user_id,
         opened_by=str(user.id),
-        occurred_at=occurred_at,
+        occurred_at=payload.occurred_at,
         aware_at=aware_at,
         is_suspected_breach=payload.is_suspected_breach,
         breach=payload.breach.model_dump(mode="json", exclude_none=True),
@@ -498,12 +500,8 @@ async def update_incident(
     incident = await _owned(session, user, incident_id, write=True)
     sent = patch.model_fields_set
     now = datetime.now(timezone.utc)
-    aware_at = _utc(patch.aware_at) if patch.aware_at else incident.aware_at
-    occurred_at = (
-        (None if patch.occurred_at is None else _utc(patch.occurred_at))
-        if "occurred_at" in sent
-        else incident.occurred_at
-    )
+    aware_at = patch.aware_at or incident.aware_at
+    occurred_at = patch.occurred_at if "occurred_at" in sent else incident.occurred_at
     _check_dates(occurred_at, aware_at, now)
     links = patch.links or Links.model_validate(incident.links)
     await _check_references(
@@ -519,7 +517,11 @@ async def update_incident(
     }
     values["aware_at"], values["occurred_at"] = aware_at, occurred_at
     if patch.breach is not None:
-        values["breach"] = patch.breach.model_dump(mode="json", exclude_none=True)
+        merged = {
+            **incident.breach,
+            **patch.breach.model_dump(mode="json", exclude_unset=True),
+        }
+        values["breach"] = {name: v for name, v in merged.items() if v is not None}
     if patch.links is not None:
         values["links"] = patch.links.model_dump(mode="json")
     changed = sorted(
@@ -531,6 +533,11 @@ async def update_incident(
             "before": incident.aware_at.isoformat(),
             "after": aware_at.isoformat(),
         }
+    if "breach" in changed:
+        # A fingerprint of the new register, never its text.
+        details["breach_sha256"] = hashlib.sha256(
+            json.dumps(values["breach"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
     for name in changed:
         setattr(incident, name, values[name])
     await _sync_clock(session, incident, aware_changed="aware_at" in changed)
@@ -561,14 +568,18 @@ async def change_incident_status(
         incident.resolved_at = now
     elif change.status == "in_progress" and before == "resolved":
         incident.resolved_at = None
-    elif change.status == "closed":
+    details: dict[str, Any] = {"before": before, "after": change.status}
+    if change.status == "closed":
         incident.closed_at = now
+        # Closing is allowed past an unmet deadline; the chain records that it was.
+        rows = (await _notifications(session, [incident.id])).get(incident.id, [])
+        details["deadline_missed"] = deadline_missed(incident, rows, now)
     await _audit(
         session,
         user,
         "tenant.incident_status_changed",
         str(incident.id),
-        details={"before": before, "after": change.status, "note": change.note},
+        details=details,
     )
     await session.commit()
     return await _detail(session, incident)
@@ -597,6 +608,8 @@ async def set_incident_notification(
             due_at=due_at(regime, incident.aware_at),
         )
         session.add(row)
+    elif not payload.required and row.submissions:
+        raise HTTPException(409, "A notification with submissions stays required")
     row.required = payload.required
     row.not_required_reason = None if payload.required else payload.not_required_reason
     await _audit(
@@ -606,6 +619,7 @@ async def set_incident_notification(
         str(incident.id),
         details={"regime": regime, "required": payload.required},
     )
+    incident.updated_at = func.now()
     await session.commit()
     return await _detail(session, incident)
 
@@ -633,14 +647,20 @@ async def record_incident_submission(
     )
     if row is None:
         raise HTTPException(404, "This incident has no notification row for the regime")
+    if not row.required:
+        raise HTTPException(409, "This notification is not required")
     if len(row.submissions) >= MAX_SUBMISSIONS:
         raise HTTPException(
             422, f"A notification holds at most {MAX_SUBMISSIONS} submissions"
         )
     now = datetime.now(timezone.utc)
-    submitted_at = _utc(payload.submitted_at or now)
+    submitted_at = payload.submitted_at or now
     if submitted_at > now:
         raise HTTPException(422, "submitted_at cannot be in the future")
+    if submitted_at < incident.aware_at:
+        raise HTTPException(422, "submitted_at cannot be before aware_at")
+    # Lateness is the stated send time against the deadline, however late it is
+    # recorded, so a backdated time after the deadline still needs a reason.
     if row.due_at is not None and submitted_at > row.due_at and not payload.late_reason:
         raise HTTPException(422, "A submission after the deadline needs late_reason")
     row.submissions = [
@@ -661,5 +681,6 @@ async def record_incident_submission(
         str(incident.id),
         details={"regime": regime, "reference": payload.reference},
     )
+    incident.updated_at = func.now()
     await session.commit()
     return await _detail(session, incident)

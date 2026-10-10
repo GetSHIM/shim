@@ -14,8 +14,13 @@ informational, 2 low, 3 medium, 4 high, 5 critical), an optional
 `owner_user_id` (a member of the organization), `occurred_at` and `aware_at`,
 `is_suspected_breach`, `breach` and `links`. The caller is `opened_by`.
 
+The title and description go into the export and the audited record of writes,
+so they must not contain personal data: name the event ("TCKN in a support
+prompt"), not the people in it. Put what the register needs in `breach`.
+
 - `aware_at` is when the organization became aware; it defaults to now and
-  cannot be in the future. `occurred_at`, when known, cannot be after it.
+  cannot be in the future. `occurred_at`, when known, cannot be after it. Every
+  time carries a UTC offset; one without (`2026-10-08T09:00:00`) answers 422.
 - `links` holds references only: `finding_ids` ([findings](FINDINGS.md)),
   `request_ids` and `audit_seqs` (audit chain sequence numbers), at most 100
   each, every one belonging to the organization. An id the organization does not
@@ -32,8 +37,11 @@ how many values were masked, monitored and blocked, the providers and models
 the linked requests used, and the linked findings' rules and severities. It
 suggests `data_categories`; shim never writes it into `breach`.
 
-`PATCH` changes any of these fields; each link list sent replaces the stored
-one.
+`PATCH` changes any of these fields. The `breach` fields sent are merged into
+the stored register (a field sent as null is removed); each link list sent
+replaces the stored one. The audit row of a `breach` change carries
+`breach_sha256`, the SHA-256 of the new register's canonical JSON, never its
+text.
 
 ## Status
 
@@ -44,10 +52,17 @@ one.
 | `on_hold` | `in_progress` |
 | `resolved` | `in_progress` (reopen), `closed` |
 
-`POST /incidents/{id}/status` with `{status, note}` makes one move; any other
-answers 409. `closed` is final: every write to a closed incident answers 409,
-and a later event opens a new incident that names the old one in its
-description.
+`POST /incidents/{id}/status` with `{status}` makes one move; any other answers
+409. It takes no free text (a `note` answers 422): the move goes into the
+immutable audit chain. `closed` is final: every write to a closed incident
+answers 409, and a later event opens a new incident that names the old one in
+its description.
+
+Closing is allowed while a required notification with a deadline has no
+submission. The incident then reads `deadline_missed: true` (also while open,
+once such a deadline has passed), and the closing audit row carries
+`deadline_missed: true`; nothing else is written. A closed incident gets no
+further reminders.
 
 ## The clock
 
@@ -71,11 +86,16 @@ risk"), `submitted` once it has a submission, `overdue` when its deadline passed
 without one, otherwise `open`.
 
 - `PUT /incidents/{id}/notifications/{regime}` creates a row (the only way to
-  add `gdpr_authority`) or sets `required` false with `not_required_reason`.
+  add `gdpr_authority`) or sets `required` false with `not_required_reason`; a
+  row that already has a submission stays required (409).
 - `POST /incidents/{id}/notifications/{regime}/submissions` records what was
-  sent, in stages: `submitted_at` (default now), `reference` (the form or case
-  number, up to 200 characters), `fields_sent` (names of `breach` fields),
-  `note` and, after the deadline, a mandatory `late_reason`. At most 20 per row.
+  sent, in stages: `submitted_at` (default now, never before `aware_at`),
+  `reference` (the form or case number, up to 200 characters), `fields_sent`
+  (names of `breach` fields), `note` and, when `submitted_at` is after the
+  deadline, a mandatory `late_reason`. Lateness compares the stated send time
+  with the deadline, so a time entered after the fact is judged the same way. A
+  row that is not required takes no submission (409). At most 20 per row.
+- Both writes move the incident's `updated_at`.
 
 ## Reminders
 
@@ -84,8 +104,9 @@ and no submission, one `incident.deadline_approaching` intent when 24 hours or
 less remain and one `incident.deadline_missed` intent once the deadline passed;
 each stage is written once. The outbox worker sends them to every enabled
 [forward target](COOKBOOK.md#send-tenant-alerts) with the incident id, title,
-regime and deadline, never `breach` text. One organization's failure is logged
-and the others still run.
+regime and deadline, never `breach` text; the alert `kind` is
+`incident_deadline_24h` or `incident_deadline_missed`. One organization's
+failure is logged and the others still run.
 
 ## Export
 

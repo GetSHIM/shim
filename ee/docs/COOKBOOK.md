@@ -712,8 +712,8 @@ Keep one record per incident, with its owner, its evidence and the KVKK 72-hour
 clock.
 
 1. As an owner or admin, open it with what you know, linking the requests or
-   findings involved:
-   `POST /api/v1/compliance/incidents`.
+   findings involved: `POST /api/v1/compliance/incidents`. Keep personal data
+   out of the title and description; it belongs in `breach`.
 2. If personal data may have been exposed, set `is_suspected_breach: true`: the
    `kvkk_board` row gets a deadline 72 hours after `aware_at`, and
    `kvkk_data_subjects` a row without one. Add `gdpr_authority` with

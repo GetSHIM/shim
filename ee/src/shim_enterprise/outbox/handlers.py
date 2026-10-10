@@ -195,9 +195,9 @@ async def announce_incident_deadline(message: OutboxMessage) -> None:
     payload = _tenant_payload(message, aggregate_type="incident")
     if payload.get("incident_id") != message.aggregate_id:
         raise ValueError("incident notice identity mismatch")
-    stage = (
-        "missed" if message.event_type == INCIDENT_DEADLINE_MISSED else "approaching"
-    )
+    stage = payload.get("stage")
+    if stage not in ("24h", "missed"):
+        raise ValueError("incident notice stage unknown")
     regime = payload.get("regime")
     async with AsyncSessionLocal.begin() as session:
         await ComplianceForwarderService().send_tenant_alert(
@@ -335,15 +335,15 @@ def _compliance_text(body: dict) -> str:
             f"({counts}) in one request with API key {body.get('api_key_id')} "
             f"at {body.get('occurred_at')}, threshold {body.get('threshold')}"
         )
-    if body.get("kind") == "incident_deadline_approaching":
-        return (
-            f"shim incident {body.get('title')}: the {body.get('regime')} "
-            f"notification is due at {body.get('due_at')}"
+    if body.get("kind") in ("incident_deadline_24h", "incident_deadline_missed"):
+        due = (
+            "was due at {} and has no submission"
+            if body["kind"] == "incident_deadline_missed"
+            else "is due at {}"
         )
-    if body.get("kind") == "incident_deadline_missed":
         return (
             f"shim incident {body.get('title')}: the {body.get('regime')} "
-            f"notification was due at {body.get('due_at')} and has no submission"
+            f"notification {due.format(body.get('due_at'))}"
         )
     if body.get("kind") == "evidence_monthly_ready":
         return (

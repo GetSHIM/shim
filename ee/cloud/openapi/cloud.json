@@ -5502,7 +5502,7 @@
       },
       "IncidentPatch": {
         "additionalProperties": false,
-        "description": "Only the fields sent change; each link list replaces the stored one.",
+        "description": "Only the fields sent change: breach fields merge, link lists replace.",
         "properties": {
           "aware_at": {
             "anyOf": [
@@ -5642,6 +5642,11 @@
             "title": "Created At",
             "type": "string"
           },
+          "deadline_missed": {
+            "description": "A required notification's deadline passed, or the incident was closed, before anything was submitted.",
+            "title": "Deadline Missed",
+            "type": "boolean"
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -5762,7 +5767,8 @@
           "closed_at",
           "created_at",
           "updated_at",
-          "notifications"
+          "notifications",
+          "deadline_missed"
         ],
         "title": "IncidentView",
         "type": "object"
@@ -11287,18 +11293,6 @@
       "StatusChange": {
         "additionalProperties": false,
         "properties": {
-          "note": {
-            "anyOf": [
-              {
-                "maxLength": 1000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Note"
-          },
           "status": {
             "enum": [
               "new",
