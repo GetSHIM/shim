@@ -12,6 +12,7 @@ from sqlalchemy import event, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
+from shim.findings import Finding as FindingV1
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.database import get_db
@@ -140,7 +141,7 @@ async def test_retry_storm_fires_at_twenty_repeats_in_one_quarter_hour(
     (storm,) = storms
     assert storm.subject_key == f"api_key:{test_api_key.id}"
     assert storm.subject == {"api_key_id": str(test_api_key.id)}
-    assert service.RULES[storm.rule_id][1] == 3
+    assert service.RULES[storm.rule_id].SEVERITY_ID == 3
     assert storm.evidence == {
         "window_start": BUCKET.isoformat(),
         "window_minutes": 15,
@@ -300,7 +301,7 @@ async def test_unused_deployment_fires_after_thirty_quiet_days(
     assert [(d.subject_key, d.subject["alias"]) for d in detections] == [
         (f"deployment:{unused}", unused)
     ]
-    assert service.RULES[service.UNUSED_DEPLOYMENT][1] == 2
+    assert service.RULES[service.UNUSED_DEPLOYMENT].SEVERITY_ID == 2
     assert detections[0].impact is None
 
 
@@ -544,16 +545,24 @@ async def test_findings_api_filters_audits_and_exports_ocsf(
         "first_seen_time": int(NOW.timestamp() * 1000),
         "last_seen_time": int(NOW.timestamp() * 1000),
     }
-    assert record["unmapped"]["evidence"]["repeated_requests"] == 20
-    assert record["unmapped"]["remediation"]["doc"].startswith("ee/docs/FINDINGS.md#")
+    assert record["unmapped"]["schema_version"] == "1"
+    assert record["unmapped"]["measurements"]["repeated_requests"] == 20
+    assert record["unmapped"]["remediation"]["max_mode"] == "suggest"
+    assert record["unmapped"]["summary_tr"].startswith("Bir API anahtarı")
+    assert all(
+        FindingV1.model_validate(item) for item in listed["items"] + [detail.json()]
+    )
     assert auditor_patch.status_code == 403
-    assert detail.json()["status"] == "new"
+    assert (detail.json()["status"], detail.json()["status_detail"]) == ("open", "new")
     assert foreign.status_code == 404
     assert resolved.status_code == 200
-    assert (resolved.json()["status"], resolved.json()["resolved_by"]) == (
+    assert (resolved.json()["status"], resolved.json()["status_detail"]) == (
         "resolved",
-        str(user.id),
+        "resolved",
     )
+    assert FindingV1.model_validate(resolved.json()).id == str(storm.id)
+    await db.refresh(storm)
+    assert storm.resolved_by == str(user.id)
     assert conflict.status_code == 409
     assert bad_status.status_code == 422
     events = [
@@ -607,27 +616,236 @@ def _copy(finding: Finding) -> dict:
 
 def test_ocsf_activity_follows_the_finding_lifecycle() -> None:
     def activity(**values) -> tuple[int, int]:
-        record = service.ocsf_detection_finding(
-            SimpleNamespace(
-                id=uuid4(),
-                title="t",
-                summary="s",
-                severity_id=2,
-                rule_id=service.ANSWER_QUALITY,
-                rule_version=1,
-                subject={},
-                evidence={},
-                impact=None,
-                remediation={},
-                first_seen_at=NOW,
-                last_seen_at=NOW,
-                resolved_at=None,
-                **values,
-            )
-        )
+        record = service.ocsf_detection_finding(_row(**values))
         return record["activity_id"], record["type_uid"]
 
     assert activity(status_id=1, occurrences=1) == (1, 200401)
     assert activity(status_id=1, occurrences=2) == (2, 200402)
     assert activity(status_id=3, occurrences=1) == (2, 200402)
     assert activity(status_id=4, occurrences=1) == (3, 200403)
+
+
+_SUBJECTS = {
+    service.RETRY_STORM: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.REPEAT_SPEND: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.UNUSED_DEPLOYMENT: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222",
+        "alias": "kurum-llama",
+    },
+    service.ANSWER_QUALITY: {"model": "gpt-5-mini"},
+}
+_EVIDENCE = {
+    service.RETRY_STORM: {
+        "window_start": BUCKET.isoformat(),
+        "window_minutes": 15,
+        "repeated_requests": 20,
+        "threshold": 20,
+        "abandoned_requests": 2,
+        "request_ids": ["req_a", "req_b"],
+    },
+    service.REPEAT_SPEND: {
+        "period_start": BUCKET.isoformat(),
+        "repeated_cost_usd": "1.25000000",
+        "known_spend_usd": "9.00000000",
+        "share": "0.1389",
+        "repeated_requests": 30,
+        "request_ids": ["req_c"],
+    },
+    service.UNUSED_DEPLOYMENT: {
+        "created_at": BUCKET.isoformat(),
+        "window_days": 30,
+        "requests": 0,
+    },
+    service.ANSWER_QUALITY: {
+        "window_hours": 24,
+        "settled_requests": 60,
+        "truncated": 4,
+        "empty": 1,
+        "refused": 2,
+        "truncated_rate": "0.0667",
+        "empty_or_refused_rate": "0.0500",
+        "threshold_rate": "0.05",
+        "request_ids": [],
+    },
+}
+
+
+def _row(rule_id: str = service.ANSWER_QUALITY, **values) -> SimpleNamespace:
+    spec = service.RULES[rule_id]
+    return SimpleNamespace(
+        **{
+            "id": uuid4(),
+            "source": "gateway",
+            "rule_id": rule_id,
+            "rule_version": 1,
+            "subject": _SUBJECTS[rule_id],
+            "title": spec.TITLE,
+            "summary": "stored",
+            "severity_id": spec.SEVERITY_ID,
+            "status_id": 1,
+            "first_seen_at": NOW,
+            "last_seen_at": NOW + timedelta(minutes=5),
+            "occurrences": 1,
+            "evidence": _EVIDENCE[rule_id],
+            "impact": None,
+            "remediation": {"text": "stored", "reversible": True, "doc": spec.PLAYBOOK},
+            "resolved_at": None,
+            **values,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("status_id", "status", "detail"),
+    [
+        (1, "open", "new"),
+        (2, "open", "in_progress"),
+        (3, "dismissed", "suppressed"),
+        (4, "resolved", "resolved"),
+    ],
+)
+def test_a_row_status_maps_to_status_and_detail(status_id, status, detail) -> None:
+    finding = service.finding_from_row(_row(status_id=status_id))
+
+    assert (finding.status, finding.status_detail) == (status, detail)
+
+
+@pytest.mark.parametrize(
+    ("severity_id", "severity"),
+    list(enumerate(("informational", "low", "medium", "high", "critical"), start=1)),
+)
+def test_a_row_severity_maps_to_its_name(severity_id, severity) -> None:
+    assert service.finding_from_row(_row(severity_id=severity_id)).severity == severity
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "kind", "subject_id"),
+    [
+        (service.RETRY_STORM, "key", "11111111-1111-1111-1111-111111111111"),
+        (
+            service.UNUSED_DEPLOYMENT,
+            "deployment",
+            "22222222-2222-2222-2222-222222222222",
+        ),
+        (service.ANSWER_QUALITY, "model", "gpt-5-mini"),
+    ],
+)
+def test_a_row_subject_maps_to_kind_and_id(rule_id, kind, subject_id) -> None:
+    subject = service.finding_from_row(_row(rule_id)).subject
+
+    assert (subject.kind, subject.id) == (kind, subject_id)
+
+
+def test_every_rule_gives_a_finding_that_round_trips_through_v1() -> None:
+    for rule_id, spec in service.RULES.items():
+        finding = service.finding_from_row(
+            _row(rule_id, impact={"cost_usd": "2E-7", "requests": 3})
+        )
+        dumped = finding.model_dump(mode="json")
+
+        assert FindingV1.model_validate(dumped) == finding
+        assert dumped["schema_version"] == "1"
+        assert finding.title == spec.TITLE
+        assert finding.playbook == spec.PLAYBOOK
+        assert (finding.impact.usd, finding.impact.requests) == ("0.0000002", 3)
+        assert finding.impact.risk_class == spec.RISK_CLASS
+        assert finding.remediation.mode == "observe"
+        assert (finding.remediation.max_mode, finding.remediation.blast_radius) == (
+            spec.MAX_MODE,
+            spec.BLAST_RADIUS,
+        )
+        assert finding.remediation.text.model_dump() == dict(spec.REMEDIATION_TEXT)
+        assert finding.window.start == NOW and finding.window.end > NOW
+        assert all(
+            isinstance(value, (int, float)) for value in finding.measurements.values()
+        )
+        assert "request_ids" not in finding.measurements
+        assert [ref.id for ref in finding.evidence] == list(
+            _EVIDENCE[rule_id].get("request_ids", [])
+        )
+    storm = service.finding_from_row(_row(service.RETRY_STORM))
+    assert "window_start" not in storm.measurements
+    assert storm.summary.en == (
+        "One API key sent 20 repeated requests within 15 minutes; the threshold is 20."
+    )
+    spend = service.finding_from_row(_row(service.REPEAT_SPEND))
+    assert spend.measurements["share"] == 0.1389
+    assert "1.25 USD" in spend.summary.en and "1.25 USD" in spend.summary.tr
+
+
+def test_measurements_keep_finite_numbers_only() -> None:
+    assert service.measurements(
+        {
+            "count": 3,
+            "rate": "0.25",
+            "flag": True,
+            "when": "2026-10-08T12:00:00+00:00",
+            "nan": "NaN",
+            "inf": float("inf"),
+            "request_ids": ["req_a"],
+        }
+    ) == {"count": 3, "rate": 0.25}
+
+
+def test_templates_use_measurement_names_and_carry_no_other_number() -> None:
+    import re
+    from string import Formatter
+
+    for rule_id, spec in service.RULES.items():
+        names = set(service.measurements(_EVIDENCE[rule_id]))
+        for language in ("en", "tr"):
+            fields = {
+                field
+                for _, field, _, _ in Formatter().parse(spec.SUMMARY[language])
+                if field
+            }
+            assert fields <= names, (rule_id, language, fields - names)
+            values = {name: 1000 + index for index, name in enumerate(sorted(names))}
+            rendered = service.render(spec.SUMMARY[language], values)
+            numbers = set(re.findall(r"\d+(?:\.\d+)?", rendered))
+            allowed = {str(v) for v in values.values()} | {
+                f"{v:.2f}" for v in values.values()
+            }
+            assert numbers <= allowed, (rule_id, language, numbers - allowed)
+            assert not re.search(r"\d", spec.REMEDIATION_TEXT[language])
+    with pytest.raises(KeyError):
+        service.render("{not_measured} requests", {"count": 1})
+
+
+def test_every_rule_has_its_playbook_section() -> None:
+    from pathlib import Path
+    import re
+
+    document = (Path(__file__).parents[3] / "ee" / "docs" / "FINDINGS.md").read_text()
+    headings = re.findall(r"^## (\S+)$", document, flags=re.MULTILINE)
+    for rule_id, spec in service.RULES.items():
+        assert rule_id in headings
+        slug = re.sub(r"[^a-z0-9 _-]", "", rule_id.lower()).replace(" ", "-")
+        assert spec.PLAYBOOK == f"ee/docs/FINDINGS.md#{slug}"
+
+
+@pytest.mark.asyncio
+async def test_the_four_rules_on_seeded_rows_give_valid_findings(
+    db, test_api_key
+) -> None:
+    await _storm(db, test_api_key)
+    _request(db, test_api_key, NOW - timedelta(minutes=30), repeat=2, cost="1.00")
+    _request(db, test_api_key, NOW - timedelta(minutes=31), cost="9.00")
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    for index in range(50):
+        _request(
+            db,
+            test_api_key,
+            NOW - timedelta(hours=2, seconds=index),
+            outcome="truncated" if index < 3 else "complete",
+            model="gpt-5-nano",
+        )
+
+    await _evaluate(db, test_api_key)
+    rows = await _findings(db, test_api_key)
+
+    assert {row.rule_id for row in rows} == set(service.RULES)
+    for row in rows:
+        finding = service.finding_from_row(row)
+        assert FindingV1.model_validate(finding.model_dump(mode="json")) == finding
+        assert row.summary == finding.summary.en

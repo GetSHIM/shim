@@ -206,6 +206,8 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   retries, streaming, observability, and shim behind
   [LiteLLM](docs/COOKBOOK.md#put-shim-behind-litellm) or
   [Portkey](docs/COOKBOOK.md#put-shim-behind-portkey)
+- [Finding schema](docs/FINDINGS_SCHEMA.md): every finding shim produces follows
+  one published, versioned JSON Schema
 - [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings,
   audit export, KVKK report, model deployments
 - [Developer guide](DEVELOPER_GUIDE.md)

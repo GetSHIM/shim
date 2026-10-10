@@ -36,6 +36,7 @@ forbidden_noncloud_import_roots = [
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
+"shim.findings" = ["EvidenceRef", "Finding", "Impact", "Remediation", "Subject", "Text", "Window"]
 "shim.gateway.admission" = ["LoopDetectionResult"]
 "shim.gateway.analyzers" = ["ANALYZERS", "ANALYZER_NAMES"]
 "shim.gateway.api.errors" = ["gateway_exception_handler"]
@@ -129,6 +130,7 @@ forbidden_noncloud_import_roots = [
 [modules]
 # Python files owned by the community target and free of enterprise imports.
 public = [
+  "scripts/export_finding_schema.py",
   "scripts/sync_models_dev.py",
   "src/shim/__init__.py",
   "src/shim/api/__init__.py",
@@ -150,6 +152,8 @@ public = [
   "src/shim/core/community_config.py",
   "src/shim/core/http.py",
   "src/shim/core/middleware.py",
+  "src/shim/findings/__init__.py",
+  "src/shim/findings/model.py",
   "src/shim/gateway/__init__.py",
   "src/shim/gateway/admission.py",
   "src/shim/gateway/analyzers/__init__.py",
@@ -212,6 +216,8 @@ public = [
   "tests/community/test_models.py",
   "tests/community/test_responses.py",
   "tests/core/test_config.py",
+  "tests/findings/test_model.py",
+  "tests/findings/test_schema_file.py",
   "tests/gateway/api/test_anthropic_boundary.py",
   "tests/gateway/api/test_openai_boundary.py",
   "tests/gateway/api/test_sdk_client_compatibility.py",

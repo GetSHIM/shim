@@ -52,6 +52,7 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
+from shim.findings import Finding as FindingV1
 from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
@@ -94,6 +95,7 @@ from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
     STATUS_IDS,
     STATUS_RESOLVED,
+    finding_from_row,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
@@ -732,35 +734,8 @@ FindingStatus = Literal["new", "in_progress", "suppressed", "resolved"]
 _FINDING_STATUSES = {value: name for name, value in STATUS_IDS.items()}
 
 
-class FindingView(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    source: str
-    rule_id: str
-    rule_version: int
-    subject: dict[str, Any]
-    title: str
-    summary: str
-    severity_id: int
-    status_id: int
-    first_seen_at: datetime
-    last_seen_at: datetime
-    occurrences: int
-    evidence: dict[str, Any]
-    impact: dict[str, Any] | None
-    remediation: dict[str, Any]
-    resolved_at: datetime | None
-    resolved_by: str | None
-
-    @computed_field
-    @property
-    def status(self) -> FindingStatus:
-        return cast(FindingStatus, _FINDING_STATUSES[self.status_id])
-
-
 class FindingPage(BaseModel):
-    items: list[FindingView]
+    items: list[FindingV1]
     total: int
     limit: int
     offset: int
@@ -2833,7 +2808,7 @@ async def list_findings(
         .offset(offset)
     )
     return FindingPage(
-        items=[FindingView.model_validate(row) for row in rows],
+        items=[finding_from_row(row) for row in rows],
         total=total or 0,
         limit=limit,
         offset=offset,
@@ -2880,24 +2855,22 @@ async def export_findings(
     return Response(body, media_type="application/x-ndjson")
 
 
-@router.get("/findings/{finding_id}", response_model=FindingView)
+@router.get("/findings/{finding_id}", response_model=FindingV1)
 async def get_finding(
     finding_id: UUID,
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> FindingView:
-    return FindingView.model_validate(
-        await _owned_finding(session, user, finding_id, lock=False)
-    )
+) -> FindingV1:
+    return finding_from_row(await _owned_finding(session, user, finding_id, lock=False))
 
 
-@router.patch("/findings/{finding_id}", response_model=FindingView)
+@router.patch("/findings/{finding_id}", response_model=FindingV1)
 async def update_finding(
     finding_id: UUID,
     patch: FindingPatch,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> FindingView:
+) -> FindingV1:
     finding = await _owned_finding(session, user, finding_id, lock=True)
     before = _FINDING_STATUSES[finding.status_id]
     target = STATUS_IDS[patch.status]
@@ -2939,7 +2912,7 @@ async def update_finding(
         )
         await session.commit()
         await session.refresh(finding)
-    return FindingView.model_validate(finding)
+    return finding_from_row(finding)
 
 
 async def _owned_finding(
