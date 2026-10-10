@@ -25,9 +25,10 @@ from shim_enterprise.policy.plans import (
     lock_tenant,
     record_managed_write,
 )
-from shim_enterprise.policy.resources import REGISTRY, PostCommit
+from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/policy", tags=["policy"])
 
@@ -147,6 +148,15 @@ def _summary(row: PolicyVersion) -> dict[str, Any]:
     }
 
 
+async def _authorize(
+    session: AsyncSession, actor: User, resource: ManagedResource
+) -> None:
+    if resource.permission not in await user_permissions(session, actor):
+        raise HTTPException(
+            status_code=403, detail=f"Permission required: {resource.permission}"
+        )
+
+
 def _expired(plan: PolicyPlan) -> bool:
     if plan.status in {"draft", "pending_approval"} and plan.expires_at <= datetime.now(
         timezone.utc
@@ -230,6 +240,8 @@ async def _apply_plan(
     stale, changes = [], []
     for change in plan.changes:
         resource = REGISTRY[change["resource"]]
+        # The one who applies may hold less than the one who planned.
+        await _authorize(session, actor, resource)
         current = await resource.snapshot(session, organization_id, [change["item"]])
         if current.get(change["item"]) != change["before"]:
             stale.append({"resource": change["resource"], "item": change["item"]})
@@ -322,6 +334,7 @@ async def create_plan(
                     "errors": f"Unknown resource {change.resource}",
                 },
             )
+        await _authorize(session, user, resource)
         if change.item is None and not resource.creatable:
             raise HTTPException(
                 status_code=422,
@@ -359,7 +372,9 @@ async def create_plan(
             after = (
                 None
                 if change.delete
-                else resource.validate(change.item, before, change.set or {})
+                else await resource.validate(
+                    session, user, change.item, before, change.set or {}
+                )
             )
         except HTTPException as exc:
             raise HTTPException(
@@ -532,6 +547,7 @@ async def restore_version(
             now = current.get(item)
             if target == now:
                 continue
+            await _authorize(session, user, resource)
             if now is None and not resource.creatable:
                 not_restored.append(
                     Unrestored(resource=name, item=item, reason="key_revoked")

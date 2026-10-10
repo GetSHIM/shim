@@ -168,6 +168,13 @@ they belong to; a write without a version carries none.
 
 A plan (`policy_plans`) is a change set with each change's before and after
 state, risk and estimated impact, created as `draft` and expiring after 7 days.
+Each change also needs what its own route asks for: `settings.write` for
+privacy, `teams.manage` for teams, `deployments.manage`, `budgets.manage`, and
+`compliance.manage` for oversight policies; a key change follows the key
+route's rules (`keys.manage` for a key without a team, team administration for
+a team's key). This is checked when the plan is created, again for the one who
+applies it, and for every item a restore puts back (403
+"Permission required: <permission>").
 Applying it checks that every item still has the stored before-state
 (`PLAN_STALE` otherwise), writes every change through the same code as the
 direct routes, records one version and marks the plan `applied`. Impact counts

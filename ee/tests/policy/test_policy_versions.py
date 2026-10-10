@@ -29,6 +29,7 @@ from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
     Organization,
+    OrganizationRole,
     ProviderSecret,
     Team,
     User,
@@ -967,6 +968,88 @@ async def test_members_cannot_plan_and_auditors_read_versions(db) -> None:
         "Permission required: plans.create",
     )
     assert (read.status_code, read.json()) == (200, [])
+
+
+async def _holder(db, owner: User, *permissions: str) -> User:
+    role = OrganizationRole(
+        organization_id=owner.organization_id,
+        slug=f"role-{uuid4().hex[:8]}",
+        name="Planner",
+        permissions=list(permissions),
+    )
+    db.add(role)
+    await db.flush()
+    holder = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"policy-{uuid4().hex}@example.com",
+        role="member",
+        custom_role_id=role.id,
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(holder)
+    await db.flush()
+    return holder
+
+
+@pytest.mark.asyncio
+async def test_a_plan_needs_the_permission_of_every_route_it_stands_in_for(
+    db,
+) -> None:
+    owner = await _tenant(db)
+    planner = await _holder(db, owner, "plans.create", "plans.apply", "keys.own")
+    privacy = {"resource": "privacy", "item": "_", "set": {"block_email": False}}
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_phone": False}
+    )
+    owners_plan = (
+        await _call(db, owner, "POST", f"{POLICY}/plans", json={"changes": [privacy]})
+    ).json()
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        user_id=planner.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-own",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(key)
+    await db.flush()
+
+    created = await _call(
+        db, planner, "POST", f"{POLICY}/plans", json={"changes": [privacy]}
+    )
+    applied = await _call(
+        db, planner, "POST", f"{POLICY}/plans/{owners_plan['id']}/apply"
+    )
+    restored = await _call(db, planner, "POST", f"{POLICY}/versions/0/restore", json={})
+    own_key = await _call(
+        db,
+        planner,
+        "POST",
+        f"{POLICY}/plans",
+        json={
+            "changes": [
+                {
+                    "resource": "api_keys",
+                    "item": str(key.id),
+                    "set": {"allowed_models": []},
+                }
+            ]
+        },
+    )
+
+    for refused in (created, applied, restored):
+        assert (refused.status_code, refused.json()["detail"]) == (
+            403,
+            "Permission required: settings.write",
+        ), refused.text
+    assert own_key.status_code == 403, own_key.text
+    assert own_key.json()["detail"]["errors"] == "Organization admin required"
+    assert (await db.get(PolicyPlan, UUID(owners_plan["id"]))).status == "draft"
+    assert len(await _versions(db, owner.organization_id)) == 1
 
 
 @pytest.mark.asyncio

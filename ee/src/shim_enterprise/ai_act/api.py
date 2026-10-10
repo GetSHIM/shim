@@ -101,6 +101,7 @@ from shim_enterprise.policy.plans import (
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.permissions import Permission
 
 
 router = APIRouter(prefix="/compliance", tags=["ai-act-control-plane"])
@@ -648,7 +649,9 @@ async def create_oversight_policy(
     ),
     session: AsyncSession = Depends(get_db),
 ) -> OversightPolicyRead:
-    after = OVERSIGHT_POLICIES.validate(None, None, payload.model_dump())
+    after = await OVERSIGHT_POLICIES.validate(
+        session, current_user, None, None, payload.model_dump()
+    )
     tenant_id, item = await _tenant_for_write(session, current_user), str(uuid4())
     await lock_tenant(session, tenant_id)
     async with record_managed_write(
@@ -702,8 +705,12 @@ async def update_oversight_policy(
     await lock_tenant(session, tenant_id)
     policy = await _tenant_policy(session, tenant_id, policy_id)
     before = _policy_facts(policy)
-    after = OVERSIGHT_POLICIES.validate(
-        str(policy_id), before, payload.model_dump(exclude_unset=True)
+    after = await OVERSIGHT_POLICIES.validate(
+        session,
+        current_user,
+        str(policy_id),
+        before,
+        payload.model_dump(exclude_unset=True),
     )
     async with record_managed_write(
         session,
@@ -900,6 +907,7 @@ _POLICY_FIELDS = (
 
 class _OversightPolicyResource:
     name = "oversight_policies"
+    permission: Permission = "compliance.manage"
     creatable = True
     deletable = True
 
@@ -919,8 +927,13 @@ class _OversightPolicyResource:
             for policy in await session.scalars(statement)
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
         _only(proposed, _POLICY_FIELDS)
         if before is None:

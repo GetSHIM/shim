@@ -554,7 +554,8 @@ Notes:
 See what a policy change would have affected before it takes effect, apply it in
 one step, and take it back in one step.
 
-1. Create a plan (`plans.create`, owners and admins):
+1. Create a plan (`plans.create`, owners and admins, plus the permission each
+   change's own route asks for):
    `POST /api/v1/management/policy/plans` with up to 100 `changes`. A change is
    `{"resource", "item", "set": {...}}` to update, `"item": null` to create, or
    `{"resource", "item", "delete": true}`. The answer lists each change's
