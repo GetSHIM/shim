@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict
 import pytest
 from sqlalchemy import func, select
 
@@ -23,18 +21,6 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
 from shim_enterprise.rules.changes import classify_rule_changes
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
-
-
-class _Terms(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    terms: list[str]
-
-
-@pytest.fixture
-def term_kind(monkeypatch):
-    # No kind ships a match model yet; a test-only one makes `term` available.
-    monkeypatch.setitem(KINDS, "term", replace(KINDS["term"], match=_Terms))
 
 
 def _rule(rule_id: str = "falcon", **values) -> dict:
@@ -106,7 +92,7 @@ async def test_a_new_row_holds_an_empty_set_at_revision_zero(db, test_org) -> No
 
 
 @pytest.mark.asyncio
-async def test_get_without_a_row_shows_every_kind_unavailable_and_writes_nothing(
+async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
     db, test_user_with_org
 ) -> None:
     view = await management.get_rules(test_user_with_org, db)
@@ -119,7 +105,10 @@ async def test_get_without_a_row_shows_every_kind_unavailable_and_writes_nothing
     )
     assert view.limits == LIMITS
     assert set(view.kinds) == set(KINDS)
-    assert not any(kind.available for kind in view.kinds.values())
+    assert {name for name, kind in view.kinds.items() if kind.available} == {
+        "term",
+        "pattern",
+    }
     assert all("require_approval" not in kind.actions for kind in view.kinds.values())
     count = select(func.count()).where(
         OrganizationRuleSet.organization_id == test_user_with_org.organization_id
@@ -129,7 +118,7 @@ async def test_get_without_a_row_shows_every_kind_unavailable_and_writes_nothing
 
 @pytest.mark.asyncio
 async def test_put_round_trip_audits_ids_kinds_and_counts_but_no_term(
-    db, test_org, term_kind, audit_events
+    db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
     cache = _DeletingCache()
@@ -144,7 +133,11 @@ async def test_put_round_trip_audits_ids_kinds_and_counts_but_no_term(
     )
 
     assert (view.revision, view.updated_by) == (1, str(admin.id))
-    assert view.rules[0].match == {"terms": ["Project Falcon"]}
+    assert view.rules[0].match == {
+        "terms": ["Project Falcon"],
+        "label": "TERM",
+        "suffixes": "tr",
+    }
     assert again == view
     assert view.kinds["term"].available is True
     assert changed.revision == 2
@@ -188,7 +181,7 @@ async def test_a_stale_revision_is_refused_with_the_current_one(db, test_org) ->
 
 @pytest.mark.asyncio
 async def test_a_new_rule_starts_in_monitor_and_may_then_be_enforced(
-    db, test_org, term_kind
+    db, test_org
 ) -> None:
     admin = await _admin(db, test_org.id)
 
@@ -206,7 +199,7 @@ async def test_a_new_rule_starts_in_monitor_and_may_then_be_enforced(
 
 @pytest.mark.asyncio
 async def test_scope_ids_must_belong_to_the_organization(
-    db, test_org, test_tier, term_kind
+    db, test_org, test_tier
 ) -> None:
     admin = await _admin(db, test_org.id)
     other = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
@@ -258,15 +251,14 @@ async def test_scope_ids_must_belong_to_the_organization(
 
 @pytest.mark.asyncio
 async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
-    db, test_org, monkeypatch
+    db, test_org
 ) -> None:
     admin = await _admin(db, test_org.id)
 
-    unavailable = await _refused(db, admin, 0, [_rule()])
-    monkeypatch.setitem(KINDS, "term", replace(KINDS["term"], match=_Terms))
+    unavailable = await _refused(db, admin, 0, [_rule(kind="record_set")])
     approval = await _refused(db, admin, 0, [_rule(action="require_approval")])
     unknown_key = await _refused(
-        db, admin, 0, [_rule(match={"terms": ["x"], "regex": "y"})]
+        db, admin, 0, [_rule(match={"terms": ["Project"], "regex": "y"})]
     )
 
     assert (unavailable["status"], unavailable["code"], unavailable["path"]) == (
@@ -318,7 +310,7 @@ def test_readers_read_and_admins_write() -> None:
 
 @pytest.mark.asyncio
 async def test_relaxing_an_enforced_rule_writes_the_relaxed_event(
-    db, test_org, term_kind, audit_events
+    db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
 

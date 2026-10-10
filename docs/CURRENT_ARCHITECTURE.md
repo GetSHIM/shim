@@ -237,7 +237,10 @@ enforced `require_approval` match, passing the payload as it entered privacy.
 Without a gate such a match is a block. Community has no rule store: the set
 arrives as `rules` on the resolved policy, which enterprise reads from
 `organization_rule_sets`, keyed by a revision kept in the privacy cache entry,
-with the rules themselves only in process memory. No kind ships a matcher yet.
+with the rules themselves only in process memory. The `term` and `pattern`
+kinds (`src/shim/rules/content.py`) are searched by `PIIScrubberService` on its
+normalized text, compiled once per `RuleSet` object; no other kind ships a
+matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 
 Anthropic token counting shares authentication, registry authorization and

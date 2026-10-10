@@ -7,7 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
-from shim.rules.model import RuleAction, RuleKind, RuleSet, RuleSetError
+from shim.rules.content import PatternMatch, TermMatch
+from shim.rules.model import LIMITS, RuleAction, RuleKind, RuleSet, RuleSetError
 
 RulePoint = Literal["resolver", "admission", "privacy", "settings"]
 
@@ -22,10 +23,12 @@ class KindSpec:
 
 KINDS: dict[RuleKind, KindSpec] = {
     "term": KindSpec(
-        "privacy", ("monitor", "warn", "mask", "block", "require_approval")
+        "privacy", ("monitor", "warn", "mask", "block", "require_approval"), TermMatch
     ),
     "pattern": KindSpec(
-        "privacy", ("monitor", "warn", "mask", "block", "require_approval")
+        "privacy",
+        ("monitor", "warn", "mask", "block", "require_approval"),
+        PatternMatch,
     ),
     "record_set": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
     "destination": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
@@ -35,6 +38,19 @@ KINDS: dict[RuleKind, KindSpec] = {
 }
 
 
+# What a whole set may hold, per match key: (limit name, kind, key).
+_SET_LIMITS = (
+    ("terms_per_set", "term", "terms"),
+    ("patterns_per_set", "pattern", "regexes"),
+)
+
+
+def _path(loc: tuple[int | str, ...]) -> str:
+    return "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc
+    ).lstrip(".")
+
+
 def validate_rule_set(
     payload: dict[str, Any], *, approval_available: bool = False
 ) -> RuleSet:
@@ -42,12 +58,11 @@ def validate_rule_set(
         rule_set = RuleSet.model_validate(payload)
     except ValidationError as error:
         first = error.errors()[0]
-        path = "".join(
-            f"[{part}]" if isinstance(part, int) else f".{part}"
-            for part in first["loc"]
-        ).lstrip(".")
-        raise RuleSetError("RULE_SET_INVALID", path, first["msg"]) from None
+        raise RuleSetError(
+            "RULE_SET_INVALID", _path(first["loc"]), first["msg"]
+        ) from None
     seen: set[str] = set()
+    totals = dict.fromkeys((name for name, _, _ in _SET_LIMITS), 0)
     rules = []
     for index, rule in enumerate(rule_set.rules):
         if rule.id in seen:
@@ -74,11 +89,22 @@ def validate_rule_set(
             match = spec.match.model_validate(rule.match)
         except ValidationError as error:
             first = error.errors()[0]
-            path = ".".join(str(part) for part in first["loc"])
             raise RuleSetError(
-                "RULE_MATCH_INVALID",
-                f"rules[{index}].match.{path}".rstrip("."),
+                "RULE_PATTERN_UNSAFE"
+                if first["type"] == "rule_pattern_unsafe"
+                else "RULE_MATCH_INVALID",
+                f"rules[{index}].match.{_path(first['loc'])}".rstrip("."),
                 first["msg"],
             ) from None
-        rules.append(rule.model_copy(update={"match": match.model_dump(mode="json")}))
+        stored = match.model_dump(mode="json")
+        for name, kind, key in _SET_LIMITS:
+            if rule.kind == kind:
+                totals[name] += len(stored[key])
+                if totals[name] > LIMITS[name]:
+                    raise RuleSetError(
+                        "RULE_SET_INVALID",
+                        f"rules[{index}].match.{key}",
+                        f"a rule set holds at most {LIMITS[name]:,} {key}",
+                    )
+        rules.append(rule.model_copy(update={"match": stored}))
     return rule_set.model_copy(update={"rules": tuple(rules)})

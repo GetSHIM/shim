@@ -1,5 +1,6 @@
 """Tenant rules: one rule object, a fixed table of kinds and evaluation points."""
 
+from shim.rules.content import count_rule_matches
 from shim.rules.evaluate import in_scope, match_records
 from shim.rules.kinds import KINDS, validate_rule_set
 from shim.rules.model import (
@@ -25,6 +26,7 @@ __all__ = [
     "RuleSet",
     "RuleSetError",
     "RuleState",
+    "count_rule_matches",
     "in_scope",
     "match_records",
     "validate_rule_set",
