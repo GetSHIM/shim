@@ -1,0 +1,507 @@
+{
+  "$defs": {
+    "Action": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "pattern": "^[a-z][a-z0-9_.]{0,63}$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxProperties": 16,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "params"
+      ],
+      "title": "Action",
+      "type": "object"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9_.:/-]{1,200}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "request",
+            "ledger_row",
+            "audit_row",
+            "finding",
+            "policy_version",
+            "cli_session"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "Impact": {
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requests"
+        },
+        "risk_class": {
+          "anyOf": [
+            {
+              "enum": [
+                "privacy",
+                "cost",
+                "reliability",
+                "quality"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Risk Class"
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tokens"
+        },
+        "usd": {
+          "anyOf": [
+            {
+              "pattern": "^\\d+(\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Usd"
+        }
+      },
+      "required": [
+        "requests",
+        "tokens",
+        "usd",
+        "risk_class"
+      ],
+      "title": "Impact",
+      "type": "object"
+    },
+    "ProofAfter": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Baseline"
+        },
+        "comparison": {
+          "enum": [
+            "lte",
+            "gte"
+          ],
+          "title": "Comparison",
+          "type": "string"
+        },
+        "metric": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Threshold"
+        },
+        "window_hours": {
+          "maximum": 720,
+          "minimum": 1,
+          "title": "Window Hours",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "metric",
+        "window_hours",
+        "baseline",
+        "threshold",
+        "comparison"
+      ],
+      "title": "ProofAfter",
+      "type": "object"
+    },
+    "Remediation": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blast_radius": {
+          "enum": [
+            "key",
+            "team",
+            "deployment",
+            "model",
+            "tenant",
+            "app"
+          ],
+          "title": "Blast Radius",
+          "type": "string"
+        },
+        "max_mode": {
+          "enum": [
+            "observe",
+            "suggest",
+            "auto"
+          ],
+          "title": "Max Mode",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "observe",
+            "suggest",
+            "auto"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "proof_after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProofAfter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reversible": {
+          "title": "Reversible",
+          "type": "boolean"
+        },
+        "text": {
+          "$ref": "#/$defs/Text"
+        }
+      },
+      "required": [
+        "mode",
+        "max_mode",
+        "action",
+        "reversible",
+        "blast_radius",
+        "proof_after",
+        "text"
+      ],
+      "title": "Remediation",
+      "type": "object"
+    },
+    "Subject": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "key",
+            "team",
+            "deployment",
+            "model",
+            "tenant",
+            "app"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "Subject",
+      "type": "object"
+    },
+    "Text": {
+      "additionalProperties": false,
+      "properties": {
+        "en": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "En",
+          "type": "string"
+        },
+        "tr": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Tr",
+          "type": "string"
+        }
+      },
+      "required": [
+        "en",
+        "tr"
+      ],
+      "title": "Text",
+      "type": "object"
+    },
+    "Window": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "format": "date-time",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date-time",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "Window",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/GetSHIM/shim/main/docs/schemas/finding-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Evidence references, never contains, a value: title, summary and text come from rule templates.",
+  "properties": {
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "maxItems": 50,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "impact": {
+      "$ref": "#/$defs/Impact"
+    },
+    "measurements": {
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "title": "Measurements",
+      "type": "object"
+    },
+    "occurrences": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Occurrences"
+    },
+    "playbook": {
+      "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+$",
+      "title": "Playbook",
+      "type": "string"
+    },
+    "remediation": {
+      "$ref": "#/$defs/Remediation"
+    },
+    "rule_id": {
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "rule_version": {
+      "minimum": 1,
+      "title": "Rule Version",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "informational",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "gateway",
+        "litellm",
+        "shim-cli"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "open",
+        "resolved",
+        "dismissed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "status_detail": {
+      "anyOf": [
+        {
+          "enum": [
+            "new",
+            "in_progress",
+            "suppressed",
+            "resolved"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status Detail"
+    },
+    "subject": {
+      "$ref": "#/$defs/Subject"
+    },
+    "summary": {
+      "$ref": "#/$defs/Text"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "window": {
+      "$ref": "#/$defs/Window"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "source",
+    "rule_id",
+    "rule_version",
+    "title",
+    "summary",
+    "severity",
+    "status",
+    "status_detail",
+    "subject",
+    "window",
+    "occurrences",
+    "evidence",
+    "measurements",
+    "impact",
+    "remediation",
+    "playbook"
+  ],
+  "title": "Finding",
+  "type": "object"
+}

@@ -11,19 +11,23 @@ is unchanged.
 
 ## Shape
 
-Each finding has `rule_id` and `rule_version`, a `subject` (for example
-`{"api_key_id": "…"}`), `title`, a one-sentence `summary`, `severity_id` and
-`status_id` with OCSF values, `first_seen_at`, `last_seen_at`, `occurrences`
-(how many evaluations found it), `evidence` (the measured numbers and up to 20
-request ids), `impact` (`cost_usd` and `requests`, or `null`) and `remediation`
-(`text`, `reversible`, `doc`).
+The API returns every finding in the published
+[Finding v1 schema](../../docs/FINDINGS_SCHEMA.md)
+([JSON Schema](../../docs/schemas/finding-v1.json)): `rule_id` and `rule_version`,
+`title`, `summary` in English and Turkish, `severity`, `status` and
+`status_detail`, `subject` (`key`, `deployment` or `model` with its id),
+`window` (first and last time seen), `occurrences`, `evidence` (up to 20 request
+references), `measurements` (the measured numbers), `impact` (`requests`, `usd`,
+`risk_class`), `remediation` (`mode`, which stays `observe` for now, `max_mode`,
+`reversible`, `blast_radius`, the fix `text`) and `playbook` (the rule's section
+below).
 
-| `severity_id` | Meaning | | `status_id` | Meaning |
+| Stored `severity_id` | `severity` | | Stored `status_id` | `status` / `status_detail` |
 | --- | --- | --- | --- | --- |
-| 1 | informational | | 1 | new |
-| 2 | low | | 2 | in progress |
-| 3 | medium | | 3 | suppressed |
-| 4 | high | | 4 | resolved |
+| 1 | informational | | 1 | open / new |
+| 2 | low | | 2 | open / in_progress |
+| 3 | medium | | 3 | dismissed / suppressed |
+| 4 | high | | 4 | resolved / resolved |
 | 5 | critical | | | |
 
 There is at most one open finding (any status but resolved) per organization,
@@ -56,7 +60,7 @@ cannot change them.
 | Route | Who | What |
 | --- | --- | --- |
 | `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`new`, `in_progress`, `suppressed`, `resolved`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
-| `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding |
+| `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding (Finding v1) |
 | `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": "in_progress" \| "suppressed" \| "resolved" \| "new"}`; recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
 | `GET /api/v1/management/findings/export` | Owner, admin, auditor | NDJSON, one OCSF Detection Finding per line, with the same filters; at most 10,000 (422 beyond) |
 
@@ -67,15 +71,18 @@ or its status changed) or 3 (closed: resolved), `type_uid` 200401, 200402 or
 otherwise the last time it was seen), `severity_id`, `status_id`,
 `metadata.version` `1.3.0`, `metadata.product` `{"name": "shim", "vendor_name":
 "shim"}`, and `finding_info` with `uid`, `title`, `desc` (the summary),
-`first_seen_time` and `last_seen_time`. The rule, subject, occurrences,
-evidence, impact and remediation are under `unmapped`.
+`first_seen_time` and `last_seen_time`. `unmapped` holds `schema_version` (`"1"`),
+`summary_tr`, and `evidence`, `measurements`, `impact` and `remediation` in
+their Finding v1 shapes. The list and detail routes return `{"items": [Finding],
+"total", "limit", "offset"}` and a Finding; the PATCH body is unchanged and the
+answer is the updated Finding.
 
 ## gateway.retry_storm
 
 **Checks.** For each API key, the four fixed 15-minute buckets of the last hour,
 aligned to the quarter hour in UTC (the current one included). It fires when
 one bucket holds at least 20 requests with `repeat_chain_length` of 2 or more.
-Severity medium.
+Severity medium. Max mode `suggest`, blast radius `key`, risk class `cost`.
 
 **Why.** A client that resends the same request quickly is usually retrying
 without backoff. Every repeat is a billable provider call, and a storm can
@@ -100,7 +107,8 @@ retrying.
 **Checks.** For each API key, month to date (UTC), the known cost of requests
 with `repeat_chain_length` of 2 or more. It fires when that cost is at least
 1 USD and at least 10 percent of the key's known spend. Unpriced requests count
-toward neither. Severity medium.
+toward neither. Severity medium. Max mode `suggest`, blast radius `key`, risk
+class `cost`.
 
 **Why.** Repeated identical requests that cost a tenth of a key's spend are
 money spent twice for the same answer.
@@ -119,7 +127,8 @@ with fewer repeats.
 
 **Checks.** Enabled [registered deployments](MODEL_DEPLOYMENTS.md) created at
 least 30 days ago that had no request with their alias as the model in the last
-30 days. Severity low.
+30 days. Severity low. Max mode `auto`, blast radius `deployment`, risk class
+`cost`.
 
 **Why.** An unused deployment keeps a stored credential and an approved
 destination alive for nobody.
@@ -136,7 +145,8 @@ disabled or deleted.
 **Checks.** For each model (the provider model, or the requested model when the
 provider did not name one), requests started in the last 24 hours. It fires
 when at least 50 of them have a `completion_outcome` and either `truncated` is
-at least 5 percent of those, or `empty` plus `refused` is. Severity low.
+at least 5 percent of those, or `empty` plus `refused` is. Severity low. Max
+mode `observe`, blast radius `model`, risk class `quality`.
 
 **Why.** A model that truncates or refuses one answer in twenty is costing
 retries and user trust; the cause is usually an output limit or a prompt.
