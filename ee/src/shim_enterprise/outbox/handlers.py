@@ -29,6 +29,8 @@ BUDGET_THRESHOLD = "budget.threshold_crossed"
 COMPLIANCE_DELIVERY = "compliance.connector_delivery_requested"
 BULK_DISCLOSURE = "privacy.bulk_disclosure"
 EVIDENCE_MONTHLY_READY = "evidence.monthly_ready"
+INCIDENT_DEADLINE_APPROACHING = "incident.deadline_approaching"
+INCIDENT_DEADLINE_MISSED = "incident.deadline_missed"
 _DELIVERY_TIMEOUT_SECONDS = 10.0
 _COMPLIANCE_DELIVERY_PURPOSE = "compliance-forward-target-delivery"
 
@@ -69,6 +71,8 @@ def build_publisher() -> OutboxPublisher:
     publisher.register(COMPLIANCE_DELIVERY, deliver_compliance_event)
     publisher.register(BULK_DISCLOSURE, fan_out_bulk_disclosure)
     publisher.register(EVIDENCE_MONTHLY_READY, announce_monthly_evidence)
+    publisher.register(INCIDENT_DEADLINE_APPROACHING, announce_incident_deadline)
+    publisher.register(INCIDENT_DEADLINE_MISSED, announce_incident_deadline)
     register_analytics_handlers(publisher)
     return publisher
 
@@ -179,6 +183,38 @@ async def announce_monthly_evidence(message: OutboxMessage) -> None:
                 "occurred_at": payload.get("generated_at"),
             },
             delivery_key=f"evidence_{kind}:{period}",
+        )
+
+
+async def announce_incident_deadline(message: OutboxMessage) -> None:
+    from shim_enterprise.compliance.services.forwarder import (
+        ComplianceForwarderService,
+    )
+    from shim_enterprise.core.database import AsyncSessionLocal
+
+    payload = _tenant_payload(message, aggregate_type="incident")
+    if payload.get("incident_id") != message.aggregate_id:
+        raise ValueError("incident notice identity mismatch")
+    stage = (
+        "missed" if message.event_type == INCIDENT_DEADLINE_MISSED else "approaching"
+    )
+    regime = payload.get("regime")
+    async with AsyncSessionLocal.begin() as session:
+        await ComplianceForwarderService().send_tenant_alert(
+            session,
+            TenantId(message.organization_id),
+            # Ids, the title, the regime and the deadline; never breach text.
+            body={
+                "source": "shim",
+                "event_type": "tenant_incident",
+                "kind": f"incident_deadline_{stage}",
+                "incident_id": message.aggregate_id,
+                "title": payload.get("title"),
+                "regime": regime,
+                "due_at": payload.get("due_at"),
+                "download": f"/api/v1/compliance/incidents/{message.aggregate_id}",
+            },
+            delivery_key=f"incident_{stage}:{message.aggregate_id}:{regime}",
         )
 
 
@@ -298,6 +334,16 @@ def _compliance_text(body: dict) -> str:
             f"shim bulk disclosure: {body.get('distinct_values')} distinct values "
             f"({counts}) in one request with API key {body.get('api_key_id')} "
             f"at {body.get('occurred_at')}, threshold {body.get('threshold')}"
+        )
+    if body.get("kind") == "incident_deadline_approaching":
+        return (
+            f"shim incident {body.get('title')}: the {body.get('regime')} "
+            f"notification is due at {body.get('due_at')}"
+        )
+    if body.get("kind") == "incident_deadline_missed":
+        return (
+            f"shim incident {body.get('title')}: the {body.get('regime')} "
+            f"notification was due at {body.get('due_at')} and has no submission"
         )
     if body.get("kind") == "evidence_monthly_ready":
         return (

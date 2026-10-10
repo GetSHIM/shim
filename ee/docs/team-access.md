@@ -33,6 +33,8 @@ write nor own gateway keys.
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |
+| `incidents.read` | Read and export [incidents](INCIDENTS.md) | x | x | | x |
+| `incidents.manage` | Open incidents, change them and their status, record notifications | x | x | | |
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
 | `plans.approve` | Approve or reject a pending plan | x | x | | |

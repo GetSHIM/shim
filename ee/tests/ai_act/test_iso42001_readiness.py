@@ -118,7 +118,11 @@ def test_every_control_has_a_gap_and_steps_that_resolve() -> None:
             else:
                 assert step.doc is None
     a84 = readiness.load_mapping().control("A.8.4")
-    assert a84 is not None and [s.type for s in a84.next_steps] == ["organization"]
+    assert a84 is not None and a84.source == "declared"
+    assert [(s.type, s.doc) for s in a84.next_steps] == [
+        ("in_shim", "COOKBOOK.md#record-an-incident"),
+        ("organization", None),
+    ]
 
 
 def _step(**fields) -> dict:
