@@ -1,0 +1,82 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 2,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "entities": [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "CREDIT_CARD",
+    "IBAN_CODE",
+    "TR_NATIONAL_ID",
+    "TR_VKN",
+    "SECRET",
+    "DB_URI",
+    "FILE_PATH",
+    "IP_ADDRESS",
+    "MAC_ADDRESS",
+    "US_SSN",
+    "TR_LICENSE_PLATE",
+    "PERSON",
+    "LOCATION"
+  ],
+  "cases": [
+    {
+      "id": "defaults-find-both-turkish-types",
+      "text": "TCKN 10000000146, Plaka 34 ABC 123",
+      "expect": [
+        {
+          "entity": "TR_NATIONAL_ID",
+          "value": "10000000146"
+        },
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34 ABC 123"
+        }
+      ]
+    },
+    {
+      "id": "a-switch-turned-off-finds-nothing",
+      "text": "TCKN 10000000146, Plaka 34 ABC 123",
+      "config": {
+        "pii_config": {
+          "block_pii_tr": false
+        }
+      },
+      "expect": []
+    },
+    {
+      "id": "an-action-measures-a-type-its-switch-turned-off",
+      "text": "TCKN 10000000146, Plaka 34 ABC 123",
+      "config": {
+        "pii_config": {
+          "block_pii_tr": false
+        },
+        "entity_actions": {
+          "TR_LICENSE_PLATE": "monitor"
+        }
+      },
+      "expect": [
+        {
+          "entity": "TR_LICENSE_PLATE",
+          "value": "34 ABC 123"
+        }
+      ]
+    },
+    {
+      "id": "a-monitored-type-is-still-found",
+      "text": "Contact alice@example.com today",
+      "config": {
+        "entity_actions": {
+          "EMAIL_ADDRESS": "monitor"
+        },
+        "rules": []
+      },
+      "expect": [
+        {
+          "entity": "EMAIL_ADDRESS",
+          "value": "alice@example.com"
+        }
+      ]
+    }
+  ]
+}

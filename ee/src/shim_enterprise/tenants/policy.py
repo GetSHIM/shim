@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from pydantic import SecretBytes, ValidationError
-from sqlalchemy import or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.cache.redis_index import CacheManager
@@ -27,9 +28,12 @@ from shim.gateway.request_policy import (
     ResolvedRequestPolicy,
 )
 from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
+from shim.rules import RuleSet
+from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
     ApiKey,
+    Organization,
     OrganizationGatewaySettings,
     OrganizationPIIConfig,
     TierDefinition,
@@ -110,6 +114,10 @@ class ResolvedTenantSettings:
     bulk_threshold: int | None = 50
     response_scan: Literal["off", "count"] = "off"
     gateway_settings: GatewaySettings = field(default_factory=GatewaySettings)
+    rules: RuleSet | None = None
+
+
+_RULE_SETS_PER_PROCESS = 1_024
 
 
 class TenantPolicyService:
@@ -117,6 +125,8 @@ class TenantPolicyService:
 
     def __init__(self, cache: CacheManager) -> None:
         self.cache = cache
+        # Terms are confidential, so rule sets stay in process memory, never in Redis.
+        self._rule_sets: OrderedDict[UUID, RuleSet] = OrderedDict()
 
     async def resolve(
         self,
@@ -150,23 +160,52 @@ class TenantPolicyService:
             ) from exc
         tier = await self._tier_definition(api_key.tier, session)
         switches = dict(pii_config or {})
-        # Every key but the five switches is a setting of its own.
+        # Every key but the five switches is a setting of its own; an entry cached
+        # before rules existed has no rules_revision, which correctly means none.
+        rules_revision = switches.pop("rules_revision", 0)
         entity_actions = switches.pop("entity_actions", None)
         placeholder_mode = switches.pop("placeholder_mode", "random")
         bulk_threshold = switches.pop("bulk_threshold", 50)
         response_scan = switches.pop("response_scan", "off")
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
-            pii_config=None
-            if pii_config is None
-            else {key: bool(value) for key, value in switches.items()},
+            pii_config={key: bool(value) for key, value in switches.items()} or None,
             tier_definition=tier,
             entity_actions=dict(entity_actions) if entity_actions else None,
             placeholder_mode=placeholder_mode,
             bulk_threshold=bulk_threshold,
             response_scan=response_scan,
             gateway_settings=gateway_settings,
+            rules=await self._rule_set(tenant_id, rules_revision, session)
+            if rules_revision
+            else None,
         )
+
+    async def _rule_set(
+        self, tenant_id: UUID, revision: int, session: AsyncSession
+    ) -> RuleSet:
+        cached = self._rule_sets.get(tenant_id)
+        if cached is not None and cached.revision == revision:
+            self._rule_sets.move_to_end(tenant_id)
+            return cached
+        row = (
+            await session.execute(
+                select(OrganizationRuleSet.revision, OrganizationRuleSet.rules).where(
+                    OrganizationRuleSet.organization_id == tenant_id
+                )
+            )
+        ).one()
+        try:
+            rules = RuleSet.model_validate(
+                {"revision": row.revision, "rules": row.rules}
+            )
+        except ValidationError as exc:
+            raise TenantPolicyConfigurationError("tenant rules are invalid") from exc
+        self._rule_sets[tenant_id] = rules
+        self._rule_sets.move_to_end(tenant_id)
+        while len(self._rule_sets) > _RULE_SETS_PER_PROCESS:
+            self._rule_sets.popitem(last=False)
+        return rules
 
     async def _gateway_settings(
         self, tenant_id: UUID, session: AsyncSession
@@ -189,22 +228,43 @@ class TenantPolicyService:
         session: AsyncSession,
     ) -> dict[str, Any] | None:
         cache_key = str(tenant_id)
-        row = (
+        # One round trip: the privacy row, if any, and the revision of a non-empty rule set.
+        found = (
             await session.execute(
-                select(OrganizationPIIConfig).where(
-                    OrganizationPIIConfig.organization_id == tenant_id
+                select(
+                    OrganizationPIIConfig,
+                    case(
+                        (
+                            func.jsonb_array_length(OrganizationRuleSet.rules) > 0,
+                            OrganizationRuleSet.revision,
+                        ),
+                        else_=0,
+                    ),
                 )
+                .select_from(Organization)
+                .outerjoin(
+                    OrganizationPIIConfig,
+                    OrganizationPIIConfig.organization_id == Organization.id,
+                )
+                .outerjoin(
+                    OrganizationRuleSet,
+                    OrganizationRuleSet.organization_id == Organization.id,
+                )
+                .where(Organization.id == tenant_id)
             )
-        ).scalar_one_or_none()
-        if row is None:
+        ).one_or_none()
+        if found is None:
             return None
-        value = {
-            **{name: getattr(row, name) for name in PII_CONFIG_DEFAULTS},
-            "entity_actions": dict(row.entity_actions),
-            "placeholder_mode": row.placeholder_mode,
-            "bulk_threshold": row.bulk_threshold,
-            "response_scan": row.response_scan,
-        }
+        row, rules_revision = found
+        value: dict[str, Any] = {"rules_revision": rules_revision}
+        if row is not None:
+            value |= {
+                **{name: getattr(row, name) for name in PII_CONFIG_DEFAULTS},
+                "entity_actions": dict(row.entity_actions),
+                "placeholder_mode": row.placeholder_mode,
+                "bulk_threshold": row.bulk_threshold,
+                "response_scan": row.response_scan,
+            }
         await self.cache.set_pii_config(cache_key, value)
         return value
 
@@ -296,6 +356,7 @@ class TenantRequestPolicyResolver:
                     tier=api_key.tier,
                     cost_center=api_key.cost_center,
                     team=api_key.team,
+                    team_id=str(api_key.team_id) if api_key.team_id else None,
                 ),
                 pii_config=tenant_settings.pii_config,
                 entity_actions=tenant_settings.entity_actions,
@@ -308,5 +369,6 @@ class TenantRequestPolicyResolver:
                     tenant_settings.gateway_settings.response_analysis
                 ),
                 tenant_gateway_settings=tenant_settings.gateway_settings,
+                rules=tenant_settings.rules,
             )
         return resolved

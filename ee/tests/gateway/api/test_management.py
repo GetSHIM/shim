@@ -302,6 +302,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "provider": "openai",
             "usage_estimated": False,
             "completion_outcome": "refused",
+            "rule_matches": [],
+            "rule_matches_truncated": False,
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -399,8 +401,12 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "bulk_disclosure",
         "response_entities",
         "response_analysis",
+        "rule_matches",
+        "rule_matches_truncated",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert page.items[0].rule_matches == []
+    assert page.items[0].rule_matches_truncated is False
     assert page.items[0].response_analysis == {
         "probe": {"n": 1},
         "versions": {"probe": "1"},
@@ -630,6 +636,15 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "blocked_entities": {"SECRET": 1},
             "cached_input_tokens": 10,
             "warnings": ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"],
+            "rule_matches": [
+                {
+                    "rule_id": "falcon",
+                    "kind": "term",
+                    "action": "block",
+                    "state": "monitor",
+                    "count": 2,
+                }
+            ],
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -698,6 +713,15 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["blocked_entities"] == '{"SECRET": 1}'
     assert exported["response_entities"] == ""
     assert exported["response_analysis"] == '{"probe":{"n":1},"versions":{"probe":"1"}}'
+    assert json.loads(exported["rule_matches"]) == [
+        {
+            "rule_id": "falcon",
+            "kind": "term",
+            "action": "block",
+            "state": "monitor",
+            "count": 2,
+        }
+    ]
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
@@ -1701,6 +1725,25 @@ def test_the_request_list_filters_on_one_warning_code() -> None:
     compiled = filters[-1].compile(dialect=postgresql.dialect())
     assert "request_logs.details @>" in str(compiled)
     assert {"warnings": ["CACHE_NOT_APPLIED"]} in compiled.params.values()
+
+
+def test_the_request_list_filters_on_one_rule_id() -> None:
+    filters = management._request_filters(
+        SimpleNamespace(role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        rule_id="falcon",
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"rule_matches": [{"rule_id": "falcon"}]} in compiled.params.values()
 
 
 _HASH_A = "hmac-sha256:v1:" + "a" * 64

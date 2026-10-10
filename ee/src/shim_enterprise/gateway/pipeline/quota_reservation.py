@@ -33,6 +33,7 @@ from shim.gateway.contracts.ids import RequestId, TenantId
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
 from shim.gateway.usage import UsageFailureReason, system_prompt_hash
+from shim.rules import match_records
 from shim_enterprise.billing.ledger import (
     DurableAccountingRepository,
     FailureReservationState,
@@ -576,6 +577,7 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            **match_records(prepared),
                         }
                     ),
                 },

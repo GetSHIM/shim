@@ -30,6 +30,8 @@ also remains outside tenant decision evidence.
 | `privacy.bulk` | The request carried at least the tenant's `bulk_threshold` of distinct detected values (`allow`, `BULK_DISCLOSURE`); recorded beside `privacy.input`, also when that one denies. Its policy carries the threshold. Absent below the threshold or with the alarm off. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
+| `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
+| `rules.evaluated` | The tenant's rule set was evaluated (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent for a tenant without rules. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
 
 `allow` means that individual check passed; it does not imply that the entire
@@ -67,14 +69,50 @@ After worker delivery, the tenant-scoped `GET /api/v1/compliance/audit/logs` res
 exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
 status. Unknown historical fields remain null. The existing chain verifier
 continues to verify this evidence.
-Decision evidence records existing gateway checks. It is not a configurable
-policy engine, content archive, signature or independent trust anchor.
+Decision evidence records the gateway's checks and the tenant's own rules. It is
+not a content archive, signature or independent trust anchor.
 
 Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,
 pre-admission denials, masking and privacy rejection, audit failure modes,
 redelivery, and chain verification. The repository-wide gate is in [the developer
 guide](../../DEVELOPER_GUIDE.md#required-gates).
+
+## Tenant rules
+
+A tenant keeps one rule set: `GET` and `PUT /api/v1/management/rules`, replaced
+whole, with the revision it was read at (a stale one answers 409
+`RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
+`state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
+deployment kinds, endpoints; an empty list means every one) and a kind-specific
+`match`. A new rule starts in `monitor`. No kind is available in this release;
+`GET /rules` lists each kind with `available: false` and its reason.
+
+Rules are evaluated in the `rules` stage, after the base privacy decision, which
+wins when both refuse. The verdict of each matched rule:
+
+| Match | Outcome | `reason_code` |
+| --- | --- | --- |
+| action `monitor` | `allow` | `RULE_MONITORED` |
+| state `monitor`, any other action | `allow` | `RULE_WOULD_<ACTION>` (`RULE_WOULD_BLOCK`, `RULE_WOULD_ROUTE`, ...) |
+| enforced `block` | `deny` | `RULE_BLOCKED`: 400, `X-Shim-Rule-Id`, no provider call |
+| enforced `mask` | `mask` | `RULE_MASKED` |
+| enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
+| enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
+| evaluation timed out | `error` | `RULE_EVALUATION_TIMEOUT` |
+
+Fail closed: an enforced `block` or `mask` rule whose evaluation fails blocks the
+request with `RULE_BLOCKED`; an enforced `require_approval` rule without an
+approval gate is a block too, and a gate that cannot be reached answers 503
+`APPROVAL_UNAVAILABLE` with no provider call. Any other evaluation error is
+recorded and the request continues. Token counting never asks for approval: it
+answers 403 `APPROVAL_REQUIRED`.
+
+The request record carries `rule_matches` (rule id, kind, action, state, count;
+at most 32, blocks first) and `rule_matches_truncated`; see
+[diagnostic metadata](DIAGNOSTIC_METADATA.md). Terms and patterns stay in the
+database row and in process memory, never in Redis, a log, a metric or an audit
+event.
 
 ## Management change details
 
@@ -85,7 +123,8 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | Event | `extra` details |
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
-| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, and `response_scan` when it moved from `count` to `off` |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
+| `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`); never a term, pattern, name or match hash |
 | `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed |
 | `tenant.gateway_protection_relaxed` | `relaxed`: the gateway settings fields whose change their direction classifies as relaxing; written with the update |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
@@ -124,7 +163,7 @@ contains its own event: `compliance.audit_bundle_exported`,
 applies, the row count, format, frameworks, connector or grouping. List views
 (`/requests`, `/compliance/audit/logs` and the like) are not recorded.
 
-Turning any privacy switch off, or lowering a type's action, also queues, for every enabled forward target of
+Turning any privacy switch off, lowering a type's action, or relaxing an enforced tenant rule also queues, for every enabled forward target of
 the tenant, connector-bound or not, one `compliance.connector_delivery_requested`
 delivery with aggregate type `organization` and the body `{"source": "shim",
 "event_type": "tenant_policy", "kind": "privacy_protection_relaxed", "fields":

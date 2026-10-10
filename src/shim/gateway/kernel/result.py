@@ -25,6 +25,7 @@ from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
+from shim.rules.model import Rule, RuleMatch, RuleSet
 
 
 StreamItem = TypeVar("StreamItem")
@@ -88,7 +89,7 @@ class PolicyVerdict(FrozenContractModel):
     rule_id: str = Field(pattern=r"^[a-z][a-z0-9_.]{0,95}$")
     rule_version: Literal[1] = 1
     policy_version: str = Field(min_length=1, max_length=128)
-    stage: Literal["authentication", "admission", "privacy", "provider_spend"]
+    stage: Literal["authentication", "admission", "privacy", "provider_spend", "rules"]
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
     effective_at: AwareDatetime
@@ -128,8 +129,14 @@ class AdmissionState:
     repeat_chain_length: int | None = None
 
 
+# SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
 ResponseWarning = Literal[
-    "CONTEXT_MAY_EXCEED", "MODEL_DEPRECATED", "LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED"
+    "CONTEXT_MAY_EXCEED",
+    "MODEL_DEPRECATED",
+    "LARGE_CONTEXT_PRICE",
+    "CACHE_NOT_APPLIED",
+    "RULE_WARN",
+    "SEMANTIC_WARN",
 ]
 
 
@@ -156,6 +163,10 @@ class PreparedInference:
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
+    rules: RuleSet | None = field(default=None, repr=False, compare=False)
+    # Request-local, shared by stage replacements like policy_verdicts.
+    rule_matches: list[RuleMatch] = field(default_factory=list)
+    approval_id: str | None = None
     privacy: PrivacyOutcome | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
     target: ProviderTarget | None = None
@@ -174,7 +185,9 @@ class PreparedInference:
         self,
         rule_id: str,
         *,
-        stage: Literal["authentication", "admission", "privacy", "provider_spend"],
+        stage: Literal[
+            "authentication", "admission", "privacy", "provider_spend", "rules"
+        ],
         outcome: Literal["allow", "mask", "deny", "error", "skip"],
         reason_code: str,
         policy: object = None,
@@ -195,6 +208,24 @@ class PreparedInference:
                 outcome=outcome,
                 reason_code=reason_code,
                 effective_at=datetime.now(timezone.utc),
+            )
+        )
+
+    def record_rule_match(self, rule: Rule, count: int, *, error: bool = False) -> None:
+        for index, match in enumerate(self.rule_matches):
+            if match.rule_id == rule.id:
+                self.rule_matches[index] = match.model_copy(
+                    update={"count": match.count + count, "error": match.error or error}
+                )
+                return
+        self.rule_matches.append(
+            RuleMatch(
+                rule_id=rule.id,
+                kind=rule.kind,
+                action=rule.action,
+                state=rule.state,
+                count=count,
+                error=error,
             )
         )
 

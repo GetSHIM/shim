@@ -16,6 +16,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
 - [Change the gateway settings](#change-the-gateway-settings)
+- [Write a tenant rule](#write-a-tenant-rule)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -259,6 +260,52 @@ classifies as relaxing also records `tenant.gateway_protection_relaxed`
 `response_analysis` only measures, so it is neutral. Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
+
+## Write a tenant rule
+
+Keep your own rules beside the privacy settings: one set per tenant, replaced
+whole. No rule kind is available in this release, so the set can only be empty;
+the store, its revision and its audit trail work now, and each kind arrives
+with its own release.
+
+1. Read the set with `GET /api/v1/management/rules` (owner, admin or auditor):
+   `revision` (0 until the first change), `rules`, `updated_by`, `updated_at`,
+   `limits`, and `kinds`, where each kind says whether it is `available`, its
+   `actions`, and why not when it is not.
+2. Send the whole set back with `PUT /api/v1/management/rules` (owner or
+   admin), with the `revision` you read. The answer is the same body as the GET,
+   at the next revision.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/rules \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"revision": 0, "rules": []}'
+```
+
+A rule, once its kind is available:
+
+```json
+{"id": "project_names", "name": "Project code names", "kind": "term",
+ "action": "block", "state": "monitor", "scope": {"models": []},
+ "match": {"terms": ["..."]}}
+```
+
+Monitor first: a new rule must start in `state: "monitor"`, where a match is
+recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list
+with `GET /api/v1/management/requests?rule_id=project_names` to see what it
+would have done, then send the set again with `"state": "enforced"`.
+
+Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
+revision; read again and resend. A refused set is 422 with `code` and the
+`path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
+`RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
+`RULE_MATCH_INVALID`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+does not have) or `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
+413. Every change records `tenant.rules_updated` with ids, kinds and counts,
+never a term; weakening an enforced rule also records
+`tenant.privacy_protection_relaxed` and alerts your forward targets
+([decision evidence](POLICY_DECISIONS.md#tenant-rules)). Gateways pick up a new
+revision at once.
 
 ## Read the daily privacy card
 

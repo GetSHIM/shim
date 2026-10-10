@@ -191,6 +191,8 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
         protocol="chat",
         privacy=PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
         policy_verdicts=[],
+        payload={},
+        rules=None,
     )
 
     def stage(name: str):

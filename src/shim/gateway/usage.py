@@ -17,6 +17,7 @@ from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_us
 from shim.gateway.kernel.result import AdmissionState, PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
 from shim.gateway.streaming.meter import StreamUsageSnapshot
+from shim.rules.evaluate import match_records
 from shim.observability.metrics import LOCAL_USAGE_DROPPED_TOTAL
 
 
@@ -343,7 +344,7 @@ class LocalUsageLifecycle:
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts
             ],
         }
-        self._emit(event)
+        self._emit(event | match_records(prepared))
 
     def _emit(self, event: Mapping[str, Any]) -> None:
         line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))

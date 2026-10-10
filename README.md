@@ -193,8 +193,8 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
 - `background=true` Responses requests are not supported.
-- Stored audit evidence, retained records, roles and budgets are enterprise
-  features. Community keeps no request history.
+- Stored audit evidence, retained records, roles, budgets and tenant rules are
+  enterprise features. Community keeps no request history.
 - SDK compatibility is pinned to `openai==2.53.0`, `anthropic==0.121.0` and
   `google-genai==2.16.0`. A new provider SDK does not arrive automatically.
 - Community mode needs no PostgreSQL, Redis or Supabase, and runs no workers.

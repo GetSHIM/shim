@@ -48,7 +48,9 @@ async def test_kernel_runs_the_authoritative_stage_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order: list[str] = []
-    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
+    prepared = SimpleNamespace(
+        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+    )
     provider_output = object()
     response = Response("ok")
 
@@ -213,7 +215,9 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
     error_code: str,
     expected_reason: str,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
+    prepared = SimpleNamespace(
+        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+    )
     failure = ProviderCallError(
         status_code=status_code,
         error_code=error_code,
@@ -262,7 +266,9 @@ async def test_kernel_publishes_the_request_id_once_a_request_is_prepared() -> N
 async def test_kernel_maps_post_reservation_admission_abort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
+    prepared = SimpleNamespace(
+        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+    )
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):
@@ -285,7 +291,9 @@ async def test_kernel_maps_post_reservation_admission_abort(
 async def test_recovery_session_failure_does_not_mask_original_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prepared = SimpleNamespace(stream=False, protocol="chat", privacy=_NO_PII)
+    prepared = SimpleNamespace(
+        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+    )
     failure = RuntimeError("admission interrupted")
 
     async def run_stage(stage, _value):
@@ -723,3 +731,406 @@ async def test_community_hashes_the_system_prompt_only_with_a_key(
     assert hashes[0] == hashes[1] != hashes[2]
     assert hashes[3:] == [None, None]
     assert "h" * 32 not in caplog.text
+
+
+# Tenant rules (S35): a resolver hands the app a rule set and a privacy-point stub
+# records a match for every rule, as a kind's matcher will.
+
+_RULE_REPLIES = {
+    "/v1/chat/completions": _CHAT_REPLY,
+    "/v1/responses": {
+        "id": "resp_rules",
+        "object": "response",
+        "created_at": 1.0,
+        "status": "completed",
+        "model": "gpt-5-nano",
+        "output": [],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": {
+            "input_tokens": 1,
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+            "output_tokens": 1,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 2,
+        },
+    },
+    "/v1/messages": {
+        "id": "msg_rules",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    },
+    "/v1/messages/count_tokens": {"input_tokens": 3},
+    "/v1beta/models/gemini-3.5-flash:generateContent": {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": "ok"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 1,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 2,
+        },
+    },
+}
+
+
+class _RulesResolver:
+    def __init__(self, inner, rules) -> None:
+        self.inner = inner
+        self.rules = rules
+
+    async def resolve(self, principal):
+        policy = await self.inner.resolve(principal)
+        return policy.model_copy(update={"rules": self.rules})
+
+
+def _rule_set(*rules: tuple[str, str, str]):
+    from shim.rules import Rule, RuleSet
+
+    return RuleSet(
+        revision=4,
+        rules=tuple(
+            Rule(id=rule_id, name="n", kind="term", action=action, state=state)
+            for rule_id, action, state in rules
+        ),
+    )
+
+
+def _matching_privacy(monkeypatch) -> None:
+    import shim.gateway.pipeline.privacy as privacy
+
+    original = privacy.PrivacyStage.run
+
+    async def run(self, value):
+        prepared = await original(self, value)
+        for rule in prepared.rules.rules if prepared.rules else ():
+            prepared.record_rule_match(rule, 2)
+        return prepared
+
+    monkeypatch.setattr(privacy.PrivacyStage, "run", run)
+
+
+async def _call_with_rules(
+    monkeypatch,
+    rules,
+    route: str,
+    *,
+    text="hello",
+    gate=None,
+    headers=None,
+    settings=None,
+):
+    _matching_privacy(monkeypatch)
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                **_CHAT_REPLY,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
+
+    events = io.StringIO()
+    path, auth, build = _ROUTES[route]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, **(settings or {})
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
+            kernel.approval_gate = gate
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={
+                        **auth,
+                        "x-provider-key": "provider-secret",
+                        **(headers or {}),
+                    },
+                    json=build(text),
+                )
+    return (
+        response,
+        calls,
+        [json.loads(line) for line in events.getvalue().splitlines()],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_ROUTES))
+async def test_an_enforced_block_refuses_before_any_provider_call(
+    monkeypatch, route
+) -> None:
+    rules = _rule_set(("zeta", "block", "enforced"), ("alpha", "block", "enforced"))
+
+    response, calls, lines = await _call_with_rules(monkeypatch, rules, route)
+
+    assert response.status_code == 400
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED"
+    assert response.headers["x-shim-rule-id"] == "alpha"
+    assert calls == []
+    if route in {"chat", "responses"}:
+        assert response.json()["error"]["param"] == "alpha"
+        assert (
+            response.json()["error"]["message"]
+            == "Request blocked by tenant rule alpha."
+        )
+    [line] = lines
+    verdicts = {
+        v["rule_id"]: (v["outcome"], v["reason_code"]) for v in line["policy_verdicts"]
+    }
+    assert verdicts["rule.alpha"] == ("deny", "RULE_BLOCKED")
+    assert verdicts["rules.evaluated"] == ("allow", "RULES_EVALUATED")
+    assert [match["rule_id"] for match in line["rule_matches"]] == ["alpha", "zeta"]
+    assert line["rule_matches"][0] == {
+        "rule_id": "alpha",
+        "kind": "term",
+        "action": "block",
+        "state": "enforced",
+        "count": 2,
+    }
+    assert line["rule_matches_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_base_privacy_block_wins_over_a_rule_block(monkeypatch) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _rule_set(("alpha", "block", "enforced")),
+        "chat",
+        text=f"Deploy with {_PASTED_KEY}",
+        settings={"PII_ENTITY_ACTIONS": json.dumps({"SECRET": "block"})},
+    )
+
+    assert response.headers["x-shim-error-code"] == "SECRET_BLOCKED"
+    assert "x-shim-rule-id" not in response.headers and calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "chat_stream"])
+async def test_an_enforced_warn_adds_rule_warn_and_changes_nothing_else(
+    monkeypatch, route
+) -> None:
+    rules = _rule_set(("careful", "warn", "enforced"), ("watch", "block", "monitor"))
+
+    response, calls, lines = await _call_with_rules(monkeypatch, rules, route)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert response.headers["x-shim-warnings"] == "RULE_WARN"
+    [line] = lines
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["rule.careful"] == "RULE_WARN"
+    assert verdicts["rule.watch"] == "RULE_WOULD_BLOCK"
+    assert line["warnings"] == ["RULE_WARN"]
+
+
+class _Gate:
+    def __init__(
+        self, outcome=None, approval_id="apr_0123456789abcdef", fails=False
+    ) -> None:
+        self.outcome = outcome
+        self.approval_id = approval_id
+        self.fails = fails
+        self.requests = []
+
+    async def check(self, prepared, request):
+        from shim.rules.approval import ApprovalDecision
+
+        self.requests.append(request)
+        if self.fails:
+            raise ConnectionError("approval store at private-host down")
+        return ApprovalDecision(
+            self.outcome, None if self.outcome == "queue_full" else self.approval_id
+        )
+
+
+@pytest.mark.asyncio
+async def test_without_rules_no_rule_key_or_verdict_is_written(monkeypatch) -> None:
+    response, calls, lines = await _call_with_rules(monkeypatch, None, "chat")
+
+    assert response.status_code == 200 and len(calls) == 1
+    [line] = lines
+    assert "rule_matches" not in line
+    assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rules", [None, _rule_set(("careful", "warn", "enforced"))])
+async def test_without_an_approval_rule_the_gate_and_its_header_are_not_used(
+    monkeypatch, rules
+) -> None:
+    gate = _Gate("rejected")
+
+    response, calls, _ = await _call_with_rules(
+        monkeypatch, rules, "chat", gate=gate, headers={"x-shim-approval-id": "apr_x"}
+    )
+
+    assert response.status_code == 200 and len(calls) == 1 and gate.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "status", "code"),
+    [
+        ("approved", 200, None),
+        ("required", 403, "APPROVAL_REQUIRED"),
+        ("rejected", 403, "APPROVAL_REJECTED"),
+        ("queue_full", 403, "APPROVAL_QUEUE_FULL"),
+    ],
+)
+@pytest.mark.parametrize("route", ["chat", "responses", "messages", "gemini"])
+async def test_the_approval_gate_decides_a_held_request(
+    monkeypatch, outcome, status, code, route
+) -> None:
+    gate = _Gate(outcome)
+    rules = _rule_set(("needs_review", "require_approval", "enforced"))
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, rules, route, gate=gate, headers={"x-shim-approval-id": " apr_x "}
+    )
+
+    assert response.status_code == status
+    [request] = gate.requests
+    assert request.rule_ids == ("needs_review",) and request.presented_id == "apr_x"
+    assert "hello" in json.dumps(request.admitted_payload)
+    verdicts = {
+        v["rule_id"]: (v["outcome"], v["reason_code"])
+        for v in lines[0]["policy_verdicts"]
+    }
+    if outcome == "approved":
+        assert len(calls) == 1
+        assert verdicts["rule.needs_review"] == ("allow", "RULE_APPROVED")
+        return
+    assert calls == []
+    assert response.headers["x-shim-error-code"] == code
+    assert response.headers["x-shim-rule-id"] == "needs_review"
+    assert response.headers["x-should-retry"] == "false"
+    assert verdicts["rule.needs_review"] == ("deny", code)
+    if outcome == "queue_full":
+        assert "x-shim-approval-id" not in response.headers
+    else:
+        assert response.headers["x-shim-approval-id"] == "apr_0123456789abcdef"
+        if route in {"chat", "responses"}:
+            assert response.json()["error"]["param"] == "apr_0123456789abcdef"
+
+
+@pytest.mark.asyncio
+async def test_a_held_stream_is_refused_before_its_first_byte(monkeypatch) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _rule_set(("needs_review", "require_approval", "enforced")),
+        "chat_stream",
+        gate=_Gate("required"),
+    )
+
+    assert response.status_code == 403 and calls == []
+    assert response.headers["content-type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_calls_the_gate(monkeypatch) -> None:
+    gate = _Gate("approved")
+
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _rule_set(("needs_review", "require_approval", "enforced")),
+        "count_tokens",
+        gate=gate,
+    )
+
+    assert response.status_code == 403 and calls == [] and gate.requests == []
+    assert response.headers["x-shim-error-code"] == "APPROVAL_REQUIRED"
+    assert "x-shim-approval-id" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_a_block_wins_over_approval_and_a_failing_gate_fails_closed(
+    monkeypatch, caplog
+) -> None:
+    blocked, block_calls, _ = await _call_with_rules(
+        monkeypatch,
+        _rule_set(
+            ("held", "require_approval", "enforced"), ("stop", "block", "enforced")
+        ),
+        "chat",
+        gate=(gate := _Gate("approved")),
+    )
+    failing, fail_calls, lines = await _call_with_rules(
+        monkeypatch,
+        _rule_set(("held", "require_approval", "enforced")),
+        "chat",
+        gate=_Gate(fails=True),
+    )
+    no_gate, no_gate_calls, _ = await _call_with_rules(
+        monkeypatch, _rule_set(("held", "require_approval", "enforced")), "chat"
+    )
+
+    assert (
+        blocked.headers["x-shim-error-code"],
+        blocked.headers["x-shim-rule-id"],
+    ) == (
+        "RULE_BLOCKED",
+        "stop",
+    )
+    assert gate.requests == [] and block_calls == []
+    assert failing.status_code == 503 and fail_calls == []
+    assert failing.headers["x-shim-error-code"] == "APPROVAL_UNAVAILABLE"
+    assert failing.headers["retry-after"] == "5"
+    assert "private-host" not in caplog.text
+    verdicts = {
+        v["rule_id"]: (v["outcome"], v["reason_code"])
+        for v in lines[0]["policy_verdicts"]
+    }
+    assert verdicts["rule.held"] == ("error", "APPROVAL_UNAVAILABLE")
+    assert (no_gate.status_code, no_gate.headers["x-shim-error-code"]) == (
+        400,
+        "RULE_BLOCKED",
+    )
+    assert no_gate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_gate_sees_the_admitted_payload_and_the_provider_the_masked_one(
+    monkeypatch,
+) -> None:
+    gate = _Gate("approved")
+
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _rule_set(("needs_review", "require_approval", "enforced")),
+        "chat",
+        text="Email alice@example.com",
+        gate=gate,
+    )
+
+    assert response.status_code == 200
+    [request] = gate.requests
+    assert "alice@example.com" in json.dumps(request.admitted_payload)
+    [sent] = calls
+    assert "alice@example.com" not in sent.content.decode()

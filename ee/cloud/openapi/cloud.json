@@ -9043,6 +9043,33 @@
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
           },
+          "rule_matches": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tenant rules that matched, by id, kind, action, state and count; [] when the rule set was evaluated and nothing matched, null without rules.",
+            "title": "Rule Matches"
+          },
+          "rule_matches_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Matches Truncated"
+          },
           "shim_latency_ms": {
             "anyOf": [
               {
@@ -9124,7 +9151,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -9298,6 +9327,281 @@
           }
         },
         "title": "RetrievalConfig",
+        "type": "object"
+      },
+      "Rule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "monitor",
+              "warn",
+              "mask",
+              "block",
+              "require_approval",
+              "set",
+              "route"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9_]{0,47}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "term",
+              "pattern",
+              "record_set",
+              "destination",
+              "request_limit",
+              "parameter_pin",
+              "route"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "match": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Match",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/RuleScope",
+            "default": {
+              "api_key_ids": [],
+              "deployment_kinds": [],
+              "endpoints": [],
+              "models": [],
+              "tags": [],
+              "team_ids": []
+            }
+          },
+          "state": {
+            "enum": [
+              "monitor",
+              "enforced"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "action",
+          "state"
+        ],
+        "title": "Rule",
+        "type": "object"
+      },
+      "RuleKindView": {
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "available",
+          "actions",
+          "unavailable_reason"
+        ],
+        "title": "RuleKindView",
+        "type": "object"
+      },
+      "RuleScope": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "deployment_kinds": {
+            "default": [],
+            "items": {
+              "enum": [
+                "internal",
+                "external"
+              ],
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Deployment Kinds",
+            "type": "array"
+          },
+          "endpoints": {
+            "default": [],
+            "items": {
+              "enum": [
+                "chat",
+                "responses",
+                "messages",
+                "count_tokens",
+                "generate_content"
+              ],
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Endpoints",
+            "type": "array"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Models",
+            "type": "array"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Tags",
+            "type": "array"
+          },
+          "team_ids": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Team Ids",
+            "type": "array"
+          }
+        },
+        "title": "RuleScope",
+        "type": "object"
+      },
+      "RuleSetPut": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "description": "The revision this set was read at.",
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "rules"
+        ],
+        "title": "RuleSetPut",
+        "type": "object"
+      },
+      "RuleSetView": {
+        "properties": {
+          "kinds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RuleKindView"
+            },
+            "title": "Kinds",
+            "type": "object"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "title": "Limits",
+            "type": "object"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "revision",
+          "rules",
+          "updated_by",
+          "updated_at",
+          "limits",
+          "kinds"
+        ],
+        "title": "RuleSetView",
         "type": "object"
       },
       "RunResult": {
@@ -16348,7 +16652,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -16375,6 +16681,25 @@
                 }
               ],
               "title": "System Prompt Hash"
+            }
+          },
+          {
+            "description": "Only requests a tenant rule with this id matched.",
+            "in": "query",
+            "name": "rule_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests a tenant rule with this id matched.",
+              "title": "Rule Id"
             }
           },
           {
@@ -16622,7 +16947,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -16649,6 +16976,25 @@
                 }
               ],
               "title": "System Prompt Hash"
+            }
+          },
+          {
+            "description": "Only requests a tenant rule with this id matched.",
+            "in": "query",
+            "name": "rule_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests a tenant rule with this id matched.",
+              "title": "Rule Id"
             }
           }
         ],
@@ -16689,6 +17035,76 @@
           }
         ],
         "summary": "Export Requests",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/rules": {
+      "get": {
+        "operationId": "get_rules_api_v1_management_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Rules",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "replace_rules_api_v1_management_rules_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleSetPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Rules",
         "tags": [
           "management"
         ]
