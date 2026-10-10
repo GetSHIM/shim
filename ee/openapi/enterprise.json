@@ -9006,6 +9006,20 @@
       },
       "RestoreInput": {
         "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The current version the caller read; 409 when it moved since.",
+            "title": "Expected Version"
+          },
           "reason": {
             "anyOf": [
               {

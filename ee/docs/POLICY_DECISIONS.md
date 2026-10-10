@@ -174,7 +174,10 @@ privacy, `teams.manage` for teams, `deployments.manage`, `budgets.manage`, and
 route's rules (`keys.manage` for a key without a team, team administration for
 a team's key). This is checked when the plan is created, again for the one who
 applies it, and for every item a restore puts back (403
-"Permission required: <permission>").
+"Permission required: <permission>"). Creating a plan also runs the checks the
+routes run before writing, so a change naming a team, model alias or provider
+secret the organization lacks, or a secret of another provider, answers 422,
+and so does a change that sets nothing new.
 Applying it checks that every item still has the stored before-state
 (`PLAN_STALE` otherwise), writes every change through the same code as the
 direct routes, records one version and marks the plan `applied`. Impact counts
@@ -188,8 +191,14 @@ limit, and an oversight policy has no estimate.
 Restoring a version applies a plan with source `restore` that puts every item a
 version touched back to its state at that version. A revoked key, a team
 created after it (teams cannot be deleted) and a re-created budget's
-notification targets are listed in `not_restored`; a deployment created after it
-is disabled and listed in `approximated`. Plans applied after the version become
+notification targets are listed in `not_restored`, and so is an item whose own
+route would refuse that state now (a deleted provider secret, a disabled model
+alias, a deployment origin no longer allowed, a team name another team took),
+with the route's message as the reason; the rest is restored. A deployment
+created after the version is disabled and listed in `approximated`. A restore
+sent with `expected_version` answers 409
+`{"code": "POLICY_VERSION_CHANGED", "version": <current>}` when the current
+version is no longer that one, and changes nothing. Plans applied after the version become
 `rolled_back`. Audit actions: `tenant.policy_plan_created`,
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,

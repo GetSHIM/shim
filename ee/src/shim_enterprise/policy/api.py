@@ -114,6 +114,12 @@ class PolicyStateView(BaseModel):
 
 class RestoreInput(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+    expected_version: int | None = Field(
+        default=None,
+        ge=0,
+        le=2_147_483_647,
+        description="The current version the caller read; 409 when it moved since.",
+    )
 
 
 class Unrestored(BaseModel):
@@ -377,10 +383,16 @@ async def create_plan(
                 )
             )
         except HTTPException as exc:
+            # A change that names something the tenant lacks cannot be processed.
             raise HTTPException(
-                status_code=exc.status_code,
+                status_code=422 if exc.status_code == 404 else exc.status_code,
                 detail={"change": index, "errors": exc.detail},
             ) from None
+        if after == before:
+            raise HTTPException(
+                status_code=422,
+                detail={"change": index, "errors": "The change sets nothing new"},
+            )
         changes.append(
             await _change(
                 session,
@@ -518,8 +530,14 @@ async def restore_version(
 ) -> RestoreView:
     organization_id = _tenant(user)
     await lock_tenant(session, organization_id)
-    if not 0 <= version <= await current_version(session, organization_id):
+    latest = await current_version(session, organization_id)
+    if not 0 <= version <= latest:
         raise HTTPException(status_code=404, detail="Policy version not found")
+    if payload.expected_version not in {None, latest}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
+        )
     targets: dict[str, dict[str, State | None]] = {}
     for row in await session.scalars(
         select(PolicyVersion)
@@ -564,6 +582,26 @@ async def restore_version(
                 if target == now:
                     continue
                 approximated.append(Unrestored(resource=name, item=item, reason=reason))
+            try:
+                if target is not None:
+                    # What the item's own route would refuse is skipped, not fatal.
+                    await resource.validate(
+                        session,
+                        user,
+                        item,
+                        now,
+                        {
+                            key: value
+                            for key, value in target.items()
+                            if now is None or now.get(key) != value
+                        },
+                    )
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    raise
+                reason = exc.detail if isinstance(exc.detail, str) else "invalid"
+                not_restored.append(Unrestored(resource=name, item=item, reason=reason))
+                continue
             if now is None and name == "budgets":
                 not_restored.append(
                     Unrestored(

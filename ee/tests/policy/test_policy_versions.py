@@ -492,6 +492,94 @@ async def test_plans_validate_each_change_with_the_routes_messages(db, origins) 
 
 
 @pytest.mark.asyncio
+async def test_a_plan_is_refused_when_it_names_what_the_tenant_lacks_or_sets_nothing(
+    db, origins
+) -> None:
+    owner = await _tenant(db)
+    tenant = owner.organization_id
+    secret = await _secret(db, tenant)
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=tenant,
+        user_id=owner.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-m2",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(key)
+    await db.flush()
+    team = (
+        await _call(
+            db, owner, "POST", "/api/v1/management/teams", json={"name": "risk"}
+        )
+    ).json()
+
+    async def plan(change: dict) -> httpx.Response:
+        return await _call(
+            db, owner, "POST", f"{POLICY}/plans", json={"changes": [change]}
+        )
+
+    refused = {
+        "budget team": await plan(
+            {
+                "resource": "budgets",
+                "item": None,
+                "set": {
+                    "scope_type": "team_id",
+                    "scope_value": str(uuid4()),
+                    "limit_usd": "5",
+                },
+            }
+        ),
+        "key team": await plan(
+            {
+                "resource": "api_keys",
+                "item": str(key.id),
+                "set": {"team_id": str(uuid4())},
+            }
+        ),
+        "key model": await plan(
+            {
+                "resource": "api_keys",
+                "item": str(key.id),
+                "set": {"allowed_models": ["no-such-model"]},
+            }
+        ),
+        "secret provider": await plan(
+            {
+                "resource": "deployments",
+                "item": None,
+                "set": _deployment_body(secret.id, provider="anthropic"),
+            }
+        ),
+        "missing secret": await plan(
+            {"resource": "deployments", "item": None, "set": _deployment_body(uuid4())}
+        ),
+        "same privacy": await plan(
+            {"resource": "privacy", "item": "_", "set": {"block_email": True}}
+        ),
+        "same team": await plan(
+            {"resource": "teams", "item": team["id"], "set": {"name": "risk"}}
+        ),
+    }
+
+    assert {name: response.status_code for name, response in refused.items()} == {
+        name: 422 for name in refused
+    }
+    assert (
+        refused["same team"].json()["detail"]["errors"] == "The change sets nothing new"
+    )
+    assert "provider does not match" in refused["secret provider"].text
+    assert (
+        await db.scalar(
+            select(PolicyPlan.id).where(PolicyPlan.organization_id == tenant)
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_plan_shows_its_effect_and_applies_as_one_version(db, origins) -> None:
     owner = await _tenant(db)
     tenant = owner.organization_id
@@ -773,6 +861,90 @@ async def test_restore_puts_back_what_it_can_and_names_the_rest(db, origins) -> 
     assert (
         _events(rows, "tenant.policy_version_restored")[0]["target_version"] == target
     )
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_an_item_it_cannot_put_back_and_restores_the_rest(
+    db, origins
+) -> None:
+    owner = await _tenant(db)
+    tenant = owner.organization_id
+    retired, current = await _secret(db, tenant), await _secret(db, tenant)
+    deployment = (
+        await _call(
+            db,
+            owner,
+            "POST",
+            "/api/v1/management/model-deployments",
+            json=_deployment_body(retired.id),
+        )
+    ).json()
+    target = len(await _versions(db, tenant))
+    await _call(
+        db,
+        owner,
+        "PUT",
+        f"/api/v1/management/model-deployments/{deployment['id']}",
+        json=_deployment_body(current.id),
+    )
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+    await db.delete(retired)
+    await db.flush()
+
+    restored = await _call(
+        db, owner, "POST", f"{POLICY}/versions/{target}/restore", json={}
+    )
+
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["not_restored"] == [
+        {
+            "resource": "deployments",
+            "item": deployment["id"],
+            "reason": "Provider secret not found",
+        }
+    ]
+    assert [change["resource"] for change in restored.json()["plan"]["changes"]] == [
+        "privacy"
+    ]
+    privacy = (await _call(db, owner, "GET", "/api/v1/management/settings/pii")).json()
+    assert privacy["block_email"] is True
+    row = await db.get(ModelDeployment, UUID(deployment["id"]))
+    assert row is not None and row.provider_secret_id == current.id
+
+
+@pytest.mark.asyncio
+async def test_restore_refuses_when_the_version_moved_since_it_was_read(db) -> None:
+    owner = await _tenant(db)
+    for blocked in (False, True):
+        await _call(
+            db,
+            owner,
+            "PUT",
+            "/api/v1/management/settings/pii",
+            json={"block_email": blocked},
+        )
+
+    moved = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/versions/1/restore",
+        json={"expected_version": 1},
+    )
+    restored = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/versions/1/restore",
+        json={"expected_version": 2},
+    )
+
+    assert moved.status_code == 409
+    assert moved.json()["detail"] == {"code": "POLICY_VERSION_CHANGED", "version": 2}
+    assert restored.status_code == 200
+    assert len(await _versions(db, owner.organization_id)) == 3
 
 
 @pytest.mark.asyncio

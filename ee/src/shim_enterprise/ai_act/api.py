@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Collection
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -937,9 +937,7 @@ class _OversightPolicyResource:
     ) -> State:
         _only(proposed, _POLICY_FIELDS)
         if before is None:
-            created = cast(
-                OversightPolicyCreate, _validated(OversightPolicyCreate, proposed)
-            )
+            created = _validated(OversightPolicyCreate, proposed)
             _validate_policy_trigger(created.trigger)
             return {
                 **created.model_dump(include=set(_POLICY_FIELDS)),

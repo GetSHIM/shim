@@ -4432,7 +4432,7 @@ async def create_model_deployment(
     session: AsyncSession = Depends(get_db),
 ):
     tenant_id, item = _tenant_id(user), str(uuid4())
-    after = _deployment_state(payload.model_dump())
+    after = await DEPLOYMENTS.validate(session, user, None, None, payload.model_dump())
     await lock_tenant(session, tenant_id)
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, None, after)], source="api"
@@ -4456,7 +4456,9 @@ async def update_model_deployment(
     before = (await DEPLOYMENTS.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(404, detail="Model deployment not found")
-    after = _deployment_state(payload.model_dump())
+    after = await DEPLOYMENTS.validate(
+        session, user, item, before, payload.model_dump()
+    )
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, before, after)], source="api"
     ) as version:
@@ -4576,7 +4578,7 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def _validated(model: type[BaseModel], data: Mapping[str, Any]) -> BaseModel:
+def _validated[M: BaseModel](model: type[M], data: Mapping[str, Any]) -> M:
     try:
         return model.model_validate(data)
     except ValidationError as exc:
@@ -4835,7 +4837,17 @@ class _TeamResource:
         proposed: State,
     ) -> State:
         _only(proposed, TeamInput.model_fields)
-        return _validated(TeamInput, {**(before or {}), **proposed}).model_dump()
+        after = _validated(TeamInput, {**(before or {}), **proposed}).model_dump()
+        taken = select(Team.id).where(
+            Team.organization_id == _tenant_id(actor), Team.name == after["name"]
+        )
+        if item_id is not None:
+            taken = taken.where(Team.id != UUID(item_id))
+        if await session.scalar(taken) is not None:
+            raise HTTPException(
+                status_code=409, detail="A team with this name already exists"
+            )
+        return after
 
     async def apply(
         self,
@@ -5022,6 +5034,7 @@ class _ApiKeyResource:
         await _key_for_change(
             session, actor, UUID(item_id), patch.model_dump(exclude_unset=True)
         )
+        await require_model_aliases(session, _tenant_id(actor), patch.allowed_models)
         return {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
 
     async def apply(
@@ -5168,11 +5181,15 @@ class _DeploymentResource:
         before: State | None,
         proposed: State,
     ) -> State:
-        return _deployment_state(
-            _validated(
-                ModelDeploymentInput, {**(before or {}), **proposed}
-            ).model_dump()
+        payload = _validated(ModelDeploymentInput, {**(before or {}), **proposed})
+        secret = await _owned_provider_secret(
+            session, actor, payload.provider_secret_id
         )
+        if secret.provider != payload.provider:
+            raise HTTPException(
+                422, detail="Credential provider does not match deployment"
+            )
+        return _deployment_state(payload.model_dump())
 
     async def apply(
         self,
@@ -5186,14 +5203,7 @@ class _DeploymentResource:
         policy_version: int | None,
     ) -> None:
         assert after is not None
-        payload = cast(ModelDeploymentInput, _validated(ModelDeploymentInput, after))
-        secret = await _owned_provider_secret(
-            session, actor, payload.provider_secret_id
-        )
-        if secret.provider != payload.provider:
-            raise HTTPException(
-                422, detail="Credential provider does not match deployment"
-            )
+        payload = _validated(ModelDeploymentInput, after)
         configuration = payload.model_dump()
         if before is None:
             row = ModelDeployment(
@@ -5340,7 +5350,9 @@ class _BudgetResource:
         proposed: State,
     ) -> State:
         if before is None:
-            return _budget_state(_validated(_ManagedBudget, proposed).model_dump())
+            after = _budget_state(_validated(_ManagedBudget, proposed).model_dump())
+            await _require_budget_team(session, _tenant_id(actor), after)
+            return after
         _only(proposed, ("limit_usd", "limit_tokens", "alert_thresholds", "enabled"))
         patch = _validated(BudgetPatch, proposed).model_dump(exclude_unset=True)
         after = {**before, **{field: _plain(value) for field, value in patch.items()}}
@@ -5363,7 +5375,6 @@ class _BudgetResource:
     ) -> Callable[[], Awaitable[None]] | None:
         if before is None:
             assert after is not None
-            await _require_budget_team(session, organization_id, after)
             await _create_budget(
                 session,
                 actor,
