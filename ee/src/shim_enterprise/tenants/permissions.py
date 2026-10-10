@@ -110,12 +110,12 @@ async def user_permissions(
     """`reload` re-reads the user and role, for a check repeated under the tenant lock."""
     if reload:
         await session.refresh(user, ["role", "custom_role_id"])
-    # Test doubles and service users carry no custom role; built-in roles need no I/O.
-    role_id = getattr(user, "custom_role_id", None)
-    if role_id is None:
+    if user.custom_role_id is None:
         return BUILTIN_ROLE_PERMISSIONS.get(user.role, frozenset())
     # The identity map makes this one read per request session.
-    role = await session.get(OrganizationRole, role_id, populate_existing=reload)
+    role = await session.get(
+        OrganizationRole, user.custom_role_id, populate_existing=reload
+    )
     if role is not None and role.organization_id != user.organization_id:
         role = None
     return effective_permissions(user, role)

@@ -296,14 +296,20 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     old_targets = [{"secret_ref": f"secret:{index}"} for index in range(11)]
     row = SimpleNamespace(
         id=uuid4(),
+        scope_type="org",
+        scope_value=None,
         limit_usd=Decimal("10"),
         limit_tokens=None,
+        alert_thresholds=[0.8],
         notify_targets=old_targets,
         enabled=True,
     )
     user = SimpleNamespace(organization_id=uuid4())
-    # execute takes the tenant lock every managed write holds.
-    session = SimpleNamespace(delete=AsyncMock(), execute=AsyncMock())
+    # execute takes the tenant lock every managed write holds; scalar reads the
+    # current policy version.
+    session = SimpleNamespace(
+        delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(return_value=0)
+    )
     monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
 
     with pytest.raises(HTTPException, match="require migration"):

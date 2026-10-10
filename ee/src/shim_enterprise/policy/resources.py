@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from typing import Protocol
 from uuid import UUID
 
-from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.api import OVERSIGHT_POLICIES
@@ -71,7 +70,8 @@ class ManagedResource(Protocol):
         window_days: int,
     ) -> Impact: ...
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None: ...
+    # Optional: `async after_commit(request, organization_id)`, run after the
+    # transaction commits (privacy invalidates its cached policy).
 
 
 REGISTRY: Mapping[str, ManagedResource] = {

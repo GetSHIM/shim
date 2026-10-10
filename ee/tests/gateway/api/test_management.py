@@ -207,7 +207,7 @@ async def test_admin_can_revoke_a_pending_member_invite(
 
     await management.revoke_team_invite(
         invite.id,
-        SimpleNamespace(organization_id=tenant_id, role="admin"),
+        SimpleNamespace(custom_role_id=None, organization_id=tenant_id, role="admin"),
         session,
     )
 
@@ -245,7 +245,9 @@ async def test_invite_revocation_preserves_role_and_acceptance_boundaries(
     with pytest.raises(management.HTTPException) as error:
         await management.revoke_team_invite(
             invite.id,
-            SimpleNamespace(organization_id=tenant_id, role=user_role),
+            SimpleNamespace(
+                custom_role_id=None, organization_id=tenant_id, role=user_role
+            ),
             session,
         )
 
@@ -337,7 +339,9 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         system_prompt_hash=None,
         limit=25,
         offset=5,
-        user=SimpleNamespace(role="owner", organization_id=tenant_id),
+        user=SimpleNamespace(
+            custom_role_id=None, role="owner", organization_id=tenant_id
+        ),
         session=session,
     )
 
@@ -644,7 +648,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         tag=None,
         cost_center=None,
         system_prompt_hash=None,
-        user=SimpleNamespace(role="owner", organization_id=tenant_id),
+        user=SimpleNamespace(
+            custom_role_id=None, role="owner", organization_id=tenant_id
+        ),
         session=session,
     )
     content = b"".join([chunk async for chunk in response.body_iterator]).decode(
@@ -732,7 +738,9 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
             tag=None,
             cost_center=None,
             system_prompt_hash=None,
-            user=SimpleNamespace(role="owner", organization_id=uuid4()),
+            user=SimpleNamespace(
+                custom_role_id=None, role="owner", organization_id=uuid4()
+            ),
             session=session,
         )
 
@@ -1660,9 +1668,11 @@ async def test_turning_the_response_scan_off_is_a_relaxation_and_on_is_not(
         management.PrivacyPatch.model_validate({"response_scan": "mask"})
 
 
-def test_the_request_list_filters_on_one_warning_code() -> None:
-    filters = management._request_filters(
-        SimpleNamespace(role="owner", organization_id=uuid4()),
+@pytest.mark.asyncio
+async def test_the_request_list_filters_on_one_warning_code() -> None:
+    filters = await management._request_filters(
+        None,  # type: ignore[arg-type]
+        SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
         start=None,
         end=None,
         status_filter=None,
@@ -1755,7 +1765,9 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
         ]
     )
     await db.flush()
-    owner = SimpleNamespace(role="owner", organization_id=tenant_id)
+    owner = SimpleNamespace(
+        custom_role_id=None, role="owner", organization_id=tenant_id
+    )
     connection = (await db.connection()).sync_connection
     statements = []
 
@@ -1823,7 +1835,9 @@ async def test_prompt_versions_count_budget_denials_as_policy_not_failure(
         )
     )
     await db.flush()
-    owner = SimpleNamespace(role="owner", organization_id=test_org.id)
+    owner = SimpleNamespace(
+        custom_role_id=None, role="owner", organization_id=test_org.id
+    )
 
     (version,) = (
         await management.list_prompt_versions(None, None, None, None, owner, db)
@@ -1845,7 +1859,9 @@ async def test_prompt_versions_stop_at_200_and_bound_the_window(db, test_org) ->
         for index in range(201)
     )
     await db.flush()
-    owner = SimpleNamespace(role="owner", organization_id=test_org.id)
+    owner = SimpleNamespace(
+        custom_role_id=None, role="owner", organization_id=test_org.id
+    )
 
     page = await management.list_prompt_versions(None, None, None, None, owner, db)
 

@@ -198,7 +198,7 @@ async def test_overview_uses_authenticated_users_tenant(
     tenant_id = uuid4()
     application = _application()
     application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(organization_id=tenant_id, role="auditor")
+        SimpleNamespace(custom_role_id=None, organization_id=tenant_id, role="auditor")
     )
     projection = OverviewProjection(
         current=_empty_summary(),
@@ -237,7 +237,7 @@ async def test_overview_normalizes_offset_boundaries_to_utc(
 ) -> None:
     application = _application()
     application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(organization_id=uuid4(), role="auditor")
+        SimpleNamespace(custom_role_id=None, organization_id=uuid4(), role="auditor")
     )
     projection = OverviewProjection(
         current=_empty_summary(),
@@ -272,7 +272,7 @@ async def test_overview_rejects_invalid_windows_before_query(
 ) -> None:
     application = _application()
     application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(organization_id=uuid4(), role="auditor")
+        SimpleNamespace(custom_role_id=None, organization_id=uuid4(), role="auditor")
     )
     read = AsyncMock()
     monkeypatch.setattr(OverviewReadModel, "read", read)

@@ -15,7 +15,6 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
-    Request,
     Response,
     status,
 )
@@ -653,7 +652,6 @@ async def create_oversight_policy(
         session, current_user, None, None, payload.model_dump()
     )
     tenant_id, item = await _tenant_for_write(session, current_user), str(uuid4())
-    await lock_tenant(session, tenant_id)
     async with record_managed_write(
         session,
         current_user,
@@ -1012,9 +1010,6 @@ class _OversightPolicyResource:
         window_days: int,
     ) -> Impact:
         return no_impact(window_days, "review queue runs after the request")
-
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
 
 
 OVERSIGHT_POLICIES = _OversightPolicyResource()

@@ -1728,7 +1728,6 @@ async def create_team(
 ) -> Team:
     tenant_id, item = _tenant_id(user), str(uuid4())
     after = payload.model_dump()
-    await lock_tenant(session, tenant_id)
     async with record_managed_write(
         session, user, tenant_id, [(TEAMS, item, None, after)], source="api"
     ) as version:
@@ -2362,7 +2361,6 @@ async def create_budget(
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(tenant_id, payload.notify_targets)
     try:
-        await lock_tenant(session, tenant_id)
         async with record_managed_write(
             session,
             user,
@@ -2453,7 +2451,6 @@ async def delete_budget(
     tenant_id = _tenant_id(user)
     await lock_tenant(session, tenant_id)
     row = await _owned_budget(session, user, budget_id)
-    _reject_oversized_legacy_targets(list(row.notify_targets or []))
     before = _budget_state({field: getattr(row, field) for field in _BUDGET_FIELDS})
     async with record_managed_write(
         session, user, tenant_id, [(BUDGETS, str(row.id), before, None)], source="api"
@@ -2741,7 +2738,8 @@ async def list_requests(
 ) -> RequestActivityPage:
     generated_at = datetime.now(timezone.utc)
     tenant_id = _tenant_id(user)
-    filters = _request_filters(
+    filters = await _request_filters(
+        session,
         user,
         start=start,
         end=end,
@@ -2755,8 +2753,6 @@ async def list_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
     )
-    if "usage.read" not in await user_permissions(session, user):
-        filters.append(_visible_requests(user))
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
     ).one()
@@ -3111,7 +3107,8 @@ async def export_requests(
     end_at = _aware(end or datetime.now(timezone.utc))
     start_at = _aware(start or end_at - timedelta(days=30))
     _validate_sync_window(start_at, end_at)
-    filters = _request_filters(
+    filters = await _request_filters(
+        session,
         user,
         start=start_at,
         end=end_at,
@@ -3125,8 +3122,6 @@ async def export_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
     )
-    if "usage.read" not in await user_permissions(session, user):
-        filters.append(_visible_requests(user))
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
         await session.scalar(
@@ -3513,16 +3508,8 @@ def _own_or_administered_key(user: User) -> Any:
     )
 
 
-def _visible_requests(user: User) -> Any:
-    return RequestLog.api_key_id.in_(
-        select(ApiKey.id).where(
-            ApiKey.organization_id == _tenant_id(user),
-            _own_or_administered_key(user),
-        )
-    )
-
-
-def _request_filters(
+async def _request_filters(
+    session: AsyncSession,
     user: User,
     *,
     start: datetime | None,
@@ -3559,6 +3546,14 @@ def _request_filters(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant_id = _tenant_id(user)
     filters = [RequestLog.organization_id == tenant_id]
+    if "usage.read" not in await user_permissions(session, user):
+        filters.append(
+            RequestLog.api_key_id.in_(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id, _own_or_administered_key(user)
+                )
+            )
+        )
     if start_at is not None:
         filters.append(RequestLog.timestamp >= start_at)
     if end_at is not None:
@@ -3907,7 +3902,6 @@ async def _owned_api_key(
 async def _key_for_change(
     session: AsyncSession, user: User, api_key_id: UUID, changes: Mapping[str, Any]
 ) -> ApiKey:
-    """The key, when the user may make these changes to it."""
     api_key = await _owned_api_key(session, user, api_key_id)
     if {"team_id", "allowed_models"} & changes.keys():
         if api_key.team_id is None:
@@ -4436,7 +4430,6 @@ async def create_model_deployment(
 ):
     tenant_id, item = _tenant_id(user), str(uuid4())
     after = await DEPLOYMENTS.validate(session, user, None, None, payload.model_dump())
-    await lock_tenant(session, tenant_id)
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, None, after)], source="api"
     ) as version:
@@ -5009,9 +5002,6 @@ class _TeamResource:
         )
         return _counted(requests, window_days, note)
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
-
 
 _KEY_FIELDS = ("allowed_models", "team_id")
 
@@ -5118,9 +5108,6 @@ class _ApiKeyResource:
             ),
             window_days,
         )
-
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
 
 
 def _key_state(key: ApiKey) -> State:
@@ -5306,9 +5293,6 @@ class _DeploymentResource:
             window_days,
         )
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
-
 
 _BUDGET_FIELDS = (
     "scope_type",
@@ -5483,9 +5467,6 @@ class _BudgetResource:
             "window_days": window_days,
             "note": f"month-to-date use is {share} percent of the new limit",
         }
-
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
 
 
 def _uuids(item_ids: Collection[str]) -> list[UUID]:

@@ -40,10 +40,6 @@ _MAX_VERSION = 2_147_483_647
 _STATE_READS = ("deployments.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
-_NOT_DELETABLE = {
-    "teams": "team_not_deletable",
-    "deployments": "deployment_not_deletable",
-}
 
 
 class ChangeInput(BaseModel):
@@ -176,13 +172,20 @@ async def _require_state_reads(session: AsyncSession, user: User) -> None:
         )
 
 
-def _expired(plan: PolicyPlan) -> bool:
-    if plan.status in {"draft", "pending_approval"} and plan.expires_at <= datetime.now(
-        timezone.utc
-    ):
-        plan.status = "expired"
-        return True
-    return False
+async def _expire_overdue(
+    session: AsyncSession, organization_id: UUID, *where: Any
+) -> None:
+    await session.execute(
+        update(PolicyPlan)
+        .where(
+            PolicyPlan.organization_id == organization_id,
+            PolicyPlan.status.in_(("draft", "pending_approval")),
+            PolicyPlan.expires_at <= datetime.now(timezone.utc),
+            *where,
+        )
+        .values(status="expired")
+    )
+    await session.commit()
 
 
 async def _change(
@@ -314,7 +317,8 @@ async def _after_commit(
     request: Request, plan: PolicyPlan, cleanups: list[PostCommit]
 ) -> None:
     for name in sorted({change["resource"] for change in plan.changes}):
-        await REGISTRY[name].after_commit(request, plan.organization_id)
+        if hook := getattr(REGISTRY[name], "after_commit", None):
+            await hook(request, plan.organization_id)
     for cleanup in cleanups:
         await cleanup()
 
@@ -432,16 +436,7 @@ async def list_plans(
     session: AsyncSession = Depends(get_db),
 ) -> list[PolicyPlan]:
     organization_id = _tenant(user)
-    await session.execute(
-        update(PolicyPlan)
-        .where(
-            PolicyPlan.organization_id == organization_id,
-            PolicyPlan.status.in_(("draft", "pending_approval")),
-            PolicyPlan.expires_at <= datetime.now(timezone.utc),
-        )
-        .values(status="expired")
-    )
-    await session.commit()
+    await _expire_overdue(session, organization_id)
     statement = select(PolicyPlan).where(PolicyPlan.organization_id == organization_id)
     if status is not None:
         statement = statement.where(PolicyPlan.status == status)
@@ -458,10 +453,9 @@ async def get_plan(
     user: User = Depends(require("plans.create", "audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
-    plan = await _owned_plan(session, _tenant(user), plan_id)
-    if _expired(plan):
-        await session.commit()
-    return plan
+    organization_id = _tenant(user)
+    await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
+    return await _owned_plan(session, organization_id, plan_id)
 
 
 @router.post("/plans/{plan_id}/apply", response_model=PlanView)
@@ -472,10 +466,9 @@ async def apply_plan(
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
     organization_id = _tenant(user)
+    await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
     await lock_tenant(session, organization_id)
     plan = await _owned_plan(session, organization_id, plan_id, lock=True)
-    if _expired(plan):
-        await session.commit()
     cleanups = await _apply_plan(session, user, plan)
     await session.commit()
     await _after_commit(request, plan, cleanups)
@@ -587,16 +580,22 @@ async def restore_version(
                 )
                 continue
             if target is None and now is not None and not resource.deletable:
-                reason = _NOT_DELETABLE[name]
-                if name != "deployments":
+                if name == "teams":
                     not_restored.append(
-                        Unrestored(resource=name, item=item, reason=reason)
+                        Unrestored(
+                            resource=name, item=item, reason="team_not_deletable"
+                        )
                     )
                     continue
-                target = {**now, "enabled": False}
-                if target == now:
+                # A deployment cannot be deleted; disabling it comes closest.
+                if not now["enabled"]:
                     continue
-                approximated.append(Unrestored(resource=name, item=item, reason=reason))
+                target = {**now, "enabled": False}
+                approximated.append(
+                    Unrestored(
+                        resource=name, item=item, reason="deployment_not_deletable"
+                    )
+                )
             try:
                 if target is not None:
                     # What the item's own route would refuse is skipped, not fatal.

@@ -237,7 +237,6 @@ async def _key(db, owner: User) -> str:
 async def _signed_in(
     db, monkeypatch, caller: User, method: str, path: str, **kwargs
 ) -> httpx.Response:
-    """A call through the real get_current_user, so the read-only rule applies."""
     monkeypatch.setattr(
         enterprise_deps, "get_invite_user", AsyncMock(return_value=caller)
     )

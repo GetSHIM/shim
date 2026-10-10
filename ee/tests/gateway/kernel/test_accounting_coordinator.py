@@ -427,7 +427,9 @@ async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
         cost_center=None,
         limit=1,
         offset=0,
-        user=SimpleNamespace(role="owner", organization_id=prepared.tenant_id),
+        user=SimpleNamespace(
+            custom_role_id=None, role="owner", organization_id=prepared.tenant_id
+        ),
         session=db,
     )
     item = page.items[0]
@@ -1562,6 +1564,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
             id=uuid4(),
             kind="human",
             role="owner",
+            custom_role_id=None,
             organization_id=test_api_key.organization_id,
         ),
         session=db,
@@ -2912,7 +2915,11 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
         tag=None,
         cost_center=None,
         user=SimpleNamespace(
-            id=uuid4(), kind="human", role="owner", organization_id=prepared.tenant_id
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
         ),
         session=db,
     )
