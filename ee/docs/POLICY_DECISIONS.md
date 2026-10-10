@@ -286,11 +286,13 @@ readiness report stay in English.
 ## Monthly evidence file
 
 On each pass the ai_act worker writes the previous calendar month's evidence
-file (UTC) for every organization that is not archived, had at least one request
+file for every organization that is not archived, had at least one request
 started in that month, and has no file for it yet. The file is a PDF stored in
 `evidence_reports` (`kind` `monthly`) with its SHA-256, size, generation time and
 generator version. A row is written once and never changed; a second worker
 racing for the same month inserts nothing. Rendering runs off the event loop.
+Months are UTC months: the first three hours of the 1st in Istanbul (UTC+3)
+belong to the previous month's file.
 An organization whose file fails counts as an error of the pass, so the worker
 writes no heartbeat and the next pass tries again.
 
@@ -309,7 +311,8 @@ and window ("Kaynak: <table>, dönem: <start> – <end>"):
 3. Ne durduruldu: policy verdicts with outcome `deny`, by rule and reason code.
 4. Kim neyi değiştirdi: management actions by action and actor type.
 5. Denetim zinciri: the [server-side check](#audit-evidence-bundle) for the
-   month, from the latest daily anchor before it, or the reason it could not run.
+   month, from the latest daily anchor before it, or a Turkish sentence saying
+   the month is too large to verify at once (the exception goes to the log).
 6. Bulgular: per rule, the [findings](FINDINGS.md) opened, open at the end and
    resolved in the month.
 7. Kim neye erişti, in two parts:
@@ -319,14 +322,19 @@ and window ("Kaynak: <table>, dönem: <start> – <end>"):
      `compliance.audit_verified`, `tenant.requests_exported`,
      `tenant.billing_exported`, `tenant.evidence_downloaded`, and
      `tenant.request_content_opened` once it exists) by action and actor: the
-     user id, the user's current role ("güncel rol") and "servis hesabı" for a
-     service account, never an e-mail. A month without such a row says "Bu ay
+     user id, the user's current role ("güncel rol"; a custom role by its name,
+     marked "özel rol") and "servis hesabı" for a service account, never an
+     e-mail. A month without such a row says "Bu ay
      kayıtlı erişim yok." when the organization has an earlier one, and
      "Okuma ve dışa aktarma kayıtları bu kurum için henüz tutulmuyor."
      otherwise. Unaudited list views are not in it.
    - Model erişimi: requests of the month by API key and team, with the
-     providers and up to 10 models each called; the 50 largest rows, the rest
-     summed as "diğer". Key and team names only, never a key id or secret.
+     providers and up to 10 models each called (a model name is cut at 64
+     characters); the 50 largest rows, the rest summed as "diğer". Key and team
+     names only, never a key id or secret. Text the file writes itself ("diğer",
+     "anahtar yok" for requests without a key, "adsız anahtar" for a key without
+     a name) is set in italics, so a key named "diğer" never reads as the sum.
+     Columns have fixed widths and long names wrap inside them.
 
 The file holds counts and names only: no prompt, answer, detected value or key.
 Files generated before a change keep their content and generator version.

@@ -3,11 +3,13 @@ import base64
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
+import logging
 from pathlib import Path
 import re
 import runpy
 import zlib
 from uuid import uuid4
+from xml.sax.saxutils import escape
 
 import httpx
 import pytest
@@ -37,7 +39,13 @@ from shim_enterprise.outbox.handlers import (
 )
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
-from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    OrganizationRole,
+    Team,
+    User,
+)
 from shim_enterprise.workers.ai_act import AuditMaintenanceWorker
 
 SCRIPT = runpy.run_path(
@@ -69,7 +77,11 @@ def _story_text(record: evidence.MonthlyEvidence) -> str:
         if hasattr(item, "text"):
             parts.append(item.text)
         elif hasattr(item, "_cellvalues"):
-            parts += [str(cell) for row in item._cellvalues for cell in row]
+            parts += [
+                str(getattr(cell, "text", cell))
+                for row in item._cellvalues
+                for cell in row
+            ]
     return "\n".join(parts)
 
 
@@ -208,6 +220,7 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
     assert old_text.startswith(
         f"Aylık Kanıt Dosyası\nKurum: Architecture Test Tenant ({tenant_id})<br/>"
         f"Dönem: {window.period} (ay sürüyor)<br/>"
+        f"Zaman aralığı: {window.describe()}<br/>"
     )
     for title in (
         "1. Trafik",
@@ -351,11 +364,164 @@ async def _access(db, tenant_id, actor, endpoint: str) -> None:
     )
 
 
+def _tables(record: evidence.MonthlyEvidence) -> list:
+    return [
+        item
+        for item in evidence._monthly_story(record, report_styles())
+        if hasattr(item, "_cellvalues")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_section_seven_fits_the_page_at_its_real_limits(
+    db, test_api_key, test_user_with_org
+) -> None:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+
+    tenant_id = test_api_key.organization_id
+    organization = await db.get(Organization, tenant_id)
+    organization.name = 'Banka & <Test> <link href="https://x">'
+    long_key = ApiKey(
+        id=uuid4(),
+        user_id=test_user_with_org.id,
+        organization_id=tenant_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-long",
+        name="k" * 100,
+        tier=test_api_key.tier,
+        is_active=True,
+    )
+    unnamed = ApiKey(
+        id=uuid4(),
+        user_id=test_user_with_org.id,
+        organization_id=tenant_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-anon",
+        name=None,
+        tier=test_api_key.tier,
+        is_active=True,
+    )
+    lookalike = ApiKey(
+        id=uuid4(),
+        user_id=test_user_with_org.id,
+        organization_id=tenant_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-diger",
+        name="diğer",
+        tier=test_api_key.tier,
+        is_active=True,
+    )
+    team = Team(id=uuid4(), organization_id=tenant_id, name="t" * 128)
+    db.add_all([long_key, unnamed, lookalike, team])
+    await db.flush()
+    await _access(db, tenant_id, "a" * 64, "tenant.requests_exported")
+    now = datetime.now(timezone.utc)
+    window = evidence.MonthlyWindow(
+        "2026-10", "monthly_partial", now - timedelta(hours=1), now
+    )
+
+    def request(key_id, team_id, model: str, requests: int = 1) -> None:
+        for _ in range(requests):
+            db.add(
+                RequestLifecycle(
+                    request_id=f"req_limits_{uuid4().hex}",
+                    organization_id=tenant_id,
+                    actor_type="api_key" if key_id else "internal",
+                    api_key_id=key_id,
+                    source_endpoint="chat.completions",
+                    status="completed",
+                    provider="openai",
+                    requested_model=model,
+                    stream=False,
+                    started_at=now - timedelta(minutes=1),
+                    lifecycle_metadata={"team_id": team_id},
+                )
+            )
+
+    # 11 models on the largest row; 49 more rows above the cap, three below it.
+    for index in range(11):
+        request(long_key.id, str(team.id), f"model-{index:02d}-" + "m" * 120, 3)
+    request(unnamed.id, None, "gpt-5-mini", 2)
+    request(None, None, "gpt-5-mini", 2)
+    for index in range(46):
+        request(None, str(uuid4()), "gpt-5-mini", 2)
+    request(lookalike.id, None, "gpt-5-mini", 2)
+    for index in range(3):
+        request(None, str(uuid4()), f"rest-{index}")
+    await db.flush()
+
+    record = await evidence.collect_monthly_evidence(db, tenant_id, window, now=now)
+    access_table, models_table = _tables(record)[-2:]
+    key_cells = [row[0].text for row in models_table._cellvalues[1:]]
+    width = A4[0] - 36 * mm
+    pdf = evidence.render_monthly_pdf(record)
+
+    rows = record.model_access
+    assert len(rows) == evidence.MODEL_ACCESS_ROWS + 1
+    assert rows[0][:2] == ("k" * 100, "t" * 128)
+    shown = rows[0][3].split("\n")
+    assert len(shown) == evidence.MODEL_ACCESS_MODELS + 1 and shown[-1] == "…"
+    assert all(len(name) <= evidence.MODEL_NAME_LIMIT + 1 for name in shown)
+    assert (evidence.UNNAMED_KEY, 2) in {(row[0], row[4]) for row in rows}
+    assert (evidence.NO_KEY, 2) in {(row[0], row[4]) for row in rows}
+    assert rows[-1][0] == evidence.OTHER_ROWS
+    assert isinstance(rows[-1][0], evidence.Label)
+    assert rows[-1][4] == 3
+    assert {row[0] for row in rows if not isinstance(row[0], evidence.Label)} == {
+        "k" * 100,
+        "diğer",
+    }
+    for table in (access_table, models_table):
+        assert table.wrap(width, A4[1])[0] <= width
+    assert key_cells[-1] == "<i>diğer</i>"
+    assert key_cells.count("diğer") == 1
+    assert escape(record.organization_name) in _story_text(record)
+    assert pdf.startswith(b"%PDF") and b"/URI" not in pdf
+
+
+@pytest.mark.asyncio
+async def test_a_chain_too_long_to_verify_is_said_in_turkish(
+    db, test_api_key, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    async def too_long(*args, **kwargs):
+        raise evidence.AuditVerificationLimitExceeded(
+            "synchronous verification is limited to 5 rows"
+        )
+
+    monkeypatch.setattr(evidence, "verify_chain", too_long)
+    now = datetime.now(timezone.utc)
+    window = evidence.monthly_window(f"{now:%Y-%m}", now=now)
+
+    with caplog.at_level(logging.WARNING, logger=evidence.__name__):
+        record = await evidence.collect_monthly_evidence(
+            db, test_api_key.organization_id, window, now=now
+        )
+
+    assert record.chain == evidence.CHAIN_TOO_LONG
+    assert "synchronous" not in _story_text(record)
+    assert "AuditVerificationLimitExceeded" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_section_seven_counts_reads_and_model_use(
-    db, test_api_key, test_user_with_org, monkeypatch: pytest.MonkeyPatch
+    db, test_api_key, test_user_with_org
 ) -> None:
     tenant_id = test_api_key.organization_id
+    role = OrganizationRole(
+        id=uuid4(), organization_id=tenant_id, slug="readers", name="Risk & <okur>"
+    )
+    db.add(role)
+    await db.flush()
+    reader = User(
+        id=uuid4(),
+        organization_id=tenant_id,
+        email=f"reader-{uuid4().hex}@example.com",
+        role="member",
+        custom_role_id=role.id,
+        is_active=True,
+        is_verified=True,
+    )
     service = User(
         id=uuid4(),
         organization_id=tenant_id,
@@ -367,7 +533,7 @@ async def test_section_seven_counts_reads_and_model_use(
     )
     other = Organization(id=uuid4(), name="Other", slug=f"access-{uuid4().hex}")
     team = Team(id=uuid4(), organization_id=tenant_id, name="risk")
-    db.add_all([service, other, team])
+    db.add_all([service, reader, other, team])
     await db.flush()
     owner = str(test_user_with_org.id)
     before_rows = datetime.now(timezone.utc)
@@ -375,6 +541,7 @@ async def test_section_seven_counts_reads_and_model_use(
         (owner, "tenant.requests_exported"),
         (owner, "tenant.requests_exported"),
         (str(service.id), "compliance.audit_bundle_exported"),
+        (str(reader.id), "compliance.kvkk_report_generated"),
         (owner, "tenant.budget_created"),
     ):
         await _access(db, tenant_id, actor, endpoint)
@@ -439,9 +606,6 @@ async def test_section_seven_counts_reads_and_model_use(
     earlier = evidence.MonthlyWindow(
         "2026-09", "monthly", before_rows - timedelta(days=2), before_rows
     )
-    monkeypatch.setattr(evidence, "MODEL_ACCESS_ROWS", 1)
-    monkeypatch.setattr(evidence, "MODEL_ACCESS_MODELS", 1)
-    capped = await evidence.model_access(db, tenant_id, window)
 
     assert len(statements) == 2
     assert note is None
@@ -450,6 +614,12 @@ async def test_section_seven_counts_reads_and_model_use(
             "compliance.audit_bundle_exported",
             str(service.id),
             "admin, servis hesabı",
+            1,
+        ),
+        (
+            "compliance.kvkk_report_generated",
+            str(reader.id),
+            "Risk & <okur> (özel rol)",
             1,
         ),
         ("tenant.requests_exported", owner, test_user_with_org.role, 2),
@@ -465,13 +635,11 @@ async def test_section_seven_counts_reads_and_model_use(
     key = test_api_key.name
     assert models == (
         (key, "risk", "anthropic, openai", "claude-haiku-4-5\ngpt-5-mini", 3),
-        (key, "—", "openai", "gpt-5-nano", 1),
-        ("—", "—", "—", "gpt-5-mini", 1),
+        (key, evidence.NO_TEAM, "openai", "gpt-5-nano", 1),
+        (evidence.NO_KEY, evidence.NO_TEAM, "—", "gpt-5-mini", 1),
     )
-    assert capped == (
-        (key, "risk", "anthropic, openai", "claude-haiku-4-5\n…", 3),
-        ("diğer", "—", "openai", "gpt-5-mini\n…", 2),
-    )
+    assert isinstance(models[2][0], evidence.Label)
+    assert not isinstance(models[0][0], evidence.Label)
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,13 @@ REPORT_FONT = "Vera"
 REPORT_FONT_BOLD = "Vera-Bold"
 NOT_RECORDED = "bu sürümde kaydedilmiyor"
 # Table cells do not wrap, so a count column breaks the phrase to stay narrow.
-NOT_RECORDED_CELL = "bu sürümde\nkaydedilmiyor"
+NOT_RECORDED_CELL = "\n".join(NOT_RECORDED.rsplit(" ", 1))
+# Lifecycle metadata map, action and Turkish label of each privacy action.
+ENTITY_ACTIONS = (
+    ("pii_entities", "masked", "Maskelenen"),
+    ("monitored_entities", "monitored", "İzlenen"),
+    ("blocked_entities", "blocked", "Durdurulan"),
+)
 
 
 def ensure_report_fonts() -> None:

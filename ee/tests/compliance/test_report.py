@@ -831,10 +831,14 @@ def _paragraphs(story: list) -> list[str]:
 
 
 def _gateway_table(story: list) -> list[list]:
-    heading = _paragraphs(story).index("Gateway tespitleri")
-    paragraphs = [item for item in story if hasattr(item, "text")]
-    after = story[story.index(paragraphs[heading]) :]
-    return next(item for item in after if hasattr(item, "_cellvalues"))._cellvalues
+    heading = next(
+        index
+        for index, item in enumerate(story)
+        if getattr(item, "text", None) == "Gateway tespitleri"
+    )
+    return next(
+        item for item in story[heading:] if hasattr(item, "_cellvalues")
+    )._cellvalues
 
 
 @pytest.mark.asyncio
@@ -984,16 +988,20 @@ async def test_the_organization_name_is_escaped_into_the_report(
         'Kurum: Şahin &amp; &lt;Ortaklar&gt; &lt;link href="https://x"&gt; ('
     )
     assert b"/URI" not in pdf
+
+
+def test_severities_are_printed_in_turkish() -> None:
+    now = datetime.now(timezone.utc)
     severities = _kvkk_story(
         ExposureEvidence(
-            tenant_id=organization.id,
+            tenant_id=uuid4(),
             organization_name="x",
             connector_id=uuid4(),
-            start=end,
-            end=end,
+            start=now,
+            end=now,
             findings=tuple(
                 FindingEvidence(
-                    occurred_at=end,
+                    occurred_at=now,
                     severity=severity,
                     entity_type="EMAIL",
                     kvkk_category=None,

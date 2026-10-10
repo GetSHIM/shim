@@ -24,6 +24,7 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.billing.read_models import BillingBreakdown, BillingReadModels
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.compliance.reporting import (
+    ENTITY_ACTIONS,
     NOT_RECORDED,
     NOT_RECORDED_CELL,
     build_pdf,
@@ -35,7 +36,13 @@ from shim_enterprise.compliance.reporting import (
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.outbox.handlers import EVIDENCE_MONTHLY_READY
 from shim_enterprise.outbox.publisher import OutboxWriter
-from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    OrganizationRole,
+    Team,
+    User,
+)
 from shim.gateway.contracts.ids import TenantId
 
 
@@ -45,11 +52,6 @@ _TITLE = "Aylık Kanıt Dosyası"
 _COVER = (
     "Bu dosya gateway trafiğinin ölçümüdür; denetim, sertifika veya uygunluk "
     "beyanı değildir."
-)
-_MASK_KEYS = (
-    ("pii_entities", "Maskelenen"),
-    ("monitored_entities", "İzlenen"),
-    ("blocked_entities", "Durdurulan"),
 )
 # Audited reads and exports of evidence and content (section 7).
 ACCESS_ACTIONS = (
@@ -65,8 +67,24 @@ ACCESS_ACTIONS = (
 )
 NO_ACCESS_THIS_MONTH = "Bu ay kayıtlı erişim yok."
 ACCESS_NOT_RECORDED = "Okuma ve dışa aktarma kayıtları bu kurum için henüz tutulmuyor."
+CHAIN_TOO_LONG = (
+    "Doğrulama çalışmadı: dönemin denetim kayıtları tek seferde doğrulanabilecek "
+    "sınırı aşıyor."
+)
 MODEL_ACCESS_ROWS = 50
 MODEL_ACCESS_MODELS = 10
+# A model name is caller text; a longer one is cut so a row stays inside a page.
+MODEL_NAME_LIMIT = 64
+
+
+class Label(str):
+    """Text the file writes itself, set in italics so no tenant name can pass for it."""
+
+
+NO_KEY = Label("anahtar yok")
+UNNAMED_KEY = Label("adsız anahtar")
+NO_TEAM = Label("—")
+OTHER_ROWS = Label("diğer")
 
 
 class EvidenceFileExists(ValueError):
@@ -204,7 +222,13 @@ async def collect_monthly_evidence(
             session, tenant_id, start=window.start, end=window.end
         )
     except AuditVerificationLimitExceeded as exc:
-        chain = f"Doğrulama çalışmadı: {exc}."
+        logger.warning(
+            "Monthly evidence chain not verified organization_id=%s type=%s detail=%s",
+            tenant_id,
+            type(exc).__name__,
+            exc,
+        )
+        chain = CHAIN_TOO_LONG
 
     opened = func.count().filter(
         Finding.first_seen_at >= window.start, Finding.first_seen_at <= window.end
@@ -244,7 +268,7 @@ async def collect_monthly_evidence(
         by_model=by_model,
         entities={
             key: await entity_counts(session, tenant_id, window.start, window.end, key)
-            for key, _ in _MASK_KEYS
+            for key, _, _ in ENTITY_ACTIONS
         },
         bulk_disclosures=bulk,
         response_entities=response_by_type,
@@ -268,8 +292,9 @@ async def access_counts(
         AIActAuditLog.endpoint.in_(ACCESS_ACTIONS),
         AIActAuditLog.created_at <= window.end,
     )
+    who = (User.role, User.kind, OrganizationRole.name)
     rows = await session.execute(
-        select(AIActAuditLog.endpoint, AIActAuditLog.actor, User.role, User.kind)
+        select(AIActAuditLog.endpoint, AIActAuditLog.actor, *who)
         .add_columns(func.count())
         .select_from(AIActAuditLog)
         .outerjoin(
@@ -277,20 +302,26 @@ async def access_counts(
             (User.organization_id == tenant_id)
             & (cast(User.id, Text) == AIActAuditLog.actor),
         )
+        .outerjoin(
+            OrganizationRole,
+            (OrganizationRole.organization_id == tenant_id)
+            & (OrganizationRole.id == User.custom_role_id),
+        )
         .where(*audited, AIActAuditLog.created_at >= window.start)
-        .group_by(AIActAuditLog.endpoint, AIActAuditLog.actor, User.role, User.kind)
+        .group_by(AIActAuditLog.endpoint, AIActAuditLog.actor, *who)
         .order_by(AIActAuditLog.endpoint, func.count().desc(), AIActAuditLog.actor)
     )
+
+    def current_role(role: str | None, kind: str | None, custom: str | None) -> str:
+        if custom is not None:
+            return f"{custom} (özel rol)"
+        if role is None:
+            return Label("—")
+        return role + (", servis hesabı" if kind == "service" else "")
+
     access = tuple(
-        (
-            str(action),
-            actor or "—",
-            "—"
-            if role is None
-            else role + (", servis hesabı" if kind == "service" else ""),
-            int(count),
-        )
-        for action, actor, role, kind, count in rows
+        (str(action), actor or Label("—"), current_role(*role), int(count))
+        for action, actor, *role, count in rows
     )
     if access:
         return access, None
@@ -314,6 +345,7 @@ async def model_access(
     rows = (
         await session.execute(
             select(
+                RequestLifecycle.api_key_id,
                 ApiKey.name,
                 Team.name,
                 func.array_agg(distinct(RequestLifecycle.provider)),
@@ -337,28 +369,40 @@ async def model_access(
     ).all()
 
     def row(key, team, providers, models, requests) -> tuple[str, str, str, str, int]:
-        names = sorted({name for name in models if name})
+        names = sorted(
+            {
+                name if len(name) <= MODEL_NAME_LIMIT else f"{name[:MODEL_NAME_LIMIT]}…"
+                for name in models
+                if name
+            }
+        )
         shown = names[:MODEL_ACCESS_MODELS] + (
             ["…"] if len(names) > MODEL_ACCESS_MODELS else []
         )
         return (
-            key or "—",
-            team or "—",
+            key,
+            team or NO_TEAM,
             ", ".join(sorted({name for name in providers if name})) or "—",
             "\n".join(shown) or "—",
             int(requests),
         )
 
-    top = [row(*item) for item in rows[:MODEL_ACCESS_ROWS]]
+    top = [
+        row(
+            NO_KEY if key_id is None else UNNAMED_KEY if key is None else key,
+            *columns,
+        )
+        for key_id, key, *columns in rows[:MODEL_ACCESS_ROWS]
+    ]
     rest = rows[MODEL_ACCESS_ROWS:]
     if rest:
         top.append(
             row(
-                "diğer",
+                OTHER_ROWS,
                 None,
-                [p for item in rest for p in item[2]],
-                [m for item in rest for m in item[3]],
-                sum(item[4] for item in rest),
+                [p for item in rest for p in item[3]],
+                [m for item in rest for m in item[4]],
+                sum(item[5] for item in rest),
             )
         )
     return tuple(top)
@@ -418,6 +462,22 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
     def text(value: str) -> Any:
         return Paragraph(escape(value), styles["Normal"])
 
+    cell_style = styles["Normal"].clone("cell", fontSize=9, leading=11)
+
+    def cell(value: str) -> Any:
+        markup = escape(value).replace("\n", "<br/>")
+        return Paragraph(
+            f"<i>{markup}</i>" if isinstance(value, Label) else markup, cell_style
+        )
+
+    def wrapped(rows: list[list[str]], headings: list[str], widths: list[int]) -> Any:
+        # Fixed widths that add up to the page; tenant text wraps inside them.
+        return evidence_table(
+            [[cell(value) for value in row] for row in rows],
+            headings,
+            [width * mm for width in widths],
+        )
+
     def source(table: str, note: str = "") -> str:
         return f"Kaynak: {table}, dönem: {window.describe()}." + (
             f" {note}" if note else ""
@@ -448,7 +508,7 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
                 NOT_RECORDED_CELL
                 if counts is None
                 else str(counts.get((provider, entity), 0))
-                for counts in (evidence.entities[key] for key, _ in _MASK_KEYS)
+                for counts in (evidence.entities[key] for key, _, _ in ENTITY_ACTIONS)
             ),
         ]
         for provider, entity in entity_types
@@ -458,7 +518,7 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
             "—",
             *(
                 "0" if evidence.entities[key] is not None else NOT_RECORDED_CELL
-                for key, _ in _MASK_KEYS
+                for key, _, _ in ENTITY_ACTIONS
             ),
         ]
     ]
@@ -479,7 +539,7 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
             f"Kurum: {evidence.organization_name} ({evidence.tenant_id})",
             f"Dönem: {window.period}"
             + (" (ay sürüyor)" if window.kind == "monthly_partial" else ""),
-            f"Aralık: {window.describe()}",
+            f"Zaman aralığı: {window.describe()}",
             f"Oluşturulma: {evidence.generated_at:%Y-%m-%d %H:%M UTC}",
         )
     )
@@ -512,7 +572,11 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
             ),
             evidence_table(
                 entity_rows,
-                ["Sağlayıcı", "Varlık türü", *(label for _, label in _MASK_KEYS)],
+                [
+                    "Sağlayıcı",
+                    "Varlık türü",
+                    *(label for _, _, label in ENTITY_ACTIONS),
+                ],
             ),
             Spacer(1, 2 * mm),
             text(
@@ -586,22 +650,24 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
             Paragraph("Kanıt ve içerik erişimi", styles["Heading3"]),
             text(evidence.access_note)
             if evidence.access_note
-            else evidence_table(
+            else wrapped(
                 [
                     [action, actor, role, str(count)]
                     for action, actor, role, count in evidence.access
                 ],
                 ["İşlem", "Kullanıcı", "Güncel rol", "Adet"],
+                [52, 60, 46, 16],
             ),
             Spacer(1, 2 * mm),
             Paragraph("Model erişimi", styles["Heading3"]),
-            evidence_table(
+            wrapped(
                 [
                     [key, team, providers, models, str(requests)]
                     for key, team, providers, models, requests in evidence.model_access
                 ]
                 or [["—", "—", "—", "—", "0"]],
                 ["API anahtarı", "Takım", "Sağlayıcı", "Model", "İstek"],
+                [40, 40, 22, 56, 16],
             ),
         ),
     ]

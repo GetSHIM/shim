@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import io
 from typing import Any, cast
@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim_enterprise.compliance.classification import classify, severity_rank
 from shim_enterprise.compliance.models import ComplianceConnector, ComplianceFinding
 from shim_enterprise.compliance.reporting import (
+    ENTITY_ACTIONS,
     NOT_RECORDED_CELL,
     build_pdf,
     evidence_table,
@@ -80,12 +81,10 @@ _CSV_FIELDS = (
     "source",
     "count",
 )
-# Lifecycle metadata map, CSV source and PDF column of each gateway action.
+# Lifecycle metadata map, action (CSV source `gateway_<action>`) and PDF column.
 _GATEWAY_ACTIONS = (
-    ("pii_entities", "gateway_masked", "Maskelenen"),
-    ("monitored_entities", "gateway_monitored", "İzlenen"),
-    ("blocked_entities", "gateway_blocked", "Durdurulan"),
-    ("response_entities", "gateway_response", "Yanıtta\ngörülen"),
+    *ENTITY_ACTIONS,
+    ("response_entities", "response", "Yanıtta\ngörülen"),
 )
 _TITLE = "KVKK Kişisel Veri Maruziyet Kanıtı"
 _SEVERITIES = {"critical": "kritik", "high": "yüksek", "medium": "orta", "low": "düşük"}
@@ -160,39 +159,39 @@ async def collect_exposure_evidence(
         )
         for row in rows
     )
-    organization_name = (
-        await session.execute(
-            select(Organization.name).where(Organization.id == tenant_id)
-        )
-    ).scalar_one()
-    evidence = ExposureEvidence(
+    sums: list[dict[str, int] | None] = []
+    if connector_id is None:  # A connector-scoped report has no gateway section.
+        window = lifecycle_window(tenant_id, start, end)
+        for key, _, _ in _GATEWAY_ACTIONS:
+            counted = await recorded_entity_sums(session, key, window)
+            sums.append(None if counted is None else {e: int(c) for e, c in counted})
+    entities = sorted({entity for counts in sums if counts for entity in counts})
+    return ExposureEvidence(
         tenant_id=tenant_id,
-        organization_name=organization_name,
+        organization_name=(
+            await session.execute(
+                select(Organization.name).where(Organization.id == tenant_id)
+            )
+        ).scalar_one(),
         connector_id=connector_id,
         start=start,
         end=end,
         findings=findings,
+        gateway_detections=tuple(
+            cast(
+                GatewayDetection,
+                (
+                    entity,
+                    classify(entity).kvkk_category,
+                    *(
+                        None if counts is None else counts.get(entity, 0)
+                        for counts in sums
+                    ),
+                ),
+            )
+            for entity in entities
+        ),
     )
-    if connector_id is not None:
-        return evidence
-    window = lifecycle_window(tenant_id, start, end)
-    sums: list[dict[str, int] | None] = []
-    for key, _, _ in _GATEWAY_ACTIONS:
-        rows = await recorded_entity_sums(session, key, window)
-        sums.append(None if rows is None else {e: int(c) for e, c in rows})
-    entities = sorted({entity for counts in sums if counts for entity in counts})
-    detections = tuple(
-        cast(
-            GatewayDetection,
-            (
-                entity,
-                classify(entity).kvkk_category,
-                *(None if counts is None else counts.get(entity, 0) for counts in sums),
-            ),
-        )
-        for entity in entities
-    )
-    return replace(evidence, gateway_detections=detections)
 
 
 def _render_csv(evidence: ExposureEvidence) -> bytes:
@@ -205,9 +204,9 @@ def _render_csv(evidence: ExposureEvidence) -> bytes:
             + ["connector", "1"]
         )
     gateway_rows = sorted(
-        (entity, source, count)
+        (entity, f"gateway_{action}", count)
         for entity, _, *counts in evidence.gateway_detections
-        for (_, source, _), count in zip(_GATEWAY_ACTIONS, counts, strict=True)
+        for (_, action, _), count in zip(_GATEWAY_ACTIONS, counts, strict=True)
         if count
     )
     for entity, source, count in gateway_rows:
