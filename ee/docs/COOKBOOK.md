@@ -26,6 +26,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 - [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
@@ -644,6 +645,33 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Find truncated and refused answers
+
+See which apps get cut-off or refused answers, then open those requests.
+
+1. As an owner, admin or auditor, read the rates per app:
+   `GET /api/v1/management/outcomes?group_by=api_key` (or `model`, `team`;
+   default the last 7 days, at most 31). Each group has `truncation_rate` and
+   `refusal_rate` (refused, filtered or empty).
+2. Open the requests behind a rate:
+   `GET /api/v1/management/requests?completion_outcome=truncated&api_key_id=…`.
+   `refused`, `filtered`, `empty`, `complete` and `none` (no recorded outcome)
+   work the same, in the CSV export too. The summary's `outcome_counts` count
+   every class under the filters you set.
+
+```console
+curl 'http://localhost:8000/api/v1/management/outcomes?group_by=api_key' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.groups[] | {name, settled, truncation_rate, refusal_rate}'
+```
+
+Notes: a key with 50 or more answers in 24 hours and either rate at 5 percent
+or more raises `gateway.truncation_rate` or `gateway.refusal_rate`
+([findings](FINDINGS.md#gatewaytruncation_rate)). The classes are the
+provider's own signals; text refusals ("yardımcı olamam") are counted only in
+`soft_refusal_rate`, and only when the tenant enabled the refusal analyzer; the
+`soft_refusal` request filter matches only answers it read. Details are in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates).
 
 ## Is our model list complete?
 

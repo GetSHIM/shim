@@ -197,6 +197,36 @@ first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
 tags); an event written before admission, such as a rejection, has
 `cost_center: null` and `tags: []`.
 
+## Outcome filters, counts and rates
+
+`/requests` and `/requests/export` accept two optional filters:
+
+- `completion_outcome`: `complete`, `truncated`, `empty`, `refused`,
+  `filtered`, or `none` for a request without a recorded outcome (failed,
+  rejected and historical rows). Any other value is 422.
+- `soft_refusal`: `true` or `false`, matched against
+  `response_analysis.refusal.soft_refusal` on the request's lifecycle row. The
+  refusal analyzer writes that field only when the tenant enabled it, so an
+  answer it never read matches neither value.
+
+Both combine with every other filter, and a member still sees only their own
+keys. The list summary carries `outcome_counts` (`complete`, `truncated`,
+`empty`, `refused`, `filtered`, `none`) under the active filters; they sum to
+`requests`.
+
+`GET /api/v1/management/outcomes?start&end&group_by=model|api_key|team` (owner,
+admin, auditor; window default the last 7 days, at most 31) counts the requests
+with a `completion_outcome` per requested model, API key (with its name) or team
+(`team_id`, with its name; requests without a team are one group with a null
+`group`). Each group has `settled` and the five outcome counts,
+`truncation_rate` (truncated / settled) and `refusal_rate` ((refused + filtered
++ empty) / settled), and `analysed`, `soft_refused` and `soft_refusal_rate` for
+answers the refusal analyzer read. A rate is null when its denominator is 0.
+Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
+`totals` covers every group. The rates per API key also drive the
+[`gateway.truncation_rate` and `gateway.refusal_rate`
+findings](FINDINGS.md#gatewaytruncation_rate).
+
 ## Responses continuation markers
 
 Enterprise writes an encrypted continuation marker to Redis for every Responses

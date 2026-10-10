@@ -53,6 +53,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import array as sql_array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 
 from shim_enterprise.api.enterprise_deps import (
     ADMIN_REQUIRED,
@@ -114,6 +115,11 @@ from shim.privacy.policies import (
 )
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.model_inventory import ModelInventoryReadModel
+from shim_enterprise.observability.outcomes import (
+    OUTCOMES,
+    OutcomeGroup,
+    OutcomeRatesReadModel,
+)
 from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
@@ -879,6 +885,9 @@ RequestActivityStatus = Literal[
     "failed",
     "unknown",
 ]
+CompletionOutcomeFilter = Literal[
+    "complete", "truncated", "empty", "refused", "filtered", "none"
+]
 
 
 class RequestActivityView(BaseModel):
@@ -962,6 +971,15 @@ class RequestActivityStatusCountsView(BaseModel):
     unknown: int = Field(ge=0)
 
 
+class RequestOutcomeCountsView(BaseModel):
+    complete: int = Field(ge=0)
+    truncated: int = Field(ge=0)
+    empty: int = Field(ge=0)
+    refused: int = Field(ge=0)
+    filtered: int = Field(ge=0)
+    none: int = Field(ge=0, description="Requests without a recorded outcome.")
+
+
 class RequestActivitySummaryView(BaseModel):
     requests: int = Field(ge=0)
     technical_success_rate: float | None = Field(ge=0, le=1)
@@ -977,6 +995,7 @@ class RequestActivitySummaryView(BaseModel):
     technical_failures: int = Field(ge=0)
     policy_rejections: int = Field(ge=0)
     status_counts: RequestActivityStatusCountsView
+    outcome_counts: RequestOutcomeCountsView
 
 
 class RequestActivityPage(BaseModel):
@@ -2688,6 +2707,63 @@ async def dashboard_overview(
     )
 
 
+class OutcomeRatesView(BaseModel):
+    group: str | None = Field(
+        description="The model, API key id or team id; null groups requests "
+        "without a team."
+    )
+    name: str | None = Field(description="The API key or team name.")
+    settled: int = Field(ge=0)
+    complete: int = Field(ge=0)
+    truncated: int = Field(ge=0)
+    empty: int = Field(ge=0)
+    refused: int = Field(ge=0)
+    filtered: int = Field(ge=0)
+    truncation_rate: float | None = Field(ge=0, le=1)
+    refusal_rate: float | None = Field(
+        ge=0, le=1, description="(refused + filtered + empty) / settled."
+    )
+    analysed: int = Field(ge=0, description="Answers the refusal analyzer read.")
+    soft_refused: int = Field(ge=0)
+    soft_refusal_rate: float | None = Field(ge=0, le=1)
+
+
+class OutcomeRatesPage(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: OutcomeGroup
+    groups: list[OutcomeRatesView]
+    truncated: bool
+    totals: OutcomeRatesView
+
+
+@router.get("/outcomes", response_model=OutcomeRatesPage)
+async def outcome_rates(
+    start: datetime | None = Query(
+        default=None, description="Inclusive start; defaults to seven days before end."
+    ),
+    end: datetime | None = Query(
+        default=None, description="Exclusive end; defaults to the current time."
+    ),
+    group_by: OutcomeGroup = Query(default="model"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> OutcomeRatesPage:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(start or end_at - timedelta(days=7))
+    _validate_sync_window(start_at, end_at)
+    report = await OutcomeRatesReadModel().read(
+        session,
+        tenant_id=_tenant_id(user),
+        start_at=start_at,
+        end_at=end_at,
+        group_by=group_by,
+    )
+    return OutcomeRatesPage.model_validate(
+        {**asdict(report), "start": start_at, "end": end_at, "group_by": group_by}
+    )
+
+
 @router.get("/requests", response_model=RequestActivityPage)
 async def list_requests(
     start: datetime | None = Query(
@@ -2730,6 +2806,21 @@ async def list_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
+    completion_outcome: Annotated[
+        CompletionOutcomeFilter | None,
+        Query(
+            description="How the answer ended; none is a request without a "
+            "recorded outcome (failed, rejected or older rows)."
+        ),
+    ] = None,
+    soft_refusal: Annotated[
+        bool | None,
+        Query(
+            description="Whether the refusal analyzer found a text refusal in the "
+            "answer. The field exists only when the tenant enabled the refusal "
+            "analyzer; answers it did not read match neither value."
+        ),
+    ] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -2750,6 +2841,8 @@ async def list_requests(
         cost_center=cost_center,
         warning=warning,
         system_prompt_hash=system_prompt_hash,
+        completion_outcome=completion_outcome,
+        soft_refusal=soft_refusal,
     )
     if "usage.read" not in await user_permissions(session, user):
         filters.append(_visible_requests(user))
@@ -3100,6 +3193,21 @@ async def export_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
+    completion_outcome: Annotated[
+        CompletionOutcomeFilter | None,
+        Query(
+            description="How the answer ended; none is a request without a "
+            "recorded outcome (failed, rejected or older rows)."
+        ),
+    ] = None,
+    soft_refusal: Annotated[
+        bool | None,
+        Query(
+            description="Whether the refusal analyzer found a text refusal in the "
+            "answer. The field exists only when the tenant enabled the refusal "
+            "analyzer; answers it did not read match neither value."
+        ),
+    ] = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -3120,6 +3228,8 @@ async def export_requests(
         cost_center=cost_center,
         warning=warning,
         system_prompt_hash=system_prompt_hash,
+        completion_outcome=completion_outcome,
+        soft_refusal=soft_refusal,
     )
     if "usage.read" not in await user_permissions(session, user):
         filters.append(_visible_requests(user))
@@ -3532,6 +3642,8 @@ def _request_filters(
     warning: ResponseWarning | None = None,
     system_prompt_hash: str | None = None,
     api_key_id: UUID | None = None,
+    completion_outcome: CompletionOutcomeFilter | None = None,
+    soft_refusal: bool | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -3601,6 +3713,28 @@ def _request_filters(
         )
     if warning is not None:
         filters.append(RequestLog.details.contains({"warnings": [warning]}))
+    if completion_outcome is not None:
+        outcome = RequestLog.details["completion_outcome"].as_string()
+        filters.append(
+            outcome.is_(None)
+            if completion_outcome == "none"
+            else outcome == completion_outcome
+        )
+    if soft_refusal is not None:
+        lifecycle = aliased(RequestLifecycle)
+        filters.append(
+            select(1)
+            .where(
+                lifecycle.organization_id == tenant_id,
+                lifecycle.request_id == RequestLog.request_id,
+                lifecycle.lifecycle_metadata["response_analysis"]["refusal"][
+                    "soft_refusal"
+                ].as_string()
+                == str(soft_refusal).lower(),
+            )
+            .correlate(RequestLog)
+            .exists()
+        )
     return filters
 
 
@@ -3637,6 +3771,7 @@ def _request_unpriced_spend(tenant_id: UUID):
 
 def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
     lifecycle_status = _request_lifecycle_status_expression()
+    outcome = RequestLog.details["completion_outcome"].as_string()
     usage_estimated = RequestLog.details["usage_estimated"].as_boolean().is_(True)
     spend = _request_settled_spend(tenant_id)
     spend_denied = (
@@ -3670,6 +3805,13 @@ def _request_summary_statement(tenant_id: UUID, filters: list[Any]):
                 )
             )
             .label("unknown"),
+            *(
+                func.count(RequestLog.id)
+                .filter(outcome == name)
+                .label(f"outcome_{name}")
+                for name in OUTCOMES
+            ),
+            func.count(RequestLog.id).filter(outcome.is_(None)).label("outcome_none"),
             func.coalesce(
                 func.sum(case((usage_estimated, 0), else_=RequestLog.prompt_tokens)),
                 0,
@@ -3726,6 +3868,12 @@ def _request_activity_summary(row: Any) -> RequestActivitySummaryView:
         technical_failures=technical_failures,
         policy_rejections=status_counts["rejected"] + int(row.policy_failed or 0),
         status_counts=RequestActivityStatusCountsView(**status_counts),
+        outcome_counts=RequestOutcomeCountsView(
+            **{
+                name: int(getattr(row, f"outcome_{name}") or 0)
+                for name in (*OUTCOMES, "none")
+            }
+        ),
     )
 
 
