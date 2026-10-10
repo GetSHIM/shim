@@ -440,7 +440,9 @@ def scrub_payload(
         )
         verification_map.update(found)
         unmasked.update(kept)
-        pii_cache[value] = protected(found, kept)
+        # An identifier's verdict is built-in types only, never tenant terms.
+        if content is None:
+            pii_cache[value] = protected(found, kept)
         text_cache[value] = scrubbed
         return scrubbed
 

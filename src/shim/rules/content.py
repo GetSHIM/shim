@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 import re
@@ -21,10 +22,10 @@ from pydantic_core import PydanticCustomError
 import regex
 
 from shim.observability.metrics import LABEL_VALUES
-from shim.rules.evaluate import strongest
-from shim.rules.model import Rule, RuleSet
+from shim.rules.model import ACTION_RANK, Rule, RuleSet
 from shim.rules.patterns import PatternTimeout, SearchBudget, compile_safe
 from shim.rules.tr_suffixes import TR_SUFFIXES
+
 
 _WORD = r"[\p{L}\p{N}_]"
 _START = rf"(?<!{_WORD})"
@@ -162,6 +163,32 @@ class ContentHit:
     start: int
     end: int
     rules: tuple[Rule, ...]
+
+    @property
+    def strength(self) -> int:
+        """The strongest enforced action's rank; a monitor-state rule acts on nothing."""
+
+        return max(
+            (
+                ACTION_RANK[rule.action]
+                for rule in self.rules
+                if rule.state == "enforced"
+            ),
+            default=0,
+        )
+
+    @property
+    def label(self) -> str | None:
+        """The placeholder type when any enforced rule masks, even if another holds."""
+
+        masking = [
+            rule
+            for rule in self.rules
+            if rule.state == "enforced" and rule.action == "mask"
+        ]
+        return (
+            min(masking, key=lambda rule: rule.id).match["label"] if masking else None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,21 +351,9 @@ class ContentRules:
             for rule in self.rules
         )
 
-    def record(self, hit: ContentHit, value: str) -> str | None:
-        """Count the value for every rule of the hit; the label to mask it with, or None.
-
-        Only an enforced rule acts, the strongest action wins, and block or
-        require_approval keep the text for the decision point to refuse or hold.
-        """
-
+    def count(self, hit: ContentHit, value: str) -> None:
         for rule in hit.rules:
             self.values.setdefault(rule.id, set()).add(value)
-        enforced = [rule for rule in hit.rules if rule.state == "enforced"]
-        if strongest(rule.action for rule in enforced) != "mask":
-            return None
-        return min(
-            (rule for rule in enforced if rule.action == "mask"), key=lambda r: r.id
-        ).match["label"]
 
     def search(self, text: str) -> list[ContentHit]:
         matchers = self.rule_set.matchers
@@ -356,7 +371,16 @@ class ContentRules:
                     for match in found
                     if match.end() > match.start()
                 )
-        return hits
+        # One hit per span, with every rule that found it.
+        spans: dict[tuple[int, int], dict[str, Rule]] = {}
+        for hit in hits:
+            spans.setdefault((hit.start, hit.end), {}).update(
+                (rule.id, rule) for rule in hit.rules
+            )
+        return [
+            ContentHit(start, end, tuple(rules.values()))
+            for (start, end), rules in spans.items()
+        ]
 
 
 def content_rules(rule_set: RuleSet | None, in_scope) -> ContentRules | None:
@@ -372,22 +396,21 @@ def content_rules(rule_set: RuleSet | None, in_scope) -> ContentRules | None:
     return ContentRules(rule_set, rules) if rules else None
 
 
-def resolve_overlaps(hits: list[ContentHit]) -> list[ContentHit]:
-    """Identical spans merge their rules; otherwise the longer span wins, then the earlier."""
+def first_fit(
+    items: Iterable[Any],
+    key: Callable[[Any], Any],
+    keep: Callable[[Any], bool] = lambda _item: False,
+) -> list[Any]:
+    """The spans, in `key` order, that overlap none taken before; `keep` ones always."""
 
-    merged: dict[tuple[int, int], dict[str, Rule]] = {}
-    for hit in hits:
-        merged.setdefault((hit.start, hit.end), {}).update(
-            (rule.id, rule) for rule in hit.rules
-        )
-    accepted: list[ContentHit] = []
-    # ponytail: O(n²) over one string's hits; an interval index if hit counts grow.
-    for (start, end), rules in sorted(
-        merged.items(), key=lambda item: (item[0][0] - item[0][1], item[0][0])
-    ):
-        if not any(start < kept.end and kept.start < end for kept in accepted):
-            accepted.append(ContentHit(start, end, tuple(rules.values())))
-    return sorted(accepted, key=lambda hit: hit.start)
+    taken: list[Any] = []
+    # ponytail: O(n²) over one string's detections; an interval index if counts grow.
+    for item in sorted(items, key=key):
+        if keep(item) or not any(
+            item.start < other.end and other.start < item.end for other in taken
+        ):
+            taken.append(item)
+    return taken
 
 
 def count_rule_matches(rule_set: RuleSet, text: str) -> dict[str, int]:
@@ -411,8 +434,9 @@ def count_rule_matches(rule_set: RuleSet, text: str) -> dict[str, int]:
         else len(
             {
                 prepared[hit.start : hit.end]
-                for hit in resolve_overlaps(
-                    [hit for hit in hits if any(o.id == rule.id for o in hit.rules)]
+                for hit in first_fit(
+                    (hit for hit in hits if any(o.id == rule.id for o in hit.rules)),
+                    key=lambda hit: (hit.start - hit.end, hit.start),
                 )
             }
         )

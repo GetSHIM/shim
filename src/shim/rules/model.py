@@ -25,6 +25,18 @@ RuleAction = Literal[
 ]
 RuleState = Literal["monitor", "enforced"]
 
+# How strongly an action protects. The stronger enforced action wins an overlap, and
+# moving down this order relaxes a rule. set and route rank with mask.
+ACTION_RANK: dict[RuleAction, int] = {
+    "monitor": 0,
+    "warn": 1,
+    "mask": 2,
+    "set": 2,
+    "route": 2,
+    "require_approval": 3,
+    "block": 4,
+}
+
 LIMITS: dict[str, Any] = {
     "rules_per_set": 100,
     "scope_entries": 100,

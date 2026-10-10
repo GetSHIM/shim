@@ -6,14 +6,12 @@ from uuid import UUID
 import pytest
 
 from shim.gateway.kernel.result import PreparedInference
-from shim.rules import Rule, RuleMatch, RuleSet, in_scope
+from shim.rules import ACTION_RANK, Rule, RuleMatch, RuleSet, in_scope
 from shim.rules.evaluate import (
-    entity_action,
     match_records,
     ordered_matches,
     record_rule_verdicts,
     settle_matches,
-    strongest,
 )
 from shim.rules.kinds import load_rule_set
 
@@ -91,15 +89,16 @@ def test_an_unknown_deployment_kind_counts_as_external_only() -> None:
     )
 
 
-def test_the_strongest_action_wins_and_a_base_action_is_never_weakened() -> None:
-    assert strongest(["warn", "block", "mask"]) == "block"
-    assert strongest(["monitor", "require_approval", "mask"]) == "require_approval"
-    assert strongest(["set"]) is None
-    assert entity_action("block", ["monitor", "mask"]) == "block"
-    assert entity_action("mask", ["warn"]) == "mask"
-    assert entity_action("monitor", ["mask"]) == "mask"
-    assert entity_action("off", ["monitor"]) == "monitor"
-    assert entity_action("mask_last4", []) == "mask_last4"
+def test_actions_rank_block_approval_mask_warn_monitor() -> None:
+    assert sorted(ACTION_RANK, key=ACTION_RANK.__getitem__) == [
+        "monitor",
+        "warn",
+        "mask",
+        "set",
+        "route",
+        "require_approval",
+        "block",
+    ]
 
 
 def _match(

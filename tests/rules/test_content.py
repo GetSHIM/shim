@@ -10,7 +10,7 @@ from shim.rules import RuleSetError, validate_rule_set
 from shim.rules.content import (
     ContentHit,
     count_rule_matches,
-    resolve_overlaps,
+    first_fit,
     turkish_fold,
 )
 from shim.rules.patterns import PatternTimeout
@@ -205,9 +205,12 @@ def test_only_the_term_is_the_match_and_the_longest_term_wins() -> None:
     found = content.content_rules(rule_set, lambda _rule: True)
     assert found is not None
 
-    hits = resolve_overlaps(found.search("Atlasın raporu, Atlas Projesi"))
+    hits = first_fit(
+        found.search("Atlasın raporu, Atlas Projesi"),
+        key=lambda hit: (hit.start - hit.end, hit.start),
+    )
 
-    assert [(hit.start, hit.end) for hit in hits] == [(0, 5), (16, 27)]
+    assert sorted((hit.start, hit.end) for hit in hits) == [(0, 5), (16, 27)]
 
 
 def test_two_rules_listing_one_term_both_count_it() -> None:
@@ -326,25 +329,45 @@ def test_a_search_that_times_out_counts_minus_one(monkeypatch) -> None:
     ) == {"words": 1, "codes": -1}
 
 
-def test_overlapping_hits_keep_the_longer_then_the_earlier_and_merge_equal_spans() -> (
-    None
-):
-    one, two = _set(_term("Atlas", rule_id="one"), _term("Heron", rule_id="two")).rules
+def test_a_span_found_by_several_rules_is_one_hit_with_every_rule() -> None:
+    found = content.content_rules(
+        _set(
+            _pattern("one", regexes=[r"PRJ-\d+"]),
+            _pattern("two", templates=["PRJ-####"]),
+        ),
+        lambda _rule: True,
+    )
+    assert found is not None
 
-    kept = resolve_overlaps(
-        [
-            ContentHit(0, 5, (one,)),
-            ContentHit(2, 9, (two,)),
-            ContentHit(10, 14, (one,)),
-            ContentHit(10, 14, (two,)),
-            ContentHit(12, 16, (one,)),
-        ]
+    [hit] = found.search("PRJ-1234")
+
+    assert (hit.start, hit.end, [rule.id for rule in hit.rules]) == (
+        0,
+        8,
+        ["one", "two"],
     )
 
-    assert [(hit.start, hit.end, [rule.id for rule in hit.rules]) for hit in kept] == [
-        (2, 9, ["two"]),
-        (10, 14, ["one", "two"]),
+
+def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
+    one, two = _set(_term("Atlas", rule_id="one"), _term("Heron", rule_id="two")).rules
+    hits = [
+        ContentHit(0, 5, (one,)),
+        ContentHit(2, 9, (two,)),
+        ContentHit(10, 14, (one,)),
+        ContentHit(12, 16, (one,)),
     ]
+
+    def longer_first(hit):
+        return (hit.start - hit.end, hit.start)
+
+    assert [(hit.start, hit.end) for hit in first_fit(hits, key=longer_first)] == [
+        (2, 9),
+        (10, 14),
+    ]
+    assert [
+        (hit.start, hit.end)
+        for hit in first_fit(hits, key=longer_first, keep=lambda hit: hit.start == 0)
+    ] == [(2, 9), (0, 5), (10, 14)]
 
 
 def test_the_matcher_stays_fast_at_the_set_limits() -> None:

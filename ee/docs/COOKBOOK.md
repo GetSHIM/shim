@@ -305,16 +305,19 @@ Two rules, a term list and a project-code template:
 
 Not matched: consonant softening (`kitap`, `kitabı`), derivations (`Atlasçılık`),
 misspellings, a term inside a longer word (`XAtlas`), a short term with an ending
-but no apostrophe (`Ata` does not find `Atada`), and anything inside a value a
-built-in type already found (`atlas@example.com` stays an e-mail address). Tool
+but no apostrophe (`Ata` does not find `Atada`), and a masking term inside a
+value a built-in type masks (`atlas@example.com` stays an e-mail address; a
+`block` or `require_approval` term there still acts). Tool
 names, ids and other protocol identifiers are not searched. The `label` names
 the placeholder, `<LABEL_…>`, which the provider sees: keep it generic.
 
 An enforced `mask` replaces the value with a placeholder that the answer gets
 back; `block` refuses the request with 400 `RULE_BLOCKED` before any provider
 call; `warn` adds `RULE_WARN`; `monitor`, or any rule in `state: "monitor"`, only
-counts. While an enforced `mask` or `block` rule applies to a request, images
-and files in it are refused, since they cannot be searched.
+counts. Overlapping matches follow the
+[overlap rule](POLICY_DECISIONS.md#tenant-rules). While an enforced `mask`,
+`block` or `require_approval` rule applies to a request, images and files in it
+are refused, since they cannot be searched.
 
 Monitor first: a new rule must start in `state: "monitor"`, where a match is
 recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list

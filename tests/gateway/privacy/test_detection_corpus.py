@@ -43,16 +43,22 @@ def _actual(case: dict[str, Any]) -> set[Detection]:
         config.get("pii_config"), config.get("entity_actions")
     )
     rule_set = validate_rule_set({"revision": 1, "rules": config.get("rules", [])})
+    labels = {rule.id: rule.match["label"] for rule in rule_set.rules}
     text = case["text"]
-    return {
-        (
-            finding["type"],
-            text[finding["start"] : finding["end"]],
-            finding.get("rule_id"),
-        )
-        for finding in PIIScrubberService().analyze(
-            text, actions, content_rules(rule_set, lambda _rule: True)
-        )
+    scrubber = PIIScrubberService()
+    built_in = {
+        (finding["type"], text[finding["start"] : finding["end"]], None)
+        for finding in scrubber.analyze(text, actions)
+    }
+    # Rule detections are what the privacy stage counts for each rule.
+    content = content_rules(rule_set, lambda _rule: True)
+    if content is None:
+        return built_in
+    scrubber.scrub(text, actions, content=content)
+    return built_in | {
+        (labels[rule_id], value, rule_id)
+        for rule_id, values in content.values.items()
+        for value in values
     }
 
 

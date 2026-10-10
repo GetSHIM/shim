@@ -91,12 +91,22 @@ available; `GET /rules` lists the others with `available: false` and the reason.
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
 characters removed, NFKC), and only for the rules in scope for the request.
-A rule match loses every overlap with a built-in detection, so built-in masking
-is never weakened; between rule matches the longer span wins, then the earlier.
-An enforced `mask` match is replaced by a `<LABEL_…>` placeholder and counted in
-`pii_entities` under its label; `block` and `require_approval` matches keep the
-text for the decision point. Rule matches never enter `monitored_entities` or
-`blocked_entities`. Protocol identifiers are not searched.
+Every term of a rule in scope is found, a shorter one inside a longer one too;
+a rule out of scope or in state `monitor` never hides one that is enforced. Where
+matches overlap, each other and built-in detections, the strongest enforced
+action wins (`block` > `require_approval` > `mask` > `warn` > `monitor`, where a
+`monitor`-state rule counts as `monitor` and a built-in type as its own action),
+then a built-in type, then the longer span, then the earlier. Masking never
+yields: every built-in mask stays, and a rule match with any enforced `mask` rule
+is masked even when another rule on it holds or blocks, joining any mask it
+overlaps into one placeholder (typed by the built-in value, else by the longer
+match). So a `block` term inside a masked value still refuses, a held term
+inside an e-mail address is held and the address still masked, and a term
+inside a value a built-in type only monitors is masked. An enforced `mask` match
+is replaced by a `<LABEL_…>` placeholder and counted in `pii_entities` under its
+label; `block` and `require_approval` matches keep the text for the decision
+point. Rule matches never enter `monitored_entities` or `blocked_entities`.
+Protocol identifiers are not searched, and a term in one never refuses a request.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

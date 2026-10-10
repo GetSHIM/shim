@@ -9,34 +9,11 @@ import json
 from typing import TYPE_CHECKING, Literal
 
 from shim.observability.metrics import RULE_MATCHES_TOTAL, bounded_label
-from shim.privacy.policies import EntityAction
-from shim.rules.model import Rule, RuleAction, RuleMatch, UnusableRule
+from shim.rules.model import Rule, RuleMatch, UnusableRule
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
 
-# The strongest action wins when several enforced rules match; set and route stand alone.
-ACTION_ORDER: tuple[RuleAction, ...] = (
-    "monitor",
-    "warn",
-    "mask",
-    "require_approval",
-    "block",
-)
-_ENTITY_ORDER: tuple[EntityAction, ...] = (
-    "off",
-    "monitor",
-    "mask_last4",
-    "mask",
-    "block",
-)
-_RULE_TO_ENTITY: dict[RuleAction, EntityAction] = {
-    "monitor": "monitor",
-    "warn": "monitor",
-    "mask": "mask",
-    "block": "block",
-    "require_approval": "block",
-}
 MAX_RECORDED_MATCHES = 32
 Outcome = Literal["allow", "mask", "deny", "error"]
 
@@ -64,23 +41,6 @@ def in_scope(
     return all(not allowed or value in allowed for allowed, value in checks) and (
         not scope.tags or not set(scope.tags).isdisjoint(tags)
     )
-
-
-def strongest(actions: Iterable[RuleAction]) -> RuleAction | None:
-    ordered = [action for action in actions if action in ACTION_ORDER]
-    return max(ordered, key=ACTION_ORDER.index) if ordered else None
-
-
-def entity_action(
-    base: EntityAction, rule_actions: Iterable[RuleAction]
-) -> EntityAction:
-    """A rule can only strengthen the tenant's base action for a built-in type, never weaken it."""
-
-    candidates = [
-        base,
-        *(_RULE_TO_ENTITY[a] for a in rule_actions if a in _RULE_TO_ENTITY),
-    ]
-    return max(candidates, key=_ENTITY_ORDER.index)
 
 
 def ordered_matches(matches: Sequence[RuleMatch]) -> list[RuleMatch]:

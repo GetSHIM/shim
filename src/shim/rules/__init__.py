@@ -4,6 +4,7 @@ from shim.rules.content import count_rule_matches
 from shim.rules.evaluate import in_scope, match_records
 from shim.rules.kinds import KINDS, load_rule_set, validate_rule_set
 from shim.rules.model import (
+    ACTION_RANK,
     LIMITS,
     Rule,
     RuleAction,
@@ -17,6 +18,7 @@ from shim.rules.model import (
 )
 
 __all__ = [
+    "ACTION_RANK",
     "KINDS",
     "LIMITS",
     "Rule",

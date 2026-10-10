@@ -1305,3 +1305,58 @@ async def test_a_stored_rule_this_build_cannot_run_fails_closed_only_when_enforc
     [line] = watch_lines
     assert "rule_matches" not in line
     assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+def _terms(*rules: tuple[str, str, str]):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": rule_id,
+                    "name": "n",
+                    "kind": "term",
+                    "action": action,
+                    "state": "enforced",
+                    "match": {"terms": [term]},
+                }
+                for rule_id, action, term in rules
+            ],
+        },
+        approval_available=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_block_inside_a_masked_term_still_refuses(monkeypatch) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _terms(("tower", "block", "Kule"), ("site", "mask", "Şişli Kule")),
+        "chat",
+        text="Şişli Kule'de toplantı",
+    )
+
+    assert (response.status_code, response.headers["x-shim-rule-id"]) == (400, "tower")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_approved_term_that_a_rule_masks_goes_out_masked(monkeypatch) -> None:
+    gate = _Gate("approved")
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _terms(("held", "require_approval", "Atlas"), ("names", "mask", "Atlas")),
+        "chat",
+        text="Atlas raporu",
+        gate=gate,
+    )
+
+    assert response.status_code == 200 and gate.requests[0].rule_ids == ("held",)
+    [sent] = calls
+    assert "Atlas" not in sent.content.decode() and "<TERM_" in sent.content.decode()
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["rule.names"] == "RULE_MASKED"
+    assert verdicts["rule.held"] == "RULE_APPROVED"
