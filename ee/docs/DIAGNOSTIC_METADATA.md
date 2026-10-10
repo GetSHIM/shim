@@ -212,6 +212,17 @@ line per request, `event: "response_analysis"`, with the same object as
 `results`. `shim_response_analysis_total{analyzer, result}` counts each run as
 `ok`, `none` or `error`.
 
+`rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
+matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
+when the rule's evaluation failed), blocks first and then by id, at most 32;
+`rule_matches_truncated` says whether more matched. Both are written with the
+privacy facts, so a refused request has them too. They are `[]` and `false`
+when the tenant has rules and none matched, and absent for a tenant without
+rules. A match is ids and counts, never the matched text. The request list and
+its CSV (compact JSON) show it, the community JSONL event carries it, and
+`GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
+rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+
 ## Responses continuation markers
 
 Enterprise writes an encrypted continuation marker to Redis for every Responses
@@ -248,7 +259,7 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`), `[]` when none. It is in the lifecycle metadata at
+`CACHE_NOT_APPLIED`, `RULE_WARN`), `[]` when none. It is in the lifecycle metadata at
 finalization, the analytics row, the request list and its CSV (comma-separated),
 and the community JSONL event. `GET /api/v1/management/requests?warning=<code>`
 and the export filter on one code. Rows written before it existed read as null.

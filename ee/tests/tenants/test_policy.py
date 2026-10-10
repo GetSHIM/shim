@@ -12,6 +12,7 @@ import pytest
 import shim_enterprise.tenants.policy as policy_module
 from shim.gateway.contracts.ids import ApiKeyId, ProviderId, TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
+from shim.rules import RuleSet
 from shim_enterprise.tenants.models import ApiKey
 from shim_enterprise.tenants.policy import (
     ResolvedTenantSettings,
@@ -46,6 +47,7 @@ async def test_enterprise_policy_session_and_exact_values() -> None:
         tier="managed",
         cost_center="engineering",
         team="platform",
+        team_id=UUID("44444444-4444-4444-4444-444444444444"),
     )
     query_result = SimpleNamespace(scalar_one_or_none=lambda: api_key)
     session = SimpleNamespace(execute=AsyncMock(return_value=query_result))
@@ -79,6 +81,7 @@ async def test_enterprise_policy_session_and_exact_values() -> None:
                 tenant_id=tenant_id,
                 pii_config=pii_config,
                 tier_definition=tier_definition,
+                rules=(rules := RuleSet(revision=2, rules=())),
             )
         )
     )
@@ -109,6 +112,8 @@ async def test_enterprise_policy_session_and_exact_values() -> None:
     assert resolved.request_policy.tier == "managed"
     assert resolved.request_policy.cost_center == "engineering"
     assert resolved.request_policy.team == "platform"
+    assert resolved.request_policy.team_id == "44444444-4444-4444-4444-444444444444"
+    assert resolved.rules is rules
     assert resolved.pii_config == pii_config
     statement = str(session.execute.await_args.args[0])
     assert "api_keys.is_active IS true" in statement
@@ -125,6 +130,7 @@ async def test_enterprise_policy_preserves_missing_tier_defaults(
         tier="managed",
         cost_center=None,
         team=None,
+        team_id=None,
     )
     load_api_key = AsyncMock(return_value=api_key)
     monkeypatch.setattr(policy_module, "load_api_key_for_principal", load_api_key)
@@ -243,7 +249,7 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         response_scan="count",
     )
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: row))
+        execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (row, 0)))
     )
     cache = _PolicyCache(None)
     api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
@@ -251,6 +257,7 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
     resolved = await policy_module.TenantPolicyService(cache).resolve(api_key, session)
 
     assert cache.stored == {
+        "rules_revision": 0,
         **_SWITCHES,
         "entity_actions": {"EMAIL_ADDRESS": "monitor"},
         "placeholder_mode": "stable",
@@ -296,7 +303,11 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     api_key = SimpleNamespace(
-        key_hash="key-hash", tier="managed", cost_center=None, team=None
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+        team_id=None,
     )
     monkeypatch.setattr(
         policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
@@ -371,6 +382,7 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
         tier="managed",
         cost_center=None,
         team=None,
+        team_id=None,
     )
     monkeypatch.setattr(
         policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)

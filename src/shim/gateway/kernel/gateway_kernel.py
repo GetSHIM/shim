@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 from starlette.responses import Response, JSONResponse
@@ -37,6 +38,8 @@ from shim.observability.metrics import (
 )
 from shim.observability.tracing import start_span
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.rules.approval import ApprovalGate, ApprovalRequest
+from shim.rules.evaluate import rule_version, settle_matches
 
 from .runtime import run_stage
 from .result import PreparedInference
@@ -63,6 +66,7 @@ class GatewayKernel:
         output_hash_salt: str | None = None,
         prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
         | None = None,
+        approval_gate: ApprovalGate | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -81,6 +85,7 @@ class GatewayKernel:
         self.chain_store = chain_store
         self.policy_resolver = policy_resolver
         self.prepare_inference = prepare_inference
+        self.approval_gate = approval_gate
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -206,6 +211,8 @@ class GatewayKernel:
             raise
 
         stream_session: StreamSession | None = None
+        # A reference, not a copy: the approval gate digests what entered privacy.
+        admitted_payload = prepared.payload
         try:
             prepared = await run_stage(
                 PrivacyStage(
@@ -226,6 +233,12 @@ class GatewayKernel:
                         f"{', '.join(sorted(prepared.privacy.blocked_entities))}.",
                     },
                 )
+            if prepared.rules is not None and prepared.rules.rules:
+                prepared, refusal = await self._decide_rules(
+                    prepared, invocation, admitted_payload
+                )
+                if refusal is not None:
+                    raise refusal
             if prepared.protocol == "count_tokens":
                 await self.usage.record_token_count(prepared, None)
 
@@ -317,6 +330,96 @@ class GatewayKernel:
                 await self.usage.reject(prepared)
             raise
 
+    async def _decide_rules(
+        self,
+        prepared: PreparedInference,
+        invocation: GatewayInvocation,
+        admitted_payload: Mapping[str, Any],
+    ) -> tuple[PreparedInference, HTTPException | None]:
+        """The decision point: a tenant rule block, then the approval gate."""
+
+        blocked, approval = settle_matches(prepared)
+        counting = prepared.protocol == "count_tokens"
+        if approval and not blocked and not counting and self.approval_gate is None:
+            # A cached set can still hold such a rule after the gate went away: fail closed.
+            blocked = approval
+            _rule_verdicts(prepared, approval, "deny", "RULE_BLOCKED")
+        if blocked:
+            if not counting:
+                await self.usage.record_privacy(prepared)
+            return prepared, HTTPException(
+                status_code=400,
+                detail={
+                    "code": "RULE_BLOCKED",
+                    "message": f"Request blocked by tenant rule {blocked[0]}.",
+                    "param": blocked[0],
+                },
+                headers={"X-Shim-Rule-Id": blocked[0]},
+            )
+        if not approval:
+            return prepared, None
+        first = approval[0]
+        if counting:
+            _rule_verdicts(prepared, approval, "deny", "APPROVAL_REQUIRED")
+            return prepared, HTTPException(
+                status_code=403,
+                detail={
+                    "code": "APPROVAL_REQUIRED",
+                    "message": "Token counting is not available for content that "
+                    f"needs approval under tenant rule {first}.",
+                },
+                headers={"X-Shim-Rule-Id": first, "x-should-retry": "false"},
+            )
+        assert self.approval_gate is not None
+        presented = (invocation.headers.get("x-shim-approval-id") or "").strip()
+        request = ApprovalRequest(
+            rule_ids=tuple(approval),
+            presented_id=presented if 0 < len(presented) <= 64 else None,
+            admitted_payload=admitted_payload,
+        )
+        try:
+            decision = await self.approval_gate.check(prepared, request)
+        except Exception as exc:
+            logger.warning("Approval gate failed type=%s", type(exc).__name__)
+            _rule_verdicts(prepared, approval, "error", "APPROVAL_UNAVAILABLE")
+            await self.usage.record_privacy(prepared)
+            return prepared, HTTPException(
+                status_code=503,
+                detail={
+                    "code": "APPROVAL_UNAVAILABLE",
+                    "message": "The approval store could not be reached.",
+                },
+                headers={"Retry-After": "5", "X-Shim-Rule-Id": first},
+            )
+        prepared = replace(prepared, approval_id=decision.approval_id)
+        if decision.outcome == "approved":
+            _rule_verdicts(prepared, approval, "allow", "RULE_APPROVED")
+            return prepared, None
+        code, message = {
+            "required": (
+                "APPROVAL_REQUIRED",
+                f"Request needs approval under tenant rule {first}. After an "
+                f"administrator approves {decision.approval_id}, send the same "
+                f"request again with X-Shim-Approval-Id: {decision.approval_id}.",
+            ),
+            "rejected": (
+                "APPROVAL_REJECTED",
+                f"Request {decision.approval_id} was rejected by an administrator.",
+            ),
+            "queue_full": (
+                "APPROVAL_QUEUE_FULL",
+                "Too many requests are waiting for approval.",
+            ),
+        }[decision.outcome]
+        _rule_verdicts(prepared, approval, "deny", code)
+        await self.usage.record_privacy(prepared)
+        headers = {"X-Shim-Rule-Id": first, "x-should-retry": "false"}
+        detail: dict[str, Any] = {"code": code, "message": message}
+        if decision.approval_id is not None and decision.outcome != "queue_full":
+            headers["X-Shim-Approval-Id"] = decision.approval_id
+            detail["param"] = decision.approval_id
+        return prepared, HTTPException(status_code=403, detail=detail, headers=headers)
+
     async def _fail_safely(
         self,
         prepared: PreparedInference,
@@ -329,3 +432,19 @@ class GatewayKernel:
             raise
         except Exception as exc:
             logger.error("Usage recovery failed type=%s", type(exc).__name__)
+
+
+def _rule_verdicts(
+    prepared: PreparedInference,
+    rule_ids: list[str],
+    outcome: Literal["allow", "deny", "error"],
+    reason_code: str,
+) -> None:
+    for rule_id in rule_ids:
+        prepared.record_verdict(
+            f"rule.{rule_id}",
+            stage="rules",
+            outcome=outcome,
+            reason_code=reason_code,
+            policy_version=rule_version(prepared, rule_id),
+        )

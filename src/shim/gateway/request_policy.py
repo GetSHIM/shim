@@ -15,6 +15,7 @@ from shim.gateway.contracts.ids import TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.local_auth import LOCAL_API_KEY_ID, LOCAL_TENANT_ID
 from shim.privacy.policies import EntityAction, effective_pii_config
+from shim.rules.model import RuleSet
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class RequestPolicyContext:
     tier: str
     cost_center: str | None = None
     team: str | None = None
+    team_id: str | None = None
 
 
 class ResolvedRequestPolicy(FrozenContractModel):
@@ -38,6 +40,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
+    rules: RuleSet | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
 

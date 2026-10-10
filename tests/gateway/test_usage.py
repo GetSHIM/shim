@@ -48,6 +48,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         deployment_kind="unknown",
         response_scan="off",
         response_analysis=(),
+        rules=None,
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -78,6 +79,44 @@ def _terminal(*, model: str = "gpt-5.6-luna") -> StreamFinalization:
         error_message=None,
         shim_latency_ms=12,
     )
+
+
+@pytest.mark.asyncio
+async def test_an_evaluated_rule_set_writes_its_matches_in_order_and_capped() -> None:
+    from shim.rules import Rule, RuleMatch, RuleSet
+
+    rule = Rule(id="r", name="n", kind="term", action="block", state="monitor")
+    events = []
+    for matches in (
+        [],
+        [
+            RuleMatch(
+                rule_id=f"r{index:02d}",
+                kind="term",
+                action=action,
+                state=state,
+                count=1,
+            )
+            for index, action, state in [
+                (index, "warn", "monitor") for index in range(33)
+            ]
+            + [(99, "block", "enforced")]
+        ],
+    ):
+        stream = StringIO()
+        prepared = _prepared()
+        prepared.rules = RuleSet(revision=1, rules=(rule,))
+        prepared.rule_matches = matches
+        lifecycle = LocalUsageLifecycle(stream)
+        await lifecycle.admit(prepared, prepared.admission)
+        await lifecycle.finalize(prepared, _terminal())
+        await lifecycle.aclose()
+        events.append(json.loads(stream.getvalue()))
+
+    empty, full = events
+    assert (empty["rule_matches"], empty["rule_matches_truncated"]) == ([], False)
+    assert len(full["rule_matches"]) == 32 and full["rule_matches_truncated"] is True
+    assert [match["rule_id"] for match in full["rule_matches"][:2]] == ["r99", "r00"]
 
 
 @pytest.mark.asyncio

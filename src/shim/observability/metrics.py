@@ -110,6 +110,21 @@ LABEL_VALUES: Final = MappingProxyType(
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
+        "rule_kind": frozenset(
+            {
+                "term",
+                "pattern",
+                "record_set",
+                "destination",
+                "request_limit",
+                "parameter_pin",
+                "route",
+            }
+        ),
+        "rule_action": frozenset(
+            {"monitor", "warn", "mask", "block", "require_approval", "set", "route"}
+        ),
+        "rule_state": frozenset({"monitor", "enforced"}),
     }
 )
 
@@ -225,6 +240,11 @@ RESPONSE_ANALYSIS_TOTAL = Counter(
     "shim_response_analysis_total",
     "After-answer analyzer runs by analyzer and result (ok, none, error).",
     ("analyzer", "result"),
+)
+RULE_MATCHES_TOTAL = Counter(
+    "shim_rule_matches_total",
+    "Tenant rule matches by kind, action and state.",
+    ("kind", "action", "state"),
 )
 LOCAL_USAGE_DROPPED_TOTAL = Counter(
     "shim_local_usage_dropped_total",
