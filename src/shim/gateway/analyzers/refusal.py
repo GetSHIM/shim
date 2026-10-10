@@ -90,6 +90,7 @@ class RefusalAnalyzer:
 
     name = "refusal"
     version = "1"
+    reads_answer = True
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any] | None:
         if ctx.completion_outcome != "complete" or not ctx.answer_text.strip():

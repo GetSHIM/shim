@@ -458,9 +458,16 @@ Analyzers run in the order shim defines, after the last byte of a JSON answer or
 after a stream ended, in one background task shared with
 `PII_RESPONSE_SCAN=count`; the answer, its first token and its timing are
 unchanged. They see the masked request and up to 1,000,000 characters of the
-answer and its tool calls. Results hold counts, labels, ids, protocol field
-names and JSON pointers, never request or answer text and never a restored
-value. An analyzer that fails, or returns anything but a JSON object, records
+answer text and its tool calls. The answer text is the same for a JSON answer
+and a stream: the text the model wrote, without refusal fields, reasoning,
+Gemini thought parts or tool-call arguments, which come as separate calls. An
+analyzer that reads the answer (`language`, `schema`, `refusal`) does not run
+for a request that carried personal data, that is any detected value, masked or
+monitored: nothing derived from such an answer is recorded. `shape` reads only
+the masked request and still runs. The answer is extracted and, for a stream,
+kept only while an analyzer that reads it runs. Results hold counts, labels,
+ids, protocol field names and JSON pointers, never request or answer text and
+never a restored value. An analyzer that fails, or returns anything but a JSON object, records
 `{"error": true}`. A result larger than 4,096 characters keeps its counts and
 digests and records its lists as `null`; one still larger records
 `{"error": true, "reason": "too_large"}`. The others still run either way. A run

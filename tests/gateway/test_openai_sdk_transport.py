@@ -1670,6 +1670,7 @@ async def test_answers_are_byte_identical_with_an_analyzer_on_and_off(
     class Probe:
         name = "probe"
         version = "1"
+        reads_answer = True
 
         def analyze(self, ctx):
             return {"answer_characters": len(ctx.answer_text)}
@@ -1738,18 +1739,24 @@ async def test_answers_are_byte_identical_with_an_analyzer_on_and_off(
                         json={
                             "model": "gpt-5.6-luna",
                             "stream": stream,
-                            "messages": [{"role": "user", "content": "hello"}],
+                            "messages": [{"role": "user", "content": content}],
                         },
                     )
                 ).content
-                for stream in (False, True)
+                for stream, content in (
+                    (False, "hello"),
+                    (True, "hello"),
+                    # Carries personal data, so nothing reads its answer.
+                    (False, "write to ayse.yilmaz@example.com"),
+                )
             ]
         await outbound.aclose()
         lines[analysis] = [json.loads(line) for line in events.getvalue().splitlines()]
 
     assert bodies[""] == bodies["probe"]
-    assert [line["event"] for line in lines[""]] == ["request", "request"]
+    assert [line["event"] for line in lines[""]] == ["request"] * 3
     assert sorted(line["event"] for line in lines["probe"]) == [
+        "request",
         "request",
         "request",
         "response_analysis",

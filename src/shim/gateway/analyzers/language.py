@@ -157,6 +157,7 @@ class LanguageAnalyzer:
 
     name = "language"
     version = "1"
+    reads_answer = True
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any]:
         request, _, request_words = label(request_text(ctx.payload, ctx.protocol))

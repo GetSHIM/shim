@@ -23,6 +23,7 @@ from shim.gateway.pipeline.admission import candidate_count
 from shim.gateway.pipeline.analysis import (
     AnalysisContext,
     AnalysisToolCall,
+    ResponseAnalyzer,
     run_analyzers,
 )
 from shim.gateway.pipeline.privacy import scan_response
@@ -104,7 +105,7 @@ _SCAN_LANE = _Lane("response-scan")
 _ANALYSIS_LANE = _Lane("response-analysis")
 
 
-# What the after-answer task reads; built only while the scan or an analyzer is on.
+# What the after-answer task reads; built only while the scan or an analyzer runs.
 @dataclass(frozen=True, slots=True)
 class _Answer:
     scan_text: str
@@ -173,11 +174,7 @@ class ResponsePostprocessor:
                 logger.error(
                     "Response privacy record failed type=%s", type(exc).__name__
                 )
-        analyzers = [
-            analyzer
-            for analyzer in ANALYZERS
-            if analyzer.name in prepared.response_analysis
-        ]
+        analyzers = _analyzers(prepared)
         if not analyzers:
             return
         dropped = _ANALYSIS_LANE.full()
@@ -368,13 +365,11 @@ class ResponsePostprocessor:
         record_settled_usage(prepared, terminal.usage)
         await self.usage.finalize(prepared, terminal)
         scan = prepared.response_scan == "count"
-        if lifecycle_status == "completed" and (scan or prepared.response_analysis):
-            text = answer_text(response.payload) if prepared.response_analysis else ""
-            calls = (
-                answer_tool_calls(response.payload)
-                if prepared.response_analysis
-                else ()
-            )
+        analyzers = _analyzers(prepared)
+        if lifecycle_status == "completed" and (scan or analyzers):
+            reads = any(analyzer.reads_answer for analyzer in analyzers)
+            text = answer_text(response.payload) if reads else ""
+            calls = answer_tool_calls(response.payload) if reads else ()
             answer = _Answer(
                 scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
                 if scan
@@ -400,7 +395,8 @@ class ResponsePostprocessor:
         if prepared.admission is None:
             raise ValueError("admission state is required")
         provider_started_at = perf_counter()
-        keep = prepared.response_scan == "count" or bool(prepared.response_analysis)
+        scan = prepared.response_scan == "count"
+        analyzers = _analyzers(prepared)
         meter = StreamMeter(
             provider=str(prepared.provider),
             requested_model=prepared.pricing_model,
@@ -409,7 +405,8 @@ class ResponsePostprocessor:
             prompt_tokens_estimated=prepared.admission.estimated_input_tokens,
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,
-            keep_answer=keep,
+            keep_scan_text=scan,
+            keep_answer=any(analyzer.reads_answer for analyzer in analyzers),
         )
 
         async def record_stream_start() -> None:
@@ -426,14 +423,13 @@ class ResponsePostprocessor:
             )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
-            if keep and terminal.terminal_status == "completed":
-                kept = "".join(meter.answer_text)
+            if (scan or analyzers) and terminal.terminal_status == "completed":
                 # Detached: the stream body ends only after this finalizer returns.
                 self._start_after_answer(
                     prepared,
                     _Answer(
-                        scan_text=kept,
-                        text=kept[:KEPT_ANSWER_CHARACTERS],
+                        scan_text="".join(meter.scan_text),
+                        text="".join(meter.answer_text),
                         truncated=meter.answer_truncated,
                         tool_calls=meter.kept_tool_calls(),
                         completion_outcome=terminal.usage.completion_outcome,
@@ -470,6 +466,22 @@ class ResponsePostprocessor:
             finalization_tasks=self._finalization_tasks,
             timing=prepared.timing,
         )
+
+
+def _analyzers(prepared: PreparedInference) -> tuple[ResponseAnalyzer, ...]:
+    """The request's analyzers in registry order.
+
+    Legal: nothing derived from the answer to a request that carried personal data
+    is stored, so after such a request only analyzers that never read the answer run.
+    """
+
+    carried = prepared.privacy is not None and prepared.privacy.pii_detected
+    return tuple(
+        analyzer
+        for analyzer in ANALYZERS
+        if analyzer.name in prepared.response_analysis
+        and not (carried and analyzer.reads_answer)
+    )
 
 
 def warn_after_answer(

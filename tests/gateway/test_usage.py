@@ -1169,6 +1169,7 @@ class _Probe:
 
     name = "probe"
     version = "7"
+    reads_answer = True
 
     def __init__(self, release=None, fails: bool = False, order=None) -> None:
         self.release = release
@@ -1186,17 +1187,27 @@ class _Probe:
         return {"answer_characters": len(ctx.answer_text), "calls": len(ctx.tool_calls)}
 
 
-def _analysis_processor(monkeypatch, probe, scan=None):
+class _Counter(_Probe):
+    """An analyzer that reads only the request, as `shape` does."""
+
+    name = "counter"
+    reads_answer = False
+
+
+_CARRIED_PII = PrivacyOutcome(
+    action=PrivacyAction.SCRUBBED,
+    pii_detected=True,
+    verification_map={"<EMAIL_ADDRESS_a1b2c3d4>": "private@example.com"},
+)
+
+
+def _analysis_processor(monkeypatch, *probes, scan=None):
     import shim.gateway.pipeline.postprocess as module
 
     processor, prepared, usage = _scan_processor(monkeypatch, scan)
-    monkeypatch.setattr(module, "ANALYZERS", (probe,))
-    prepared.response_analysis = ("probe",)
-    prepared.privacy = PrivacyOutcome(
-        action=PrivacyAction.SCRUBBED,
-        pii_detected=True,
-        verification_map={"<EMAIL_ADDRESS_a1b2c3d4>": "private@example.com"},
-    )
+    monkeypatch.setattr(module, "ANALYZERS", probes)
+    prepared.response_analysis = tuple(probe.name for probe in probes)
+    prepared.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
     usage.record_response_analysis = AsyncMock()
     return processor, prepared, usage
 
@@ -1247,7 +1258,7 @@ async def test_a_json_answer_is_sent_before_its_analysis_runs(monkeypatch) -> No
 
     [context] = probe.seen
     assert context.answer_text == "Write to <EMAIL_ADDRESS_a1b2c3d4>"
-    assert context.restore(context.answer_text) == "Write to private@example.com"
+    assert context.restore(context.answer_text) == context.answer_text
     assert context.tool_calls == (AnalysisToolCall("send", '{"to": "x"}'),)
     assert (context.protocol, context.completion_outcome) == ("chat", "complete")
     assert context.payload is prepared.payload and context.answer_truncated is False
@@ -1270,7 +1281,7 @@ async def test_the_scan_and_the_analyzers_share_one_task_and_fail_alone(
         return {"response_entities": {}, "truncated": False}
 
     processor, prepared, usage = _analysis_processor(
-        monkeypatch, _Probe(fails=failing == "analyzer"), scan
+        monkeypatch, _Probe(fails=failing == "analyzer"), scan=scan
     )
     prepared.response_scan = "count"
     started = []
@@ -1370,9 +1381,114 @@ async def test_a_stream_is_neither_held_nor_changed_by_its_analysis(
     release.set()
     await processor.drain()
     [context] = probe.seen
-    assert context.answer_text == "Write to {}<EMAIL_ADDRESS_a1b2c3d4>"
+    assert context.answer_text == "Write to <EMAIL_ADDRESS_a1b2c3d4>"
     assert context.tool_calls == (AnalysisToolCall("send", "{}"),)
     usage.record_response_analysis.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("carried_pii", [False, True])
+async def test_only_analyzers_that_never_read_the_answer_run_after_personal_data(
+    monkeypatch, carried_pii
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    reader, counter = _Probe(), _Counter()
+    processor, prepared, usage = _analysis_processor(monkeypatch, reader, counter)
+    if carried_pii:
+        prepared.privacy = _CARRIED_PII
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(_ANALYZED_PAYLOAD, None), stream_session=None
+    )
+    await response.background()
+
+    [seen] = counter.seen
+    recorded = usage.record_response_analysis.await_args.args[1]
+    if carried_pii:
+        # Legal: nothing derived from the answer to a request that carried personal data.
+        assert reader.seen == [] and set(recorded) == {"counter", "versions"}
+        assert (seen.answer_text, seen.tool_calls) == ("", ())
+        assert seen.restore("<EMAIL_ADDRESS_a1b2c3d4>") == "private@example.com"
+    else:
+        assert len(reader.seen) == 1 and set(recorded) == {
+            "probe",
+            "counter",
+            "versions",
+        }
+        assert seen.answer_text == "Write to <EMAIL_ADDRESS_a1b2c3d4>"
+
+
+@pytest.mark.asyncio
+async def test_the_answer_is_read_only_when_a_running_analyzer_reads_it(
+    monkeypatch,
+) -> None:
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    extracted: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "answer_text",
+        lambda payload: extracted.append("text") or "",
+    )
+    monkeypatch.setattr(
+        module,
+        "answer_tool_calls",
+        lambda payload: extracted.append("calls") or (),
+    )
+    counter = _Counter()
+    processor, prepared, usage = _analysis_processor(monkeypatch, counter)
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(_ANALYZED_PAYLOAD, None), stream_session=None
+    )
+    await response.background()
+
+    assert extracted == [] and len(counter.seen) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("analyzers", "carried_pii", "scan", "kept", "task"),
+    [
+        (("probe",), False, "off", (False, True), True),
+        (("probe",), True, "off", (False, False), False),
+        (("counter",), False, "off", (False, False), True),
+        (("probe",), True, "count", (True, False), True),
+        ((), False, "count", (True, False), True),
+    ],
+)
+async def test_a_stream_keeps_only_what_its_after_answer_work_reads(
+    monkeypatch, analyzers, carried_pii, scan, kept, task
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderStream
+
+    processor, prepared, usage = _analysis_processor(
+        monkeypatch,
+        _Probe(),
+        _Counter(),
+        scan=lambda *_: {"response_entities": {}, "truncated": False},
+    )
+    prepared.response_analysis = analyzers
+    prepared.response_scan = scan
+    prepared.stream = True
+    if carried_pii:
+        prepared.privacy = _CARRIED_PII
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    session = processor.create_stream_session(prepared)
+    await processor.finalize(
+        prepared, ProviderStream(events(), None, AsyncMock()), stream_session=session
+    )
+    _ = [chunk async for chunk in session]
+
+    assert (session.meter.keep_scan_text, session.meter.keep_answer) == kept
+    assert bool(processor._finalization_tasks) is task
+    await processor.drain()
 
 
 def _analysis_runs(analyzer: str, result: str) -> float:
@@ -1512,7 +1628,9 @@ async def test_analysis_over_its_backlog_bound_is_dropped_and_counted_and_the_sc
         scanned.append(text)
         return {"response_entities": {}, "truncated": False}
 
-    processor, prepared, usage = _analysis_processor(monkeypatch, _Probe(release), scan)
+    processor, prepared, usage = _analysis_processor(
+        monkeypatch, _Probe(release), scan=scan
+    )
     prepared.response_scan = "count"
     before = {result: _analysis_runs("probe", result) for result in ("ok", "dropped")}
 

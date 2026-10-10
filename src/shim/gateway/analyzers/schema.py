@@ -170,6 +170,7 @@ class SchemaAnalyzer:
 
     name = "schema"
     version = "1"
+    reads_answer = True
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any]:
         requested = requested_output(ctx.payload, ctx.protocol)

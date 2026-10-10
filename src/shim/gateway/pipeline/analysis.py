@@ -43,6 +43,9 @@ class AnalysisContext:
 class ResponseAnalyzer(Protocol):
     name: str
     version: str
+    # Whether it reads answer_text or tool_calls; one that does never runs after a
+    # request that carried personal data, and the answer is kept only for one that does.
+    reads_answer: bool
 
     def analyze(self, ctx: AnalysisContext) -> dict | None: ...
 

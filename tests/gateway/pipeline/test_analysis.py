@@ -164,3 +164,12 @@ def test_registered_names_are_valid_unique_and_never_the_reserved_key() -> None:
     )
     assert len(ANALYZER_NAMES) == len(ANALYZERS)
     assert "versions" not in ANALYZER_NAMES
+
+
+def test_only_shape_runs_after_a_request_that_carried_personal_data() -> None:
+    assert {analyzer.name: analyzer.reads_answer for analyzer in ANALYZERS} == {
+        "shape": False,
+        "language": True,
+        "schema": True,
+        "refusal": True,
+    }

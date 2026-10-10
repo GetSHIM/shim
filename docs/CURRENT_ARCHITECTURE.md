@@ -224,7 +224,9 @@ lines, enterprise lifecycle metadata in a short transaction of its own. Each
 thread takes at most 64 pending requests; work beyond that is dropped and
 counted, never queued, so a stuck run cannot grow memory. The task is registered
 with the postprocessor and drained at shutdown. With both off nothing is kept
-and no task is created.
+and no task is created. An analyzer declares `reads_answer`; one that does never
+runs after a request that carried personal data, and the answer is extracted (or
+kept by the stream meter) only while one that does runs.
 Enterprise tenant switches live in `organization_gateway_settings`, one validated
 `GatewaySettings` model read next to the privacy settings and cached for 300
 seconds; core sees it only as `tenant_gateway_settings` on the request.

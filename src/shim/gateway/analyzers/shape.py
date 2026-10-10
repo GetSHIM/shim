@@ -394,6 +394,7 @@ class ShapeAnalyzer:
 
     name = "shape"
     version = "1"
+    reads_answer = False
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any] | None:
         return shape(ctx.payload, ctx.protocol)
