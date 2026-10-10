@@ -2373,13 +2373,16 @@ async def replace_rules(
 def _gateway_settings_view(
     row: OrganizationGatewaySettings | None,
 ) -> GatewaySettingsView:
+    if row is None:
+        settings, revision, updated_at, updated_by = GatewaySettings(), 0, None, None
+    else:
+        settings = stored_settings(row.settings)
+        revision, updated_at, updated_by = row.revision, row.updated_at, row.updated_by
     return GatewaySettingsView(
-        settings=stored_settings(row.settings)
-        if row is not None
-        else GatewaySettings(),
-        revision=row.revision if row is not None else 0,
-        updated_at=row.updated_at if row is not None else None,
-        updated_by=row.updated_by if row is not None else None,
+        settings=settings,
+        revision=revision,
+        updated_at=updated_at,
+        updated_by=updated_by,
         available_analyzers=[analyzer.name for analyzer in ANALYZERS],
         unavailable={
             field: reason
@@ -2431,7 +2434,10 @@ async def update_gateway_settings(
     if after == before:
         # Nothing to write; a row inserted above came from a concurrent first write.
         return _gateway_settings_view(row)
-    row.settings = after.model_dump(mode="json", exclude_defaults=True)
+    # Only the fields this PATCH named are written; keys another build wrote stay.
+    row.settings = {
+        key: value for key, value in row.settings.items() if key not in changes
+    } | after.model_dump(mode="json", include=set(changes), exclude_defaults=True)
     row.revision += 1
     row.updated_by = user.id
     await _audit(

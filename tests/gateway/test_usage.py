@@ -1375,6 +1375,206 @@ async def test_a_stream_is_neither_held_nor_changed_by_its_analysis(
     usage.record_response_analysis.assert_awaited_once()
 
 
+def _analysis_runs(analyzer: str, result: str) -> float:
+    from prometheus_client import REGISTRY
+
+    return (
+        REGISTRY.get_sample_value(
+            "shim_response_analysis_total", {"analyzer": analyzer, "result": result}
+        )
+        or 0.0
+    )
+
+
+async def _serve(response) -> tuple[asyncio.Task, list[dict], asyncio.Event]:
+    sent: list[dict] = []
+    body_sent = asyncio.Event()
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.body":
+            body_sent.set()
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    serving = asyncio.create_task(
+        response({"type": "http", "method": "POST"}, receive, send)
+    )
+    await asyncio.wait_for(body_sent.wait(), 1)
+    return serving, sent, body_sent
+
+
+@pytest.mark.asyncio
+async def test_the_body_and_headers_go_out_while_a_blocking_analyzer_runs(
+    monkeypatch,
+) -> None:
+    import threading
+
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    release = threading.Event()
+    probe = _Probe(release)
+    processor, prepared, usage = _analysis_processor(monkeypatch, probe)
+
+    response = await processor.finalize(
+        prepared, ProviderNonStream(_ANALYZED_PAYLOAD, None), stream_session=None
+    )
+    serving, sent, _ = await _serve(response)
+
+    assert [message["type"] for message in sent] == [
+        "http.response.start",
+        "http.response.body",
+    ]
+    assert b"x-shim-latency-ms" in dict(sent[0]["headers"])
+    assert probe.seen == [] and not serving.done()
+    usage.record_response_analysis.assert_not_awaited()
+    release.set()
+    await asyncio.wait_for(serving, 5)
+    assert len(probe.seen) == 1
+    usage.record_response_analysis.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_that_did_not_complete_gets_no_after_answer_task(
+    monkeypatch,
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderStream
+
+    processor, prepared, usage = _analysis_processor(monkeypatch, _Probe())
+    prepared.response_scan = "count"
+    prepared.stream = True
+
+    async def events():
+        yield b'data: {"choices":[{"index":0,"delta":{"content":"Write to "}}]}\n\n'
+        yield b'data: {"error":{"code":"PROVIDER_UNAVAILABLE"}}\n\n'
+
+    session = processor.create_stream_session(prepared)
+    await processor.finalize(
+        prepared, ProviderStream(events(), None, AsyncMock()), stream_session=session
+    )
+    _ = [chunk async for chunk in session]
+    await processor.drain()
+
+    assert usage.finalize.await_args.args[1].terminal_status == "provider_error"
+    usage.record_response_privacy.assert_not_awaited()
+    usage.record_response_analysis.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drain_waits_for_the_after_answer_task_and_cancels_past_its_bound(
+    monkeypatch,
+) -> None:
+    import threading
+
+    import shim.gateway.pipeline.postprocess as module
+
+    release = threading.Event()
+    processor, prepared, usage = _analysis_processor(monkeypatch, _Probe(release))
+    answer = module._Answer(
+        scan_text="",
+        text="Write to",
+        truncated=False,
+        tool_calls=(),
+        completion_outcome="complete",
+    )
+
+    waited = processor._start_after_answer(prepared, answer)
+    draining = asyncio.create_task(processor.drain(timeout_seconds=5))
+    await asyncio.sleep(0.05)
+    assert not draining.done()
+    release.set()
+    await asyncio.wait_for(draining, 5)
+    assert waited.done() and not waited.cancelled()
+    usage.record_response_analysis.assert_awaited_once()
+
+    release.clear()
+    stuck = processor._start_after_answer(prepared, answer)
+    await processor.drain(timeout_seconds=0.05)
+    with pytest.raises(asyncio.CancelledError):
+        await stuck
+    release.set()
+
+
+@pytest.mark.asyncio
+async def test_analysis_over_its_backlog_bound_is_dropped_and_counted_and_the_scan_still_runs(
+    monkeypatch,
+) -> None:
+    import threading
+
+    import shim.gateway.pipeline.postprocess as module
+
+    monkeypatch.setattr(module, "MAX_PENDING_AFTER_ANSWER", 1)
+    release = threading.Event()
+    scanned: list[str] = []
+
+    def scan(text, _prepared, _scrubber):
+        scanned.append(text)
+        return {"response_entities": {}, "truncated": False}
+
+    processor, prepared, usage = _analysis_processor(monkeypatch, _Probe(release), scan)
+    prepared.response_scan = "count"
+    before = {result: _analysis_runs("probe", result) for result in ("ok", "dropped")}
+
+    for index in range(3):
+        processor._start_after_answer(
+            prepared,
+            module._Answer(
+                scan_text=str(index),
+                text="Write to",
+                truncated=False,
+                tool_calls=(),
+                completion_outcome="complete",
+            ),
+        )
+        for _ in range(100):
+            if len(scanned) > index and module._ANALYSIS_LANE.full():
+                break
+            await asyncio.sleep(0.01)
+
+    # The scan has its own thread, so the stuck analysis did not hold it.
+    assert scanned == ["0", "1", "2"]
+    assert _analysis_runs("probe", "dropped") - before["dropped"] == 2
+    release.set()
+    await processor.drain()
+    assert _analysis_runs("probe", "ok") - before["ok"] == 1
+    usage.record_response_analysis.assert_awaited_once()
+    assert usage.record_response_privacy.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "label"),
+    [({"n": 1}, "ok"), (None, "none"), (RuntimeError("down"), "error")],
+)
+async def test_each_analysis_run_is_counted_by_its_outcome(
+    monkeypatch, result, label
+) -> None:
+    import shim.gateway.pipeline.postprocess as module
+
+    class _Fixed(_Probe):
+        def analyze(self, ctx):
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    processor, prepared, _ = _analysis_processor(monkeypatch, _Fixed())
+    before = _analysis_runs("probe", label)
+
+    await processor._start_after_answer(
+        prepared,
+        module._Answer(
+            scan_text="",
+            text="",
+            truncated=False,
+            tool_calls=(),
+            completion_outcome="complete",
+        ),
+    )
+
+    assert _analysis_runs("probe", label) - before == 1
+
+
 @pytest.mark.asyncio
 async def test_a_response_analysis_writes_its_own_jsonl_line() -> None:
     stream = StringIO()

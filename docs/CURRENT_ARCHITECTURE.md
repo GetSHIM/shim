@@ -218,10 +218,13 @@ After a completed answer has been delivered (after the last body byte of a JSON
 answer, after a stream's finalization), one background task per request runs the
 opt-in response scan and the opt-in response analyzers
 (`src/shim/gateway/pipeline/analysis.py`, registry in
-`src/shim/gateway/analyzers/`) on a dedicated single-worker executor, then
-writes each record: community JSONL lines, enterprise lifecycle metadata in a
-short transaction of its own. The task is registered with the postprocessor and
-drained at shutdown. With both off nothing is kept and no task is created.
+`src/shim/gateway/analyzers/`), each on a single worker thread of its own, so a
+slow analyzer never holds the scan, then writes each record: community JSONL
+lines, enterprise lifecycle metadata in a short transaction of its own. Each
+thread takes at most 64 pending requests; work beyond that is dropped and
+counted, never queued, so a stuck run cannot grow memory. The task is registered
+with the postprocessor and drained at shutdown. With both off nothing is kept
+and no task is created.
 Enterprise tenant switches live in `organization_gateway_settings`, one validated
 `GatewaySettings` model read next to the privacy settings and cached for 300
 seconds; core sees it only as `tenant_gateway_settings` on the request.

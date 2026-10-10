@@ -1266,6 +1266,30 @@ def test_kept_calls_and_arguments_are_bounded() -> None:
     )
 
 
+def test_kept_arguments_stop_at_the_first_overflow_and_never_have_holes() -> None:
+    def arguments(index: int, text: str, name: str | None = None) -> dict:
+        function = {"arguments": text} | ({"name": name} if name else {})
+        return {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": index, "function": function}]}}
+            ]
+        }
+
+    stream_meter = _kept(
+        "openai",
+        arguments(0, "x" * 600_000, "first"),
+        arguments(0, "y" * 600_000),
+        arguments(0, "z"),
+        arguments(1, "w", "second"),
+    )
+
+    assert stream_meter.kept_tool_calls() == (
+        AnalysisToolCall("first", "x" * 600_000),
+        AnalysisToolCall("second", ""),
+    )
+    assert stream_meter.answer_truncated is True
+
+
 def test_kept_text_is_bounded_with_one_character_for_the_scan() -> None:
     stream_meter = _kept(
         "openai",

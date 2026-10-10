@@ -447,7 +447,8 @@ record what they measured, never what was written.
 1. Set `SHIM_RESPONSE_ANALYSIS` to a comma-separated list (or a JSON list) of
    analyzer names and restart the gateway. It is empty by default, and an empty
    list keeps nothing and adds no work.
-2. Read a third JSONL line for each completed request:
+2. Read the `response_analysis` line written after each completed request's
+   `request` line (and after its `response_privacy` line when the scan is on):
 
 ```json
 {"version":4,"event":"response_analysis","request_id":"req_…","results":{"<name>":{…},"versions":{"<name>":"1"}}}
@@ -459,13 +460,21 @@ after a stream ended, in one background task shared with
 unchanged. They see the masked request and up to 1,000,000 characters of the
 answer and its tool calls. Results hold counts, labels, ids, protocol field
 names and JSON pointers, never request or answer text and never a restored
-value. An analyzer that fails records `{"error": true}`, and a result larger
-than 4,096 characters records `{"error": true, "reason": "too_large"}`; the
-others still run. A request that failed or was refused gets no analysis.
+value. An analyzer that fails, or returns anything but a JSON object, records
+`{"error": true}`. A result larger than 4,096 characters keeps its counts and
+digests and records its lists as `null`; one still larger records
+`{"error": true, "reason": "too_large"}`. The others still run either way. A run
+checks a one-second budget before each analyzer, and one it no longer starts
+records `{"error": true, "reason": "timeout"}`. A request that failed or was
+refused gets no analysis.
 
 Notes: an unknown name stops the gateway at start-up with the setting and the
-name in the message; a repeated name is dropped.
-`shim_response_analysis_total{analyzer, result}` counts the runs.
+name in the message; a repeated name is dropped. Analysis has a worker thread of
+its own with room for 64 pending requests; a request beyond that is not
+analysed. The response scan has its own thread and the same bound; a scan it
+cannot take writes `"response_entities": null, "error": true`.
+`shim_response_analysis_total{analyzer, result}` counts the runs as `ok`,
+`none`, `error` or `dropped`.
 
 | Analyzer | What it records |
 | --- | --- |

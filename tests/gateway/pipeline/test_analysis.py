@@ -4,9 +4,10 @@ from dataclasses import dataclass
 import logging
 import re
 
-from prometheus_client import REGISTRY
+import pytest
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
+from shim.gateway.pipeline import analysis
 from shim.gateway.pipeline.analysis import AnalysisContext, run_analyzers
 
 
@@ -36,13 +37,10 @@ def _context() -> AnalysisContext:
     )
 
 
-def _runs(analyzer: str, result: str) -> float:
-    return (
-        REGISTRY.get_sample_value(
-            "shim_response_analysis_total", {"analyzer": analyzer, "result": result}
-        )
-        or 0.0
-    )
+def _cyclic() -> dict:
+    value: dict = {}
+    value["self"] = value
+    return value
 
 
 def test_results_keep_analyzer_order_leave_out_none_and_carry_versions() -> None:
@@ -94,9 +92,12 @@ def test_a_failing_analyzer_is_an_error_and_the_next_still_runs(caplog) -> None:
     assert "private" not in caplog.text
 
 
-def test_a_result_over_the_bound_is_replaced() -> None:
+def test_a_result_still_over_the_bound_without_its_lists_is_replaced() -> None:
     results = run_analyzers(
-        [_Analyzer("big", {"ids": ["x" * 100] * 50}), _Analyzer("small", {"n": 1})],
+        [
+            _Analyzer("big", {"ids": ["x" * 100] * 50, "label": "x" * 5_000}),
+            _Analyzer("small", {"n": 1}),
+        ],
         _context(),
     )
 
@@ -105,28 +106,61 @@ def test_a_result_over_the_bound_is_replaced() -> None:
     assert results["small"] == {"n": 1}
 
 
-def test_runs_are_counted_with_names_bounded_by_the_registry() -> None:
-    before = {key: _runs("other", key) for key in ("ok", "none", "error")}
-
-    run_analyzers(
+@pytest.mark.parametrize(
+    "bad",
+    [["a"], "text", 7, {"values": {1, 2}}, {"ratio": float("nan")}, _cyclic()],
+    ids=["list", "str", "int", "set", "nan", "cycle"],
+)
+def test_a_result_that_is_not_a_json_object_is_an_error_and_keeps_the_others(
+    bad,
+) -> None:
+    results = run_analyzers(
         [
-            _Analyzer("unregistered_ok", {"n": 1}),
-            _Analyzer("unregistered_none", None),
-            _Analyzer("unregistered_error", RuntimeError()),
+            _Analyzer("before", {"n": 1}),
+            _Analyzer("bad", bad),
+            _Analyzer("after", {"n": 2}),
         ],
         _context(),
     )
 
-    assert {key: _runs("other", key) - before[key] for key in before} == {
-        "ok": 1,
-        "none": 1,
-        "error": 1,
+    assert results == {
+        "before": {"n": 1},
+        "bad": {"error": True},
+        "after": {"n": 2},
+        "versions": {"before": "1", "bad": "1", "after": "1"},
     }
 
 
-def test_registered_names_are_valid_unique_and_match_the_name_set() -> None:
+def test_a_result_over_the_bound_keeps_its_counts_and_digests() -> None:
+    results = run_analyzers(
+        [_Analyzer("big", {"count": 50, "digest": "ab12", "names": ["x" * 100] * 50})],
+        _context(),
+    )
+
+    assert results is not None
+    assert results["big"] == {"count": 50, "digest": "ab12", "names": None}
+
+
+def test_a_run_past_its_time_records_the_remaining_analyzers_as_timed_out(
+    monkeypatch,
+) -> None:
+    clock = iter([0.0, 0.5, analysis.MAX_RUN_SECONDS + 0.1])
+    monkeypatch.setattr(analysis, "monotonic", lambda: next(clock))
+
+    results = run_analyzers(
+        [_Analyzer("first", {"n": 1}), _Analyzer("late", {"n": 2})], _context()
+    )
+
+    assert results == {
+        "first": {"n": 1},
+        "late": {"error": True, "reason": "timeout"},
+        "versions": {"first": "1", "late": "1"},
+    }
+
+
+def test_registered_names_are_valid_unique_and_never_the_reserved_key() -> None:
     assert all(
         re.fullmatch(r"[a-z][a-z0-9_]{0,31}", analyzer.name) for analyzer in ANALYZERS
     )
-    assert ANALYZER_NAMES == {analyzer.name for analyzer in ANALYZERS}
     assert len(ANALYZER_NAMES) == len(ANALYZERS)
+    assert "versions" not in ANALYZER_NAMES

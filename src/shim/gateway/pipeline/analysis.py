@@ -6,13 +6,18 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import json
 import logging
+import re
+from time import monotonic
 from typing import Any, Protocol
-
-from shim.observability.metrics import RESPONSE_ANALYSIS_TOTAL
 
 logger = logging.getLogger(__name__)
 
 MAX_RESULT_CHARACTERS = 4_096
+# Checked between analyzers: a running one cannot be interrupted, so the after-answer
+# lane's bounded backlog is what keeps a stuck analyzer from holding memory.
+MAX_RUN_SECONDS = 1.0
+# Tool names come from the app and the model; only what providers allow is recorded.
+TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,36 +50,47 @@ class ResponseAnalyzer(Protocol):
 def run_analyzers(
     analyzers: Iterable[ResponseAnalyzer], ctx: AnalysisContext
 ) -> dict | None:
-    # The registry imports this module, so its names are read at call time.
-    from shim.gateway.analyzers import ANALYZER_NAMES
+    """Each analyzer's result by name, plus their versions; never raises."""
 
     results: dict[str, Any] = {}
     versions: dict[str, str] = {}
+    deadline = monotonic() + MAX_RUN_SECONDS
     for analyzer in analyzers:
-        try:
-            result = analyzer.analyze(ctx)
-        except Exception as exc:
-            logger.warning(
-                "Response analyzer failed analyzer=%s type=%s",
-                analyzer.name,
-                type(exc).__name__,
-            )
-            result = {"error": True}
-        if (
-            result is not None
-            and len(json.dumps(result, separators=(",", ":"), default=str))
-            > MAX_RESULT_CHARACTERS
-        ):
-            result = {"error": True, "reason": "too_large"}
-        RESPONSE_ANALYSIS_TOTAL.labels(
-            analyzer=analyzer.name if analyzer.name in ANALYZER_NAMES else "other",
-            result="none"
-            if result is None
-            else "error"
-            if result.get("error")
-            else "ok",
-        ).inc()
+        result = (
+            _result(analyzer, ctx)
+            if monotonic() < deadline
+            else {"error": True, "reason": "timeout"}
+        )
         if result is not None:
             results[analyzer.name] = result
             versions[analyzer.name] = analyzer.version
     return {**results, "versions": versions} if results else None
+
+
+def _result(analyzer: ResponseAnalyzer, ctx: AnalysisContext) -> dict | None:
+    try:
+        result = analyzer.analyze(ctx)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise TypeError("an analyzer result is a JSON object")
+        if _size(result) > MAX_RESULT_CHARACTERS:
+            # Detail lists go first; counts and digests stay.
+            result = {
+                key: None if isinstance(value, list) else value
+                for key, value in result.items()
+            }
+            if _size(result) > MAX_RESULT_CHARACTERS:
+                return {"error": True, "reason": "too_large"}
+        return result
+    except Exception as exc:
+        logger.warning(
+            "Response analyzer failed analyzer=%s type=%s",
+            analyzer.name,
+            type(exc).__name__,
+        )
+        return {"error": True}
+
+
+def _size(result: dict) -> int:
+    return len(json.dumps(result, separators=(",", ":"), allow_nan=False))

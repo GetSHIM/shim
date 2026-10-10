@@ -111,6 +111,7 @@ class StreamMeter:
         # Per call: its first name, then its argument fragments.
         self._tool_calls: dict[tuple[object, ...], tuple[list[str], list[str]]] = {}
         self._tool_argument_characters = 0
+        self._tool_arguments_full = False
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
@@ -306,12 +307,13 @@ class StreamMeter:
                 call = self._tool_calls[key] = ([], [])
             if name and not call[0]:
                 call[0].append(name)
-            if fragment:
+            if fragment and not self._tool_arguments_full:
                 if (
                     self._tool_argument_characters + len(fragment)
                     > KEPT_ANSWER_CHARACTERS
                 ):
-                    self.answer_truncated = True
+                    # Nothing more is kept, so every kept call is a clean prefix.
+                    self.answer_truncated = self._tool_arguments_full = True
                     continue
                 call[1].append(fragment)
                 self._tool_argument_characters += len(fragment)

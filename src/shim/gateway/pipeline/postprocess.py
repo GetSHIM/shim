@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -55,6 +55,7 @@ from shim.observability.metrics import (
     PROVIDER_LATENCY_MS,
     PROVIDER_REQUESTS_TOTAL,
     REQUESTS_IN_FLIGHT,
+    RESPONSE_ANALYSIS_TOTAL,
     TIME_TO_FIRST_TOKEN_SECONDS,
     bounded_label,
 )
@@ -67,14 +68,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# After-answer work (response scans, analyzers) queues here, not on the loop's
-# default executor that the request-path scrub and secret fetches share, so a
-# burst of large answers cannot delay another request's privacy stage.
-# ponytail: the GIL still costs event-loop time while a scan runs; a process
-# pool is the upgrade path. One idle worker, joined at interpreter exit.
-_RESPONSE_SCAN_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="response-scan"
-)
+MAX_PENDING_AFTER_ANSWER = 64
+
+
+class _Lane:
+    """One worker thread for after-answer work, with a bounded backlog.
+
+    Not the loop's default executor that the request-path scrub and secret fetches
+    share, so a burst of large answers cannot delay another request's privacy stage.
+    Work over the bound is refused, never queued, so a stuck run holds at most the
+    bound's answers in memory.
+    """
+
+    # ponytail: the GIL still costs event-loop time while work runs; a process pool
+    # is the upgrade path. One idle worker per lane, joined at interpreter exit.
+    def __init__(self, name: str) -> None:
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+        self.pending = 0
+
+    def full(self) -> bool:
+        return self.pending >= MAX_PENDING_AFTER_ANSWER
+
+    async def run(self, function: Callable[..., Any], *args: Any) -> Any:
+        self.pending += 1
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self.executor, function, *args
+            )
+        finally:
+            self.pending -= 1
+
+
+# Separate threads, so a slow analyzer cannot hold the response privacy scan.
+_SCAN_LANE = _Lane("response-scan")
+_ANALYSIS_LANE = _Lane("response-analysis")
 
 
 # What the after-answer task reads; built only while the scan or an analyzer is on.
@@ -129,58 +156,67 @@ class ResponsePostprocessor:
         return task
 
     async def _after_answer(self, prepared: PreparedInference, answer: _Answer) -> None:
-        loop = asyncio.get_running_loop()
         if prepared.response_scan == "count":
+            scanned: dict[str, Any] = {"response_entities": None, "error": True}
+            if not _SCAN_LANE.full():
+                try:
+                    scanned = await _SCAN_LANE.run(
+                        scan_response, answer.scan_text, prepared, PIIScrubberService()
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Response privacy scan failed type=%s", type(exc).__name__
+                    )
             try:
-                result = await loop.run_in_executor(
-                    _RESPONSE_SCAN_EXECUTOR,
-                    scan_response,
-                    answer.scan_text,
-                    prepared,
-                    PIIScrubberService(),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Response privacy scan failed type=%s", type(exc).__name__
-                )
-                result = {"response_entities": None, "error": True}
-            try:
-                await self.usage.record_response_privacy(prepared, result)
+                await self.usage.record_response_privacy(prepared, scanned)
             except Exception as exc:
                 logger.error(
                     "Response privacy record failed type=%s", type(exc).__name__
                 )
-        if not prepared.response_analysis:
-            return
-        context = AnalysisContext(
-            request_id=str(prepared.request_id),
-            protocol=prepared.protocol,
-            model=prepared.model,
-            payload=prepared.payload,
-            answer_text=answer.text,
-            answer_truncated=answer.truncated,
-            tool_calls=answer.tool_calls,
-            completion_outcome=answer.completion_outcome,
-            restore=partial(
-                PIIScrubberService().deanonymize,
-                verification_map=prepared.privacy.verification_map
-                if prepared.privacy is not None
-                else {},
-            ),
-        )
         analyzers = [
             analyzer
             for analyzer in ANALYZERS
             if analyzer.name in prepared.response_analysis
         ]
-        try:
-            results = await loop.run_in_executor(
-                _RESPONSE_SCAN_EXECUTOR, run_analyzers, analyzers, context
+        if not analyzers:
+            return
+        dropped = _ANALYSIS_LANE.full()
+        results = None
+        if not dropped:
+            context = AnalysisContext(
+                request_id=str(prepared.request_id),
+                protocol=prepared.protocol,
+                model=prepared.model,
+                payload=prepared.payload,
+                answer_text=answer.text,
+                answer_truncated=answer.truncated,
+                tool_calls=answer.tool_calls,
+                completion_outcome=answer.completion_outcome,
+                restore=partial(
+                    PIIScrubberService().deanonymize,
+                    verification_map=prepared.privacy.verification_map
+                    if prepared.privacy is not None
+                    else {},
+                ),
             )
-            if results is not None:
-                await self.usage.record_response_analysis(prepared, results)
-        except Exception as exc:
-            logger.error("Response analysis failed type=%s", type(exc).__name__)
+            try:
+                results = await _ANALYSIS_LANE.run(run_analyzers, analyzers, context)
+                if results is not None:
+                    await self.usage.record_response_analysis(prepared, results)
+            except Exception as exc:
+                logger.error("Response analysis failed type=%s", type(exc).__name__)
+        for analyzer in analyzers:
+            result = None if results is None else results.get(analyzer.name)
+            RESPONSE_ANALYSIS_TOTAL.labels(
+                analyzer=analyzer.name,
+                result="dropped"
+                if dropped
+                else "none"
+                if result is None
+                else "error"
+                if result.get("error")
+                else "ok",
+            ).inc()
 
     async def finalize(
         self,

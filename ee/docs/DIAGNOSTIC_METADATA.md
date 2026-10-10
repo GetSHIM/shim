@@ -208,19 +208,24 @@ and `reasoning_seen: false`.
 `response_analysis` holds the results of the after-answer analyzers the tenant
 turned on in its [gateway settings](COOKBOOK.md#change-the-gateway-settings),
 by analyzer name, plus `versions` (each analyzer's version), for example
-`{"shape": {...}, "versions": {"shape": "1"}}`. An analyzer that raised is
-`{"error": true}`; one whose result would exceed 4,096 characters of compact JSON
-is `{"error": true, "reason": "too_large"}`; one with nothing to record is left
-out, and when none recorded anything the key is absent. Results are counts,
+`{"shape": {...}, "versions": {"shape": "1"}}`. An analyzer that raised or
+returned anything but a JSON object is `{"error": true}`; one whose result would
+exceed 4,096 characters of compact JSON keeps its counts and digests with its
+lists as `null`, or, still too large, is `{"error": true, "reason": "too_large"}`;
+one the run's one-second budget no longer started is
+`{"error": true, "reason": "timeout"}`; one with nothing to record is left out,
+and when none recorded anything the key is absent. Results are counts,
 labels, ids, protocol field names and JSON pointers, never text from the request
 or the answer. The pass runs only for completed requests, after the answer was
 delivered, in the same task as the response scan, and writes the key into the
 lifecycle metadata in its own short transaction; a failed write is logged by
 type and dropped. The request list reads it from the lifecycle row and the CSV
-writes it as compact JSON with sorted keys. The community JSONL writes a third
+writes it as compact JSON with sorted keys. The community JSONL writes one more
 line per request, `event: "response_analysis"`, with the same object as
-`results`. `shim_response_analysis_total{analyzer, result}` counts each run as
-`ok`, `none` or `error`.
+`results`. Analysis has its own worker thread with room for 64 pending
+requests; a request beyond that is not analysed and the key stays absent.
+`shim_response_analysis_total{analyzer, result}` counts each run as `ok`,
+`none`, `error` or `dropped`.
 
 `response_analysis.shape` records what a request was made of: turn, history,
 system and tool-result sizes, the tools it offered by name and in order, the

@@ -238,7 +238,7 @@ COMPLETION_OUTCOMES_TOTAL = Counter(
 )
 RESPONSE_ANALYSIS_TOTAL = Counter(
     "shim_response_analysis_total",
-    "After-answer analyzer runs by analyzer and result (ok, none, error).",
+    "After-answer analyzer runs by analyzer and result (ok, none, error, dropped).",
     ("analyzer", "result"),
 )
 RULE_MATCHES_TOTAL = Counter(
