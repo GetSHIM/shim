@@ -145,7 +145,7 @@ def readiness_status(
     return "partial" if declaration_status == "partial" else "gap"
 
 
-def _next_steps(item: dict) -> tuple[NextStep, ...]:
+def _gap_and_steps(item: dict) -> tuple[str, tuple[NextStep, ...]]:
     steps = item.get("next_steps")
     gap = item.get("gap")
     if (
@@ -172,7 +172,7 @@ def _next_steps(item: dict) -> tuple[NextStep, ...]:
         ):
             raise ValueError(f"{FRAMEWORK}.yaml: invalid next step for {item['id']}")
         parsed.append(NextStep(kind, text, doc))
-    return tuple(sorted(parsed, key=lambda step: STEP_TYPES.index(step.type)))
+    return gap, tuple(sorted(parsed, key=lambda step: STEP_TYPES.index(step.type)))
 
 
 @lru_cache(maxsize=1)
@@ -200,6 +200,7 @@ def load_mapping() -> ReadinessMapping:
             evidence is not None and (evidence not in EVIDENCE or not rule)
         ):
             raise ValueError(f"{FRAMEWORK}.yaml: invalid evidence for {item['id']}")
+        gap, next_steps = _gap_and_steps(item)
         controls.append(
             ReadinessControl(
                 identifier=str(item["id"]),
@@ -207,8 +208,8 @@ def load_mapping() -> ReadinessMapping:
                 source=source,
                 evidence=evidence,
                 rule=rule,
-                gap=item.get("gap"),
-                next_steps=_next_steps(item),
+                gap=gap,
+                next_steps=next_steps,
             )
         )
     if len({control.identifier for control in controls}) != len(controls):

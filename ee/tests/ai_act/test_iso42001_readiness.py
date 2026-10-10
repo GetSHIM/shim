@@ -833,3 +833,23 @@ def test_the_gap_list_holds_every_partial_and_gap_control_in_order() -> None:
     forbidden = re.compile(r"compliant|certified|conformity|score|%", re.I)
     assert not forbidden.search(gap_list)
     assert not any(forbidden.search(row["next_steps"]) for row in by_id.values())
+
+
+def test_a_gap_text_is_true_for_a_partial_control_too() -> None:
+    mapping = readiness.load_mapping()
+    now = datetime.now(timezone.utc)
+    text = _pdf_text(
+        readiness.render_pdf(
+            _mixed_rows(), tenant_id=uuid4(), start=now, end=now, verified=False
+        )
+    )
+    gap_list = text[text.index("Gap list and next steps") :]
+
+    # Only input and declared controls can be partial: something is recorded, so
+    # their gap may not say that nothing is.
+    for control in mapping.controls:
+        if control.source != "measured":
+            assert "not fully" in control.gap, control.identifier
+    for identifier in ("A.2.3", "A.4.3"):
+        listed = gap_list[gap_list.index(f"{identifier} ") :]
+        assert listed.index("(partial)") < listed.index(mapping.control(identifier).gap)

@@ -429,7 +429,9 @@ Each row has a status, derived when the report is produced and never stored:
 
 After the table, a "Gap list and next steps" section lists the `gap` controls,
 then the `partial` ones, each in control order, with one sentence on what is
-missing and one to four steps. A step is either "in shim", naming the shim
+missing and one to four steps. The sentence of an input or declared control says
+what is "not fully recorded", so it holds for a `partial` control as well as for
+one with nothing recorded. A step is either "in shim", naming the shim
 feature that produces the missing evidence and its documentation, or for the
 organization (a policy, a process, an owner, a document). shim never stores or
 checks those documents. The texts are static, kept in the mapping beside each
