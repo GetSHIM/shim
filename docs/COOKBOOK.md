@@ -49,7 +49,9 @@ To send the provider key per request instead, add
 `default_headers={"x-provider-key": os.environ["OPENAI_API_KEY"]}` to the client.
 
 Notes: the model must be in shim's price catalog, which `GET /v1/models` lists;
-any other model gets 400 `MODEL_NOT_PRICED`. With no provider key at all the
+any other model gets 400 `MODEL_NOT_PRICED`. A model id is at most 200 letters,
+digits, `.`, `_`, `:` and `-`; any other id is refused the same way, and the usage
+event records it as `unsupported`, never the id itself. With no provider key at all the
 answer is 503 `PROVIDER_NOT_CONFIGURED`, and an empty `x-provider-key` is 400
 `INVALID_PROVIDER_CREDENTIAL`. `background=true` Responses requests are rejected.
 
@@ -366,6 +368,7 @@ except openai.APIStatusError as error:
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
 | The input certainly does not fit the model's context window or input limit | 400 `MODEL_CONTEXT_EXCEEDED` | none: shorten the input or lower the output limit |
 | The catalog says the model lacks tools, structured output or an input modality the request uses | 400 `MODEL_CAPABILITY_UNSUPPORTED` | none: remove what the message names or change model |
+| The model is not in the catalog, or its id is longer than 200 characters or has a character other than letters, digits, `.`, `_`, `:` and `-` | 400 `MODEL_NOT_PRICED`; enterprise, 403 `MODEL_NOT_REGISTERED` | none: use a model `GET /v1/models` lists |
 
 In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 `tokens` or `repeated_requests`.

@@ -837,6 +837,57 @@ async def test_disabled_registry_alias_cannot_fall_back_to_public_catalog(
 
 
 @pytest.mark.asyncio
+async def test_a_model_id_that_is_not_id_shaped_is_refused_and_never_stored(
+    db, test_api_key, origins, monkeypatch
+):
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_REQUIRED", False)
+    models = [
+        "gpt-5.6-luna-" + "x" * 13_000,
+        "gpt-5.6-luna-john.doe@example.com",
+        "gpt-5.6-luna-john doe",
+        "gpt-5.6-luna-\nx",
+    ]
+    calls = []
+    async with _gateway(db, test_api_key, lambda request: calls.append(request)) as (
+        client,
+        _,
+        _,
+    ):
+        responses = [
+            await client.post(
+                "/v1/chat/completions",
+                json={"model": model, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            for model in models
+        ]
+
+    assert [response.status_code for response in responses] == [403] * len(models)
+    assert {response.json()["error"]["code"] for response in responses} == {
+        "MODEL_NOT_REGISTERED"
+    }
+    assert calls == []
+    tenant = test_api_key.organization_id
+    assert not (
+        await db.scalars(
+            select(RequestLifecycle.requested_model).where(
+                RequestLifecycle.organization_id == tenant
+            )
+        )
+    ).all()
+    stored = [
+        (event.payload["model"], intent.model)
+        for event, intent in (
+            await db.execute(
+                select(OutboxEvent, AuditIntent)
+                .join(AuditIntent, AuditIntent.outbox_event_id == OutboxEvent.id)
+                .where(OutboxEvent.organization_id == tenant)
+            )
+        ).all()
+    ]
+    assert stored == [(None, None)] * len(models)
+
+
+@pytest.mark.asyncio
 async def test_health_probe_has_a_wall_clock_deadline(
     db, test_api_key, test_user_with_org, origins, monkeypatch
 ):
