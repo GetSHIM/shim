@@ -547,8 +547,9 @@ Notes:
 
 - A role without `keys.own` cannot go to someone who holds an active gateway
   key: the PATCH answers 409 `ROLE_HOLDERS_HAVE_KEYS`. Revoke the keys first.
-- Owner-only permissions (`roles.manage`, `config.manage`) and the ones that
-  open content or decide approvals cannot be part of a custom role (422).
+- Owner-only permissions (`roles.manage`, `config.manage`), `keys.manage` and
+  the ones that open content or decide approvals cannot be part of a custom
+  role (422).
 - `"custom_role_id": null` takes the role away; deleting a role someone holds
   answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
   instead ([on-prem identity](ON_PREM_IDENTITY.md)).
@@ -559,7 +560,8 @@ Notes:
 See what a policy change would have affected before it takes effect, apply it in
 one step, and take it back in one step.
 
-1. Create a plan (`plans.create`, owners and admins):
+1. Create a plan (`plans.create`, owners and admins, plus the permission each
+   change's own route asks for):
    `POST /api/v1/management/policy/plans` with up to 100 `changes`. A change is
    `{"resource", "item", "set": {...}}` to update, `"item": null` to create, or
    `{"resource", "item", "delete": true}`. The answer lists each change's
@@ -569,7 +571,9 @@ one step, and take it back in one step.
    A 409 `PLAN_STALE` names the items someone changed since the plan was made;
    create a new plan.
 3. Undo: `POST /api/v1/management/policy/versions/{version}/restore` with an
-   optional `reason`; restoring `current - 1` undoes the last change. Read the
+   optional `reason`; restoring `current - 1` undoes the last change. Send the
+   `expected_version` you read to get 409 `POLICY_VERSION_CHANGED` instead of
+   undoing a change someone made since. Read the
    versions with `GET /api/v1/management/policy/versions` and the current state
    with `GET /api/v1/management/policy/state` (owners, admins and auditors).
 
@@ -596,7 +600,9 @@ Notes:
 - A plan expires after 7 days; an expired, applied or rolled-back plan answers
   409 `PLAN_STATE_CONFLICT` on apply. The body is at most 256 KB.
 - A restore cannot bring back a revoked key or delete a team, and a re-created
-  budget has no notification targets: those are listed in `not_restored`. A
+  budget has no notification targets: those are listed in `not_restored`, as is
+  an item its own route would now refuse (a deleted provider secret, for
+  example); everything else is restored. A
   deployment registered after the version is disabled instead of deleted
   (`approximated`).
 - The resources, what counts as relaxing and the audit details are in

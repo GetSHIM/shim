@@ -39,11 +39,13 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import (
+    ColumnDefault,
     and_,
     case,
     cast as sql_cast,
     distinct,
     func,
+    inspect,
     or_,
     select,
     text,
@@ -131,6 +133,7 @@ from shim_enterprise.tenants.models import (
     ModelDeployment,
     OrganizationInvite,
     Organization,
+    OrganizationPIIConfig,
     OrganizationRole,
     ProviderSecret,
     ServiceAccountCredential,
@@ -160,7 +163,11 @@ from shim_enterprise.tenants.permissions import (
     user_permissions,
 )
 from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
-from shim_enterprise.tenants.teams import member_team_ids, require_team
+from shim_enterprise.tenants.teams import (
+    may_hold_team_key,
+    member_team_ids,
+    require_team,
+)
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
 from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import (
@@ -1650,7 +1657,7 @@ async def create_service_account(
 
 @router.get("/service-accounts", response_model=list[ServiceAccountView])
 async def list_service_accounts(
-    user: User = Depends(require("members.manage", legacy_detail=ADMIN_REQUIRED)),
+    user: User = Depends(require("roles.manage", legacy_detail=OWNER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ServiceAccountView]:
     if user.kind == "service":
@@ -1742,7 +1749,6 @@ async def create_team(
 ) -> Team:
     tenant_id, item = _tenant_id(user), str(uuid4())
     after = payload.model_dump()
-    await lock_tenant(session, tenant_id)
     async with record_managed_write(
         session, user, tenant_id, [(TEAMS, item, None, after)], source="api"
     ) as version:
@@ -1926,16 +1932,24 @@ async def create_api_key(
     user: User = Depends(require("keys.own", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
-    _tenant_id(user)
+    tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
+    # Role changes take the tenant lock, so the guard's answer is re-read under it.
+    await lock_tenant(session, tenant_id)
+    if "keys.own" not in await user_permissions(session, user, reload=True):
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
     if payload.team_id is not None:
-        await require_team(session, user, payload.team_id, scope="keys.manage")
+        await require_team(session, user, payload.team_id)
+        if not await may_hold_team_key(session, user, payload.team_id):
+            raise HTTPException(
+                status_code=403, detail="API-key owner is not a member of this team"
+            )
     elif "keys.manage" not in await user_permissions(
         session, user
     ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
-    await require_model_aliases(session, _tenant_id(user), payload.allowed_models)
+    await require_model_aliases(session, tenant_id, payload.allowed_models)
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -1995,17 +2009,8 @@ async def update_api_key(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> ApiKey:
-    api_key = await _owned_api_key(session, user, api_key_id)
-    if {"team_id", "allowed_models"} & patch.model_fields_set:
-        if api_key.team_id is None:
-            await _require_permission(session, user, "keys.manage")
-        else:
-            await require_team(session, user, api_key.team_id, administer=True)
-    if "team_id" in patch.model_fields_set and patch.team_id != api_key.team_id:
-        await _require_permission(session, user, "keys.manage")
-        if patch.team_id is not None:
-            await require_team(session, user, patch.team_id, administer=True)
     changes = patch.model_dump(exclude_unset=True)
+    api_key = await _key_for_change(session, user, api_key_id, changes)
     before = _key_state(api_key)
     after = {
         **before,
@@ -2377,7 +2382,6 @@ async def create_budget(
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(tenant_id, payload.notify_targets)
     try:
-        await lock_tenant(session, tenant_id)
         async with record_managed_write(
             session,
             user,
@@ -2468,7 +2472,6 @@ async def delete_budget(
     tenant_id = _tenant_id(user)
     await lock_tenant(session, tenant_id)
     row = await _owned_budget(session, user, budget_id)
-    _reject_oversized_legacy_targets(list(row.notify_targets or []))
     before = _budget_state({field: getattr(row, field) for field in _BUDGET_FIELDS})
     async with record_managed_write(
         session, user, tenant_id, [(BUDGETS, str(row.id), before, None)], source="api"
@@ -2828,7 +2831,8 @@ async def list_requests(
 ) -> RequestActivityPage:
     generated_at = datetime.now(timezone.utc)
     tenant_id = _tenant_id(user)
-    filters = _request_filters(
+    filters = await _request_filters(
+        session,
         user,
         start=start,
         end=end,
@@ -2844,8 +2848,6 @@ async def list_requests(
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
-    if "usage.read" not in await user_permissions(session, user):
-        filters.append(_visible_requests(user))
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
     ).one()
@@ -3215,7 +3217,8 @@ async def export_requests(
     end_at = _aware(end or datetime.now(timezone.utc))
     start_at = _aware(start or end_at - timedelta(days=30))
     _validate_sync_window(start_at, end_at)
-    filters = _request_filters(
+    filters = await _request_filters(
+        session,
         user,
         start=start_at,
         end=end_at,
@@ -3231,8 +3234,6 @@ async def export_requests(
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
-    if "usage.read" not in await user_permissions(session, user):
-        filters.append(_visible_requests(user))
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
         await session.scalar(
@@ -3619,16 +3620,8 @@ def _own_or_administered_key(user: User) -> Any:
     )
 
 
-def _visible_requests(user: User) -> Any:
-    return RequestLog.api_key_id.in_(
-        select(ApiKey.id).where(
-            ApiKey.organization_id == _tenant_id(user),
-            _own_or_administered_key(user),
-        )
-    )
-
-
-def _request_filters(
+async def _request_filters(
+    session: AsyncSession,
     user: User,
     *,
     start: datetime | None,
@@ -3667,6 +3660,14 @@ def _request_filters(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     tenant_id = _tenant_id(user)
     filters = [RequestLog.organization_id == tenant_id]
+    if "usage.read" not in await user_permissions(session, user):
+        filters.append(
+            RequestLog.api_key_id.in_(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id, _own_or_administered_key(user)
+                )
+            )
+        )
     if start_at is not None:
         filters.append(RequestLog.timestamp >= start_at)
     if end_at is not None:
@@ -4048,6 +4049,22 @@ async def _owned_api_key(
     return row
 
 
+async def _key_for_change(
+    session: AsyncSession, user: User, api_key_id: UUID, changes: Mapping[str, Any]
+) -> ApiKey:
+    api_key = await _owned_api_key(session, user, api_key_id)
+    if {"team_id", "allowed_models"} & changes.keys():
+        if api_key.team_id is None:
+            await _require_permission(session, user, "keys.manage")
+        else:
+            await require_team(session, user, api_key.team_id, administer=True)
+    if "team_id" in changes and changes["team_id"] != api_key.team_id:
+        await _require_permission(session, user, "keys.manage")
+        if changes["team_id"] is not None:
+            await require_team(session, user, changes["team_id"], administer=True)
+    return api_key
+
+
 async def _owned_service_account(
     session: AsyncSession, user: User, account_id: UUID
 ) -> User:
@@ -4067,8 +4084,9 @@ async def _owned_service_account(
 
 
 async def _deactivate(session: AsyncSession, member: User) -> None:
-    """Deactivate a user and the gateway keys it owns."""
+    """Deactivate a user and the gateway keys it owns, and free its custom role."""
     member.is_active = False
+    member.custom_role_id = None
     await session.execute(
         update(ApiKey)
         .where(ApiKey.user_id == member.id, ApiKey.is_active.is_(True))
@@ -4620,8 +4638,7 @@ async def create_model_deployment(
     session: AsyncSession = Depends(get_db),
 ):
     tenant_id, item = _tenant_id(user), str(uuid4())
-    after = _deployment_state(payload.model_dump())
-    await lock_tenant(session, tenant_id)
+    after = await DEPLOYMENTS.validate(session, user, None, None, payload.model_dump())
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, None, after)], source="api"
     ) as version:
@@ -4644,7 +4661,9 @@ async def update_model_deployment(
     before = (await DEPLOYMENTS.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(404, detail="Model deployment not found")
-    after = _deployment_state(payload.model_dump())
+    after = await DEPLOYMENTS.validate(
+        session, user, item, before, payload.model_dump()
+    )
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, before, after)], source="api"
     ) as version:
@@ -4764,7 +4783,7 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def _validated(model: type[BaseModel], data: Mapping[str, Any]) -> BaseModel:
+def _validated[M: BaseModel](model: type[M], data: Mapping[str, Any]) -> M:
     try:
         return model.model_validate(data)
     except ValidationError as exc:
@@ -4856,8 +4875,23 @@ def _privacy_tightened(before: Mapping[str, Any], after: Mapping[str, Any]) -> b
     )
 
 
+# A field newer than a stored version takes its column default when it is restored.
+_PRIVACY_DEFAULTS = {
+    field: default.arg(None) if default.is_callable else default.arg
+    for field in PrivacySettings.model_fields
+    if isinstance(
+        default := inspect(OrganizationPIIConfig).columns[field].default, ColumnDefault
+    )
+}
+
+
+def _privacy_settings(state: State) -> PrivacySettings:
+    return PrivacySettings.model_validate({**_PRIVACY_DEFAULTS, **state})
+
+
 class _PrivacyResource:
     name = "privacy"
+    permission: Permission = "settings.write"
     creatable = False
     deletable = False
 
@@ -4874,8 +4908,13 @@ class _PrivacyResource:
             )
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
         patch = _validated(PrivacyPatch, proposed)
         return {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
@@ -4894,8 +4933,9 @@ class _PrivacyResource:
         assert after is not None
         row = await ensure_privacy_defaults(session, organization_id)
         previous = PrivacySettings.model_validate(row).model_dump()
+        values = _privacy_settings(after)
         for field in PrivacySettings.model_fields:
-            setattr(row, field, after[field])
+            setattr(row, field, getattr(values, field))
         current = PrivacySettings.model_validate(row).model_dump()
         await _audit(
             session,
@@ -4930,8 +4970,8 @@ class _PrivacyResource:
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         assert before is not None and after is not None
-        previous = PrivacySettings.model_validate(before).model_dump()
-        current = PrivacySettings.model_validate(after).model_dump()
+        previous = _privacy_settings(before).model_dump()
+        current = _privacy_settings(after).model_dump()
         if _privacy_relaxed(previous, current):
             return "relaxing"
         return "tightening" if _privacy_tightened(previous, current) else "neutral"
@@ -4946,8 +4986,8 @@ class _PrivacyResource:
         window_days: int,
     ) -> Impact:
         assert before is not None and after is not None
-        previous = PrivacySettings.model_validate(before).effective_actions
-        current = PrivacySettings.model_validate(after).effective_actions
+        previous = _privacy_settings(before).effective_actions
+        current = _privacy_settings(after).effective_actions
         changed = sorted(kind for kind in current if current[kind] != previous[kind])
         if any(previous[kind] == "off" for kind in changed):
             return no_impact(window_days, "type was off; start with monitor")
@@ -4988,6 +5028,7 @@ _TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_l
 
 class _TeamResource:
     name = "teams"
+    permission: Permission = "teams.manage"
     creatable = True
     deletable = False
 
@@ -5007,11 +5048,26 @@ class _TeamResource:
             for team in await session.scalars(statement)
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
         _only(proposed, TeamInput.model_fields)
-        return _validated(TeamInput, {**(before or {}), **proposed}).model_dump()
+        after = _validated(TeamInput, {**(before or {}), **proposed}).model_dump()
+        taken = select(Team.id).where(
+            Team.organization_id == _tenant_id(actor), Team.name == after["name"]
+        )
+        if item_id is not None:
+            taken = taken.where(Team.id != UUID(item_id))
+        if await session.scalar(taken) is not None:
+            raise HTTPException(
+                status_code=409, detail="A team with this name already exists"
+            )
+        return after
 
     async def apply(
         self,
@@ -5155,15 +5211,14 @@ class _TeamResource:
         )
         return _counted(requests, window_days, note)
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
-
 
 _KEY_FIELDS = ("allowed_models", "team_id")
 
 
 class _ApiKeyResource:
     name = "api_keys"
+    # Who may change which key is the PATCH route's rule, checked in validate and apply.
+    permission: Permission = "keys.own"
     creatable = False
     deletable = False
 
@@ -5182,11 +5237,21 @@ class _ApiKeyResource:
             str(key.id): _key_state(key) for key in await session.scalars(statement)
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
         _only(proposed, _KEY_FIELDS)
         patch = _validated(ApiKeyPatch, proposed)
+        assert item_id is not None
+        await _key_for_change(
+            session, actor, UUID(item_id), patch.model_dump(exclude_unset=True)
+        )
+        await require_model_aliases(session, _tenant_id(actor), patch.allowed_models)
         return {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
 
     async def apply(
@@ -5201,17 +5266,6 @@ class _ApiKeyResource:
         policy_version: int | None,
     ) -> None:
         assert before is not None and after is not None
-        api_key = await session.scalar(
-            select(ApiKey)
-            .where(
-                ApiKey.id == UUID(item_id),
-                ApiKey.organization_id == organization_id,
-                ApiKey.is_active.is_(True),
-            )
-            .with_for_update()
-        )
-        if api_key is None:
-            raise HTTPException(status_code=404, detail="API key not found")
         changes = {
             field: UUID(after[field])
             if field == "team_id" and after[field] is not None
@@ -5219,8 +5273,7 @@ class _ApiKeyResource:
             for field in _KEY_FIELDS
             if after[field] != before[field]
         }
-        if changes.get("team_id") is not None:
-            await require_team(session, actor, changes["team_id"], administer=True)
+        api_key = await _key_for_change(session, actor, UUID(item_id), changes)
         await _write_api_key(
             session, actor, api_key, changes, policy_version=policy_version
         )
@@ -5260,16 +5313,10 @@ class _ApiKeyResource:
                 organization_id,
                 window_days,
                 RequestLifecycle.api_key_id == UUID(item_id),
-                or_(
-                    RequestLifecycle.requested_model.is_(None),
-                    RequestLifecycle.requested_model.not_in(after["allowed_models"]),
-                ),
+                RequestLifecycle.requested_model.not_in(after["allowed_models"]),
             ),
             window_days,
         )
-
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
 
 
 def _key_state(key: ApiKey) -> State:
@@ -5312,6 +5359,7 @@ def _deployment_state(values: Mapping[str, Any]) -> State:
 
 class _DeploymentResource:
     name = "deployments"
+    permission: Permission = "deployments.manage"
     creatable = True
     deletable = False
 
@@ -5336,14 +5384,23 @@ class _DeploymentResource:
             for row in await session.scalars(statement)
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
-        return _deployment_state(
-            _validated(
-                ModelDeploymentInput, {**(before or {}), **proposed}
-            ).model_dump()
+        payload = _validated(ModelDeploymentInput, {**(before or {}), **proposed})
+        secret = await _owned_provider_secret(
+            session, actor, payload.provider_secret_id
         )
+        if secret.provider != payload.provider:
+            raise HTTPException(
+                422, detail="Credential provider does not match deployment"
+            )
+        return _deployment_state(payload.model_dump())
 
     async def apply(
         self,
@@ -5357,14 +5414,7 @@ class _DeploymentResource:
         policy_version: int | None,
     ) -> None:
         assert after is not None
-        payload = cast(ModelDeploymentInput, _validated(ModelDeploymentInput, after))
-        secret = await _owned_provider_secret(
-            session, actor, payload.provider_secret_id
-        )
-        if secret.provider != payload.provider:
-            raise HTTPException(
-                422, detail="Credential provider does not match deployment"
-            )
+        payload = _validated(ModelDeploymentInput, after)
         configuration = payload.model_dump()
         if before is None:
             row = ModelDeployment(
@@ -5452,9 +5502,6 @@ class _DeploymentResource:
             window_days,
         )
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
-
 
 _BUDGET_FIELDS = (
     "scope_type",
@@ -5480,6 +5527,7 @@ def _budget_state(values: Mapping[str, Any]) -> State:
 
 class _BudgetResource:
     name = "budgets"
+    permission: Permission = "budgets.manage"
     creatable = True
     deletable = True
 
@@ -5501,11 +5549,18 @@ class _BudgetResource:
             for row in await session.scalars(statement)
         }
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State:
         if before is None:
-            return _budget_state(_validated(_ManagedBudget, proposed).model_dump())
+            after = _budget_state(_validated(_ManagedBudget, proposed).model_dump())
+            await _require_budget_team(session, _tenant_id(actor), after)
+            return after
         _only(proposed, ("limit_usd", "limit_tokens", "alert_thresholds", "enabled"))
         patch = _validated(BudgetPatch, proposed).model_dump(exclude_unset=True)
         after = {**before, **{field: _plain(value) for field, value in patch.items()}}
@@ -5528,7 +5583,6 @@ class _BudgetResource:
     ) -> Callable[[], Awaitable[None]] | None:
         if before is None:
             assert after is not None
-            await _require_budget_team(session, organization_id, after)
             await _create_budget(
                 session,
                 actor,
@@ -5610,7 +5664,7 @@ class _BudgetResource:
             limit_tokens=after["limit_tokens"],
         )
         now = datetime.now(timezone.utc)
-        usage = await BudgetEvaluator()._aggregate(
+        usage = await BudgetEvaluator().aggregate(
             session,
             budget,
             now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
@@ -5622,9 +5676,6 @@ class _BudgetResource:
             "window_days": window_days,
             "note": f"month-to-date use is {share} percent of the new limit",
         }
-
-    async def after_commit(self, request: Request, organization_id: UUID) -> None:
-        return None
 
 
 def _uuids(item_ids: Collection[str]) -> list[UUID]:

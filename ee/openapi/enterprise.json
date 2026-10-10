@@ -10105,6 +10105,20 @@
       },
       "RestoreInput": {
         "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The current version the caller read; 409 when it moved since.",
+            "title": "Expected Version"
+          },
           "reason": {
             "anyOf": [
               {
@@ -17889,6 +17903,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 2147483647,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -17946,6 +17961,8 @@
             "name": "version",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 0,
               "title": "Version",
               "type": "integer"
             }
@@ -17993,6 +18010,8 @@
             "name": "version",
             "required": true,
             "schema": {
+              "maximum": 2147483647,
+              "minimum": 0,
               "title": "Version",
               "type": "integer"
             }

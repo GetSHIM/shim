@@ -24,18 +24,18 @@ write nor own gateway keys.
 | `budgets.manage` | Create, change, delete and evaluate budgets | x | x | | |
 | `teams.manage` | Create and change teams, grant or remove `team_admin` | x | x | | |
 | `keys.own` | Create and hold one's own gateway keys | x | x | x | |
-| `keys.manage` | Read and change every key, set `allowed_models` and `team_id` on keys without a team | x | x | | |
+| `keys.manage` | Read and change every key, set `allowed_models` and `team_id` on keys without a team; owners and admins only | x | x | | |
 | `members.read` | The member list with e-mail addresses | x | x | | x |
-| `members.manage` | Invite, list and revoke invites, remove members, list service accounts | x | x | | |
+| `members.manage` | Invite, list and revoke invites, remove members | x | x | | |
 | `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
 | `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
-| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |
 | `incidents.read` | Read and export [incidents](INCIDENTS.md) | x | x | | x |
 | `incidents.manage` | Open incidents, change them and their status, record notifications | x | x | | |
-| `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them | x | x | | |
+| `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
 | `plans.approve` | Approve or reject a pending plan | x | x | | |
 | `requests.approve` | Decide request approvals | x | x | | |
@@ -49,8 +49,12 @@ teams they administer, and everyone manages their own keys.
 A write (any method but GET, HEAD and OPTIONS) by a user who holds only read
 permissions answers 403 "Auditor access is read-only", except the four report
 and verification POSTs readers may call (`/compliance/audit/verify` and
-`/compliance/reports/audit`, `kvkk` and `readiness`). Only a user whose role
-holds `keys.own` (owner, admin, member) can authenticate a gateway key.
+`/compliance/reports/audit`, `kvkk` and `readiness`). For a member with a
+[custom role](#custom-roles) the rule covers organization writes, the routes
+that ask for a permission; their own profile (`PUT /auth/me`), the teams they
+administer, and their own keys, which follow `keys.own`, stay theirs. Only a
+user whose role holds `keys.own` (owner, admin, member) can authenticate a
+gateway key.
 `GET /api/v1/management/auth/me` returns the caller's sorted `permissions` and
 `custom_role`, so a dashboard can decide what to show from one call.
 
@@ -93,7 +97,9 @@ deleted instead of archived, as before.
 Use **Workspace → Teams** to create a team, configure quotas, and assign
 members. Use **Gateway → Keys** to assign a key's access team and model list.
 Only organization owners/admins can move a key between teams. A member with
-team memberships must select a team when creating a key. Removing membership
+team memberships must select a team when creating a key, and can create a key
+only on a team they belong to (403 "API-key owner is not a member of this team"
+otherwise), the same rule the gateway applies to every request. Removing membership
 denies subsequent inference through that user's team keys; organization
 owners/admins retain organization-wide authority.
 
@@ -108,7 +114,7 @@ management API without a person's sign-in. It is an organization user of kind
 | Route | Who | What |
 | --- | --- | --- |
 | `POST /api/v1/management/service-accounts` | Owner | `{name, role, expires_in_days}` (1 to 365 days); answers 201 with the account and its key, shown once |
-| `GET /api/v1/management/service-accounts` | Owner, admin (people only) | Name, role, key prefix, expiry, last use (to the minute), creator; never the key |
+| `GET /api/v1/management/service-accounts` | Owner | Name, role, key prefix, expiry, last use (to the minute), creator; never the key |
 | `POST /api/v1/management/service-accounts/{id}/rotate` | Owner | A new key with the same expiry; the old key stops working at once. An expired key answers 409: create a new account |
 | `DELETE /api/v1/management/service-accounts/{id}` | Owner | Deactivates the account, revokes its keys and its gateway keys |
 
@@ -224,14 +230,15 @@ owners call them.
 | `GET /api/v1/management/roles` | The organization's roles |
 | `POST /api/v1/management/roles` | `{slug, name, permissions}`; answers 201 |
 | `PUT /api/v1/management/roles/{role_id}` | Replaces slug, name and permissions |
-| `DELETE /api/v1/management/roles/{role_id}` | 409 while a user holds it |
+| `DELETE /api/v1/management/roles/{role_id}` | 409 while a user holds it; removing a member frees the role |
 
 - `slug` is 2 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter,
   and not a built-in role name; `name` is up to 100 characters. An organization
   has at most 20 roles (409 beyond) and a slug once (409).
 - `permissions` may hold any permission above except `roles.manage`,
-  `config.manage`, `content.read`, `plans.approve` and `requests.approve`; any
-  other string answers 422 naming it.
+  `config.manage`, `content.read`, `keys.manage`, `plans.approve` and
+  `requests.approve`; any other string answers 422 naming it. A role stored
+  with one of them before it was reserved does not grant it.
 - `PATCH /api/v1/management/team/members/{member_id}` with `role: "member"` and
   `custom_role_id` gives a member the role; `custom_role_id: null` takes it away,
   and a role other than `member` clears it (422 when both are sent). The holder
@@ -240,6 +247,8 @@ owners call them.
   Giving a role without it to a user with an active key, or removing it from a
   role whose holders have active keys, answers 409
   `{"code": "ROLE_HOLDERS_HAVE_KEYS", "users": <count>}`: revoke those keys first.
+  An OIDC login that gives such a role revokes the user's active keys instead
+  ([on-prem identity](ON_PREM_IDENTITY.md)).
 - Changes record `tenant.custom_role_created`, `tenant.custom_role_updated`
   (before and after), `tenant.custom_role_deleted` and
   `tenant.member_custom_role_changed` (before and after slug).

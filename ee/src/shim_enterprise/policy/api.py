@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,20 +25,21 @@ from shim_enterprise.policy.plans import (
     lock_tenant,
     record_managed_write,
 )
-from shim_enterprise.policy.resources import REGISTRY, PostCommit
+from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/policy", tags=["policy"])
 
 _PLAN_LIFETIME = timedelta(days=7)
 _MAX_PLAN_BYTES = 256 * 1024
+_MAX_CHANGES = 100
+_MAX_VERSION = 2_147_483_647
+# What /state and one version's states show besides audit.read.
+_STATE_READS = ("deployments.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
-_NOT_DELETABLE = {
-    "teams": "team_not_deletable",
-    "deployments": "deployment_not_deletable",
-}
 
 
 class ChangeInput(BaseModel):
@@ -59,7 +60,7 @@ class ChangeInput(BaseModel):
 
 
 class PlanInput(BaseModel):
-    changes: list[ChangeInput] = Field(min_length=1, max_length=100)
+    changes: list[ChangeInput] = Field(min_length=1, max_length=_MAX_CHANGES)
     reason: str | None = Field(default=None, max_length=500)
 
 
@@ -113,6 +114,12 @@ class PolicyStateView(BaseModel):
 
 class RestoreInput(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+    expected_version: int | None = Field(
+        default=None,
+        ge=0,
+        le=_MAX_VERSION,
+        description="The current version the caller read; 409 when it moved since.",
+    )
 
 
 class Unrestored(BaseModel):
@@ -147,13 +154,38 @@ def _summary(row: PolicyVersion) -> dict[str, Any]:
     }
 
 
-def _expired(plan: PolicyPlan) -> bool:
-    if plan.status in {"draft", "pending_approval"} and plan.expires_at <= datetime.now(
-        timezone.utc
-    ):
-        plan.status = "expired"
-        return True
-    return False
+async def _authorize(
+    session: AsyncSession, actor: User, resource: ManagedResource
+) -> None:
+    if resource.permission not in await user_permissions(session, actor):
+        raise HTTPException(
+            status_code=403, detail=f"Permission required: {resource.permission}"
+        )
+
+
+async def _require_state_reads(session: AsyncSession, user: User) -> None:
+    granted = await user_permissions(session, user)
+    missing = [permission for permission in _STATE_READS if permission not in granted]
+    if missing:
+        raise HTTPException(
+            status_code=403, detail=f"Permission required: {' and '.join(missing)}"
+        )
+
+
+async def _expire_overdue(
+    session: AsyncSession, organization_id: UUID, *where: Any
+) -> None:
+    await session.execute(
+        update(PolicyPlan)
+        .where(
+            PolicyPlan.organization_id == organization_id,
+            PolicyPlan.status.in_(("draft", "pending_approval")),
+            PolicyPlan.expires_at <= datetime.now(timezone.utc),
+            *where,
+        )
+        .values(status="expired")
+    )
+    await session.commit()
 
 
 async def _change(
@@ -230,6 +262,8 @@ async def _apply_plan(
     stale, changes = [], []
     for change in plan.changes:
         resource = REGISTRY[change["resource"]]
+        # The one who applies may hold less than the one who planned.
+        await _authorize(session, actor, resource)
         current = await resource.snapshot(session, organization_id, [change["item"]])
         if current.get(change["item"]) != change["before"]:
             stale.append({"resource": change["resource"], "item": change["item"]})
@@ -283,7 +317,8 @@ async def _after_commit(
     request: Request, plan: PolicyPlan, cleanups: list[PostCommit]
 ) -> None:
     for name in sorted({change["resource"] for change in plan.changes}):
-        await REGISTRY[name].after_commit(request, plan.organization_id)
+        if hook := getattr(REGISTRY[name], "after_commit", None):
+            await hook(request, plan.organization_id)
     for cleanup in cleanups:
         await cleanup()
 
@@ -322,6 +357,7 @@ async def create_plan(
                     "errors": f"Unknown resource {change.resource}",
                 },
             )
+        await _authorize(session, user, resource)
         if change.item is None and not resource.creatable:
             raise HTTPException(
                 status_code=422,
@@ -359,13 +395,21 @@ async def create_plan(
             after = (
                 None
                 if change.delete
-                else resource.validate(change.item, before, change.set or {})
+                else await resource.validate(
+                    session, user, change.item, before, change.set or {}
+                )
             )
         except HTTPException as exc:
+            # A change that names something the tenant lacks cannot be processed.
             raise HTTPException(
-                status_code=exc.status_code,
+                status_code=422 if exc.status_code == 404 else exc.status_code,
                 detail={"change": index, "errors": exc.detail},
             ) from None
+        if after == before:
+            raise HTTPException(
+                status_code=422,
+                detail={"change": index, "errors": "The change sets nothing new"},
+            )
         changes.append(
             await _change(
                 session,
@@ -392,16 +436,7 @@ async def list_plans(
     session: AsyncSession = Depends(get_db),
 ) -> list[PolicyPlan]:
     organization_id = _tenant(user)
-    await session.execute(
-        update(PolicyPlan)
-        .where(
-            PolicyPlan.organization_id == organization_id,
-            PolicyPlan.status.in_(("draft", "pending_approval")),
-            PolicyPlan.expires_at <= datetime.now(timezone.utc),
-        )
-        .values(status="expired")
-    )
-    await session.commit()
+    await _expire_overdue(session, organization_id)
     statement = select(PolicyPlan).where(PolicyPlan.organization_id == organization_id)
     if status is not None:
         statement = statement.where(PolicyPlan.status == status)
@@ -418,10 +453,9 @@ async def get_plan(
     user: User = Depends(require("plans.create", "audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
-    plan = await _owned_plan(session, _tenant(user), plan_id)
-    if _expired(plan):
-        await session.commit()
-    return plan
+    organization_id = _tenant(user)
+    await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
+    return await _owned_plan(session, organization_id, plan_id)
 
 
 @router.post("/plans/{plan_id}/apply", response_model=PlanView)
@@ -432,10 +466,9 @@ async def apply_plan(
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
     organization_id = _tenant(user)
+    await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
     await lock_tenant(session, organization_id)
     plan = await _owned_plan(session, organization_id, plan_id, lock=True)
-    if _expired(plan):
-        await session.commit()
     cleanups = await _apply_plan(session, user, plan)
     await session.commit()
     await _after_commit(request, plan, cleanups)
@@ -445,7 +478,7 @@ async def apply_plan(
 @router.get("/versions", response_model=list[VersionSummary])
 async def list_versions(
     limit: int = Query(default=50, ge=1, le=200),
-    before: int | None = Query(default=None, ge=1),
+    before: int | None = Query(default=None, ge=1, le=_MAX_VERSION),
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -462,10 +495,11 @@ async def list_versions(
 
 @router.get("/versions/{version}", response_model=VersionView)
 async def get_version(
-    version: int,
+    version: int = Path(ge=0, le=_MAX_VERSION),
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    await _require_state_reads(session, user)
     row = await session.scalar(
         select(PolicyVersion).where(
             PolicyVersion.organization_id == _tenant(user),
@@ -482,6 +516,7 @@ async def policy_state(
     user: User = Depends(require("audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    await _require_state_reads(session, user)
     organization_id = _tenant(user)
     resources = {
         name: await resource.snapshot(session, organization_id, None)
@@ -494,17 +529,23 @@ async def policy_state(
 
 @router.post("/versions/{version}/restore", response_model=RestoreView)
 async def restore_version(
-    version: int,
     payload: RestoreInput,
     request: Request,
+    version: int = Path(ge=0, le=_MAX_VERSION),
     user: User = Depends(require("plans.create")),
     _: User = Depends(require("plans.apply")),
     session: AsyncSession = Depends(get_db),
 ) -> RestoreView:
     organization_id = _tenant(user)
     await lock_tenant(session, organization_id)
-    if not 0 <= version <= await current_version(session, organization_id):
+    latest = await current_version(session, organization_id)
+    if not 0 <= version <= latest:
         raise HTTPException(status_code=404, detail="Policy version not found")
+    if payload.expected_version not in {None, latest}:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
+        )
     targets: dict[str, dict[str, State | None]] = {}
     for row in await session.scalars(
         select(PolicyVersion)
@@ -538,16 +579,43 @@ async def restore_version(
                 )
                 continue
             if target is None and now is not None and not resource.deletable:
-                reason = _NOT_DELETABLE[name]
-                if name != "deployments":
+                if name == "teams":
                     not_restored.append(
-                        Unrestored(resource=name, item=item, reason=reason)
+                        Unrestored(
+                            resource=name, item=item, reason="team_not_deletable"
+                        )
                     )
                     continue
-                target = {**now, "enabled": False}
-                if target == now:
+                # A deployment cannot be deleted; disabling it comes closest.
+                if not now["enabled"]:
                     continue
-                approximated.append(Unrestored(resource=name, item=item, reason=reason))
+                target = {**now, "enabled": False}
+                approximated.append(
+                    Unrestored(
+                        resource=name, item=item, reason="deployment_not_deletable"
+                    )
+                )
+            await _authorize(session, user, resource)
+            try:
+                if target is not None:
+                    # What the item's own route would refuse is skipped, not fatal.
+                    await resource.validate(
+                        session,
+                        user,
+                        item,
+                        now,
+                        {
+                            key: value
+                            for key, value in target.items()
+                            if now is None or now.get(key) != value
+                        },
+                    )
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    raise
+                reason = exc.detail if isinstance(exc.detail, str) else "invalid"
+                not_restored.append(Unrestored(resource=name, item=item, reason=reason))
+                continue
             if now is None and name == "budgets":
                 not_restored.append(
                     Unrestored(
@@ -557,6 +625,10 @@ async def restore_version(
             changes.append(
                 await _change(session, organization_id, name, item, now, target, 7)
             )
+    if len(changes) > _MAX_CHANGES:
+        raise HTTPException(
+            status_code=422, detail=f"A plan holds at most {_MAX_CHANGES} changes"
+        )
     plan = None
     cleanups: list[PostCommit] = []
     if changes:

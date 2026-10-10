@@ -308,18 +308,27 @@ _READ_ONLY_POSTS = frozenset(
 )
 
 
+def _refuse_read_only_write(
+    request: Request, permissions: frozenset[Permission]
+) -> None:
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and (request.method, request.url.path) not in _READ_ONLY_POSTS
+        and permissions <= READ_PERMISSIONS
+    ):
+        raise HTTPException(403, "Auditor access is read-only")
+
+
 async def get_current_user(
     request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
     user = await get_invite_user(request, bearer, session)
-    if (
-        request.method not in {"GET", "HEAD", "OPTIONS"}
-        and (request.method, request.url.path) not in _READ_ONLY_POSTS
-        and await user_permissions(session, user) <= READ_PERMISSIONS
-    ):
-        raise HTTPException(403, "Auditor access is read-only")
+    # A custom role's own and team-scoped writes stay; its organization writes
+    # are refused by the route guard below.
+    if user.custom_role_id is None:
+        _refuse_read_only_write(request, await user_permissions(session, user))
     if not user.is_active:
         logger.warning("Rejected deactivated user")
         raise HTTPException(
@@ -334,10 +343,13 @@ def require(*permissions: Permission, legacy_detail: str | None = None):
     """A route guard that answers 403 unless the caller holds one of the permissions."""
 
     async def guard(
+        request: Request,
         user: User = Depends(get_current_user),
         session: AsyncSession = Depends(get_db),
     ) -> User:
-        if not set(permissions) & await user_permissions(session, user):
+        granted = await user_permissions(session, user)
+        _refuse_read_only_write(request, granted)
+        if not set(permissions) & granted:
             raise HTTPException(
                 403, legacy_detail or f"Permission required: {' or '.join(permissions)}"
             )

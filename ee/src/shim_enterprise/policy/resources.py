@@ -6,7 +6,6 @@ from collections.abc import Awaitable, Callable, Collection, Mapping
 from typing import Protocol
 from uuid import UUID
 
-from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.api import OVERSIGHT_POLICIES
@@ -19,12 +18,15 @@ from shim_enterprise.api.v1.management import (
 )
 from shim_enterprise.policy.plans import Impact, Risk, State
 from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.permissions import Permission
 
 PostCommit = Callable[[], Awaitable[None]]
 
 
 class ManagedResource(Protocol):
     name: str
+    # What the resource's own write route asks for; a plan asks for it too.
+    permission: Permission
     creatable: bool
     deletable: bool
 
@@ -35,8 +37,13 @@ class ManagedResource(Protocol):
         item_ids: Collection[str] | None,
     ) -> dict[str, State]: ...
 
-    def validate(
-        self, item_id: str | None, before: State | None, proposed: State
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
     ) -> State: ...
 
     async def apply(
@@ -63,7 +70,8 @@ class ManagedResource(Protocol):
         window_days: int,
     ) -> Impact: ...
 
-    async def after_commit(self, request: Request, organization_id: UUID) -> None: ...
+    # Optional: `async after_commit(request, organization_id)`, run after the
+    # transaction commits (privacy invalidates its cached policy).
 
 
 REGISTRY: Mapping[str, ManagedResource] = {

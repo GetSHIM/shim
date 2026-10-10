@@ -23,8 +23,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from shim_enterprise.core.database import Base
 
-SOURCES = ("api", "mcp", "plan", "restore", "file", "auto", "import", "proposal")
-RISKS = ("tightening", "relaxing", "neutral")
+Risk = Literal["tightening", "relaxing", "neutral"]
+Source = Literal["api", "mcp", "plan", "restore", "file", "auto", "import", "proposal"]
+SOURCES = get_args(Source)
+RISKS = get_args(Risk)
 PlanStatus = Literal[
     "draft", "pending_approval", "applied", "rejected", "expired", "rolled_back"
 ]

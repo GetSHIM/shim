@@ -10,14 +10,12 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim_enterprise.policy.models import PolicyVersion
+from shim_enterprise.policy.models import PolicyVersion, Risk, Source
 from shim_enterprise.tenants.models import Organization, User
 
 if TYPE_CHECKING:
     from shim_enterprise.policy.resources import ManagedResource
 
-Risk = Literal["tightening", "relaxing", "neutral"]
-Source = Literal["api", "mcp", "plan", "restore", "file", "auto", "import", "proposal"]
 State = dict[str, Any]
 
 

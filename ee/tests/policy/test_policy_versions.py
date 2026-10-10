@@ -29,6 +29,7 @@ from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
     Organization,
+    OrganizationRole,
     ProviderSecret,
     Team,
     User,
@@ -491,6 +492,116 @@ async def test_plans_validate_each_change_with_the_routes_messages(db, origins) 
 
 
 @pytest.mark.asyncio
+async def test_a_restore_asks_only_for_what_it_changes(db) -> None:
+    owner = await _tenant(db)
+    restorer = await _holder(db, owner, "plans.create", "plans.apply", "settings.write")
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+    await _call(db, owner, "POST", "/api/v1/management/teams", json={"name": "late"})
+
+    restored = await _call(
+        db, restorer, "POST", f"{POLICY}/versions/0/restore", json={}
+    )
+
+    assert restored.status_code == 200, restored.text
+    assert [row["reason"] for row in restored.json()["not_restored"]] == [
+        "team_not_deletable"
+    ]
+    assert [change["resource"] for change in restored.json()["plan"]["changes"]] == [
+        "privacy"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_plan_is_refused_when_it_names_what_the_tenant_lacks_or_sets_nothing(
+    db, origins
+) -> None:
+    owner = await _tenant(db)
+    tenant = owner.organization_id
+    secret = await _secret(db, tenant)
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=tenant,
+        user_id=owner.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-m2",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(key)
+    await db.flush()
+    team = (
+        await _call(
+            db, owner, "POST", "/api/v1/management/teams", json={"name": "risk"}
+        )
+    ).json()
+
+    async def plan(change: dict) -> httpx.Response:
+        return await _call(
+            db, owner, "POST", f"{POLICY}/plans", json={"changes": [change]}
+        )
+
+    refused = {
+        "budget team": await plan(
+            {
+                "resource": "budgets",
+                "item": None,
+                "set": {
+                    "scope_type": "team_id",
+                    "scope_value": str(uuid4()),
+                    "limit_usd": "5",
+                },
+            }
+        ),
+        "key team": await plan(
+            {
+                "resource": "api_keys",
+                "item": str(key.id),
+                "set": {"team_id": str(uuid4())},
+            }
+        ),
+        "key model": await plan(
+            {
+                "resource": "api_keys",
+                "item": str(key.id),
+                "set": {"allowed_models": ["no-such-model"]},
+            }
+        ),
+        "secret provider": await plan(
+            {
+                "resource": "deployments",
+                "item": None,
+                "set": _deployment_body(secret.id, provider="anthropic"),
+            }
+        ),
+        "missing secret": await plan(
+            {"resource": "deployments", "item": None, "set": _deployment_body(uuid4())}
+        ),
+        "same privacy": await plan(
+            {"resource": "privacy", "item": "_", "set": {"block_email": True}}
+        ),
+        "same team": await plan(
+            {"resource": "teams", "item": team["id"], "set": {"name": "risk"}}
+        ),
+    }
+
+    assert {name: response.status_code for name, response in refused.items()} == {
+        name: 422 for name in refused
+    }
+    assert (
+        refused["same team"].json()["detail"]["errors"] == "The change sets nothing new"
+    )
+    assert "provider does not match" in refused["secret provider"].text
+    assert (
+        await db.scalar(
+            select(PolicyPlan.id).where(PolicyPlan.organization_id == tenant)
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_plan_shows_its_effect_and_applies_as_one_version(db, origins) -> None:
     owner = await _tenant(db)
     tenant = owner.organization_id
@@ -775,6 +886,90 @@ async def test_restore_puts_back_what_it_can_and_names_the_rest(db, origins) -> 
 
 
 @pytest.mark.asyncio
+async def test_restore_skips_an_item_it_cannot_put_back_and_restores_the_rest(
+    db, origins
+) -> None:
+    owner = await _tenant(db)
+    tenant = owner.organization_id
+    retired, current = await _secret(db, tenant), await _secret(db, tenant)
+    deployment = (
+        await _call(
+            db,
+            owner,
+            "POST",
+            "/api/v1/management/model-deployments",
+            json=_deployment_body(retired.id),
+        )
+    ).json()
+    target = len(await _versions(db, tenant))
+    await _call(
+        db,
+        owner,
+        "PUT",
+        f"/api/v1/management/model-deployments/{deployment['id']}",
+        json=_deployment_body(current.id),
+    )
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+    await db.delete(retired)
+    await db.flush()
+
+    restored = await _call(
+        db, owner, "POST", f"{POLICY}/versions/{target}/restore", json={}
+    )
+
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["not_restored"] == [
+        {
+            "resource": "deployments",
+            "item": deployment["id"],
+            "reason": "Provider secret not found",
+        }
+    ]
+    assert [change["resource"] for change in restored.json()["plan"]["changes"]] == [
+        "privacy"
+    ]
+    privacy = (await _call(db, owner, "GET", "/api/v1/management/settings/pii")).json()
+    assert privacy["block_email"] is True
+    row = await db.get(ModelDeployment, UUID(deployment["id"]))
+    assert row is not None and row.provider_secret_id == current.id
+
+
+@pytest.mark.asyncio
+async def test_restore_refuses_when_the_version_moved_since_it_was_read(db) -> None:
+    owner = await _tenant(db)
+    for blocked in (False, True):
+        await _call(
+            db,
+            owner,
+            "PUT",
+            "/api/v1/management/settings/pii",
+            json={"block_email": blocked},
+        )
+
+    moved = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/versions/1/restore",
+        json={"expected_version": 1},
+    )
+    restored = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/versions/1/restore",
+        json={"expected_version": 2},
+    )
+
+    assert moved.status_code == 409
+    assert moved.json()["detail"] == {"code": "POLICY_VERSION_CHANGED", "version": 2}
+    assert restored.status_code == 200
+    assert len(await _versions(db, owner.organization_id)) == 3
+
+
+@pytest.mark.asyncio
 async def test_undoing_a_tightening_records_the_relaxation(db) -> None:
     owner = await _tenant(db)
     await _call(
@@ -831,7 +1026,7 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
     now = datetime.now(timezone.utc)
 
     def row(
-        started_at: datetime, model: str = "gpt-5-mini", **metadata
+        started_at: datetime, model: str | None = "gpt-5-mini", **metadata
     ) -> RequestLifecycle:
         return RequestLifecycle(
             request_id=f"req_policy_{uuid4().hex}",
@@ -854,6 +1049,7 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
             row(inside, model="policy-model", team_id=team["id"]),
             row(inside, model="other", deployment_id=deployment["id"]),
             row(outside, pii_entities={"EMAIL_ADDRESS": 1}, model="policy-model"),
+            row(inside, model=None),
         ]
     )
     await db.flush()
@@ -919,6 +1115,14 @@ async def test_impact_counts_the_windows_lifecycle_rows(db, origins) -> None:
     assert disable["requests"] == 2
     assert daily["requests"] == 2
     assert oversight["note"] == "review queue runs after the request"
+    budget = await impact(
+        {
+            "resource": "budgets",
+            "item": None,
+            "set": {"scope_type": "org", "limit_usd": "10"},
+        }
+    )
+    assert budget["note"] == "month-to-date use is 0 percent of the new limit"
     wide = await _call(
         db,
         owner,
@@ -967,6 +1171,167 @@ async def test_members_cannot_plan_and_auditors_read_versions(db) -> None:
         "Permission required: plans.create",
     )
     assert (read.status_code, read.json()) == (200, [])
+
+
+async def _holder(db, owner: User, *permissions: str) -> User:
+    role = OrganizationRole(
+        organization_id=owner.organization_id,
+        slug=f"role-{uuid4().hex[:8]}",
+        name="Planner",
+        permissions=list(permissions),
+    )
+    db.add(role)
+    await db.flush()
+    holder = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"policy-{uuid4().hex}@example.com",
+        role="member",
+        custom_role_id=role.id,
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(holder)
+    await db.flush()
+    return holder
+
+
+@pytest.mark.asyncio
+async def test_a_plan_needs_the_permission_of_every_route_it_stands_in_for(
+    db,
+) -> None:
+    owner = await _tenant(db)
+    planner = await _holder(db, owner, "plans.create", "plans.apply", "keys.own")
+    privacy = {"resource": "privacy", "item": "_", "set": {"block_email": False}}
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_phone": False}
+    )
+    owners_plan = (
+        await _call(db, owner, "POST", f"{POLICY}/plans", json={"changes": [privacy]})
+    ).json()
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        user_id=planner.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-own",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(key)
+    await db.flush()
+
+    created = await _call(
+        db, planner, "POST", f"{POLICY}/plans", json={"changes": [privacy]}
+    )
+    applied = await _call(
+        db, planner, "POST", f"{POLICY}/plans/{owners_plan['id']}/apply"
+    )
+    restored = await _call(db, planner, "POST", f"{POLICY}/versions/0/restore", json={})
+    own_key = await _call(
+        db,
+        planner,
+        "POST",
+        f"{POLICY}/plans",
+        json={
+            "changes": [
+                {
+                    "resource": "api_keys",
+                    "item": str(key.id),
+                    "set": {"allowed_models": []},
+                }
+            ]
+        },
+    )
+
+    for refused in (created, applied, restored):
+        assert (refused.status_code, refused.json()["detail"]) == (
+            403,
+            "Permission required: settings.write",
+        ), refused.text
+    assert own_key.status_code == 403, own_key.text
+    assert own_key.json()["detail"]["errors"] == "Organization admin required"
+    assert (await db.get(PolicyPlan, UUID(owners_plan["id"]))).status == "draft"
+    assert len(await _versions(db, owner.organization_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_versions_are_read_only_with_the_reads_of_what_they_hold(db) -> None:
+    owner = await _tenant(db)
+    auditor = await _holder(db, owner, "audit.read")
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_email": False}
+    )
+
+    state = await _call(db, auditor, "GET", f"{POLICY}/state")
+    version = await _call(db, auditor, "GET", f"{POLICY}/versions/1")
+    listed = await _call(db, auditor, "GET", f"{POLICY}/versions")
+
+    for refused in (state, version):
+        assert (refused.status_code, refused.json()["detail"]) == (
+            403,
+            "Permission required: deployments.read and settings.read and usage.read",
+        )
+    assert listed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_version_numbers_and_restore_size_are_bounded(db) -> None:
+    owner = await _tenant(db)
+    huge = 2_147_483_648
+
+    paths = (
+        ("GET", f"{POLICY}/versions/{huge}"),
+        ("GET", f"{POLICY}/versions?before={huge}"),
+        ("POST", f"{POLICY}/versions/{huge}/restore"),
+    )
+    for method, path in paths:
+        response = await _call(db, owner, method, path, json={})
+        assert response.status_code == 422, path
+    for number in range(101):
+        created = await _call(
+            db,
+            owner,
+            "POST",
+            "/api/v1/compliance/oversight/policies",
+            json={"name": f"policy {number}", "trigger": {"pii_detected": True}},
+        )
+        assert created.status_code == 201, created.text
+    too_many = await _call(db, owner, "POST", f"{POLICY}/versions/0/restore", json={})
+
+    assert too_many.status_code == 422
+    assert too_many.json()["detail"] == "A plan holds at most 100 changes"
+    assert len(await _versions(db, owner.organization_id)) == 101
+
+
+@pytest.mark.asyncio
+async def test_restoring_a_version_older_than_a_privacy_field_gives_its_default(
+    db,
+) -> None:
+    owner = await _tenant(db)
+    for body in ({"response_scan": "count"}, {"block_email": False}):
+        await _call(db, owner, "PUT", "/api/v1/management/settings/pii", json=body)
+    await _call(
+        db, owner, "PUT", "/api/v1/management/settings/pii", json={"block_phone": False}
+    )
+    older = (await _versions(db, owner.organization_id))[1]
+    # As if response_scan were added after version 2 was written.
+    older.snapshot = {
+        "privacy": {
+            "_": {
+                key: value
+                for key, value in older.snapshot["privacy"]["_"].items()
+                if key != "response_scan"
+            }
+        }
+    }
+    await db.flush()
+
+    restored = await _call(db, owner, "POST", f"{POLICY}/versions/2/restore", json={})
+
+    assert restored.status_code == 200, restored.text
+    privacy = (await _call(db, owner, "GET", "/api/v1/management/settings/pii")).json()
+    assert (privacy["block_phone"], privacy["response_scan"]) == (True, "off")
 
 
 @pytest.mark.asyncio

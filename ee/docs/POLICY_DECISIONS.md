@@ -101,8 +101,8 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.custom_role_updated` | `before` and `after` of the changed `slug`, `name` and `permissions` |
 | `tenant.member_custom_role_changed` | `before` and `after`: the member's custom role slug, `null` for none |
 | `tenant.budgets_evaluated` | `budgets_evaluated`: how many enabled budgets the manual run evaluated |
-| `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role` and `oidc_teams` (team id to role) of the new user |
-| `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role` or `oidc_teams` when a login changed them |
+| `tenant.oidc_user_provisioned` | `source: "oidc"` and `after`: `role`, `custom_role` (slug or null) and `oidc_teams` (team id to role) of the new user |
+| `tenant.oidc_user_synchronized` | `source: "oidc"` and `before` and `after` of `role`, `custom_role` or `oidc_teams` when a login changed them; `api_keys_revoked` when the login revoked the user's keys |
 | `compliance.connector_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `provider`, `status`, and the redacted `config` |
 | `compliance.connector_run_requested` | `provider`; recorded before the manual run starts |
 | `compliance.forward_target_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `kind`, `endpoint_origin`, `signed`, `min_severity`, `enabled`; an update adds `destination_rotated` (true when the endpoint or signing secret was replaced) |
@@ -168,6 +168,16 @@ they belong to; a write without a version carries none.
 
 A plan (`policy_plans`) is a change set with each change's before and after
 state, risk and estimated impact, created as `draft` and expiring after 7 days.
+Each change also needs what its own route asks for: `settings.write` for
+privacy, `teams.manage` for teams, `deployments.manage`, `budgets.manage`, and
+`compliance.manage` for oversight policies; a key change follows the key
+route's rules (`keys.manage` for a key without a team, team administration for
+a team's key). This is checked when the plan is created, again for the one who
+applies it, and for every item a restore puts back (403
+"Permission required: <permission>"). Creating a plan also runs the checks the
+routes run before writing, so a change naming a team, model alias or provider
+secret the organization lacks, or a secret of another provider, answers 422,
+and so does a change that sets nothing new.
 Applying it checks that every item still has the stored before-state
 (`PLAN_STALE` otherwise), writes every change through the same code as the
 direct routes, records one version and marks the plan `applied`. Impact counts
@@ -181,8 +191,19 @@ limit, and an oversight policy has no estimate.
 Restoring a version applies a plan with source `restore` that puts every item a
 version touched back to its state at that version. A revoked key, a team
 created after it (teams cannot be deleted) and a re-created budget's
-notification targets are listed in `not_restored`; a deployment created after it
-is disabled and listed in `approximated`. Plans applied after the version become
+notification targets are listed in `not_restored`, and so is an item whose own
+route would refuse that state now (a deleted provider secret, a disabled model
+alias, a deployment origin no longer allowed, a team name another team took),
+with the route's message as the reason; the rest is restored. A deployment
+created after the version is disabled and listed in `approximated`. A restore
+sent with `expected_version` answers 409
+`{"code": "POLICY_VERSION_CHANGED", "version": <current>}` when the current
+version is no longer that one, and changes nothing. A restore, like a plan,
+holds at most 100 changes (422 beyond; restore a later version first), and a
+privacy field added after the restored version takes its default. Reading the
+current state (`/policy/state`) or one version's states needs, besides
+`audit.read`, the reads of what they show: `settings.read`, `usage.read` and
+`deployments.read` (403 naming the missing ones). Plans applied after the version become
 `rolled_back`. Audit actions: `tenant.policy_plan_created`,
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,
