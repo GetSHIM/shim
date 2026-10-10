@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from functools import cached_property
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+
+if TYPE_CHECKING:
+    from shim.rules.content import Matchers
 
 RuleKind = Literal[
     "term",
@@ -92,6 +96,15 @@ class RuleSet(_Frozen):
     revision: int = Field(ge=1)
     rules: tuple[Rule, ...] = Field(max_length=100)
     unusable: tuple[UnusableRule, ...] = ()
+
+    # Built on first use and kept with the set; model_copy would keep it too, so a
+    # changed set is a new RuleSet.
+    @cached_property
+    def matchers(self) -> Matchers:
+        # Here, not at the top: content imports this module.
+        from shim.rules.content import Matchers
+
+        return Matchers(self)
 
 
 class RuleMatch(_Frozen):

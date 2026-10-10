@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+import timeit
+
 import pytest
 
 import shim.rules.content as content
@@ -51,6 +54,7 @@ def _found(rule: dict, text: str) -> int:
     ("match", "path"),
     [
         ({"terms": ["ab"]}, "rules[0].match.terms[0]"),
+        ({"terms": ["+++"]}, "rules[0].match.terms[0]"),
         ({"terms": ["x" * 129]}, "rules[0].match.terms[0]"),
         ({"terms": ["İzmir", "IZMIR"]}, "rules[0].match.terms"),
         ({"terms": []}, "rules[0].match.terms"),
@@ -201,7 +205,7 @@ def test_only_the_term_is_the_match_and_the_longest_term_wins() -> None:
     found = content.content_rules(rule_set, lambda _rule: True)
     assert found is not None
 
-    hits = found.search("Atlasın raporu, Atlas Projesi")
+    hits = resolve_overlaps(found.search("Atlasın raporu, Atlas Projesi"))
 
     assert [(hit.start, hit.end) for hit in hits] == [(0, 5), (16, 27)]
 
@@ -269,17 +273,20 @@ def test_the_suffix_tuple_is_pinned_and_follows_its_rule() -> None:
 
 
 def test_a_rule_set_compiles_once_per_object(monkeypatch) -> None:
-    calls = []
-    compile_set = content._compile
-    monkeypatch.setattr(
-        content, "_compile", lambda rule_set: calls.append(1) or compile_set(rule_set)
-    )
+    built = []
+
+    class Counted(content.Matchers):
+        def __init__(self, rule_set) -> None:
+            built.append(rule_set)
+            super().__init__(rule_set)
+
+    monkeypatch.setattr(content, "Matchers", Counted)
     first, second = _set(_term("Atlas")), _set(_term("Atlas"))
 
     for rule_set in (first, first, second):
         count_rule_matches(rule_set, "Atlas")
 
-    assert len(calls) == 2
+    assert built == [first, second] and built[0] is first
 
 
 def test_counting_ignores_state_scope_and_action_and_skips_other_kinds() -> None:
@@ -338,3 +345,33 @@ def test_overlapping_hits_keep_the_longer_then_the_earlier_and_merge_equal_spans
         (2, 9, ["two"]),
         (10, 14, ["one", "two"]),
     ]
+
+
+def test_the_matcher_stays_fast_at_the_set_limits() -> None:
+    # 2,000 terms, a fifth of them sharing their first word, and 32 KB made only of
+    # their words with endings, so every word starts a walk through the index.
+    rng = random.Random(7)
+    syllables = "ka ra de ni şe hi ğu çe kö ip ür sel tan bey gül fır".split()
+    words = sorted(
+        {
+            "".join(rng.choice(syllables) for _ in range(3)).capitalize()
+            for _ in range(4_000)
+        }
+    )[:1_600]
+    terms = words + [f"Atlas {word}" for word in words[:400]]
+    rule_set = _set(
+        *(
+            _term(*terms[i : i + 200], rule_id=f"r{i // 200}")
+            for i in range(0, 2_000, 200)
+        )
+    )
+    text = " ".join(
+        rng.choice(["Atlas", *terms]) + rng.choice(["", "'ın", "ları", "da", "ndan"])
+        for _ in range(4_000)
+    )[:32_768]
+    found = content.content_rules(rule_set, lambda _rule: True)
+    assert found is not None and len(found.search(text)) > 2_000
+
+    elapsed = min(timeit.repeat(lambda: found.search(text), number=1, repeat=3))
+
+    assert elapsed < 0.05

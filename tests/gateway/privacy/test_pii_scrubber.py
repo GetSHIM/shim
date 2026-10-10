@@ -1307,9 +1307,8 @@ def test_a_local_part_longer_than_the_rfc_limit_is_still_masked_whole(
     ],
 )
 def test_adversarial_runs_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
-    many_terms = _content(_term_rule(*(f"Projekt{index:03d}" for index in range(200))))
     started = time.perf_counter()
-    scrubber.analyze(text, DEFAULT_ACTIONS, many_terms)
+    scrubber.analyze(text, DEFAULT_ACTIONS)
 
     # Unbounded, the email patterns took 20 s and more on 32 KB.
     assert time.perf_counter() - started < 5
