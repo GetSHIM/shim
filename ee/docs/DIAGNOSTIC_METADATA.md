@@ -212,6 +212,15 @@ line per request, `event: "response_analysis"`, with the same object as
 `results`. `shim_response_analysis_total{analyzer, result}` counts each run as
 `ok`, `none` or `error`.
 
+`response_analysis.shape` records what a request was made of: turn, history,
+system and tool-result sizes, the tools it offered by name and in order, the
+tool calls it replayed, the order and set digests of the offered names, and
+image and document counts with the largest inline image's size. Sizes count the
+masked request, so a detected value counts as its placeholder. Tool names are
+stored in clear, which is what the switch is for; tool definitions are never
+stored or hashed. The keys are listed in the
+[community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery).
+
 `rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
 matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
 when the rule's evaluation failed), blocks first and then by id, at most 32;

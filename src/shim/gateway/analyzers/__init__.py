@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
+from shim.gateway.analyzers.shape import ShapeAnalyzer
 from shim.gateway.pipeline.analysis import ResponseAnalyzer
 
-ANALYZERS: tuple[ResponseAnalyzer, ...] = ()
+ANALYZERS: tuple[ResponseAnalyzer, ...] = (ShapeAnalyzer(),)
 ANALYZER_NAMES: frozenset[str] = frozenset(analyzer.name for analyzer in ANALYZERS)
