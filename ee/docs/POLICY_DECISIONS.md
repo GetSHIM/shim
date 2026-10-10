@@ -90,7 +90,8 @@ available; `GET /rules` lists the others with `available: false` and the reason.
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
-characters removed, NFKC), and only for the rules in scope for the request.
+characters and the combining dot of a lower-cased `İ` removed, NFKC), and only
+for the rules in scope for the request.
 Every term of a rule in scope is found, a shorter one inside a longer one too;
 a rule out of scope or in state `monitor` never hides one that is enforced. Where
 matches overlap, each other and built-in detections, the strongest enforced

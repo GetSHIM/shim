@@ -14,7 +14,7 @@ from shim.rules.content import (
     turkish_fold,
 )
 from shim.rules.patterns import PatternTimeout
-from shim.rules.tr_suffixes import TR_SUFFIXES, TR_SUFFIXES_VERSION
+from shim.rules.tr_suffixes import TR_SUFFIX, TR_SUFFIXES_VERSION
 
 
 def _rule(rule_id: str = "words", kind: str = "term", **values) -> dict:
@@ -219,7 +219,7 @@ def test_two_rules_listing_one_term_both_count_it() -> None:
     ) == {"one": 1, "two": 1}
 
 
-def test_the_suffix_tuple_is_pinned_and_follows_its_rule() -> None:
+def test_the_suffix_grammar_keeps_every_version_1_ending() -> None:
     def expand(template: str) -> set[str]:
         # A = a/e; I = ı/u (back) or i/ü (front), only ı/i after the plural; D = d/t.
         plural = "lAr" in template
@@ -270,9 +270,16 @@ def test_the_suffix_tuple_is_pinned_and_follows_its_rule() -> None:
         if len(suffix) <= 8
     }
 
-    assert TR_SUFFIXES_VERSION == 1
-    assert len(TR_SUFFIXES) == len(set(TR_SUFFIXES)) == 124
-    assert set(TR_SUFFIXES) == expected
+    # The 124 endings version 1 listed, each at most eight characters.
+    assert len(expected) == 124
+    assert TR_SUFFIXES_VERSION == 2
+    assert [
+        suffix for suffix in expected if not TR_SUFFIX.fullmatch(content._fold(suffix))
+    ] == []
+    assert not any(
+        TR_SUFFIX.fullmatch(content._fold(derived))
+        for derived in ("çılık", "cı", "lık", "sız", "siz", "li", "dibi", "ian", "x")
+    )
 
 
 def test_a_rule_set_compiles_once_per_object(monkeypatch) -> None:
@@ -368,6 +375,73 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
         (hit.start, hit.end)
         for hit in first_fit(hits, key=longer_first, keep=lambda hit: hit.start == 0)
     ] == [(2, 9), (0, 5), (10, 14)]
+
+
+@pytest.mark.parametrize(
+    ("term", "text"),
+    [
+        # Typed without Turkish letters.
+        ("Şişli Kule", "SISLI KULE"),
+        ("Işık Holding", "Isik Holding"),
+        ("İzmir Proje", "izmir proje"),
+        ("Gülçiçek", "gulcicek'in"),
+        # The dotted i of a lower-cased İ (i and U+0307).
+        ("İzmir Proje", "i̇zmir proje"),
+        # Possessives, copula, equative, -ki, and long chains.
+        ("Atlas", "Atlasımız"),
+        ("Atlas", "Atlasımızın"),
+        ("Atlas", "Atlasınız"),
+        ("Atlas", "Atlasım"),
+        ("Kule", "Kulemiz"),
+        ("Kule", "Kulen"),
+        ("Atlas", "Atlastır"),
+        ("Atlas", "Atlaslardır"),
+        ("Atlas", "Atlasça"),
+        ("Atlas", "Atlasınki"),
+        ("Atlas", "Atlaslarındaki"),
+        ("Atlas", "Atlaslarımızdakiler"),
+        ("Atlas", "Atlastakini"),
+        ("Atlas", "Atlasındadır"),
+        # A short term in capitals takes a lower-case ending without an apostrophe.
+        ("BKM", "BKMnin"),
+        ("BKM", "BKMye"),
+        # Word edges: underscore, letter and digit, lower to upper case.
+        ("Atlas", "atlas_rapor.xlsx"),
+        ("Atlas", "Atlas2024"),
+        ("Atlas", "AtlasProje"),
+        # Other dashes are a hyphen.
+        ("e-Devlet", "e–Devlet"),
+        ("e-Devlet", "e‐Devlet'e"),
+        ("PRJ-2024-001", "PRJ−2024−001"),
+    ],
+)
+def test_a_term_is_found_in_every_form_it_is_written_in(term, text) -> None:
+    assert _found(_term(term), text) == 1
+
+
+@pytest.mark.parametrize(
+    ("term", "text"),
+    [
+        ("Atlas", "Atlasçılık"),
+        ("Atlas", "Atlasian"),
+        ("Atlas", "XAtlas"),
+        ("Kule", "Kuleli"),
+        ("Kule", "Kulesiz"),
+        ("Kule", "Kuledibi"),
+        ("PRJ-2024-001", "PRJ-2024-0012"),
+        ("Ata", "Atalar"),
+        ("Ata", "ATALAR"),
+        ("Ata", "Atada"),
+        ("BKM", "BKMNIN"),
+    ],
+)
+def test_a_longer_word_is_not_the_term(term, text) -> None:
+    assert _found(_term(term), text) == 0
+
+
+@pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234"])
+def test_a_template_hyphen_takes_any_dash(text) -> None:
+    assert _found(_pattern(templates=["PRJ-####"]), text) == 1
 
 
 def test_the_matcher_stays_fast_at_the_set_limits() -> None:

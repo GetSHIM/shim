@@ -2027,3 +2027,17 @@ def test_a_term_in_an_identifier_is_never_refused_whatever_the_key_order(
 
     [placeholder] = mapping
     assert scrubbed["messages"][0] == {**message, "content": placeholder}
+
+
+def test_a_dotted_i_maps_back_to_its_source_and_is_restored(
+    scrubber: PIIScrubberService,
+) -> None:
+    text = "Rapor: i̇zmir projesi hazır"
+
+    scrubbed, mapping = scrubber.scrub(
+        text, _OFF, content=_content(_term_rule("İzmir Proje"))
+    )
+
+    assert list(mapping.values()) == ["i̇zmir proje"]
+    assert scrubbed.endswith("si hazır") and "zmir" not in scrubbed
+    assert scrubber.deanonymize(scrubbed, mapping) == text

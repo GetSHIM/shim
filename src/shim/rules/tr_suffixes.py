@@ -1,136 +1,26 @@
-"""Turkish case suffixes a tenant term may carry without an apostrophe (version 1).
+"""The Turkish endings a tenant term may carry without an apostrophe (version 2).
 
-Plural, third-person possessive, accusative, dative, locative, ablative, genitive,
-instrumental and -ki after the locative, and their two-step combinations, in both
-vowel-harmony series with the d/t and buffer-consonant variants, each at most eight
-characters. Softening (kitap, kitabı) and derivational suffixes are not here.
+A grammar over the folded text (ı and i as i, ü and u as u, ç as c, lower case), so
+both vowel-harmony series, the d/t forms and any chain length are covered: plural,
+possessive (all persons), case (accusative, dative, locative, ablative, genitive,
+instrumental, equative) with the y, n and s buffer letters, -ki after a genitive or a
+locative and what may follow it, and the -DIr copula. Softening (kitap, kitabı) and
+derivations (-cı, -lık, -sız, -li) are not endings here.
 """
 
-TR_SUFFIXES_VERSION = 1
+import re
 
-TR_SUFFIXES: tuple[str, ...] = (
-    "larından",
-    "lerinden",
-    "lardaki",
-    "larında",
-    "larının",
-    "larıyla",
-    "lerdeki",
-    "lerinde",
-    "lerinin",
-    "leriyle",
-    "sindeki",
-    "sundaki",
-    "sündeki",
-    "sındaki",
-    "indeki",
-    "lardan",
-    "larına",
-    "larını",
-    "lerden",
-    "lerine",
-    "lerini",
-    "sinden",
-    "sundan",
-    "sünden",
-    "sından",
-    "undaki",
-    "ündeki",
-    "ındaki",
-    "inden",
-    "larda",
-    "larla",
-    "ların",
-    "lerde",
-    "lerin",
-    "lerle",
-    "sinde",
-    "sinin",
-    "siyle",
-    "sunda",
-    "sunun",
-    "suyla",
-    "sünde",
-    "sünün",
-    "süyle",
-    "sında",
-    "sının",
-    "sıyla",
-    "undan",
-    "ünden",
-    "ından",
-    "daki",
-    "deki",
-    "inde",
-    "inin",
-    "iyle",
-    "lara",
-    "ları",
-    "lere",
-    "leri",
-    "sine",
-    "sini",
-    "suna",
-    "sunu",
-    "süne",
-    "sünü",
-    "sına",
-    "sını",
-    "taki",
-    "teki",
-    "unda",
-    "unun",
-    "uyla",
-    "ünde",
-    "ünün",
-    "üyle",
-    "ında",
-    "ının",
-    "ıyla",
-    "dan",
-    "den",
-    "ine",
-    "ini",
-    "lar",
-    "ler",
-    "nin",
-    "nun",
-    "nün",
-    "nın",
-    "tan",
-    "ten",
-    "una",
-    "unu",
-    "yla",
-    "yle",
-    "üne",
-    "ünü",
-    "ına",
-    "ını",
-    "da",
-    "de",
-    "in",
-    "la",
-    "le",
-    "si",
-    "su",
-    "sü",
-    "sı",
-    "ta",
-    "te",
-    "un",
-    "ya",
-    "ye",
-    "yi",
-    "yu",
-    "yü",
-    "yı",
-    "ün",
-    "ın",
-    "a",
-    "e",
-    "i",
-    "u",
-    "ü",
-    "ı",
+TR_SUFFIXES_VERSION = 2
+
+_A, _I, _D = "[ae]", "[iu]", "[dt]"
+_PLURAL = f"l{_A}r"
+_POSSESSIVE = f"(?:{_I}?m(?:{_I}z)?|{_I}?n(?:{_I}z)?|s?{_I})"
+_GENITIVE_OR_LOCATIVE = f"(?:n?{_I}n|n?{_D}{_A})"
+_CASE = f"(?:[yn]?{_I}|[yn]?{_A}|n?{_D}{_A}n?|n?{_I}n|y?l{_A}|n?c{_A})"
+_COPULA = f"{_D}{_I}r(?:{_PLURAL})?"
+
+TR_SUFFIX = re.compile(
+    f"(?:{_PLURAL})?(?:{_POSSESSIVE})?"
+    f"(?:{_GENITIVE_OR_LOCATIVE}ki(?:{_PLURAL})?(?:{_CASE})?|{_CASE})?"
+    f"(?:{_COPULA})?"
 )

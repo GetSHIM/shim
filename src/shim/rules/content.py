@@ -24,15 +24,30 @@ import regex
 from shim.observability.metrics import LABEL_VALUES
 from shim.rules.model import ACTION_RANK, Rule, RuleSet
 from shim.rules.patterns import PatternTimeout, SearchBudget, compile_safe
-from shim.rules.tr_suffixes import TR_SUFFIXES
+from shim.rules.tr_suffixes import TR_SUFFIX
 
 
 _WORD = r"[\p{L}\p{N}_]"
 _START = rf"(?<!{_WORD})"
 _END = rf"(?!{_WORD})"
-# A run of word characters: what a term's words are matched against.
-_RUN = re.compile(r"\w+")
+# A run of letters or of digits: what a term's words are matched against. An
+# underscore, a letter next to a digit and a lower-case letter before an upper-case
+# one are word edges too: "atlas_rapor", "Atlas2024", "AtlasProje".
+_RUN = re.compile(r"[^\W\d_]+|\d+")
+_CAMEL = regex.compile(r"\p{Ll}\p{Lu}")
 _SPACES = re.compile(r"\s+")
+_DASH = "-"
+# Hyphen, non-breaking hyphen, figure, en and em dash, horizontal bar, minus sign.
+_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+# Turkish letters typed without their marks, and every dash as a hyphen.
+_ASCII = (
+    ("ı", "i"),
+    ("ş", "s"),
+    ("ç", "c"),
+    ("ğ", "g"),
+    ("ö", "o"),
+    ("ü", "u"),
+) + tuple((dash, _DASH) for dash in _DASHES)
 # U+02BC is a letter, so a run can carry it: "Atlasʼa".
 _APOSTROPHE_LETTER = "ʼ"
 _TURKISH_I = "İIıi"
@@ -41,23 +56,29 @@ _MIN_SUFFIXED_TERM = 4
 
 
 def _fold(text: str) -> str:
-    """The case fold terms are compared in; one character for one, so offsets hold."""
+    """The fold terms are compared in; one character for one, so offsets hold.
+
+    Lower case with the four Turkish I letters as one, ş ç ğ ö ü as s c g o u, and
+    every dash as a hyphen: "ŞİŞLİ", "Sisli" and "sişli" are one word.
+    """
 
     # str.replace runs in C; a translate table walks a dict per character.
-    return text.replace("İ", "i").lower().replace("ı", "i")
+    folded = text.replace("İ", "i").lower()
+    for letter, plain in _ASCII:
+        folded = folded.replace(letter, plain)
+    return folded
 
 
 def turkish_fold(text: str) -> str:
-    """İ, I and ı to i, then lower case, then whitespace runs to one space."""
+    """The fold, then whitespace runs to one space."""
 
     return " ".join(_fold(text).split())
 
 
-_SUFFIXES = frozenset(_fold(suffix) for suffix in TR_SUFFIXES)
-
-
 def _letter(character: str) -> str:
-    return f"[{_TURKISH_I}]" if character in _TURKISH_I else regex.escape(character)
+    if character in _TURKISH_I:
+        return f"[{_TURKISH_I}]"
+    return f"[-{_DASHES}]" if character == _DASH else regex.escape(character)
 
 
 def _template_regex(template: str) -> str:
@@ -203,13 +224,14 @@ class _Term:
 class _Node:
     """Terms by their words: the next word and separator, and the words a term ends with."""
 
-    next: dict[tuple[str, str], _Node] = field(default_factory=dict)
+    # A word, then the separator after it, to the node for the next word.
+    next: dict[str, dict[str, _Node]] = field(default_factory=dict)
     ends: dict[str, list[_Term]] = field(default_factory=dict)
     lengths: tuple[int, ...] = ()
 
 
 def _word_at(text: str, index: int) -> bool:
-    return 0 <= index < len(text) and (text[index].isalnum() or text[index] == "_")
+    return 0 <= index < len(text) and text[index].isalnum()
 
 
 class Matchers:
@@ -244,7 +266,9 @@ class Matchers:
             node = self.root
             for run, following in zip(runs, runs[1:]):
                 separator = _SPACES.sub(" ", term[run.end() : following.start()])
-                node = node.next.setdefault((run.group(), separator), _Node())
+                node = node.next.setdefault(run.group(), {}).setdefault(
+                    separator, _Node()
+                )
             node.ends.setdefault(runs[-1].group(), []).append(
                 _Term(
                     term[: runs[0].start()],
@@ -256,11 +280,10 @@ class Matchers:
         nodes = [self.root]
         for node in nodes:
             node.lengths = tuple(sorted({len(word) for word in node.ends}))
-            nodes.extend(node.next.values())
-        self.keys = frozenset(
-            word[:3]
-            for word in (*self.root.ends, *(word for word, _ in self.root.next))
-        )
+            nodes.extend(
+                child for after in node.next.values() for child in after.values()
+            )
+        self.keys = frozenset(word[:3] for word in (*self.root.ends, *self.root.next))
 
     def terms(self, text: str, ids: set[str]) -> list[ContentHit]:
         """Every term of the rules `ids` in `text`, overlaps included."""
@@ -270,13 +293,17 @@ class Matchers:
         for run in _RUN.finditer(folded):
             start, end = run.span()
             if folded[start : min(start + 3, end)] in self.keys:
-                found += self._walk(folded, start, end, ids)
+                found += self._walk(text, folded, start, end, ids)
+        for edge in _CAMEL.finditer(text):
+            run = _RUN.match(folded, edge.start() + 1)
+            if run is not None and folded[run.start() : run.start() + 3] in self.keys:
+                found += self._walk(text, folded, run.start(), run.end(), ids)
         return found
 
     # ponytail: each word run re-walks up to the longest term's word count (64 at most),
     # so terms of many repeated words cost that factor; Aho-Corasick over words if seen.
     def _walk(
-        self, folded: str, start: int, end: int, ids: set[str]
+        self, text: str, folded: str, start: int, end: int, ids: set[str]
     ) -> list[ContentHit]:
         found: list[ContentHit] = []
         node: _Node | None = self.root
@@ -287,20 +314,28 @@ class Matchers:
                 if length > len(word):
                     break
                 for term in node.ends.get(word[:length], ()):
-                    hit = _accept(folded, term, start, word_start + length, end, ids)
+                    hit = _accept(
+                        text, folded, term, start, word_start + length, end, ids
+                    )
                     if hit is not None:
                         found.append(hit)
-            following = _RUN.search(folded, end) if node.next else None
-            if following is None:
+            after = node.next.get(word)
+            following = _RUN.search(folded, end) if after else None
+            if after is None or following is None:
                 break
-            separator = _SPACES.sub(" ", folded[end : following.start()])
-            node = node.next.get((word, separator))
+            node = after.get(_SPACES.sub(" ", folded[end : following.start()]))
             word_start, end = following.span()
         return found
 
 
 def _accept(
-    folded: str, term: _Term, start: int, end: int, run_end: int, ids: set[str]
+    text: str,
+    folded: str,
+    term: _Term,
+    start: int,
+    end: int,
+    run_end: int,
+    ids: set[str],
 ) -> ContentHit | None:
     """The hit of `term` from `start` to `end` when the text around it allows one."""
 
@@ -319,15 +354,28 @@ def _accept(
         end += len(term.trail)
         if _word_at(folded, end):
             return None
+    if rest and not rest[0].isalpha():
+        # Inside a number: "PRJ-2024-0012" is not "PRJ-2024-001".
+        return None
+    if camel := _CAMEL.search(text, end - 1, run_end):
+        rest = rest[: camel.start() + 1 - end]
+    ending = (
+        rest
+        and (
+            rest[0] == _APOSTROPHE_LETTER
+            or TR_SUFFIX.fullmatch(rest) is not None
+            # A short term takes an ending only written as an acronym: "BKMnin".
+            and (
+                not term.short
+                or text[start:end].isupper()
+                and text[end:run_end].islower()
+            )
+        )
+    )
     owners = tuple(
         rule
         for rule in term.owners
-        if rule.id in ids
-        and (
-            not rest
-            or rule.match["suffixes"] == "tr"
-            and (rest[0] == _APOSTROPHE_LETTER or not term.short and rest in _SUFFIXES)
-        )
+        if rule.id in ids and (not rest or ending and rule.match["suffixes"] == "tr")
     )
     return ContentHit(start, end, owners) if owners else None
 

@@ -145,7 +145,9 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     for character, span in zip(decoded, spans):
-        if not _INVISIBLE.fullmatch(character):
+        # A lower-cased İ is i and a combining dot (JavaScript and Python lower()).
+        dotted_i = character == "\u0307" and visible_characters[-1:] == ["i"]
+        if not dotted_i and not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
     visible_text = "".join(visible_characters)
