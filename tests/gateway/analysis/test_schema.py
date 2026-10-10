@@ -449,4 +449,4 @@ def test_language_still_labels_json_answers_unknown() -> None:
 def test_the_analyzer_is_registered_after_language() -> None:
     names = [analyzer.name for analyzer in ANALYZERS]
 
-    assert names[-2:] == ["language", "schema"]
+    assert names.index("schema") == names.index("language") + 1

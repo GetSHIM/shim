@@ -39,6 +39,16 @@ counted, except a provider block, which is `filtered`); community records it in 
 it in lifecycle metadata, the analytics projection, the request list and its
 CSV export.
 
+A model can also refuse in words and end normally ("Üzgünüm, bu konuda
+yardımcı olamam" with `stop`): that answer stays `complete`, because
+`completion_outcome` records native signals only and its metric and rate rules
+depend on that. The opt-in `refusal` analyzer records such answers separately,
+as `response_analysis.refusal`: `soft_refusal` and the `marker` id, never the
+text. It reads only `complete` answers, by a versioned Turkish and English
+phrase list, and is a heuristic; the
+[community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery) says
+what it looks for.
+
 The repeat count is a content-match observation, **not evidence of a retry**.
 Its existing matching algorithm selects prompt fields plus provider/model,
 sorts JSON keys, applies NFKC normalization, and collapses whitespace. The
