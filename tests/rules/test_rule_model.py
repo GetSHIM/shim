@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import shim.rules.kinds as kinds
+import shim.rules.patterns as patterns
 from shim.rules import RuleSet, RuleSetError, validate_rule_set
 from shim.rules.content import PatternMatch, TermMatch
 
@@ -196,3 +197,14 @@ def test_a_stored_rule_without_a_readable_id_action_or_state_is_refused(
         kinds.load_rule_set(1, [stored])
 
     assert (error.value.code, error.value.path) == ("RULE_SET_INVALID", "rules[0]")
+
+
+def test_a_stored_pattern_is_not_probed_again(monkeypatch) -> None:
+    # Every timed probe fails: a write is refused, a stored set still loads.
+    monkeypatch.setattr(patterns, "PROBE_SECONDS", 0.0)
+    rule = _rule(kind="pattern", match={"regexes": [r"INV\d{6}"]})
+
+    assert _refused({"revision": 1, "rules": [rule]}).code == "RULE_PATTERN_UNSAFE"
+    assert [rule.id for rule in kinds.load_rule_set(1, [rule]).rules] == [
+        "project_names"
+    ]

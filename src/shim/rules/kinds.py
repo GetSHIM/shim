@@ -65,7 +65,7 @@ def _refusal(code: str, prefix: str, error: ValidationError) -> RuleSetError:
 
 
 def validate_rule_set(
-    payload: dict[str, Any], *, approval_available: bool = False
+    payload: dict[str, Any], *, approval_available: bool = False, stored: bool = False
 ) -> RuleSet:
     try:
         rule_set = RuleSet.model_validate(payload)
@@ -96,7 +96,7 @@ def validate_rule_set(
                 f"action {rule.action} is not available for kind {rule.kind}",
             )
         try:
-            match = spec.match.model_validate(rule.match)
+            match = spec.match.model_validate(rule.match, context={"stored": stored})
         except ValidationError as error:
             raise _refusal(
                 "RULE_MATCH_INVALID", f"rules[{index}].match", error
@@ -126,7 +126,9 @@ def load_rule_set(revision: int, stored: list[dict[str, Any]]) -> RuleSet:
     for index, raw in enumerate(stored):
         try:
             rules += validate_rule_set(
-                {"revision": revision, "rules": [raw]}, approval_available=True
+                {"revision": revision, "rules": [raw]},
+                approval_available=True,
+                stored=True,
             ).rules
             continue
         except RuleSetError:

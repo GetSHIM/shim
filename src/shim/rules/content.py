@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -122,8 +123,11 @@ def _template(value: str) -> str:
     return value
 
 
-def _safe(value: str) -> str:
-    if compile_safe(value) is None:
+def _safe(value: str, info: ValidationInfo) -> str:
+    flags = regex.IGNORECASE if info.data.get("ignore_case", True) else 0
+    # A stored set was probed when it was written; a timed probe on load could flake.
+    probe = not (info.context or {}).get("stored", False)
+    if compile_safe(value, flags, probe=probe) is None:
         raise PydanticCustomError(
             "rule_pattern_unsafe",
             "the regex does not compile, can backtrack, or is too slow",
@@ -154,6 +158,8 @@ class TermMatch(BaseModel):
 class PatternMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Before regexes: their safety check runs with the flags they run with.
+    ignore_case: bool = True
     templates: list[
         Annotated[
             str,
@@ -167,7 +173,6 @@ class PatternMatch(BaseModel):
         ]
     ] = Field(default=[], max_length=32)
     label: _Label = "PATTERN"
-    ignore_case: bool = True
 
     @model_validator(mode="after")
     def something_to_match(self) -> PatternMatch:
