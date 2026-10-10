@@ -760,10 +760,20 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
   -o iso42001_readiness.csv
 ```
 
+3. Read the gap list: every control whose status is `gap` or `partial`, gaps
+   first, each with what is missing and the next steps. A step marked "in shim"
+   points at the feature that produces the missing evidence; the others are for
+   your organization, and shim does not check the documents they produce.
+   Declare a control once your organization has done its steps.
+
 Notes: the CSV starts with the cover sentences, one per row, and a blank row;
 then come the columns `control_id`, `title`, `source` (`measured`, `input` or
-`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`.
-The PDF holds the same 38 rows, with text over 900 characters cut and marked
-"(truncated, see CSV)". The report is not an audit or a certification.
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration`, `note`,
+`status` (`ready`, `partial` or `gap`) and `next_steps` (empty for a ready
+control, otherwise the steps joined with ` | `, each prefixed `in_shim: ` or
+`organization: `). The PDF holds the same 38 rows with a status column, then
+the gap list, with text over 900 characters cut and marked
+"(truncated, see CSV)". The report is not an audit or a certification and
+carries no score.
 Sources, rules and the numbering caveat are in
 [decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

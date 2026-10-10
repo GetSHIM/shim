@@ -11,6 +11,7 @@ from decimal import Decimal
 from functools import lru_cache
 from importlib import resources
 import io
+from typing import Literal
 from uuid import UUID
 from xml.sax.saxutils import escape
 
@@ -54,12 +55,28 @@ COVER = (
     "It is not an audit, a certification or a statement of conformity."
 )
 UNVERIFIED = (
-    "Control numbers and titles have not yet been checked against the published "
-    "standard."
+    "Control numbers and titles, and the gap and next-step texts, have not yet been "
+    "checked against the published standard."
 )
+STEP_TYPES = ("in_shim", "organization")
+GAP_LIMIT = 300
+STEP_LIMIT = 240
+MAX_STEPS = 4
+GAP_LIST_NOTE = (
+    "Steps marked 'in shim' can be done in the product; the others are for your "
+    "organization. shim does not check documents."
+)
+ReadinessStatus = Literal["ready", "partial", "gap"]
 # reportlab cannot split a table row across pages, so one cell stays well under a
 # page: a long summary or note is cut here and read whole in the CSV.
 _PDF_TEXT_LIMIT = 900
+
+
+@dataclass(frozen=True, slots=True)
+class NextStep:
+    type: str
+    text: str
+    doc: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +86,9 @@ class ReadinessControl:
     source: str
     evidence: str | None
     rule: str | None
+    gap: str
+    # in_shim steps first, then organization steps.
+    next_steps: tuple[NextStep, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +119,60 @@ class ReadinessRow:
         if self.declaration is not None:
             return self.declaration.status
         return NOT_DECLARED if self.control.source == "declared" else ""
+
+    @property
+    def status(self) -> ReadinessStatus:
+        return readiness_status(
+            self.control.source,
+            self.evidence is not None and self.evidence.present,
+            self.declaration.status if self.declaration is not None else None,
+        )
+
+
+def readiness_status(
+    source: str, evidence_present: bool, declaration_status: str | None
+) -> ReadinessStatus:
+    """Derived per report, never stored."""
+    stated = declaration_status in ("implemented", "not_applicable")
+    if source == "measured":
+        return "ready" if evidence_present else "gap"
+    if source == "input":
+        if not evidence_present or declaration_status == "not_implemented":
+            return "gap"
+        return "ready" if stated else "partial"
+    if stated:
+        return "ready"
+    return "partial" if declaration_status == "partial" else "gap"
+
+
+def _next_steps(item: dict) -> tuple[NextStep, ...]:
+    steps = item.get("next_steps")
+    gap = item.get("gap")
+    if (
+        not isinstance(gap, str)
+        or not gap
+        or len(gap) > GAP_LIMIT
+        or not isinstance(steps, list)
+        or not 1 <= len(steps) <= MAX_STEPS
+    ):
+        raise ValueError(
+            f"{FRAMEWORK}.yaml: invalid gap or next_steps for {item['id']}"
+        )
+    parsed = []
+    for step in steps:
+        kind = step.get("type") if isinstance(step, dict) else None
+        text, doc = (step.get("text"), step.get("doc")) if kind else (None, None)
+        if (
+            kind not in STEP_TYPES
+            or not isinstance(text, str)
+            or not text
+            or len(text) > STEP_LIMIT
+            or (kind == "in_shim") != isinstance(doc, str)
+            or (doc is not None and not doc)
+        ):
+            raise ValueError(f"{FRAMEWORK}.yaml: invalid next step for {item['id']}")
+        parsed.append(NextStep(kind, text, doc))
+    return tuple(sorted(parsed, key=lambda step: STEP_TYPES.index(step.type)))
 
 
 @lru_cache(maxsize=1)
@@ -133,6 +207,8 @@ def load_mapping() -> ReadinessMapping:
                 source=source,
                 evidence=evidence,
                 rule=rule,
+                gap=item.get("gap"),
+                next_steps=_next_steps(item),
             )
         )
     if len({control.identifier for control in controls}) != len(controls):
@@ -508,6 +584,8 @@ _CSV_FIELDS = (
     "rule",
     "declaration",
     "note",
+    "status",
+    "next_steps",
 )
 
 
@@ -529,6 +607,12 @@ def render_csv(rows: list[ReadinessRow], *, verified: bool) -> bytes:
                 row.declared,
                 # A spreadsheet must not read the organization's note as a formula.
                 safe_csv(note),
+                row.status,
+                ""
+                if row.status == "ready"
+                else " | ".join(
+                    f"{step.type}: {step.text}" for step in row.control.next_steps
+                ),
             )
         )
     return output.getvalue().encode("utf-8-sig")
@@ -596,13 +680,45 @@ def render_pdf(
                     row.control.identifier,
                     Paragraph(escape(row.control.title), cell),
                     row.control.source,
+                    row.status,
                     Paragraph(detail(row), cell),
                 ]
                 for row in rows
             ],
-            ["Control", "Title", "Source", "Evidence or declaration"],
+            ["Control", "Title", "Source", "Status", "Evidence or declaration"],
             # Fixed widths: A4 less two 14 mm margins.
-            [18 * mm, 42 * mm, 20 * mm, 102 * mm],
+            [17 * mm, 40 * mm, 18 * mm, 15 * mm, 92 * mm],
+        ),
+        Spacer(1, 6 * mm),
+        Paragraph("Gap list and next steps", styles["Heading2"]),
+        Paragraph(GAP_LIST_NOTE, styles["Normal"]),
+        *(
+            item
+            for row in sorted(
+                (row for row in rows if row.status != "ready"),
+                key=lambda row: row.status != "gap",
+            )
+            for item in (
+                Spacer(1, 3 * mm),
+                Paragraph(
+                    escape(
+                        f"{row.control.identifier} {row.control.title} ({row.status})"
+                    ),
+                    styles["Heading3"],
+                ),
+                Paragraph(escape(row.control.gap), styles["Normal"]),
+                *(
+                    Paragraph(
+                        escape(
+                            f"In shim: {step.text} (ee/docs/{step.doc})"
+                            if step.type == "in_shim"
+                            else f"Organization: {step.text}"
+                        ),
+                        cell,
+                    )
+                    for step in row.control.next_steps
+                ),
+            )
         ),
     ]
     return build_pdf(story, "ISO/IEC 42001 Readiness", side_margin=14)

@@ -1,6 +1,7 @@
 # Control ids and titles come from the 3 September 2026 coverage matrix, which compiled
-# them from secondary sources. Set verified_against_standard to true only after they are
-# checked against the purchased ISO/IEC 42001 text.
+# them from secondary sources; each control's gap and next_steps were drafted from its
+# title and evidence rule. Set verified_against_standard to true only after all of them
+# are checked against the purchased ISO/IEC 42001 text.
 framework: iso42001
 title: ISO/IEC 42001 Annex A readiness
 verified_against_standard: false
@@ -10,132 +11,359 @@ controls:
     source: input
     evidence: inventory
     rule: Present when the window has requests; the models, providers, teams and data categories in use scope the policy.
+    gap: No AI policy statement is recorded for the models, providers, teams and data categories that the gateway traffic shows in use.
+    next_steps:
+      - type: in_shim
+        text: Read the model inventory to list the models, providers and teams the policy has to cover.
+        doc: COOKBOOK.md#is-our-model-list-complete
+      - type: organization
+        text: Write and approve an AI policy that covers those systems, then declare this control with a note naming the policy document.
   - id: A.2.3
     title: Alignment with other organisational policies
     source: declared
+    gap: No statement records how the AI policy aligns with the organization's information security, privacy and other policies.
+    next_steps:
+      - type: organization
+        text: Map the AI policy against your information security and privacy policies and record where they overlap or conflict.
   - id: A.2.4
     title: Review of the AI policy
     source: declared
+    gap: No statement records who reviews the AI policy, what triggers a review, or the outcome of the last review.
+    next_steps:
+      - type: in_shim
+        text: Use policy versions and plans to see what changed in the gateway's policy between two reviews.
+        doc: COOKBOOK.md#plan-apply-and-undo-a-change
+      - type: organization
+        text: Name an owner for the AI policy and record the events that trigger its review, such as a new model or provider.
   - id: A.3.2
     title: AI roles and responsibilities
     source: declared
+    gap: No statement records who is responsible for each AI system, its approval, its operation and its monitoring.
+    next_steps:
+      - type: in_shim
+        text: Give each person the narrowest role or custom role their task needs, so shim's access list reflects the responsibilities.
+        doc: COOKBOOK.md#give-someone-exactly-the-access-they-need
+      - type: organization
+        text: Name an owner for each AI system and record it in your asset register.
   - id: A.3.3
     title: Reporting of concerns
     source: declared
+    gap: No statement records how staff and users can report concerns about an AI system and how those reports are handled.
+    next_steps:
+      - type: in_shim
+        text: Send gateway findings and alerts to the team that handles concerns through a forward target.
+        doc: COOKBOOK.md#send-tenant-alerts
+      - type: organization
+        text: Set up a channel for reporting AI concerns, name who handles the reports, and tell staff and users how to use it.
   - id: A.4.2
     title: Resource documentation
     source: measured
     evidence: resource_documentation
     rule: Present when at least one deployment is registered and every registered deployment names an owner and a declared version.
+    gap: No deployment is registered, or a registered deployment does not name an owner and a declared version.
+    next_steps:
+      - type: in_shim
+        text: Register every model you call as a deployment with an owner and a declared version.
+        doc: COOKBOOK.md#register-a-private-model-deployment
+      - type: in_shim
+        text: Check the model inventory for catalog models outside the registry and register them.
+        doc: COOKBOOK.md#is-our-model-list-complete
   - id: A.4.3
     title: Data resources
     source: input
     evidence: inventory
     rule: Present when the window has requests; only runtime data is seen, never training data.
+    gap: No statement describes the data resources the AI systems use; shim sees runtime data only, never training data.
+    next_steps:
+      - type: in_shim
+        text: Use the personal data counts in this report and in the KVKK exposure report to describe the runtime data each provider receives.
+        doc: COOKBOOK.md#produce-a-kvkk-exposure-report
+      - type: organization
+        text: Document the training, fine-tuning and reference data of each AI system, with its source and owner.
   - id: A.4.4
     title: Tooling resources
     source: measured
     evidence: tooling
     rule: Present when at least one provider served a request in the window.
+    gap: No provider served a request in the window, so the gateway holds no evidence of the AI tooling in use.
+    next_steps:
+      - type: in_shim
+        text: Route the organization's model traffic through the gateway so providers and models are recorded.
+        doc: COOKBOOK.md#is-our-model-list-complete
+      - type: organization
+        text: List the AI tooling used outside the gateway, such as notebooks and labelling tools, in your asset register.
   - id: A.4.5
     title: System and computing resources
     source: declared
+    gap: No statement describes the computing resources the AI systems run on or who manages them.
+    next_steps:
+      - type: in_shim
+        text: Register self-hosted model servers as internal deployments so their endpoints and owners are recorded.
+        doc: COOKBOOK.md#register-a-private-model-deployment
+      - type: organization
+        text: Record the hosting, hardware and cloud services each AI system depends on, with an owner for each.
   - id: A.4.6
     title: Human resources
     source: declared
+    gap: No statement records the people and competences needed to develop, operate and oversee the AI systems.
+    next_steps:
+      - type: organization
+        text: Record the roles and competences each AI system needs and how the people in those roles are trained.
   - id: A.5.2
     title: AI system impact assessment process
     source: declared
+    gap: No statement records a process for assessing the impact of AI systems on individuals, groups and society.
+    next_steps:
+      - type: in_shim
+        text: Use the personal data types per provider in this report as input to each assessment.
+        doc: COOKBOOK.md#produce-a-kvkk-exposure-report
+      - type: organization
+        text: Define an impact assessment process, including what starts an assessment and who approves its result, and record it.
   - id: A.5.3
     title: Documentation of impact assessments
     source: declared
+    gap: No statement records where completed impact assessments are kept and who may read them.
+    next_steps:
+      - type: organization
+        text: Keep each completed impact assessment with its scope and approver, and record where it is stored.
   - id: A.5.4
     title: Impact on individuals or groups
     source: input
     evidence: personal_data
     rule: Present when the window has requests; personal data types by provider are input to the assessment.
+    gap: No impact statement for individuals or groups is recorded, or the window has no requests whose personal data counts could inform one.
+    next_steps:
+      - type: in_shim
+        text: Read the personal data types per provider in this report and in the KVKK exposure report as input to the assessment.
+        doc: COOKBOOK.md#produce-a-kvkk-exposure-report
+      - type: in_shim
+        text: Mask or block the personal data types the assessment rules out.
+        doc: COOKBOOK.md#change-the-privacy-settings
+      - type: organization
+        text: Assess the impact on the individuals and groups each AI system affects, and declare this control with a note naming the assessment.
   - id: A.5.5
     title: Societal impacts
     source: declared
+    gap: No statement records the assessed societal impact of the AI systems.
+    next_steps:
+      - type: organization
+        text: Assess the wider societal effects of each AI system as part of its impact assessment and record the outcome.
   - id: A.6.1.2
     title: Objectives for responsible development
     source: declared
+    gap: No statement records the organization's objectives for the responsible development of AI systems.
+    next_steps:
+      - type: organization
+        text: Set objectives for responsible development, such as fairness, transparency and privacy, and record how each is measured.
   - id: A.6.1.3
     title: Processes for responsible design and development
     source: declared
+    gap: No statement records the processes that put the responsible development objectives into practice.
+    next_steps:
+      - type: organization
+        text: Document the design and development process of each AI system, including its review and approval points.
   - id: A.6.2.2
     title: AI system requirements and specification
     source: declared
+    gap: No statement records the requirements and specification of each AI system.
+    next_steps:
+      - type: organization
+        text: Write down the requirements of each AI system, including its intended use, its limits and its acceptance criteria.
   - id: A.6.2.3
     title: Documentation of design and development
     source: declared
+    gap: No statement records where the design and development documentation of each AI system is kept.
+    next_steps:
+      - type: in_shim
+        text: Use prompt versions to keep a record of system prompt changes and how answers ended before and after each one.
+        doc: COOKBOOK.md#see-what-changed-after-a-prompt-change
+      - type: organization
+        text: Keep design and development records for each AI system and record their location and owner.
   - id: A.6.2.4
     title: Verification and validation
     source: declared
+    gap: No statement records how each AI system is verified and validated before and after a change.
+    next_steps:
+      - type: in_shim
+        text: Compare truncation and refusal rates per model and API key before and after a change.
+        doc: COOKBOOK.md#find-truncated-and-refused-answers
+      - type: organization
+        text: Define the tests each AI system must pass before release and record their results.
   - id: A.6.2.5
     title: AI system deployment
     source: declared
+    gap: No statement records how AI systems are approved and deployed into use.
+    next_steps:
+      - type: in_shim
+        text: Register each deployment with an owner and a declared version before it serves traffic.
+        doc: COOKBOOK.md#register-a-private-model-deployment
+      - type: in_shim
+        text: Change gateway policy through plans, which show the effect before it applies and can be undone.
+        doc: COOKBOOK.md#plan-apply-and-undo-a-change
+      - type: organization
+        text: Record who approves a deployment and what must be true before it goes live.
   - id: A.6.2.6
     title: Operation and monitoring
     source: measured
     evidence: operation
     rule: Present when the window has requests and at least one of them has an audit row.
+    gap: No request in the window has an audit row, so the gateway holds no evidence of monitored operation.
+    next_steps:
+      - type: in_shim
+        text: Run the ai_act worker and keep the audit chain on, so every request leaves an audit row.
+        doc: COOKBOOK.md#export-and-verify-the-audit-trail
+      - type: in_shim
+        text: Read open findings and forward them to the team that operates the system.
+        doc: COOKBOOK.md#read-and-export-findings
   - id: A.6.2.7
     title: Technical documentation
     source: declared
+    gap: No statement records where the technical documentation of each AI system is kept or who maintains it.
+    next_steps:
+      - type: in_shim
+        text: Use the model inventory to list the models and providers the documentation has to cover.
+        doc: COOKBOOK.md#is-our-model-list-complete
+      - type: organization
+        text: Keep technical documentation for each AI system, covering its architecture, models, data and limits, and name its maintainer.
   - id: A.6.2.8
     title: Recording of event logs
     source: measured
     evidence: event_logs
     rule: Present when the window has audit rows, the chain verifies and retention is at least 180 days.
+    gap: The window has no audit rows, the audit chain does not verify, or audit retention is below the floor shim requires.
+    next_steps:
+      - type: in_shim
+        text: Export and verify the audit trail, and keep audit retention at or above the floor.
+        doc: COOKBOOK.md#export-and-verify-the-audit-trail
+      - type: in_shim
+        text: Collect the monthly evidence file, which carries the audit chain check for its month.
+        doc: COOKBOOK.md#collect-the-monthly-evidence-file
   - id: A.7.2
     title: Data for development and enhancement
     source: declared
+    gap: No statement records the data used to develop and improve the AI systems; shim does not see training data.
+    next_steps:
+      - type: organization
+        text: List the data sets used to develop, fine-tune or evaluate each AI system, with their purpose and owner.
   - id: A.7.3
     title: Acquisition of data
     source: declared
+    gap: No statement records how data for the AI systems is acquired and on what basis.
+    next_steps:
+      - type: organization
+        text: Record where each data set comes from, the legal basis for its use and the terms that apply to it.
   - id: A.7.4
     title: Quality of data
     source: declared
+    gap: No statement records the quality requirements for the data the AI systems use.
+    next_steps:
+      - type: organization
+        text: Define the quality criteria each data set must meet and record how they are checked.
   - id: A.7.5
     title: Data provenance
     source: declared
+    gap: No statement records the provenance of the data the AI systems use.
+    next_steps:
+      - type: organization
+        text: Record the origin and every transformation of each data set so its provenance can be traced.
   - id: A.7.6
     title: Data preparation
     source: declared
+    gap: No statement records how data is prepared before the AI systems use it.
+    next_steps:
+      - type: in_shim
+        text: Mask personal data in prompts at the gateway where preparation must remove it.
+        doc: COOKBOOK.md#change-the-privacy-settings
+      - type: organization
+        text: Document the preparation applied to each data set, such as cleaning, labelling and anonymisation.
   - id: A.8.2
     title: System documentation and information for users
     source: declared
+    gap: No statement records the information given to users about each AI system, its purpose and its limits.
+    next_steps:
+      - type: organization
+        text: Give the users of each AI system documentation on its purpose, its limits and how to report a problem.
   - id: A.8.3
     title: External reporting
     source: declared
+    gap: No statement records how parties outside the organization can report adverse effects of the AI systems.
+    next_steps:
+      - type: organization
+        text: Provide an external channel for reporting adverse effects and record who handles the reports.
   - id: A.8.4
     title: Communication of incidents
     source: declared
+    gap: No statement records how AI incidents are recorded and communicated to users and other interested parties.
+    next_steps:
+      - type: organization
+        text: Define how AI incidents are recorded and who informs users, authorities and other interested parties.
   - id: A.8.5
     title: Information for interested parties
     source: declared
+    gap: No statement records what information about the AI systems is shared with interested parties and how.
+    next_steps:
+      - type: in_shim
+        text: Share the KVKK exposure report or the monthly evidence file where an interested party needs evidence from traffic.
+        doc: COOKBOOK.md#collect-the-monthly-evidence-file
+      - type: organization
+        text: Decide what information about the AI systems each interested party receives and record how it is provided.
   - id: A.9.2
     title: Processes for responsible use
     source: measured
     evidence: responsible_use
     rule: Present when at least one request in the window carries both a privacy.input verdict and an admission verdict.
+    gap: No request in the window carries both a privacy decision and an admission decision, so the gateway holds no evidence of responsible-use controls.
+    next_steps:
+      - type: in_shim
+        text: Turn on privacy protection for the tenant so every request receives a privacy decision.
+        doc: COOKBOOK.md#change-the-privacy-settings
+      - type: organization
+        text: Write down the rules of responsible use and tell users what they may and may not send to AI systems.
   - id: A.9.3
     title: Objectives for responsible use
     source: declared
+    gap: No statement records the organization's objectives for the responsible use of AI systems.
+    next_steps:
+      - type: in_shim
+        text: Use findings and answer outcome rates as measurements for those objectives.
+        doc: COOKBOOK.md#read-and-export-findings
+      - type: organization
+        text: Set objectives for responsible use and record how each is measured.
   - id: A.9.4
     title: Intended use of the AI system
     source: input
     evidence: intended_use
     rule: Present when the window has requests; the share with a tag or cost center is input to the statement of intended use, not proof of it.
+    gap: No statement of intended use is recorded, or the window has no requests whose tags and cost centers could inform one.
+    next_steps:
+      - type: in_shim
+        text: Tag requests with a cost center or team so traffic can be compared with the intended use.
+        doc: COOKBOOK.md#attribute-spend-to-teams
+      - type: organization
+        text: State the intended use of each AI system and declare this control with a note naming the statement.
   - id: A.10.2
     title: Allocation of responsibilities
     source: declared
+    gap: No statement records how responsibilities are divided between the organization, its suppliers and its customers.
+    next_steps:
+      - type: organization
+        text: Record which responsibilities sit with the organization, each AI supplier and each customer, for example in contracts.
   - id: A.10.3
     title: Suppliers
     source: measured
     evidence: suppliers
     rule: Present when at least one provider served a request in the window.
+    gap: No provider served a request in the window, so the gateway holds no evidence of the AI suppliers in use.
+    next_steps:
+      - type: in_shim
+        text: Route provider traffic through the gateway so each supplier and the models used are recorded.
+        doc: COOKBOOK.md#is-our-model-list-complete
+      - type: organization
+        text: Keep a supplier register for AI providers with the terms and data processing agreements that apply.
   - id: A.10.4
     title: Customers
     source: declared
+    gap: No statement records the commitments made to customers who use the organization's AI systems.
+    next_steps:
+      - type: organization
+        text: Record what customers are told about the AI systems they use and the commitments made to them.

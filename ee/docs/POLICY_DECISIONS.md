@@ -368,8 +368,28 @@ the rest. It is not an audit, a certification or a statement of conformity."
 The control numbers and titles come from secondary sources; until they are
 checked against the purchased standard, `verified_against_standard` in
 `shim_enterprise/ai_act/readiness/iso42001.yaml` stays false and the cover adds
-"Control numbers and titles have not yet been checked against the published
-standard." The five-control framework report (`/reports/audit`) is unchanged.
+"Control numbers and titles, and the gap and next-step texts, have not yet been
+checked against the published standard." The five-control framework report
+(`/reports/audit`) is unchanged.
+
+Each row has a status, derived when the report is produced and never stored:
+
+| Source | `ready` | `partial` | `gap` |
+| --- | --- | --- | --- |
+| `measured` | evidence present | | evidence absent |
+| `input` | evidence present and declared `implemented` or `not_applicable` | evidence present and declared `partial`, or not declared | evidence absent, or declared `not_implemented` |
+| `declared` | declared `implemented` or `not_applicable` | declared `partial` | not declared, or declared `not_implemented` |
+
+After the table, a "Gap list and next steps" section lists the `gap` controls,
+then the `partial` ones, each in control order, with one sentence on what is
+missing and one to four steps. A step is either "in shim", naming the shim
+feature that produces the missing evidence and its documentation, or for the
+organization (a policy, a process, an owner, a document). shim never stores or
+checks those documents. The texts are static, kept in the mapping beside each
+control, and reviewed with the control numbers and titles; one flag covers
+both. They are the same for every tenant: no dates, effort, priority, progress
+tracking or score, and no percentage of ready controls. The CSV adds `status`
+and `next_steps` after its earlier columns.
 
 The CSV starts with the same sentences, one per row, then a blank row, then the
 header and the 38 rows. In the PDF a table row cannot span two pages, so an
