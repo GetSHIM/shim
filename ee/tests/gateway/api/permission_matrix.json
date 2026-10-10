@@ -314,6 +314,15 @@
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/model-inventory": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: deployments.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: deployments.read"
+ },
  "GET /api/v1/management/overview": {
   "admin": "200",
   "auditor": "200",

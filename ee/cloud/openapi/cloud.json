@@ -5776,6 +5776,246 @@
         "title": "ModelDeploymentView",
         "type": "object"
       },
+      "ModelInventoryItemView": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "api_keys": {
+            "minimum": 0.0,
+            "title": "Api Keys",
+            "type": "integer"
+          },
+          "byok_requests": {
+            "description": "Requests that carried their own provider key.",
+            "minimum": 0.0,
+            "title": "Byok Requests",
+            "type": "integer"
+          },
+          "declared_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared Version"
+          },
+          "deployment_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Id"
+          },
+          "deployment_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Kind"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "first_seen": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen"
+          },
+          "health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The registry's upstream model, or the model a catalog request named.",
+            "title": "Model"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "registered": {
+            "title": "Registered",
+            "type": "boolean"
+          },
+          "requests": {
+            "minimum": 0.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "route": {
+            "enum": [
+              "registry",
+              "catalog"
+            ],
+            "title": "Route",
+            "type": "string"
+          },
+          "teams": {
+            "minimum": 0.0,
+            "title": "Teams",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "route",
+          "registered",
+          "deployment_id",
+          "alias",
+          "provider",
+          "model",
+          "deployment_kind",
+          "declared_version",
+          "owner",
+          "enabled",
+          "health",
+          "requests",
+          "first_seen",
+          "last_seen",
+          "api_keys",
+          "teams",
+          "byok_requests"
+        ],
+        "title": "ModelInventoryItemView",
+        "type": "object"
+      },
+      "ModelInventoryView": {
+        "properties": {
+          "byok_requests": {
+            "minimum": 0.0,
+            "title": "Byok Requests",
+            "type": "integer"
+          },
+          "catalog_models": {
+            "minimum": 0.0,
+            "title": "Catalog Models",
+            "type": "integer"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInventoryItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "registry_deployments": {
+            "minimum": 0.0,
+            "title": "Registry Deployments",
+            "type": "integer"
+          },
+          "requests": {
+            "minimum": 0.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "items",
+          "truncated",
+          "registry_deployments",
+          "catalog_models",
+          "requests",
+          "byok_requests"
+        ],
+        "title": "ModelInventoryView",
+        "type": "object"
+      },
       "ModelListView": {
         "properties": {
           "data": {
@@ -15953,6 +16193,82 @@
           }
         ],
         "summary": "Check Model Deployment Health",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-inventory": {
+      "get": {
+        "operationId": "model_inventory_api_v1_management_model_inventory_get",
+        "parameters": [
+          {
+            "description": "Inclusive start; defaults to 30 days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive start; defaults to 30 days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive end; defaults to the current time.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive end; defaults to the current time.",
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelInventoryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Model Inventory",
         "tags": [
           "management"
         ]

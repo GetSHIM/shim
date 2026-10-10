@@ -17,6 +17,9 @@ from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings import service
 from shim_enterprise.findings.models import Finding
+from shim_enterprise.gateway.pipeline.quota_reservation import (
+    EPHEMERAL_BYOK_SPEND_POLICY_VERSION,
+)
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
@@ -40,6 +43,7 @@ def _request(
     model: str = "gpt-5-mini",
     cost: str | None = None,
     priced: bool = True,
+    metadata: dict | None = None,
 ) -> str:
     request_id = f"req_finding_{uuid4().hex}"
     db.add(
@@ -58,6 +62,7 @@ def _request(
             lifecycle_metadata={
                 "repeat_chain_length": repeat,
                 "completion_outcome": outcome,
+                **(metadata or {}),
             },
         )
     )
@@ -1070,3 +1075,149 @@ async def test_another_tenants_traffic_never_counts_for_a_deployment(
     assert [d.rule_id for d in detections if d.subject.get("alias") == alias] == [
         service.UNUSED_DEPLOYMENT
     ]
+
+
+def _catalog_request(db, key, model: str = "gpt-5-mini", *, byok: bool = False) -> str:
+    version = EPHEMERAL_BYOK_SPEND_POLICY_VERSION if byok else "spend:provider:v1"
+    return _request(
+        db,
+        key,
+        NOW - timedelta(days=1),
+        model=model,
+        cost="0.10",
+        metadata={
+            "deployment_id": None,
+            "deployment_kind": "unknown",
+            "policy_verdicts": [
+                {"rule_id": "spend.provider_monthly", "policy_version": version}
+            ],
+        },
+    )
+
+
+async def _secret(db, key, provider: str = "openai") -> None:
+    db.add(
+        ProviderSecret(
+            id=uuid4(),
+            organization_id=key.organization_id,
+            provider=provider,
+            secret_ref=f"reference-{uuid4().hex}",
+            secret_backend="fernet",
+            secret_version="v2",
+            masked_key="masked",
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.parametrize(("requests", "fires"), [(5, True), (4, False)])
+@pytest.mark.asyncio
+async def test_catalog_traffic_beside_a_registry_is_an_unregistered_model(
+    db, test_api_key, requests: int, fires: bool
+) -> None:
+    await _deployment(db, test_api_key, age=timedelta(days=1))
+    ids = [
+        _catalog_request(db, test_api_key, byok=index == 0) for index in range(requests)
+    ]
+
+    found = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.UNREGISTERED_MODEL
+    ]
+
+    if not fires:
+        assert found == []
+        return
+    (finding,) = found
+    assert finding.subject == {"provider": "openai", "model": "gpt-5-mini"}
+    assert finding.subject_key == "openai:gpt-5-mini"
+    assert finding.evidence["requests"] == 5
+    assert finding.evidence["api_key_ids"] == [str(test_api_key.id)]
+    assert finding.evidence["byok_requests"] == 1
+    assert sorted(finding.evidence["request_ids"]) == sorted(ids)
+    assert finding.impact == {"cost_usd": "0.50000000", "requests": 5}
+    assert service.RULES[finding.rule_id][1] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_without_a_registry_never_has_unregistered_models(
+    db, test_api_key
+) -> None:
+    for _ in range(6):
+        _catalog_request(db, test_api_key)
+
+    detections = await _evaluate(db, test_api_key)
+
+    assert [d for d in detections if d.rule_id == service.UNREGISTERED_MODEL] == []
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_unregistered_model_is_not_recreated(
+    db, test_api_key
+) -> None:
+    await _deployment(db, test_api_key, age=timedelta(days=1))
+    for _ in range(5):
+        _catalog_request(db, test_api_key)
+    await _evaluate(db, test_api_key)
+    await db.execute(update(Finding).values(status_id=service.STATUS_IDS["suppressed"]))
+
+    await _evaluate(db, test_api_key, NOW + timedelta(minutes=1))
+
+    (finding,) = [
+        f
+        for f in await _findings(db, test_api_key)
+        if f.rule_id == service.UNREGISTERED_MODEL
+    ]
+    assert (finding.status_id, finding.occurrences) == (3, 2)
+
+
+@pytest.mark.parametrize(("requests", "fires"), [(5, True), (4, False)])
+@pytest.mark.asyncio
+async def test_a_key_sending_its_own_provider_key_past_a_stored_one_is_byok_usage(
+    db, test_api_key, requests: int, fires: bool
+) -> None:
+    await _secret(db, test_api_key)
+    other_key = ApiKey(
+        id=uuid4(),
+        organization_id=test_api_key.organization_id,
+        user_id=test_api_key.user_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-oth",
+        tier=test_api_key.tier,
+        is_active=True,
+    )
+    db.add(other_key)
+    await db.flush()
+    for _ in range(requests):
+        _catalog_request(db, test_api_key, byok=True)
+    for _ in range(3):
+        _catalog_request(db, test_api_key)
+        _catalog_request(db, other_key, byok=True)
+
+    found = [
+        d for d in await _evaluate(db, test_api_key) if d.rule_id == service.BYOK_USAGE
+    ]
+
+    if not fires:
+        assert found == []
+        return
+    (finding,) = found
+    assert finding.subject == {"api_key_id": str(test_api_key.id)}
+    assert finding.evidence["requests"] == {"openai": 5}
+    assert finding.evidence["models"] == ["gpt-5-mini"]
+    assert finding.impact == {"cost_usd": "0.50000000", "requests": 5}
+    assert "spend limit" in finding.evidence["note"]
+
+
+@pytest.mark.asyncio
+async def test_byok_without_a_stored_key_for_the_provider_is_its_only_mode(
+    db, test_api_key
+) -> None:
+    await _secret(db, test_api_key, provider="anthropic")
+    for _ in range(6):
+        _catalog_request(db, test_api_key, byok=True)
+
+    detections = await _evaluate(db, test_api_key)
+
+    assert [d for d in detections if d.rule_id == service.BYOK_USAGE] == []

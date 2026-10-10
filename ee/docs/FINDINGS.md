@@ -192,6 +192,54 @@ it can be enabled again in one write.
 **Resolves** 7 days after it stops firing: the deployment is disabled, gets
 busier, or has no traffic at all.
 
+## gateway.unregistered_model
+
+**Checks.** Only for organizations with at least one enabled
+[registered deployment](MODEL_DEPLOYMENTS.md): a tenant without a registry
+routes by catalog on purpose. For each provider and model, the requests of the
+last 7 days that reached the provider's public endpoint (`deployment_kind:
+unknown`, after spend reservation). It fires at 5 or more. Severity medium.
+Subject: `{"provider", "model"}`.
+
+**Why.** Once a tenant keeps a registry, model use outside it is use nobody
+listed: the answer to "is your model list complete" is no.
+
+**Evidence and impact.** The requests, the threshold, distinct API keys and up
+to 10 key ids, distinct teams, first and last request, up to 20 request ids and
+how many requests carried their own provider key. Impact is the requests and
+their settled cost.
+
+**Fix.** Register the model as a deployment, or limit the keys that use it with
+`allowed_models`; an operator can make the registry mandatory with
+`MODEL_DEPLOYMENT_REQUIRED=true`. A tenant that uses the catalog on purpose
+suppresses the finding.
+
+**Resolves** after 7 days without firing.
+
+## gateway.byok_usage
+
+**Checks.** For each API key, the requests of the last 7 days that carried their
+own provider key (`x-provider-key`), counted only for providers the tenant
+stores a key for: a tenant that never stored one uses its own keys as its only
+mode. The request's spend verdict says so (`spend.provider_monthly` with policy
+version `spend:ephemeral-byok:unlimited:v1`). It fires at 5 or more. Severity
+medium. Subject: the API key.
+
+**Why.** Such a request skips the stored key's monthly spend limit and the
+managed secret.
+
+**Evidence and impact.** Requests per provider, up to 10 models, up to 20
+request ids, the settled cost and a note that these requests skipped the spend
+limit and the stored key. Nothing derived from the caller's provider key is
+recorded. Impact is the requests and their settled cost.
+
+**Fix.** Give the app the managed key path (no `x-provider-key`), or route it
+through a registry deployment, whose stored secret always wins. To refuse such
+keys outright, turn `allow_customer_provider_keys` off
+([cookbook](COOKBOOK.md#refuse-provider-keys-sent-in-requests)).
+
+**Resolves** after 7 days without firing.
+
 ## gateway.answer_quality
 
 **Checks.** For each model (the provider model, or the requested model when the

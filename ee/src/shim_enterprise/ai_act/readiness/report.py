@@ -40,6 +40,7 @@ from shim_enterprise.compliance.services.monthly_evidence import (
     entity_counts,
     usage_breakdowns,
 )
+from shim_enterprise.observability.model_inventory import ModelInventoryReadModel
 from shim_enterprise.tenants.models import ModelDeployment, Team
 
 
@@ -332,30 +333,21 @@ async def _resource_documentation(
     end: datetime,
     traffic: Traffic,
 ) -> Evidence:
-    deployments = (
-        await session.execute(
-            select(
-                ModelDeployment.alias,
-                ModelDeployment.owner,
-                ModelDeployment.declared_version,
-            )
-            .where(ModelDeployment.organization_id == tenant_id)
-            .order_by(ModelDeployment.alias)
-        )
-    ).all()
-    unregistered = list(
-        await session.scalars(
-            select(RequestLifecycle.requested_model)
-            .where(
-                *lifecycle_window(tenant_id, start, end),
-                RequestLifecycle.requested_model.is_not(None),
-                RequestLifecycle.requested_model.not_in(
-                    [alias for alias, _, _ in deployments]
-                ),
-            )
-            .distinct()
-            .order_by(RequestLifecycle.requested_model)
-        )
+    inventory = await ModelInventoryReadModel().read(
+        session, tenant_id=tenant_id, start_at=start, end_at=end
+    )
+    deployments = sorted(
+        (item.alias, item.owner, item.declared_version)
+        for item in inventory.items
+        if item.route == "registry"
+    )
+    # The inventory's catalog items, so this report and the inventory read agree.
+    unregistered = sorted(
+        {
+            item.model
+            for item in inventory.items
+            if item.route == "catalog" and item.model
+        }
     )
     documented = all(owner and version for _, owner, version in deployments)
     return Evidence(

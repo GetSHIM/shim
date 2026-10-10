@@ -12,6 +12,7 @@ from collections.abc import (
 )
 import asyncio
 import csv
+from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
@@ -112,6 +113,7 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim_enterprise.observability.analytics_projection import RequestLog
+from shim_enterprise.observability.model_inventory import ModelInventoryReadModel
 from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
@@ -4401,6 +4403,65 @@ async def list_model_deployments(
         )
         .scalars()
         .all()
+    )
+
+
+class ModelInventoryItemView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    route: Literal["registry", "catalog"]
+    registered: bool
+    deployment_id: UUID | None
+    alias: str | None
+    provider: str | None
+    model: str | None = Field(
+        description="The registry's upstream model, or the model a catalog request named."
+    )
+    deployment_kind: str | None
+    declared_version: str | None
+    owner: str | None
+    enabled: bool | None
+    health: str | None
+    requests: int = Field(ge=0)
+    first_seen: datetime | None
+    last_seen: datetime | None
+    api_keys: int = Field(ge=0)
+    teams: int = Field(ge=0)
+    byok_requests: int = Field(
+        ge=0, description="Requests that carried their own provider key."
+    )
+
+
+class ModelInventoryView(BaseModel):
+    start: datetime
+    end: datetime
+    items: list[ModelInventoryItemView]
+    truncated: bool
+    registry_deployments: int = Field(ge=0)
+    catalog_models: int = Field(ge=0)
+    requests: int = Field(ge=0)
+    byok_requests: int = Field(ge=0)
+
+
+@router.get("/model-inventory", response_model=ModelInventoryView)
+async def model_inventory(
+    start: datetime | None = Query(
+        default=None, description="Inclusive start; defaults to 30 days before end."
+    ),
+    end: datetime | None = Query(
+        default=None, description="Exclusive end; defaults to the current time."
+    ),
+    user: User = Depends(require("deployments.read")),
+    session: AsyncSession = Depends(get_db),
+) -> ModelInventoryView:
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(start or end_at - timedelta(days=30))
+    _validate_sync_window(start_at, end_at)
+    inventory = await ModelInventoryReadModel().read(
+        session, tenant_id=_tenant_id(user), start_at=start_at, end_at=end_at
+    )
+    return ModelInventoryView.model_validate(
+        {**asdict(inventory), "start": start_at, "end": end_at}
     )
 
 

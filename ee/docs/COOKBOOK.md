@@ -26,6 +26,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Is our model list complete?](#is-our-model-list-complete)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 - [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
@@ -643,6 +644,29 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Is our model list complete?
+
+Compare the registry with what the gateway actually served.
+
+1. As an owner, admin or auditor, read
+   `GET /api/v1/management/model-inventory?start=…&end=…` (default the last 30
+   days, at most 31).
+2. `registry` items are your registered deployments with their traffic;
+   `catalog` items (`registered: false`) are models requests reached through a
+   provider's public endpoint. `byok_requests` counts requests that brought their
+   own provider key.
+
+```console
+curl 'http://localhost:8000/api/v1/management/model-inventory' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.items[] | {route, alias, model, requests, byok_requests}'
+```
+
+Notes: once a registry exists, catalog models with 5 or more requests in 7 days
+raise `gateway.unregistered_model`, and keys sending their own provider key past
+a stored one raise `gateway.byok_usage` ([findings](FINDINGS.md)). Refused
+unknown model names and servers that never see traffic through shim are not in
+the inventory. Details are in [model deployments](MODEL_DEPLOYMENTS.md#the-inventory).
 
 ## Collect the monthly evidence file
 

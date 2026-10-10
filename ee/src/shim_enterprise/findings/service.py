@@ -30,7 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.findings.models import Finding
-from shim_enterprise.tenants.models import ModelDeployment, Organization
+from shim_enterprise.observability.model_inventory import byok_request, traffic_routes
+from shim_enterprise.tenants.models import ModelDeployment, Organization, ProviderSecret
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ REPEAT_SPEND = "gateway.repeat_spend"
 UNUSED_DEPLOYMENT = "gateway.unused_deployment"
 ANSWER_QUALITY = "gateway.answer_quality"
 IDLE_INTERNAL_DEPLOYMENT = "gateway.idle_internal_deployment"
+UNREGISTERED_MODEL = "gateway.unregistered_model"
+BYOK_USAGE = "gateway.byok_usage"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -58,6 +61,12 @@ REPEAT_LINK_WINDOW_SECONDS = 900
 IDLE_DEPLOYMENT_WINDOW_DAYS = 30
 IDLE_DEPLOYMENT_MIN_AGE_DAYS = 30
 IDLE_DEPLOYMENT_MAX_REQUESTS = 300
+UNREGISTERED_MODEL_WINDOW_DAYS = 7
+UNREGISTERED_MODEL_MIN_REQUESTS = 5
+BYOK_USAGE_WINDOW_DAYS = 7
+BYOK_USAGE_MIN_REQUESTS = 5
+EVIDENCE_KEY_IDS = 10
+EVIDENCE_MODELS = 10
 EVIDENCE_REQUEST_IDS = 20
 
 STATUS_IDS = {"new": 1, "in_progress": 2, "suppressed": 3, "resolved": 4}
@@ -93,6 +102,19 @@ RULES: dict[str, tuple[str, int, str]] = {
         "For truncation, raise the output token limit or shorten the expected "
         "answer; for empty or refused answers, review the prompt and the "
         "model choice.",
+    ),
+    UNREGISTERED_MODEL: (
+        "A model outside the registry serves requests",
+        3,
+        "Register the model as a deployment, or limit the keys that use it with "
+        "allowed_models; an operator can make the registry mandatory with "
+        "MODEL_DEPLOYMENT_REQUIRED=true.",
+    ),
+    BYOK_USAGE: (
+        "An API key sends its own provider key past a stored one",
+        3,
+        "Give the app the managed key path (no x-provider-key header), or route "
+        "it through a registry deployment, whose stored secret always wins.",
     ),
     IDLE_INTERNAL_DEPLOYMENT: (
         "Internal deployment is almost unused",
@@ -137,6 +159,20 @@ def _request_ids(
         condition
     )
     return type_coerce(ordered, ARRAY(Text))[1:EVIDENCE_REQUEST_IDS]
+
+
+def _priced_settlement(
+    request_id: Any, tenant_id: UUID, ledger: Any = UsageLedger
+) -> Any:
+    # One settlement per request at most, so this join never repeats a row.
+    return (
+        (ledger.organization_id == tenant_id)
+        & (ledger.request_id == request_id)
+        & (ledger.event_type == "spend_settlement")
+        & ledger.event_metadata["pricing"]["pricing_resolution"]
+        .as_string()
+        .is_distinct_from("unknown")
+    )
 
 
 def _repeated() -> Any:
@@ -204,13 +240,7 @@ def _repeat_terms(rows: Any, tenant_id: UUID) -> SimpleNamespace:
     )
     # One settlement per request at most, so neither join repeats a row.
     joined = rows.outerjoin(
-        settlement,
-        (settlement.organization_id == tenant_id)
-        & (settlement.request_id == rows.c.request_id)
-        & (settlement.event_type == "spend_settlement")
-        & settlement.event_metadata["pricing"]["pricing_resolution"]
-        .as_string()
-        .is_distinct_from("unknown"),
+        settlement, _priced_settlement(rows.c.request_id, tenant_id, settlement)
     ).outerjoin(
         previous,
         (previous.organization_id == tenant_id)
@@ -522,6 +552,160 @@ async def _idle_internal_deployments(
     return detections
 
 
+async def _unregistered_models(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    # A tenant without a registry routes by catalog on purpose.
+    if not await session.scalar(
+        select(ModelDeployment.id)
+        .where(
+            ModelDeployment.organization_id == tenant_id,
+            ModelDeployment.enabled.is_(True),
+        )
+        .limit(1)
+    ):
+        return []
+    joined, _, catalog = traffic_routes(tenant_id)
+    count = func.count()
+    rows = await session.execute(
+        select(
+            RequestLifecycle.provider,
+            RequestLifecycle.requested_model,
+            count.label("requests"),
+            func.count(func.distinct(RequestLifecycle.api_key_id)).label("keys"),
+            type_coerce(
+                func.array_agg(func.distinct(cast(RequestLifecycle.api_key_id, Text))),
+                ARRAY(Text),
+            )[1:EVIDENCE_KEY_IDS].label("key_ids"),
+            func.count(
+                func.distinct(
+                    RequestLifecycle.lifecycle_metadata["team_id"].as_string()
+                )
+            ).label("teams"),
+            func.min(RequestLifecycle.started_at).label("first_seen"),
+            func.max(RequestLifecycle.started_at).label("last_seen"),
+            _request_ids(True).label("request_ids"),
+            func.count().filter(byok_request()).label("byok"),
+            func.coalesce(func.sum(UsageLedger.cost_usd), Decimal("0")).label("cost"),
+        )
+        .select_from(
+            joined.outerjoin(
+                UsageLedger, _priced_settlement(RequestLifecycle.request_id, tenant_id)
+            )
+        )
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at
+            >= now - timedelta(days=UNREGISTERED_MODEL_WINDOW_DAYS),
+            RequestLifecycle.started_at <= now,
+            catalog,
+        )
+        .group_by(RequestLifecycle.provider, RequestLifecycle.requested_model)
+        .having(count >= UNREGISTERED_MODEL_MIN_REQUESTS)
+        .order_by(RequestLifecycle.provider, RequestLifecycle.requested_model)
+    )
+    return [
+        Detection(
+            rule_id=UNREGISTERED_MODEL,
+            subject_key=f"{row.provider}:{row.requested_model}",
+            subject={"provider": row.provider, "model": row.requested_model},
+            summary=(
+                f"{row.requests} requests in 7 days used {row.requested_model} "
+                f"through {row.provider}'s public endpoint, outside the registry."
+            ),
+            evidence={
+                "window_days": UNREGISTERED_MODEL_WINDOW_DAYS,
+                "requests": row.requests,
+                "threshold": UNREGISTERED_MODEL_MIN_REQUESTS,
+                "api_keys": row.keys,
+                "api_key_ids": sorted(row.key_ids or []),
+                "teams": row.teams,
+                "first_seen": row.first_seen.isoformat(),
+                "last_seen": row.last_seen.isoformat(),
+                "request_ids": list(row.request_ids or []),
+                "byok_requests": row.byok,
+            },
+            impact={"cost_usd": str(row.cost), "requests": row.requests},
+        )
+        for row in rows
+    ]
+
+
+async def _byok_usage(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    # A tenant that never stored a provider key uses its own keys as its only mode.
+    managed = select(ProviderSecret.provider).where(
+        ProviderSecret.organization_id == tenant_id
+    )
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            RequestLifecycle.provider,
+            func.count().label("requests"),
+            type_coerce(
+                func.array_agg(func.distinct(RequestLifecycle.requested_model)),
+                ARRAY(Text),
+            )[1:EVIDENCE_MODELS].label("models"),
+            _request_ids(True).label("request_ids"),
+            func.coalesce(func.sum(UsageLedger.cost_usd), Decimal("0")).label("cost"),
+        )
+        .select_from(RequestLifecycle)
+        .outerjoin(
+            UsageLedger,
+            _priced_settlement(RequestLifecycle.request_id, tenant_id),
+        )
+        .where(
+            RequestLifecycle.organization_id == tenant_id,
+            RequestLifecycle.started_at >= now - timedelta(days=BYOK_USAGE_WINDOW_DAYS),
+            RequestLifecycle.started_at <= now,
+            RequestLifecycle.api_key_id.is_not(None),
+            RequestLifecycle.provider.in_(managed),
+            byok_request(),
+        )
+        .group_by(RequestLifecycle.api_key_id, RequestLifecycle.provider)
+        .order_by(RequestLifecycle.api_key_id, RequestLifecycle.provider)
+    )
+    by_key: dict[UUID, list[Any]] = {}
+    for row in rows:
+        by_key.setdefault(row.api_key_id, []).append(row)
+    detections = []
+    for key_id, providers in by_key.items():
+        requests = sum(row.requests for row in providers)
+        if requests < BYOK_USAGE_MIN_REQUESTS:
+            continue
+        cost = sum((row.cost for row in providers), Decimal("0"))
+        detections.append(
+            Detection(
+                rule_id=BYOK_USAGE,
+                subject_key=f"api_key:{key_id}",
+                subject={"api_key_id": str(key_id)},
+                summary=(
+                    f"One API key sent {requests} requests with its own provider key "
+                    "in 7 days, past the provider spend limit."
+                ),
+                evidence={
+                    "window_days": BYOK_USAGE_WINDOW_DAYS,
+                    "requests": {row.provider: row.requests for row in providers},
+                    "threshold": BYOK_USAGE_MIN_REQUESTS,
+                    "models": sorted(
+                        {model for row in providers for model in row.models or []}
+                    )[:EVIDENCE_MODELS],
+                    "request_ids": [
+                        request
+                        for row in providers
+                        for request in row.request_ids or []
+                    ][:EVIDENCE_REQUEST_IDS],
+                    "cost_usd": str(cost),
+                    "note": "These requests skipped the provider spend limit and the "
+                    "tenant's stored provider key.",
+                },
+                impact={"cost_usd": str(cost), "requests": requests},
+            )
+        )
+    return detections
+
+
 async def _answer_quality(
     session: AsyncSession, tenant_id: UUID, now: datetime
 ) -> list[Detection]:
@@ -592,6 +776,8 @@ async def evaluate_organization(
             _repeat_spend,
             _unused_deployments,
             _idle_internal_deployments,
+            _unregistered_models,
+            _byok_usage,
             _answer_quality,
         )
         for detection in await rule(session, tenant_id, now)

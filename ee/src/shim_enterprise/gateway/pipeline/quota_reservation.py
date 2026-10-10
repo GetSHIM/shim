@@ -91,6 +91,10 @@ logger = logging.getLogger(__name__)
 _CUSTOMER_KEY_REFUSED = "spend:customer-provider-key:refused:v1"
 
 
+# Recorded on the spend verdict of a request that carried its own provider key.
+EPHEMERAL_BYOK_SPEND_POLICY_VERSION = "spend:ephemeral-byok:unlimited:v1"
+
+
 class AccountingPolicyLoader:
     """Load current quota/spend policy while locking its authoritative row."""
 
@@ -271,7 +275,7 @@ class AccountingPolicyLoader:
                 )
             )
             return SpendPolicySnapshot(
-                version="spend:ephemeral-byok:unlimited:v1"
+                version=EPHEMERAL_BYOK_SPEND_POLICY_VERSION
                 if allowed
                 else _CUSTOMER_KEY_REFUSED,
                 monthly_limit_usd=None,
