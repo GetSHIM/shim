@@ -290,6 +290,12 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         p95_completed_shim_latency_ms=401.2,
         settled_spend_usd=Decimal("1.25000000"),
         unpriced_requests=0,
+        outcome_complete=5,
+        outcome_truncated=0,
+        outcome_empty=0,
+        outcome_refused=1,
+        outcome_filtered=0,
+        outcome_none=8,
     )
     row = SimpleNamespace(
         id=uuid4(),
@@ -394,6 +400,14 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
+    assert page.summary.outcome_counts.model_dump() == {
+        "complete": 5,
+        "truncated": 0,
+        "empty": 0,
+        "refused": 1,
+        "filtered": 0,
+        "none": 8,
+    }
     assert page.items[0].repeat_chain_length is None
     assert page.items[0].shim_latency_ms is None
     assert "latency_ms" not in page.items[0].model_dump()
@@ -464,10 +478,17 @@ def test_request_activity_summary_has_null_technical_metrics_without_denominator
             p95_completed_shim_latency_ms=None,
             settled_spend_usd=Decimal("0"),
             unpriced_requests=0,
+            outcome_complete=0,
+            outcome_truncated=0,
+            outcome_empty=0,
+            outcome_refused=0,
+            outcome_filtered=0,
+            outcome_none=2,
         )
     )
 
     assert summary.technical_success_rate is None
+    assert summary.outcome_counts.none == 2
     assert summary.p95_completed_shim_latency_ms is None
     assert summary.policy_rejections == 1
 
@@ -1980,3 +2001,174 @@ async def test_requests_filter_by_api_key_without_widening_member_scope(
     assert len(list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))) == 1
     assert widened.json()["total"] == 0
     assert malformed.status_code == 422
+
+
+def _analysed_lifecycle(organization_id, request_id: str, api_key_id, analysis):
+    return RequestLifecycle(
+        request_id=request_id,
+        organization_id=organization_id,
+        actor_type="api_key" if api_key_id else "internal",
+        api_key_id=api_key_id,
+        source_endpoint="chat.completions",
+        status="completed",
+        requested_model="gpt-5-mini",
+        stream=False,
+        started_at=datetime.now(timezone.utc),
+        lifecycle_metadata={"response_analysis": analysis} if analysis else {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_requests_filter_by_outcome_and_text_refusal(
+    db, test_user_with_org, test_api_key, test_tier
+) -> None:
+    user = test_user_with_org
+    colleague = User(
+        id=uuid4(),
+        organization_id=user.organization_id,
+        email=f"colleague-{uuid4().hex}@example.com",
+        role="member",
+        is_active=True,
+        is_verified=True,
+    )
+    other = Organization(id=uuid4(), name="Other", slug=f"outcome-{uuid4().hex}")
+    db.add_all([colleague, other])
+    await db.flush()
+    colleague_key = ApiKey(
+        id=uuid4(),
+        user_id=colleague.id,
+        organization_id=user.organization_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-coll",
+        tier=test_tier,
+        is_active=True,
+    )
+    db.add(colleague_key)
+    await db.flush()
+    seeded = [
+        (test_api_key, "complete", "completed", ["support"]),
+        (test_api_key, "truncated", "completed", ["support"]),
+        (test_api_key, "truncated", "completed", []),
+        (test_api_key, "empty", "completed", []),
+        (test_api_key, "refused", "completed", []),
+        (test_api_key, "filtered", "completed", []),
+        (test_api_key, None, "failed", []),
+        (colleague_key, "truncated", "completed", []),
+    ]
+    ids = [f"req_outcome_{uuid4().hex}" for _ in seeded]
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        RequestLog(
+            request_id=request_id,
+            api_key_id=key.id,
+            organization_id=user.organization_id,
+            timestamp=now - timedelta(seconds=index),
+            tags=tags,
+            details={"lifecycle_status": status}
+            | ({"completion_outcome": outcome} if outcome else {}),
+        )
+        for index, (request_id, (key, outcome, status, tags)) in enumerate(
+            zip(ids, seeded, strict=True)
+        )
+    )
+    tenant = user.organization_id
+    db.add_all(
+        [
+            _analysed_lifecycle(
+                tenant, ids[0], test_api_key.id, {"refusal": {"soft_refusal": True}}
+            ),
+            _analysed_lifecycle(
+                tenant, ids[1], test_api_key.id, {"refusal": {"soft_refusal": False}}
+            ),
+            _analysed_lifecycle(tenant, ids[2], test_api_key.id, None),
+            # Another tenant's analysed row sharing a request id never matches.
+            _analysed_lifecycle(
+                other.id, ids[3], None, {"refusal": {"soft_refusal": True}}
+            ),
+        ]
+    )
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+
+        async def listed(**params):
+            response = await client.get("/api/v1/management/requests", params=params)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        async def exported(**params) -> list[dict[str, str]]:
+            response = await client.get(
+                "/api/v1/management/requests/export", params=params
+            )
+            return list(csv.DictReader(io.StringIO(response.text.lstrip("﻿"))))
+
+        user.role = "owner"
+        everything = await listed()
+        by_outcome = {
+            outcome: await listed(completion_outcome=outcome)
+            for outcome in (
+                "complete",
+                "truncated",
+                "empty",
+                "refused",
+                "filtered",
+                "none",
+            )
+        }
+        truncated_csv = await exported(completion_outcome="truncated")
+        combined = (
+            (await listed(completion_outcome="truncated", tag="support"))["total"],
+            (await listed(completion_outcome="truncated", status="completed"))["total"],
+            (await listed(completion_outcome="none", status="failed"))["total"],
+        )
+        invalid = [
+            (
+                await client.get(
+                    f"/api/v1/management/{path}", params={"completion_outcome": value}
+                )
+            ).status_code
+            for path in ("requests", "requests/export")
+            for value in ("partial", "None", "")
+        ]
+        soft = {
+            value: [
+                item["request_id"]
+                for item in (await listed(soft_refusal=value))["items"]
+            ]
+            for value in ("true", "false")
+        }
+        soft_csv = await exported(soft_refusal="true")
+        user.role = "member"
+        member = await listed(completion_outcome="truncated")
+
+    counts = everything["summary"]["outcome_counts"]
+    assert counts == {
+        "complete": 1,
+        "truncated": 3,
+        "empty": 1,
+        "refused": 1,
+        "filtered": 1,
+        "none": 1,
+    }
+    assert sum(counts.values()) == everything["summary"]["requests"] == 8
+    for outcome, page in by_outcome.items():
+        assert page["total"] == counts[outcome]
+        assert page["summary"]["outcome_counts"] == {
+            name: counts[outcome] if name == outcome else 0 for name in counts
+        }
+        assert {item["completion_outcome"] for item in page["items"]} == {
+            None if outcome == "none" else outcome
+        }
+    assert {row["request_id"] for row in truncated_csv} == {ids[1], ids[2], ids[7]}
+    assert combined == (1, 3, 1)
+    assert invalid == [422] * 6
+    assert soft == {"true": [ids[0]], "false": [ids[1]]}
+    assert [row["request_id"] for row in soft_csv] == [ids[0]]
+    assert {item["request_id"] for item in member["items"]} == {ids[1], ids[2]}
+    assert member["summary"]["outcome_counts"]["truncated"] == 2

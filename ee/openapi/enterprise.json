@@ -6176,6 +6176,179 @@
         "title": "Outcome",
         "type": "string"
       },
+      "OutcomeRatesPage": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "group_by": {
+            "enum": [
+              "model",
+              "api_key",
+              "team"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/OutcomeRatesView"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/OutcomeRatesView"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "groups",
+          "truncated",
+          "totals"
+        ],
+        "title": "OutcomeRatesPage",
+        "type": "object"
+      },
+      "OutcomeRatesView": {
+        "properties": {
+          "analysed": {
+            "description": "Answers the refusal analyzer read.",
+            "minimum": 0.0,
+            "title": "Analysed",
+            "type": "integer"
+          },
+          "complete": {
+            "minimum": 0.0,
+            "title": "Complete",
+            "type": "integer"
+          },
+          "empty": {
+            "minimum": 0.0,
+            "title": "Empty",
+            "type": "integer"
+          },
+          "filtered": {
+            "minimum": 0.0,
+            "title": "Filtered",
+            "type": "integer"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model, API key id or team id; null groups requests without a team.",
+            "title": "Group"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The API key or team name.",
+            "title": "Name"
+          },
+          "refusal_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "(refused + filtered + empty) / settled.",
+            "title": "Refusal Rate"
+          },
+          "refused": {
+            "minimum": 0.0,
+            "title": "Refused",
+            "type": "integer"
+          },
+          "settled": {
+            "minimum": 0.0,
+            "title": "Settled",
+            "type": "integer"
+          },
+          "soft_refusal_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soft Refusal Rate"
+          },
+          "soft_refused": {
+            "minimum": 0.0,
+            "title": "Soft Refused",
+            "type": "integer"
+          },
+          "truncated": {
+            "minimum": 0.0,
+            "title": "Truncated",
+            "type": "integer"
+          },
+          "truncation_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncation Rate"
+          }
+        },
+        "required": [
+          "group",
+          "name",
+          "settled",
+          "complete",
+          "truncated",
+          "empty",
+          "refused",
+          "filtered",
+          "truncation_rate",
+          "refusal_rate",
+          "analysed",
+          "soft_refused",
+          "soft_refusal_rate"
+        ],
+        "title": "OutcomeRatesView",
+        "type": "object"
+      },
       "OversightDecision": {
         "properties": {
           "decision": {
@@ -8757,6 +8930,9 @@
             "title": "Cost Complete",
             "type": "boolean"
           },
+          "outcome_counts": {
+            "$ref": "#/components/schemas/RequestOutcomeCountsView"
+          },
           "p95_completed_shim_latency_ms": {
             "anyOf": [
               {
@@ -8833,7 +9009,8 @@
           "pii_detected_requests",
           "technical_failures",
           "policy_rejections",
-          "status_counts"
+          "status_counts",
+          "outcome_counts"
         ],
         "title": "RequestActivitySummaryView",
         "type": "object"
@@ -9183,6 +9360,51 @@
           "team"
         ],
         "title": "RequestActivityView",
+        "type": "object"
+      },
+      "RequestOutcomeCountsView": {
+        "properties": {
+          "complete": {
+            "minimum": 0.0,
+            "title": "Complete",
+            "type": "integer"
+          },
+          "empty": {
+            "minimum": 0.0,
+            "title": "Empty",
+            "type": "integer"
+          },
+          "filtered": {
+            "minimum": 0.0,
+            "title": "Filtered",
+            "type": "integer"
+          },
+          "none": {
+            "description": "Requests without a recorded outcome.",
+            "minimum": 0.0,
+            "title": "None",
+            "type": "integer"
+          },
+          "refused": {
+            "minimum": 0.0,
+            "title": "Refused",
+            "type": "integer"
+          },
+          "truncated": {
+            "minimum": 0.0,
+            "title": "Truncated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "truncated",
+          "empty",
+          "refused",
+          "filtered",
+          "none"
+        ],
+        "title": "RequestOutcomeCountsView",
         "type": "object"
       },
       "ResponseFormat": {
@@ -15915,6 +16137,97 @@
         ]
       }
     },
+    "/api/v1/management/outcomes": {
+      "get": {
+        "operationId": "outcome_rates_api_v1_management_outcomes_get",
+        "parameters": [
+          {
+            "description": "Inclusive start; defaults to seven days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive start; defaults to seven days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive end; defaults to the current time.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive end; defaults to the current time.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "enum": [
+                "model",
+                "api_key",
+                "team"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeRatesPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Outcome Rates",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/overview": {
       "get": {
         "operationId": "dashboard_overview_api_v1_management_overview_get",
@@ -16974,6 +17287,50 @@
             }
           },
           {
+            "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+            "in": "query",
+            "name": "completion_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "complete",
+                    "truncated",
+                    "empty",
+                    "refused",
+                    "filtered",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+              "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+            "in": "query",
+            "name": "soft_refusal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+              "title": "Soft Refusal"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -17245,6 +17602,50 @@
                 }
               ],
               "title": "System Prompt Hash"
+            }
+          },
+          {
+            "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+            "in": "query",
+            "name": "completion_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "complete",
+                    "truncated",
+                    "empty",
+                    "refused",
+                    "filtered",
+                    "none"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+              "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+            "in": "query",
+            "name": "soft_refusal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+              "title": "Soft Refusal"
             }
           }
         ],

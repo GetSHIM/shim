@@ -43,6 +43,8 @@ ANSWER_QUALITY = "gateway.answer_quality"
 IDLE_INTERNAL_DEPLOYMENT = "gateway.idle_internal_deployment"
 UNREGISTERED_MODEL = "gateway.unregistered_model"
 BYOK_USAGE = "gateway.byok_usage"
+TRUNCATION_RATE = "gateway.truncation_rate"
+REFUSAL_RATE = "gateway.refusal_rate"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -65,8 +67,13 @@ UNREGISTERED_MODEL_WINDOW_DAYS = 7
 UNREGISTERED_MODEL_MIN_REQUESTS = 5
 BYOK_USAGE_WINDOW_DAYS = 7
 BYOK_USAGE_MIN_REQUESTS = 5
+OUTCOME_RATE_WINDOW_HOURS = 24
+OUTCOME_RATE_MIN_SETTLED = 50
+TRUNCATION_RATE_THRESHOLD = Decimal("0.05")
+REFUSAL_RATE_THRESHOLD = Decimal("0.05")
 EVIDENCE_KEY_IDS = 10
 EVIDENCE_MODELS = 10
+EVIDENCE_MODELS_PER_KEY = 5
 EVIDENCE_REQUEST_IDS = 20
 
 STATUS_IDS = {"new": 1, "in_progress": 2, "suppressed": 3, "resolved": 4}
@@ -115,6 +122,20 @@ RULES: dict[str, tuple[str, int, str]] = {
         3,
         "Give the app the managed key path (no x-provider-key header), or route "
         "it through a registry deployment, whose stored secret always wins.",
+    ),
+    TRUNCATION_RATE: (
+        "An API key's answers often stop at the output limit",
+        2,
+        "The answers hit the output limit: raise the max output tokens the app "
+        "sends, or check the model's output limit. The request list filtered by "
+        "completion_outcome=truncated and this api_key_id shows them.",
+    ),
+    REFUSAL_RATE: (
+        "An API key's answers are often refused, filtered or empty",
+        2,
+        "Read the refused and filtered requests (the request list filtered by "
+        "completion_outcome and this api_key_id): a provider content filter, a "
+        "model refusal and an empty answer have different fixes.",
     ),
     IDLE_INTERNAL_DEPLOYMENT: (
         "Internal deployment is almost unused",
@@ -766,6 +787,109 @@ async def _answer_quality(
     return detections
 
 
+async def _outcome_rates(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    outcome = RequestLifecycle.lifecycle_metadata["completion_outcome"].as_string()
+    unanswered = outcome.in_(("refused", "filtered", "empty"))
+    settled = func.count().filter(outcome.is_not(None))
+    counts = (
+        settled.label("settled"),
+        *(
+            func.count().filter(outcome == name).label(name)
+            for name in ("truncated", "refused", "filtered", "empty")
+        ),
+    )
+    window = (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= now - timedelta(hours=OUTCOME_RATE_WINDOW_HOURS),
+        RequestLifecycle.started_at <= now,
+        RequestLifecycle.api_key_id.is_not(None),
+    )
+    keys = {
+        row.api_key_id: row
+        for row in await session.execute(
+            select(
+                RequestLifecycle.api_key_id,
+                *counts,
+                _request_ids(outcome == "truncated").label("truncated_ids"),
+                _request_ids(unanswered).label("unanswered_ids"),
+            )
+            .where(*window)
+            .group_by(RequestLifecycle.api_key_id)
+            .having(settled >= OUTCOME_RATE_MIN_SETTLED)
+        )
+    }
+    if not keys:
+        return []
+    models: dict[UUID, list[Any]] = {}
+    for row in await session.execute(
+        select(RequestLifecycle.api_key_id, RequestLifecycle.requested_model, *counts)
+        .where(*window, RequestLifecycle.api_key_id.in_(list(keys)))
+        .group_by(RequestLifecycle.api_key_id, RequestLifecycle.requested_model)
+        .order_by(
+            RequestLifecycle.api_key_id,
+            settled.desc(),
+            RequestLifecycle.requested_model,
+        )
+    ):
+        models.setdefault(row.api_key_id, []).append(row)
+    detections = []
+    for key_id, row in sorted(keys.items()):
+        top = models[key_id][:EVIDENCE_MODELS_PER_KEY]
+        unanswered_count = row.refused + row.filtered + row.empty
+        for rule_id, count, threshold, ids, fields, ended in (
+            (
+                TRUNCATION_RATE,
+                row.truncated,
+                TRUNCATION_RATE_THRESHOLD,
+                row.truncated_ids,
+                ("truncated",),
+                "stopped at the output limit",
+            ),
+            (
+                REFUSAL_RATE,
+                unanswered_count,
+                REFUSAL_RATE_THRESHOLD,
+                row.unanswered_ids,
+                ("refused", "filtered", "empty"),
+                "were refused, filtered or empty",
+            ),
+        ):
+            rate = Decimal(count) / row.settled
+            if rate < threshold:
+                continue
+            detections.append(
+                Detection(
+                    rule_id=rule_id,
+                    subject_key=f"api_key:{key_id}",
+                    subject={"api_key_id": str(key_id)},
+                    summary=(
+                        f"{count} of {row.settled} answers to this API key in "
+                        f"{OUTCOME_RATE_WINDOW_HOURS} hours {ended}."
+                    ),
+                    evidence={
+                        "window_hours": OUTCOME_RATE_WINDOW_HOURS,
+                        "settled_requests": row.settled,
+                        **{field: getattr(row, field) for field in fields},
+                        "rate": str(round(rate, 4)),
+                        "threshold_rate": str(threshold),
+                        "models": [
+                            {
+                                "model": model.requested_model,
+                                "settled": model.settled,
+                                **{field: getattr(model, field) for field in fields},
+                            }
+                            for model in top
+                        ],
+                        "request_ids": list(ids or []),
+                    },
+                    impact={"cost_usd": None, "requests": count},
+                )
+            )
+    return detections
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -779,6 +903,7 @@ async def evaluate_organization(
             _unregistered_models,
             _byok_usage,
             _answer_quality,
+            _outcome_rates,
         )
         for detection in await rule(session, tenant_id, now)
     ]

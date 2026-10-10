@@ -260,3 +260,58 @@ answers; for empty or refused answers, review the prompt and the model choice.
 whether the rate changed with a prompt.
 
 **Resolves** after 7 days below the threshold.
+
+## gateway.truncation_rate
+
+**Checks.** For each API key, the requests started in the last 24 hours that
+have a `completion_outcome`. It fires when there are at least 50 of them and
+`truncated` is at least 5 percent. Severity low. Subject: the API key.
+
+**Why.** An app whose answers stop at the output limit usually sends too low a
+max output tokens value, or uses a model whose output limit is shorter than the
+answers it asks for.
+
+**Evidence and impact.** The answered and truncated counts, the rate and the
+threshold, up to five models with their own counts, and up to 20 truncated
+request ids. Impact is the truncated request count; no money.
+
+**Fix.** Raise the max output tokens the app sends, or check the model's output
+limit. `GET /api/v1/management/requests?completion_outcome=truncated&api_key_id=…`
+lists the requests.
+
+**Resolves** after 7 days below the threshold.
+
+## gateway.refusal_rate
+
+**Checks.** The same window, minimum and subject as `gateway.truncation_rate`.
+It fires when `refused` plus `filtered` plus `empty` is at least 5 percent of
+the answered requests. Severity low. Text refusals found by the refusal
+analyzer are not counted: `completion_outcome` records the provider's own
+signal only.
+
+**Why.** Each of the three has a different cause and fix:
+
+- `filtered`: the provider's content filter stopped the prompt or the answer;
+  read the request and the provider's filter settings.
+- `refused`: the model returned a refusal field; the prompt asks for something
+  the model declines, so rephrase it or choose another model.
+- `empty`: the answer had no text; often a tool-only turn the app does not
+  expect, or an output limit spent on reasoning tokens.
+
+**Evidence and impact.** The `refused`, `filtered` and `empty` counts, the
+rate and the threshold, up to five models with their counts, and up to 20
+request ids. Impact is the count of those requests; no money.
+
+**Fix.** Read the requests with `completion_outcome=refused`, `filtered` or
+`empty` and this `api_key_id` and apply the fix for their class.
+
+**Resolves** after 7 days below the threshold.
+
+### Model rates and key rates
+
+`gateway.answer_quality` asks whether a model is bad: it groups by model across
+every key. The two rules above ask whether one app is configured badly: they
+group by API key across models. The same traffic can raise both; they are
+separate findings with separate subjects. `GET /api/v1/management/outcomes`
+reads the same counts for any window, per model, key or team
+([diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates)).

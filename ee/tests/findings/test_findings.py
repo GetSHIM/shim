@@ -1221,3 +1221,92 @@ async def test_byok_without_a_stored_key_for_the_provider_is_its_only_mode(
     detections = await _evaluate(db, test_api_key)
 
     assert [d for d in detections if d.rule_id == service.BYOK_USAGE] == []
+
+
+def _other_key(db, key) -> ApiKey:
+    other = ApiKey(
+        id=uuid4(),
+        organization_id=key.organization_id,
+        user_id=key.user_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-rat",
+        tier=key.tier,
+        is_active=True,
+    )
+    db.add(other)
+    return other
+
+
+@pytest.mark.parametrize(
+    ("rule", "settled", "bad", "fires"),
+    [
+        (service.TRUNCATION_RATE, 50, {"truncated": 3}, True),
+        (service.TRUNCATION_RATE, 60, {"truncated": 3}, True),
+        (service.TRUNCATION_RATE, 1000, {"truncated": 49}, False),
+        (service.TRUNCATION_RATE, 49, {"truncated": 49}, False),
+        (service.REFUSAL_RATE, 50, {"empty": 3}, True),
+        (service.REFUSAL_RATE, 60, {"refused": 1, "filtered": 1, "empty": 1}, True),
+        (service.REFUSAL_RATE, 1000, {"refused": 49}, False),
+        (service.REFUSAL_RATE, 49, {"filtered": 49}, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rate_findings_need_fifty_answers_and_five_percent_per_key(
+    db, test_api_key, rule: str, settled: int, bad: dict[str, int], fires: bool
+) -> None:
+    started = NOW - timedelta(hours=1)
+    outcomes = [name for name, count in bad.items() for _ in range(count)]
+    outcomes += ["complete"] * (settled - len(outcomes))
+    ids = [_request(db, test_api_key, started, outcome=o) for o in outcomes]
+    other = _other_key(db, test_api_key)
+    await db.flush()
+    for _ in range(10):
+        _request(db, test_api_key, started, status="rejected", outcome=None)
+        _request(db, test_api_key, NOW - timedelta(hours=25), outcome="truncated")
+        _request(db, other, started, outcome="truncated")
+        _request(db, other, started, outcome="refused")
+
+    found = [d for d in await _evaluate(db, test_api_key) if d.rule_id == rule]
+
+    if not fires:
+        assert found == []
+        return
+    (finding,) = found
+    count = sum(bad.values())
+    assert finding.subject == {"api_key_id": str(test_api_key.id)}
+    assert finding.subject_key == f"api_key:{test_api_key.id}"
+    assert finding.evidence["settled_requests"] == settled
+    assert {name: finding.evidence.get(name, 0) for name in bad} == bad
+    assert finding.evidence["rate"] == str(round(Decimal(count) / settled, 4))
+    (model,) = finding.evidence["models"]
+    assert (model["model"], model["settled"]) == ("gpt-5-mini", settled)
+    assert {name: model[name] for name in bad} == bad
+    assert sorted(finding.evidence["request_ids"]) == sorted(
+        request_id for request_id, o in zip(ids, outcomes) if o != "complete"
+    )
+    assert finding.impact == {"cost_usd": None, "requests": count}
+    assert service.RULES[rule][1] == 2
+
+
+@pytest.mark.asyncio
+async def test_rate_findings_break_down_up_to_five_models(db, test_api_key) -> None:
+    started = NOW - timedelta(hours=1)
+    for outcome in ["complete"] * 30 + ["truncated"] * 4:
+        _request(db, test_api_key, started, outcome=outcome, model="model-0")
+    for index in range(1, 6):
+        for _ in range(4):
+            _request(db, test_api_key, started, model=f"model-{index}")
+
+    detections = await _evaluate(db, test_api_key)
+
+    (finding,) = [d for d in detections if d.rule_id == service.TRUNCATION_RATE]
+    assert finding.evidence["models"] == [
+        {"model": "model-0", "settled": 34, "truncated": 4},
+        *(
+            {"model": f"model-{index}", "settled": 4, "truncated": 0}
+            for index in range(1, 5)
+        ),
+    ]
+    assert "completion_outcome=truncated" in service.RULES[finding.rule_id][2]
+    assert [d for d in detections if d.rule_id == service.REFUSAL_RATE] == []
+    assert [d for d in detections if d.rule_id == service.ANSWER_QUALITY] == []
