@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -345,6 +346,84 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
     assert all(projected.details[key] == value for key, value in expected.items())
     assert projected.details["lifecycle_status"] == "client_disconnected"
     assert projected.details["usage_estimated"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("privacy", "kept"),
+    [
+        (PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False), True),
+        (
+            PrivacyOutcome(
+                action=PrivacyAction.SCRUBBED,
+                pii_detected=True,
+                verification_map={"<EMAIL_ADDRESS_ff8d9819>": "alice@example.com"},
+                pii_entities={"EMAIL_ADDRESS": 1},
+            ),
+            False,
+        ),
+        (
+            PrivacyOutcome(
+                action=PrivacyAction.SCRUBBED,
+                pii_detected=True,
+                blocked_entities={"SECRET": 1},
+            ),
+            False,
+        ),
+    ],
+    ids=["clean", "scrubbed", "blocked"],
+)
+async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
+    db, test_api_key, privacy, kept
+) -> None:
+    repository = DurableAccountingRepository()
+    request_id = f"req_digest_pii_{uuid4().hex}"
+    deployment_id = str(uuid4())
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            deployment_id=deployment_id,
+            repeat_digest="b" * 64,
+        ),
+    )
+    prepared = SimpleNamespace(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        policy_verdicts=[],
+        privacy=privacy,
+    )
+    await DurableAccountingCoordinator().record_privacy(prepared, db)
+    command = FinalizationCommand(
+        tenant_id=test_api_key.organization_id,
+        request_id=request_id,
+        quota_action=TerminalAction.SETTLE,
+        prompt_tokens=20,
+        completion_tokens=3,
+        estimated=True,
+        lifecycle_status="client_disconnected",
+    )
+    await repository.finalize(db, command)
+    assert (await repository.finalize(db, command)).replayed
+    await db.flush()
+
+    metadata = (
+        await db.scalar(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).lifecycle_metadata
+    assert metadata["repeat_digest"] == ("b" * 64 if kept else None)
+    assert metadata["deployment_id"] == deployment_id
 
 
 @pytest.mark.asyncio
@@ -2651,8 +2730,7 @@ async def test_the_repeat_digest_is_keyed_per_tenant_and_installation(
     prepared = _prepared()
     value = (await _reserved_command(prepared, material="same material")).repeat_digest
 
-    assert value is not None and len(value) == 64
-    assert value == value.lower() and int(value, 16) >= 0
+    assert value is not None and re.fullmatch(r"[0-9a-f]{64}", value)
     assert value != hashlib.sha256(b"same material").hexdigest()
     again = await _reserved_command(prepared, material="same material")
     assert again.repeat_digest == value

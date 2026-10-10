@@ -14,7 +14,7 @@ provider attempt rule are unchanged.
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
 | `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
-| `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal material, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material; absent on rows written before it existed. |
+| `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
 first class that matches, in this order, wins, including across several choices
@@ -49,10 +49,28 @@ after the loop window, for example a retry after the SDK's 600-second timeout,
 which starts a new `repeat_chain_length` at 1. It is
 `HMAC-SHA256(key, "<tenant id>:<detector digest>")` with
 `key = HMAC-SHA256(COMPLIANCE_HASH_SALT or SECRET_KEY, "shim-repeat-digest-v1")`,
-so two tenants sending the same prompt get different values, and rotating
-`COMPLIANCE_HASH_SALT` breaks the linkage across the rotation. It is computed
-even when Redis is unavailable. The unkeyed digest never reaches PostgreSQL, the
-outbox, logs, spans or metrics.
+so two tenants sending the same prompt get different values. The key falls back
+to `SECRET_KEY` when `COMPLIANCE_HASH_SALT` is unset. It is computed even when
+Redis is unavailable.
+
+The repeat material is the prompt-bearing fields plus the provider, protocol and
+model alias, normalized. Tools, sampling parameters and `prompt` are not in it,
+so two requests that differ only there share a value; renaming a model alias
+changes the material and breaks the link.
+
+The value carries no version prefix. After `COMPLIANCE_HASH_SALT` (or the
+`SECRET_KEY` fallback) is rotated, old and new values cannot be told apart and
+do not link.
+
+The digest is written at reservation, before privacy runs. When privacy detects
+PII, whether it is scrubbed, monitored or blocked, the same update that records
+`pii_detected` sets `repeat_digest` to `null`: a keyed hash of raw prompt text is
+still a pseudonym of the personal data in it. Requests with PII therefore cannot
+be linked as repeats. `deployment_id` is unaffected.
+
+The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
+metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
+`LOOP_WINDOW_SECONDS`.
 
 `deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
 `request_lifecycle.metadata` and not in the analytics row, the request list, its
