@@ -463,8 +463,12 @@ than 4,096 characters records `{"error": true, "reason": "too_large"}`; the
 others still run. A request that failed or was refused gets no analysis.
 
 Notes: an unknown name stops the gateway at start-up with the setting and the
-name in the message; a repeated name is dropped. This release defines no
-analyzer yet. `shim_response_analysis_total{analyzer, result}` counts the runs.
+name in the message; a repeated name is dropped.
+`shim_response_analysis_total{analyzer, result}` counts the runs.
+
+| Analyzer | What it records |
+| --- | --- |
+| `shape` | What the request is made of, to find oversized parts, tools no one calls and tool order that defeats the provider's prompt cache. Sizes are characters of the masked request, so a detected value counts as its placeholder: `message_count`, `system_chars`, `history_chars` (turns before the last user turn, tool results included), `last_user_chars`, `largest_part_chars`, `tool_result_count`, `tool_result_chars`, `largest_tool_result_chars`, `tool_count`, `tool_definition_chars` (the compact JSON of `tools`), `tools_offered` (names in the order sent; built-in tools as `builtin:<type>`), `tools_called_in_history` (calls replayed in the request), `tools_order_digest` and `tools_set_digest` (16 hex characters of sha256 over the names in order, and sorted: the same set in a new order changes only the first), `image_count`, `document_count`, `largest_image` (`bytes`, `width`, `height` of the largest inline image, read from its header) and `truncated`. Tool names are recorded in clear; tool definitions are never stored. At most 128 tool names of 64 characters each, 20,000 parts and 64 levels of nesting are read; beyond them `truncated` is true. A request offering many long tool names can exceed the 4,096-character result bound and record `too_large`. |
 
 ## Stream long generations and read usage
 
