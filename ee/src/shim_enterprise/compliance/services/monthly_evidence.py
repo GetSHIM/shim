@@ -11,8 +11,9 @@ import hashlib
 import logging
 from typing import Any, Literal
 from uuid import UUID
+from xml.sax.saxutils import escape
 
-from sqlalchemy import func, select, true
+from sqlalchemy import Text, cast, distinct, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,32 +24,49 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.billing.read_models import BillingBreakdown, BillingReadModels
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.compliance.reporting import (
+    NOT_RECORDED,
+    NOT_RECORDED_CELL,
     build_pdf,
-    entity_sums,
     evidence_table,
     lifecycle_window,
+    recorded_entity_sums,
     report_styles,
 )
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.outbox.handlers import EVIDENCE_MONTHLY_READY
 from shim_enterprise.outbox.publisher import OutboxWriter
-from shim_enterprise.tenants.models import Organization
+from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
 from shim.gateway.contracts.ids import TenantId
 
 
 logger = logging.getLogger(__name__)
 
-NOT_RECORDED = "not recorded in this version"
+_TITLE = "Aylık Kanıt Dosyası"
 _COVER = (
-    "This file is a measurement of the gateway traffic shim recorded for this "
-    "organization. It is not an audit, an assessment or a certification, and it "
-    "contains no prompt, answer or detected value."
+    "Bu dosya gateway trafiğinin ölçümüdür; denetim, sertifika veya uygunluk "
+    "beyanı değildir."
 )
 _MASK_KEYS = (
-    ("pii_entities", "Masked"),
-    ("monitored_entities", "Monitored"),
-    ("blocked_entities", "Blocked"),
+    ("pii_entities", "Maskelenen"),
+    ("monitored_entities", "İzlenen"),
+    ("blocked_entities", "Durdurulan"),
 )
+# Audited reads and exports of evidence and content (section 7).
+ACCESS_ACTIONS = (
+    "compliance.kvkk_report_generated",
+    "compliance.audit_report_generated",
+    "compliance.readiness_report_generated",
+    "compliance.audit_bundle_exported",
+    "compliance.audit_verified",
+    "tenant.requests_exported",
+    "tenant.billing_exported",
+    "tenant.evidence_downloaded",
+    "tenant.request_content_opened",
+)
+NO_ACCESS_THIS_MONTH = "Bu ay kayıtlı erişim yok."
+ACCESS_NOT_RECORDED = "Okuma ve dışa aktarma kayıtları bu kurum için henüz tutulmuyor."
+MODEL_ACCESS_ROWS = 50
+MODEL_ACCESS_MODELS = 10
 
 
 class EvidenceFileExists(ValueError):
@@ -69,6 +87,7 @@ class MonthlyWindow:
 @dataclass(frozen=True, slots=True)
 class MonthlyEvidence:
     tenant_id: UUID
+    organization_name: str
     window: MonthlyWindow
     generated_at: datetime
     by_provider: tuple[BillingBreakdown, ...]
@@ -80,6 +99,11 @@ class MonthlyEvidence:
     changes: tuple[tuple[str, str, int], ...]
     chain: dict[str, Any] | str
     findings: tuple[tuple[str, int, int, int], ...]
+    # Action, user id, current role and count; empty with a note when none.
+    access: tuple[tuple[str, str, str, int], ...]
+    access_note: str | None
+    # Key name, team name, providers, models and requests.
+    model_access: tuple[tuple[str, str, str, str, int], ...]
 
 
 def monthly_window(period: str, *, now: datetime) -> MonthlyWindow:
@@ -107,15 +131,11 @@ async def entity_counts(
     session: AsyncSession, tenant_id: UUID, start: datetime, end: datetime, key: str
 ) -> dict[tuple[str, str], int] | None:
     """Per provider and entity type, or None when no request recorded the key."""
-    metadata = RequestLifecycle.lifecycle_metadata
-    in_window = lifecycle_window(tenant_id, start, end)
-    if not await session.scalar(
-        select(RequestLifecycle.id).where(*in_window, metadata.has_key(key)).limit(1)
-    ):
-        return None
     provider = func.coalesce(RequestLifecycle.provider, "unknown")
-    rows = await session.execute(entity_sums(key, in_window, provider))
-    return {(row[0], row[1]): int(row[2]) for row in rows}
+    rows = await recorded_entity_sums(
+        session, key, lifecycle_window(tenant_id, start, end), provider
+    )
+    return None if rows is None else {(row[0], row[1]): int(row[2]) for row in rows}
 
 
 async def usage_breakdowns(
@@ -184,7 +204,7 @@ async def collect_monthly_evidence(
             session, tenant_id, start=window.start, end=window.end
         )
     except AuditVerificationLimitExceeded as exc:
-        chain = f"Verification could not run: {exc}."
+        chain = f"Doğrulama çalışmadı: {exc}."
 
     opened = func.count().filter(
         Finding.first_seen_at >= window.start, Finding.first_seen_at <= window.end
@@ -209,8 +229,15 @@ async def collect_monthly_evidence(
     by_provider, by_model = await usage_breakdowns(
         session, tenant_id, window.start, window.end
     )
+    access, access_note = await access_counts(session, tenant_id, window)
+    organization_name = (
+        await session.execute(
+            select(Organization.name).where(Organization.id == tenant_id)
+        )
+    ).scalar_one()
     return MonthlyEvidence(
         tenant_id=tenant_id,
+        organization_name=organization_name,
         window=window,
         generated_at=now,
         by_provider=by_provider,
@@ -225,7 +252,116 @@ async def collect_monthly_evidence(
         changes=tuple((str(a), str(b), int(c)) for a, b, c in changes),
         chain=chain,
         findings=tuple((str(a), int(b), int(c), int(d)) for a, b, c, d in findings),
+        access=access,
+        access_note=access_note,
+        model_access=await model_access(session, tenant_id, window),
     )
+
+
+async def access_counts(
+    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow
+) -> tuple[tuple[tuple[str, str, str, int], ...], str | None]:
+    """Audited evidence and content reads by action and actor, or why there are none."""
+    audited = (
+        AIActAuditLog.organization_id == tenant_id,
+        AIActAuditLog.event_type == "management_action",
+        AIActAuditLog.endpoint.in_(ACCESS_ACTIONS),
+        AIActAuditLog.created_at <= window.end,
+    )
+    rows = await session.execute(
+        select(AIActAuditLog.endpoint, AIActAuditLog.actor, User.role, User.kind)
+        .add_columns(func.count())
+        .select_from(AIActAuditLog)
+        .outerjoin(
+            User,
+            (User.organization_id == tenant_id)
+            & (cast(User.id, Text) == AIActAuditLog.actor),
+        )
+        .where(*audited, AIActAuditLog.created_at >= window.start)
+        .group_by(AIActAuditLog.endpoint, AIActAuditLog.actor, User.role, User.kind)
+        .order_by(AIActAuditLog.endpoint, func.count().desc(), AIActAuditLog.actor)
+    )
+    access = tuple(
+        (
+            str(action),
+            actor or "—",
+            "—"
+            if role is None
+            else role + (", servis hesabı" if kind == "service" else ""),
+            int(count),
+        )
+        for action, actor, role, kind, count in rows
+    )
+    if access:
+        return access, None
+    earlier = await session.scalar(
+        select(AIActAuditLog.created_at)
+        .where(*audited)
+        .order_by(AIActAuditLog.created_at)
+        .limit(1)
+    )
+    return (), NO_ACCESS_THIS_MONTH if earlier else ACCESS_NOT_RECORDED
+
+
+async def model_access(
+    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow
+) -> tuple[tuple[str, str, str, str, int], ...]:
+    """Requests by API key and team with the providers and models they called."""
+    team_id = RequestLifecycle.lifecycle_metadata["team_id"].as_string()
+    model = func.coalesce(
+        RequestLifecycle.provider_model, RequestLifecycle.requested_model
+    )
+    rows = (
+        await session.execute(
+            select(
+                ApiKey.name,
+                Team.name,
+                func.array_agg(distinct(RequestLifecycle.provider)),
+                func.array_agg(distinct(model)),
+                func.count(),
+            )
+            .select_from(RequestLifecycle)
+            .outerjoin(
+                ApiKey,
+                (ApiKey.organization_id == tenant_id)
+                & (ApiKey.id == RequestLifecycle.api_key_id),
+            )
+            .outerjoin(
+                Team,
+                (Team.organization_id == tenant_id) & (cast(Team.id, Text) == team_id),
+            )
+            .where(*lifecycle_window(tenant_id, window.start, window.end))
+            .group_by(RequestLifecycle.api_key_id, ApiKey.name, team_id, Team.name)
+            .order_by(func.count().desc(), ApiKey.name, Team.name)
+        )
+    ).all()
+
+    def row(key, team, providers, models, requests) -> tuple[str, str, str, str, int]:
+        names = sorted({name for name in models if name})
+        shown = names[:MODEL_ACCESS_MODELS] + (
+            ["…"] if len(names) > MODEL_ACCESS_MODELS else []
+        )
+        return (
+            key or "—",
+            team or "—",
+            ", ".join(sorted({name for name in providers if name})) or "—",
+            "\n".join(shown) or "—",
+            int(requests),
+        )
+
+    top = [row(*item) for item in rows[:MODEL_ACCESS_ROWS]]
+    rest = rows[MODEL_ACCESS_ROWS:]
+    if rest:
+        top.append(
+            row(
+                "diğer",
+                None,
+                [p for item in rest for p in item[2]],
+                [m for item in rest for m in item[3]],
+                sum(item[4] for item in rest),
+            )
+        )
+    return tuple(top)
 
 
 async def denial_counts(
@@ -258,7 +394,7 @@ async def denial_counts(
 def _cost(rows: tuple[BillingBreakdown, ...]) -> str:
     if any(row.unpriced_requests for row in rows):
         unpriced = sum(row.unpriced_requests for row in rows)
-        return f"unknown ({unpriced} unpriced request(s))"
+        return f"bilinmiyor (fiyatı bilinmeyen {unpriced} istek)"
     return f"{sum((row.cost_usd for row in rows), Decimal()):.6f} USD"
 
 
@@ -267,28 +403,31 @@ def _traffic_rows(rows: tuple[BillingBreakdown, ...]) -> list[list[str]]:
         [
             row.key,
             str(row.request_count),
-            "unknown" if row.unpriced_requests else f"{row.cost_usd:.6f}",
+            "bilinmiyor" if row.unpriced_requests else f"{row.cost_usd:.6f}",
         ]
         for row in rows
     ] or [["—", "0", "0"]]
 
 
-def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
+def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer
 
-    styles = report_styles()
     window = evidence.window
-    lifecycle_source = (
-        f"Source: request_lifecycle, requests started {window.describe()}."
-    )
-    audit_source = f"Source: ai_act_audit_log, rows written {window.describe()}."
 
-    def section(title: str, source: str, *body: Any) -> list[Any]:
+    def text(value: str) -> Any:
+        return Paragraph(escape(value), styles["Normal"])
+
+    def source(table: str, note: str = "") -> str:
+        return f"Kaynak: {table}, dönem: {window.describe()}." + (
+            f" {note}" if note else ""
+        )
+
+    def section(title: str, source_line: str, *body: Any) -> list[Any]:
         return [
             Spacer(1, 5 * mm),
             Paragraph(title, styles["Heading2"]),
-            Paragraph(source, styles["Normal"]),
+            text(source_line),
             Spacer(1, 2 * mm),
             *body,
         ]
@@ -306,7 +445,7 @@ def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
             provider,
             entity,
             *(
-                NOT_RECORDED
+                NOT_RECORDED_CELL
                 if counts is None
                 else str(counts.get((provider, entity), 0))
                 for counts in (evidence.entities[key] for key, _ in _MASK_KEYS)
@@ -318,7 +457,7 @@ def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
             "—",
             "—",
             *(
-                "0" if evidence.entities[key] is not None else NOT_RECORDED
+                "0" if evidence.entities[key] is not None else NOT_RECORDED_CELL
                 for key, _ in _MASK_KEYS
             ),
         ]
@@ -328,110 +467,148 @@ def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
         chain_text = chain
     elif chain["ok"]:
         chain_text = (
-            f"The chain verified: {chain['rows_checked']} row(s) read, "
-            f"{chain['rows_selected']} written in the window, last verified "
-            f"sequence {chain['last_verified_seq']}."
+            f"Zincir doğrulandı: {chain['rows_checked']} satır okundu, dönemde "
+            f"{chain['rows_selected']} satır yazıldı, son doğrulanan sıra "
+            f"{chain['last_verified_seq']}."
         )
     else:
-        chain_text = f"The chain did not verify: first break {chain['first_break']}."
-
-    story = [
-        Paragraph("Monthly Evidence File", styles["Title"]),
-        Paragraph(
-            f"Organization: {evidence.tenant_id}<br/>"
-            f"Period: {window.period}"
-            + (" (month in progress)" if window.kind == "monthly_partial" else "")
-            + f"<br/>Window: {window.describe()}<br/>"
-            f"Generated: {evidence.generated_at:%Y-%m-%d %H:%M UTC}",
-            styles["Normal"],
-        ),
+        chain_text = f"Zincir doğrulanamadı: ilk kırılma {chain['first_break']}."
+    header = "<br/>".join(
+        escape(line)
+        for line in (
+            f"Kurum: {evidence.organization_name} ({evidence.tenant_id})",
+            f"Dönem: {window.period}"
+            + (" (ay sürüyor)" if window.kind == "monthly_partial" else ""),
+            f"Aralık: {window.describe()}",
+            f"Oluşturulma: {evidence.generated_at:%Y-%m-%d %H:%M UTC}",
+        )
+    )
+    response = evidence.response_entities
+    return [
+        Paragraph(_TITLE, styles["Title"]),
+        Paragraph(header, styles["Normal"]),
         Spacer(1, 3 * mm),
-        Paragraph(_COVER, styles["Normal"]),
+        text(_COVER),
         *section(
-            "1. Traffic",
-            "Source: usage_ledger settlements joined to request_lifecycle, settled "
-            f"{window.describe()}. Total cost: {_cost(evidence.by_provider)}.",
+            "1. Trafik",
+            source(
+                "usage_ledger ve request_lifecycle",
+                f"Toplam maliyet: {_cost(evidence.by_provider)}.",
+            ),
             evidence_table(
                 _traffic_rows(evidence.by_provider),
-                ["Provider", "Requests", "Cost USD"],
+                ["Sağlayıcı", "İstek", "Maliyet (USD)"],
             ),
             Spacer(1, 2 * mm),
             evidence_table(
-                _traffic_rows(evidence.by_model), ["Model", "Requests", "Cost USD"]
+                _traffic_rows(evidence.by_model), ["Model", "İstek", "Maliyet (USD)"]
             ),
         ),
         *section(
-            "2. What left",
-            lifecycle_source
-            + " Counts are distinct values per request, summed, by entity type.",
+            "2. Kurumdan ne çıktı",
+            source(
+                "request_lifecycle",
+                "Sayılar istek başına farklı değerlerin varlık türüne göre toplamıdır.",
+            ),
             evidence_table(
                 entity_rows,
-                ["Provider", "Entity type", *(label for _, label in _MASK_KEYS)],
+                ["Sağlayıcı", "Varlık türü", *(label for _, label in _MASK_KEYS)],
             ),
             Spacer(1, 2 * mm),
-            Paragraph(
-                "Bulk disclosures: "
+            text(
+                "Toplu ifşa: "
                 + (
                     NOT_RECORDED
                     if evidence.bulk_disclosures is None
                     else str(evidence.bulk_disclosures)
-                ),
-                styles["Normal"],
+                )
             ),
-            Paragraph(
-                "Personal data in answers: "
+            text(
+                "Yanıtlardaki kişisel veri: "
                 + (
                     NOT_RECORDED
-                    if evidence.response_entities is None
+                    if response is None
                     else ", ".join(
                         f"{entity} {count}"
-                        for entity, count in sorted(evidence.response_entities.items())
+                        for entity, count in sorted(response.items())
                     )
-                    or "none"
-                ),
-                styles["Normal"],
+                    or "yok"
+                )
             ),
         ),
         *section(
-            "3. What was stopped",
-            audit_source + " Policy verdicts with outcome deny.",
+            "3. Ne durduruldu",
+            source("ai_act_audit_log", "Sonucu deny olan politika kararları."),
             evidence_table(
                 [[rule, reason, str(count)] for rule, reason, count in evidence.denials]
                 or [["—", "—", "0"]],
-                ["Rule", "Reason code", "Requests"],
+                ["Kural", "Gerekçe kodu", "İstek"],
             ),
         ),
         *section(
-            "4. Who changed what",
-            audit_source + " Management actions by action and actor type.",
+            "4. Kim neyi değiştirdi",
+            source(
+                "ai_act_audit_log",
+                "Yönetim işlemleri, işleme ve kullanıcı türüne göre.",
+            ),
             evidence_table(
                 [
                     [action, actor, str(count)]
                     for action, actor, count in evidence.changes
                 ]
                 or [["—", "—", "0"]],
-                ["Action", "Actor type", "Count"],
+                ["İşlem", "Kullanıcı türü", "Adet"],
             ),
         ),
         *section(
-            "5. Audit chain",
-            audit_source + " Verified from the latest daily anchor before the window.",
-            Paragraph(chain_text, styles["Normal"]),
+            "5. Denetim zinciri",
+            source(
+                "ai_act_audit_log",
+                "Dönemden önceki son günlük çapadan doğrulanır.",
+            ),
+            text(chain_text),
         ),
         *section(
-            "6. Findings",
-            f"Source: findings, first seen or resolved {window.describe()}.",
+            "6. Bulgular",
+            source("findings", "İlk görülen veya kapanan bulgular."),
             evidence_table(
                 [
                     [rule, str(opened), str(still_open), str(resolved)]
                     for rule, opened, still_open, resolved in evidence.findings
                 ]
                 or [["—", "0", "0", "0"]],
-                ["Rule", "Opened", "Open at end", "Resolved"],
+                ["Kural", "Açılan", "Dönem sonunda açık", "Kapanan"],
+            ),
+        ),
+        *section(
+            "7. Kim neye erişti",
+            source("ai_act_audit_log ve request_lifecycle"),
+            Paragraph("Kanıt ve içerik erişimi", styles["Heading3"]),
+            text(evidence.access_note)
+            if evidence.access_note
+            else evidence_table(
+                [
+                    [action, actor, role, str(count)]
+                    for action, actor, role, count in evidence.access
+                ],
+                ["İşlem", "Kullanıcı", "Güncel rol", "Adet"],
+            ),
+            Spacer(1, 2 * mm),
+            Paragraph("Model erişimi", styles["Heading3"]),
+            evidence_table(
+                [
+                    [key, team, providers, models, str(requests)]
+                    for key, team, providers, models, requests in evidence.model_access
+                ]
+                or [["—", "—", "—", "—", "0"]],
+                ["API anahtarı", "Takım", "Sağlayıcı", "Model", "İstek"],
             ),
         ),
     ]
-    return build_pdf(story, "Monthly Evidence File")
+
+
+def render_monthly_pdf(evidence: MonthlyEvidence) -> bytes:
+    return build_pdf(_monthly_story(evidence, report_styles()), _TITLE)
 
 
 async def generate_monthly_evidence(

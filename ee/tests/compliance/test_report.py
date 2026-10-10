@@ -30,15 +30,19 @@ from shim_enterprise.compliance.services.ingest import (
     ComplianceIngestService,
 )
 from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
+from shim_enterprise.compliance.reporting import NOT_RECORDED_CELL, report_styles
 from shim_enterprise.compliance.services.report import (
     ExposureEvidence,
     FindingEvidence,
     ReportLimitExceeded,
+    _kvkk_story,
     _render_csv,
     _render_pdf,
     collect_exposure_evidence,
+    generate_report,
 )
 from shim_enterprise.billing.models import RequestLifecycle
+from shim_enterprise.tenants.models import Organization
 
 
 def _lock_test_service(redis):
@@ -123,8 +127,11 @@ async def test_compliance_report_rejects_findings_over_its_fixed_cap(
 async def test_compliance_report_query_is_stably_ordered_and_bounded() -> None:
     session = SimpleNamespace(
         execute=AsyncMock(
-            return_value=SimpleNamespace(scalars=lambda: (), all=lambda: [])
-        )
+            return_value=SimpleNamespace(
+                scalars=lambda: (), all=lambda: [], scalar_one=lambda: "Tenant"
+            )
+        ),
+        scalar=AsyncMock(return_value=None),
     )
     end = datetime(2026, 8, 1, tzinfo=timezone.utc)
 
@@ -609,9 +616,11 @@ def test_csv_report_prevents_spreadsheet_formula_execution() -> None:
     now = datetime.now(timezone.utc)
     evidence = ExposureEvidence(
         tenant_id=uuid4(),
+        organization_name="Tenant",
         connector_id=None,
         start=now,
         end=now,
+        gateway_detections=(("=SUM(1)", "Kişisel Veri", 2, None, 0, 1),),
         findings=(
             FindingEvidence(
                 occurred_at=now,
@@ -631,6 +640,13 @@ def test_csv_report_prevents_spreadsheet_formula_execution() -> None:
 
     assert "'=HYPERLINK" in rendered
     assert evidence.counts("entity_type") == {"EMAIL": 1}
+    lines = rendered.splitlines()
+    assert lines[0].endswith(",value_hash,source,count")
+    assert lines[1].endswith(",connector,1")
+    assert lines[2:] == [
+        ",medium,'=SUM(1),Kişisel Veri,Personal data,,,,,gateway_masked,2",
+        ",medium,'=SUM(1),Kişisel Veri,Personal data,,,,,gateway_response,1",
+    ]
 
 
 @pytest.mark.asyncio
@@ -795,6 +811,32 @@ def _pdf_strings(pdf: bytes) -> list[str]:
     return strings
 
 
+def _pdf_title(pdf: bytes) -> str:
+    match = re.search(rb"/Title \(((?:[^()\\]|\\.)*)\)", pdf, re.S)
+    assert match is not None
+    raw = re.sub(
+        rb"\\([0-7]{1,3}|.)",
+        lambda escaped: (
+            bytes([int(escaped.group(1), 8)])
+            if escaped.group(1)[:1].isdigit()
+            else escaped.group(1)
+        ),
+        match.group(1),
+    )
+    return raw.removeprefix(b"\xfe\xff").decode("utf-16-be")
+
+
+def _paragraphs(story: list) -> list[str]:
+    return [item.text for item in story if hasattr(item, "text")]
+
+
+def _gateway_table(story: list) -> list[list]:
+    heading = _paragraphs(story).index("Gateway tespitleri")
+    paragraphs = [item for item in story if hasattr(item, "text")]
+    after = story[story.index(paragraphs[heading]) :]
+    return next(item for item in after if hasattr(item, "_cellvalues"))._cellvalues
+
+
 @pytest.mark.asyncio
 async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
     db, test_api_key
@@ -802,25 +844,40 @@ async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=1)
     tenant_id = test_api_key.organization_id
-    for started_at, entities in (
-        (end - timedelta(hours=1), {"TR_NATIONAL_ID": 2, "EMAIL_ADDRESS": 1}),
-        (end - timedelta(hours=2), {"TR_NATIONAL_ID": 1}),
-        (end - timedelta(hours=3), {}),
-        (start - timedelta(hours=1), {"IBAN_CODE": 5}),
+    other = Organization(id=uuid4(), name="Other", slug=f"kvkk-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    every_action = {
+        "pii_entities": {"TR_NATIONAL_ID": 2, "EMAIL_ADDRESS": 1, "=SUM(1)": 1},
+        "monitored_entities": {"EMAIL_ADDRESS": 3},
+        "blocked_entities": {},
+        "response_entities": {"TR_NATIONAL_ID": 1},
+    }
+    for organization_id, key_id, started_at, metadata in (
+        (tenant_id, test_api_key.id, end - timedelta(hours=1), every_action),
+        (
+            tenant_id,
+            test_api_key.id,
+            end - timedelta(hours=30),
+            {"pii_entities": {"TR_NATIONAL_ID": 1}},
+        ),
+        (tenant_id, test_api_key.id, end - timedelta(hours=2), {}),
+        (tenant_id, test_api_key.id, start - timedelta(days=3), every_action),
+        (other.id, None, end - timedelta(hours=1), every_action),
     ):
         db.add(
             RequestLifecycle(
-                organization_id=tenant_id,
+                organization_id=organization_id,
                 request_id=f"req_kvkk_{uuid4().hex}",
-                actor_type="api_key",
-                api_key_id=test_api_key.id,
+                actor_type="api_key" if key_id else "internal",
+                api_key_id=key_id,
                 source_endpoint="chat.completions",
                 status="accepted",
                 requested_model="gpt-5.6-luna",
                 stream=False,
                 started_at=started_at,
                 reconciliation_due_at=end,
-                lifecycle_metadata={"pii_entities": entities},
+                lifecycle_metadata=metadata,
             )
         )
     await db.flush()
@@ -828,30 +885,136 @@ async def test_tenant_wide_report_counts_gateway_detections_in_the_window(
     tenant_wide = await collect_exposure_evidence(
         db, tenant_id=tenant_id, start=start, end=end, connector_id=None
     )
+    only_masked = await collect_exposure_evidence(
+        db,
+        tenant_id=tenant_id,
+        start=end - timedelta(hours=31),
+        end=end - timedelta(hours=29),
+        connector_id=None,
+    )
     connector_scoped = await collect_exposure_evidence(
         db, tenant_id=tenant_id, start=start, end=end, connector_id=uuid4()
     )
-    for_csv = await collect_exposure_evidence(
+    story = _kvkk_story(tenant_wide, report_styles())
+    pdf = _render_pdf(tenant_wide)
+    strings = _pdf_strings(pdf)
+    csv_rows = (
+        (await generate_report(db, org_id=tenant_id, start=start, end=end, fmt="csv"))[
+            0
+        ]
+        .decode("utf-8-sig")
+        .splitlines()
+    )
+    connector_csv = (
+        await generate_report(
+            db, org_id=tenant_id, start=start, end=end, connector_id=uuid4(), fmt="csv"
+        )
+    )[0].decode("utf-8-sig")
+
+    assert tenant_wide.organization_name == "Architecture Test Tenant"
+    assert tenant_wide.gateway_detections == (
+        ("=SUM(1)", "Kişisel Veri", 1, 0, 0, 0),
+        ("EMAIL_ADDRESS", "İletişim", 1, 3, 0, 0),
+        ("TR_NATIONAL_ID", "Kimlik", 2, 0, 0, 1),
+    )
+    assert only_masked.gateway_detections == (
+        ("TR_NATIONAL_ID", "Kimlik", 1, None, None, None),
+    )
+    assert connector_scoped.gateway_detections == ()
+    assert _pdf_title(pdf) == "KVKK Kişisel Veri Maruziyet Kanıtı"
+    texts = _paragraphs(story)
+    assert texts[0] == "KVKK Kişisel Veri Maruziyet Kanıtı"
+    assert texts[1].startswith(
+        f"Kurum: Architecture Test Tenant ({tenant_id})<br/>Dönem: "
+    )
+    assert texts[1].endswith("<br/>Kapsam: tüm bağlayıcılar ve gateway")
+    for heading in ("Bulgu özeti", "Gateway tespitleri", "Kanıt sınırı"):
+        assert heading in texts
+    assert "Dönemde yalnız üst veri içeren 0 bulgu var." in texts
+    assert _gateway_table(story)[0] == [
+        "Varlık türü",
+        "KVKK kategorisi",
+        "Maskelenen",
+        "İzlenen",
+        "Durdurulan",
+        "Yanıtta\ngörülen",
+    ]
+    assert _gateway_table(story)[-1] == ["TR_NATIONAL_ID", "Kimlik", "2", "0", "0", "1"]
+    assert _gateway_table(_kvkk_story(only_masked, report_styles()))[1] == [
+        "TR_NATIONAL_ID",
+        "Kimlik",
+        "1",
+        *[NOT_RECORDED_CELL] * 3,
+    ]
+    assert rf"Kurum: Architecture Test Tenant \({tenant_id}\)" in strings
+    assert strings[strings.index("TR_NATIONAL_ID") + 2] == "2"
+    assert "Gateway tespitleri" not in _paragraphs(
+        _kvkk_story(connector_scoped, report_styles())
+    )
+    assert csv_rows[0].endswith(",source,count")
+    assert csv_rows[1:] == [
+        ",medium,'=SUM(1),Kişisel Veri,Personal data,,,,,gateway_masked,1",
+        ",medium,EMAIL_ADDRESS,İletişim,Contact data,,,,,gateway_masked,1",
+        ",medium,EMAIL_ADDRESS,İletişim,Contact data,,,,,gateway_monitored,3",
+        ",critical,TR_NATIONAL_ID,Kimlik,Identification data,,,,,gateway_masked,2",
+        ",critical,TR_NATIONAL_ID,Kimlik,Identification data,,,,,gateway_response,1",
+    ]
+    assert connector_csv.splitlines()[1:] == []
+
+
+@pytest.mark.asyncio
+async def test_the_organization_name_is_escaped_into_the_report(
+    db, test_api_key
+) -> None:
+    organization = await db.get(Organization, test_api_key.organization_id)
+    organization.name = 'Şahin & <Ortaklar> <link href="https://x">'
+    await db.flush()
+    end = datetime.now(timezone.utc)
+
+    evidence = await collect_exposure_evidence(
         db,
-        tenant_id=tenant_id,
-        start=start,
+        tenant_id=organization.id,
+        start=end - timedelta(days=1),
         end=end,
         connector_id=None,
-        with_gateway=False,
     )
-    strings = _pdf_strings(_render_pdf(tenant_wide))
+    pdf = _render_pdf(evidence)
 
-    assert tenant_wide.gateway_detections == (
-        ("EMAIL_ADDRESS", "İletişim", 1),
-        ("TR_NATIONAL_ID", "Kimlik", 3),
+    assert _paragraphs(_kvkk_story(evidence, report_styles()))[1].startswith(
+        'Kurum: Şahin &amp; &lt;Ortaklar&gt; &lt;link href="https://x"&gt; ('
     )
-    assert connector_scoped.gateway_detections == for_csv.gateway_detections == ()
-    assert "Gateway detections" in strings
-    assert "Scope: all tenant connectors and the gateway" in strings
-    assert f"Organization: {tenant_id}" in strings
-    assert not any("Architecture Test Tenant" in item for item in strings)
-    assert strings[strings.index("TR_NATIONAL_ID") + 2] == "3"
-    assert "Gateway detections" not in _pdf_strings(_render_pdf(connector_scoped))
+    assert b"/URI" not in pdf
+    severities = _kvkk_story(
+        ExposureEvidence(
+            tenant_id=organization.id,
+            organization_name="x",
+            connector_id=uuid4(),
+            start=end,
+            end=end,
+            findings=tuple(
+                FindingEvidence(
+                    occurred_at=end,
+                    severity=severity,
+                    entity_type="EMAIL",
+                    kvkk_category=None,
+                    gdpr_category=None,
+                    actor_email=None,
+                    model=None,
+                    content_id="c",
+                    value_hash="h",
+                )
+                for severity in ("critical", "low", "informational")
+            ),
+        ),
+        report_styles(),
+    )
+    table = next(item for item in severities if hasattr(item, "_cellvalues"))
+    assert table._cellvalues == [
+        ["Önem", "Adet"],
+        ["kritik", "1"],
+        ["düşük", "1"],
+        ["informational", "1"],
+    ]
 
 
 @pytest.mark.asyncio

@@ -12,18 +12,19 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
 import shim_enterprise.core.database as database
 from shim_enterprise.ai_act.api import router as compliance_router
-from shim_enterprise.ai_act.audit_writer import write_audit_row
+from shim_enterprise.ai_act.audit_writer import gateway_version, write_audit_row
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.compliance.models import (
     ComplianceForwardTarget,
     MonthlyEvidenceFile,
 )
+from shim_enterprise.compliance.reporting import report_styles
 from shim_enterprise.compliance.services import monthly_evidence as evidence
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
@@ -36,7 +37,7 @@ from shim_enterprise.outbox.handlers import (
 )
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
-from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
 from shim_enterprise.workers.ai_act import AuditMaintenanceWorker
 
 SCRIPT = runpy.run_path(
@@ -59,6 +60,17 @@ def _pdf_text(pdf: bytes) -> str:
             for item in re.findall(rb"\(((?:[^()\\]|\\.)*)\) Tj", zlib.decompress(data))
         ]
     return re.sub(r"\\([()\\])", r"\1", " ".join(strings))
+
+
+def _story_text(record: evidence.MonthlyEvidence) -> str:
+    """Paragraph sources and table cells: Turkish glyphs are subset codes in the PDF."""
+    parts = []
+    for item in evidence._monthly_story(record, report_styles()):
+        if hasattr(item, "text"):
+            parts.append(item.text)
+        elif hasattr(item, "_cellvalues"):
+            parts += [str(cell) for row in item._cellvalues for cell in row]
+    return "\n".join(parts)
 
 
 def _savepoints(connection) -> async_sessionmaker[AsyncSession]:
@@ -179,7 +191,7 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
     await db.flush()
 
     before = await evidence.collect_monthly_evidence(db, tenant_id, window, now=now)
-    old_text = _pdf_text(evidence.render_monthly_pdf(before))
+    old_text = _story_text(before)
 
     assert before.entities == {
         "pii_entities": {("openai", "TR_NATIONAL_ID"): 2},
@@ -187,18 +199,30 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
         "blocked_entities": None,
     }
     assert (before.bulk_disclosures, before.response_entities) == (None, None)
-    assert old_text.count(evidence.NOT_RECORDED) == 4
-    assert "not an audit" in old_text
+    assert old_text.count(evidence.NOT_RECORDED) == 2
+    assert old_text.count(evidence.NOT_RECORDED_CELL) == 2
+    assert (
+        "Bu dosya gateway trafiğinin ölçümüdür; denetim, sertifika veya uygunluk "
+        "beyanı değildir."
+    ) in old_text
+    assert old_text.startswith(
+        f"Aylık Kanıt Dosyası\nKurum: Architecture Test Tenant ({tenant_id})<br/>"
+        f"Dönem: {window.period} (ay sürüyor)<br/>"
+    )
     for title in (
-        "1. Traffic",
-        "2. What left",
-        "3. What was stopped",
-        "4. Who changed what",
-        "5. Audit chain",
-        "6. Findings",
+        "1. Trafik",
+        "2. Kurumdan ne çıktı",
+        "3. Ne durduruldu",
+        "4. Kim neyi değiştirdi",
+        "5. Denetim zinciri",
+        "6. Bulgular",
+        "7. Kim neye erişti",
     ):
         assert title in old_text
-    assert old_text.count("Source:") == 6
+    assert old_text.count("Kaynak: ") == 7
+    assert f"Kaynak: request_lifecycle, dönem: {window.describe()}." in old_text
+    assert evidence.ACCESS_NOT_RECORDED in old_text
+    assert "PII_BLOCKED" not in _pdf_text(evidence.render_monthly_pdf(before))
 
     _lifecycle(
         db,
@@ -286,7 +310,8 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
     after = await evidence.collect_monthly_evidence(
         db, tenant_id, evidence.monthly_window(f"{now:%Y-%m}", now=later), now=later
     )
-    text = _pdf_text(evidence.render_monthly_pdf(after))
+    text = _story_text(after)
+    pdf_text = _pdf_text(evidence.render_monthly_pdf(after))
 
     assert after.entities == {
         "pii_entities": {("openai", "TR_NATIONAL_ID"): 2},
@@ -305,11 +330,148 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
     assert [
         (row.key, row.request_count, row.unpriced_requests) for row in after.by_model
     ] == [("gpt-5-mini", 3, 1)]
-    assert "unknown (1 unpriced request(s))" in text
+    assert "bilinmiyor (fiyatı bilinmeyen 1 istek)" in text
     assert evidence.NOT_RECORDED in text
     assert "IBAN_CODE" not in text
     for value in ("PII_BLOCKED", "tenant.budget_created", "EMAIL_ADDRESS 1"):
         assert value in text
+        assert value in pdf_text
+
+
+async def _access(db, tenant_id, actor, endpoint: str) -> None:
+    await write_audit_row(
+        {
+            "organization_id": tenant_id,
+            "event_type": "management_action",
+            "request_id": f"mgmt-{uuid4().hex}",
+            "actor": actor,
+            "endpoint": endpoint,
+        },
+        db,
+    )
+
+
+@pytest.mark.asyncio
+async def test_section_seven_counts_reads_and_model_use(
+    db, test_api_key, test_user_with_org, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = test_api_key.organization_id
+    service = User(
+        id=uuid4(),
+        organization_id=tenant_id,
+        email=f"service-{uuid4().hex}@example.com",
+        role="admin",
+        kind="service",
+        is_active=True,
+        is_verified=True,
+    )
+    other = Organization(id=uuid4(), name="Other", slug=f"access-{uuid4().hex}")
+    team = Team(id=uuid4(), organization_id=tenant_id, name="risk")
+    db.add_all([service, other, team])
+    await db.flush()
+    owner = str(test_user_with_org.id)
+    before_rows = datetime.now(timezone.utc)
+    for actor, endpoint in (
+        (owner, "tenant.requests_exported"),
+        (owner, "tenant.requests_exported"),
+        (str(service.id), "compliance.audit_bundle_exported"),
+        (owner, "tenant.budget_created"),
+    ):
+        await _access(db, tenant_id, actor, endpoint)
+    await _access(db, other.id, owner, "tenant.requests_exported")
+    now = datetime.now(timezone.utc)
+    window = evidence.MonthlyWindow("2026-10", "monthly_partial", before_rows, now)
+    middle = before_rows + (now - before_rows) / 2
+    for model, provider, team_id in (
+        ("gpt-5-mini", "openai", str(team.id)),
+        ("gpt-5-mini", "openai", str(team.id)),
+        ("claude-haiku-4-5", "anthropic", str(team.id)),
+        ("gpt-5-nano", "openai", None),
+    ):
+        db.add(
+            RequestLifecycle(
+                request_id=f"req_access_{uuid4().hex}",
+                organization_id=tenant_id,
+                actor_type="api_key",
+                api_key_id=test_api_key.id,
+                source_endpoint="chat.completions",
+                status="completed",
+                provider=provider,
+                provider_model=model,
+                requested_model=model,
+                stream=False,
+                started_at=middle,
+                lifecycle_metadata={"team_id": team_id},
+            )
+        )
+    db.add(
+        RequestLifecycle(
+            request_id=f"req_access_{uuid4().hex}",
+            organization_id=tenant_id,
+            actor_type="internal",
+            source_endpoint="chat.completions",
+            status="completed",
+            requested_model="gpt-5-mini",
+            stream=False,
+            started_at=middle,
+            lifecycle_metadata={},
+        )
+    )
+    await db.flush()
+    statements: list[str] = []
+    connection = (await db.connection()).sync_connection
+
+    def count(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(connection, "before_cursor_execute", count)
+    try:
+        access, note = await evidence.access_counts(db, tenant_id, window)
+        models = await evidence.model_access(db, tenant_id, window)
+    finally:
+        event.remove(connection, "before_cursor_execute", count)
+    later = evidence.MonthlyWindow(
+        "2026-11",
+        "monthly_partial",
+        now + timedelta(seconds=1),
+        now + timedelta(days=1),
+    )
+    earlier = evidence.MonthlyWindow(
+        "2026-09", "monthly", before_rows - timedelta(days=2), before_rows
+    )
+    monkeypatch.setattr(evidence, "MODEL_ACCESS_ROWS", 1)
+    monkeypatch.setattr(evidence, "MODEL_ACCESS_MODELS", 1)
+    capped = await evidence.model_access(db, tenant_id, window)
+
+    assert len(statements) == 2
+    assert note is None
+    assert access == (
+        (
+            "compliance.audit_bundle_exported",
+            str(service.id),
+            "admin, servis hesabı",
+            1,
+        ),
+        ("tenant.requests_exported", owner, test_user_with_org.role, 2),
+    )
+    assert await evidence.access_counts(db, tenant_id, later) == (
+        (),
+        evidence.NO_ACCESS_THIS_MONTH,
+    )
+    assert await evidence.access_counts(db, tenant_id, earlier) == (
+        (),
+        evidence.ACCESS_NOT_RECORDED,
+    )
+    key = test_api_key.name
+    assert models == (
+        (key, "risk", "anthropic, openai", "claude-haiku-4-5\ngpt-5-mini", 3),
+        (key, "—", "openai", "gpt-5-nano", 1),
+        ("—", "—", "—", "gpt-5-mini", 1),
+    )
+    assert capped == (
+        (key, "risk", "anthropic, openai", "claude-haiku-4-5\n…", 3),
+        ("diğer", "—", "openai", "gpt-5-mini\n…", 2),
+    )
 
 
 @pytest.mark.asyncio
@@ -511,6 +673,7 @@ async def test_script_writes_the_current_month_as_partial_and_refuses_a_second(
     assert printed.startswith(f"monthly_partial {period} sha256={stored.sha256}")
     assert stored.sha256 == hashlib.sha256(stored.content).hexdigest()
     assert stored.size_bytes == len(stored.content)
+    assert stored.generator_version == gateway_version()
 
     user = test_user_with_org
     application = FastAPI()
