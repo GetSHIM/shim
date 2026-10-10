@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import event
 
-from shim_enterprise.api.enterprise_deps import get_current_user
+from shim_enterprise.api.enterprise_deps import READER_REQUIRED, get_current_user
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.database import get_db
@@ -25,6 +25,7 @@ from shim_enterprise.tenants.models import (
     ProviderSecret,
     User,
 )
+from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
 
 NOW = datetime.now(timezone.utc)
 BYOK = {
@@ -254,7 +255,40 @@ async def test_readers_read_the_inventory_within_thirty_one_days(db) -> None:
     assert listed.json()["byok_requests"] == 1
     assert too_long.status_code == 422
     assert (await get(auditor)).status_code == 200
-    assert (await get(member)).status_code == 403
+    refused = await get(member)
+    assert (refused.status_code, refused.json()["detail"]) == (403, READER_REQUIRED)
+
+
+@pytest.mark.asyncio
+async def test_catalog_items_are_keyed_on_their_price_book_entry(db) -> None:
+    user, key = await _tenant(db)
+    catalog = {"deployment_id": None, "deployment_kind": "unknown"}
+    for model in (
+        "gpt-5-mini-" + "x" * 13_000,
+        "gpt-5-mini-2026-01-01",
+        "gpt-5-mini",
+        "retired-model",
+        UNSPECIFIED_PROVIDER_MODEL,
+    ):
+        _row(db, key, model, NOW - timedelta(hours=1), **catalog)
+    await db.flush()
+    window = {"start_at": NOW - timedelta(days=1), "end_at": NOW}
+
+    inventory = await ModelInventoryReadModel().read(
+        db, tenant_id=user.organization_id, **window
+    )
+    names = await model_inventory.catalog_model_names(
+        db, tenant_id=user.organization_id, **window
+    )
+
+    assert {item.model: item.requests for item in inventory.items} == {
+        "gpt-5-mini": 3,
+        model_inventory.OTHER_MODEL: 1,
+        model_inventory.UNSPECIFIED_MODEL: 1,
+    }
+    assert names == sorted(
+        ["gpt-5-mini", model_inventory.OTHER_MODEL, model_inventory.UNSPECIFIED_MODEL]
+    )
 
 
 def test_the_byok_spend_version_has_one_literal() -> None:

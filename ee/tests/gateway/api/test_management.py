@@ -33,10 +33,12 @@ from shim_enterprise.compliance.models import (
 from shim_enterprise.compliance.services.forwarder import DELIVERY_EVENT
 from shim_enterprise.core.database import get_db
 from shim_enterprise.observability.analytics_projection import RequestLog
+from shim_enterprise.observability.model_inventory import UNSPECIFIED_MODEL
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.tenants.models import ApiKey, Organization, User
 from shim_enterprise.billing.read_models import BillingReadModels
 from shim.gateway.contracts.ids import TenantId
+from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
 
 
 @pytest.mark.asyncio
@@ -1869,6 +1871,25 @@ async def test_prompt_versions_count_budget_denials_as_policy_not_failure(
 
 
 @pytest.mark.asyncio
+async def test_prompt_versions_say_when_no_model_was_named(db, test_org) -> None:
+    t0 = datetime.now(timezone.utc) - timedelta(hours=1)
+    db.add_all(
+        _prompt_lifecycle(test_org.id, t0, _HASH_A, model=model)
+        for model in (UNSPECIFIED_PROVIDER_MODEL, "gpt-5-mini")
+    )
+    await db.flush()
+    owner = SimpleNamespace(
+        custom_role_id=None, role="owner", organization_id=test_org.id
+    )
+
+    (version,) = (
+        await management.list_prompt_versions(None, None, None, None, owner, db)
+    ).items
+
+    assert sorted(version.models) == ["gpt-5-mini", UNSPECIFIED_MODEL]
+
+
+@pytest.mark.asyncio
 async def test_prompt_versions_stop_at_200_and_bound_the_window(db, test_org) -> None:
     start = datetime.now(timezone.utc) - timedelta(hours=1)
     db.add_all(
@@ -2099,6 +2120,10 @@ async def test_requests_filter_by_outcome_and_text_refusal(
                 tenant, ids[1], test_api_key.id, {"refusal": {"soft_refusal": False}}
             ),
             _analysed_lifecycle(tenant, ids[2], test_api_key.id, None),
+            # A colleague's text refusal: a member never sees it.
+            _analysed_lifecycle(
+                tenant, ids[7], colleague_key.id, {"refusal": {"soft_refusal": True}}
+            ),
             # Another tenant's analysed row sharing a request id never matches.
             _analysed_lifecycle(
                 other.id, ids[3], None, {"refusal": {"soft_refusal": True}}
@@ -2164,6 +2189,8 @@ async def test_requests_filter_by_outcome_and_text_refusal(
         soft_csv = await exported(soft_refusal="true")
         user.role = "member"
         member = await listed(completion_outcome="truncated")
+        member_soft = await listed(soft_refusal="true")
+        member_soft_csv = await exported(soft_refusal="true")
 
     counts = everything["summary"]["outcome_counts"]
     assert counts == {
@@ -2186,7 +2213,10 @@ async def test_requests_filter_by_outcome_and_text_refusal(
     assert {row["request_id"] for row in truncated_csv} == {ids[1], ids[2], ids[7]}
     assert combined == (1, 3, 1)
     assert invalid == [422] * 6
-    assert soft == {"true": [ids[0]], "false": [ids[1]]}
-    assert [row["request_id"] for row in soft_csv] == [ids[0]]
+    assert soft == {"true": [ids[0], ids[7]], "false": [ids[1]]}
+    assert [row["request_id"] for row in soft_csv] == [ids[0], ids[7]]
+    assert [item["request_id"] for item in member_soft["items"]] == [ids[0]]
+    assert member_soft["summary"]["requests"] == 1
+    assert [row["request_id"] for row in member_soft_csv] == [ids[0]]
     assert {item["request_id"] for item in member["items"]} == {ids[1], ids[2]}
     assert member["summary"]["outcome_counts"]["truncated"] == 2

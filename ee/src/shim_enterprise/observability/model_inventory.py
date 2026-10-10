@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import Text, and_, cast, func, not_, select
+from sqlalchemy import Text, and_, case, cast, column, func, not_, select, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.billing.models import RequestLifecycle
@@ -15,8 +15,14 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     EPHEMERAL_BYOK_SPEND_POLICY_VERSION,
 )
 from shim_enterprise.tenants.models import ModelDeployment
+from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
 
 MAX_INVENTORY_ITEMS = 500
+# How readers see the Responses placeholder for a request that named no model.
+UNSPECIFIED_MODEL = "model not specified"
+# A catalog model the current price book no longer matches.
+OTHER_MODEL = "other"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,13 +68,17 @@ def byok_request() -> Any:
     )
 
 
-def traffic_routes(tenant_id: UUID) -> tuple[Any, Any, Any]:
-    """The lifecycle join, the deployment a request is attributed to, and the catalog test.
+def shown_model(model: Any) -> Any:
+    """A model name as readers see it: the Responses placeholder is not a model."""
+    return case((model == UNSPECIFIED_PROVIDER_MODEL, UNSPECIFIED_MODEL), else_=model)
 
-    The attributed id is text, null for a catalog-routed request.
+
+def registry_traffic(tenant_id: UUID) -> tuple[Any, Any]:
+    """The lifecycle join and the registry deployment id (text) a request belongs to.
+
+    The id is null for a catalog-routed request.
     """
     metadata = RequestLifecycle.lifecycle_metadata
-    kind = metadata["deployment_kind"].as_string()
     by_alias = (
         select(ModelDeployment.id, ModelDeployment.alias)
         .where(ModelDeployment.organization_id == tenant_id)
@@ -78,16 +88,100 @@ def traffic_routes(tenant_id: UUID) -> tuple[Any, Any, Any]:
     joined = RequestLifecycle.__table__.outerjoin(
         by_alias,
         not_(metadata.has_key("deployment_id"))
-        & kind.is_distinct_from("unknown")
+        & metadata["deployment_kind"].as_string().is_distinct_from("unknown")
         & (RequestLifecycle.requested_model == by_alias.c.alias),
     )
-    target = func.coalesce(
+    return joined, func.coalesce(
         metadata["deployment_id"].as_string(), cast(by_alias.c.id, Text)
     )
-    catalog = and_(
-        target.is_(None), RequestLifecycle.provider.is_not(None), kind == "unknown"
+
+
+def catalog_request() -> Any:
+    """A request no registry deployment served that reached spend reservation."""
+    metadata = RequestLifecycle.lifecycle_metadata
+    return and_(
+        metadata["deployment_id"].as_string().is_(None),
+        RequestLifecycle.provider.is_not(None),
+        metadata["deployment_kind"].as_string() == "unknown",
     )
-    return joined, target, catalog
+
+
+def catalog_models(*window: Any) -> Any:
+    """Each catalog model name of the window and the price-book entry it matched.
+
+    The name is caller text of any length; the entry is bounded by the book, so it
+    is what inventories and findings key on.
+    """
+    book = values(
+        column("provider", Text), column("entry", Text), name="price_book"
+    ).data(
+        [
+            (provider, entry)
+            for provider, prices in DEFAULT_PRICE_BOOK.provider_prices.items()
+            for entry in prices
+        ]
+    )
+    names = (
+        select(RequestLifecycle.provider, RequestLifecycle.requested_model)
+        .where(*window, catalog_request())
+        .distinct()
+        .cte("catalog_names")
+    )
+    name = func.lower(func.trim(names.c.requested_model))
+    # The longest entry the name equals or extends with "-", as the gateway matched.
+    entry = (
+        select(book.c.entry)
+        .where(
+            book.c.provider == names.c.provider,
+            (name == book.c.entry)
+            | (func.left(name, func.length(book.c.entry) + 1) == book.c.entry + "-"),
+        )
+        .order_by(func.length(book.c.entry).desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    return select(
+        names.c.provider,
+        names.c.requested_model,
+        case(
+            (names.c.requested_model == UNSPECIFIED_PROVIDER_MODEL, UNSPECIFIED_MODEL),
+            else_=func.coalesce(entry, OTHER_MODEL),
+        ).label("model"),
+    ).subquery("catalog_models")
+
+
+def catalog_traffic(*window: Any) -> tuple[Any, Any]:
+    """Catalog requests of the window joined to their bounded model name."""
+    models = catalog_models(*window)
+    return (
+        RequestLifecycle.__table__.join(
+            models,
+            (models.c.provider == RequestLifecycle.provider)
+            & (models.c.requested_model == RequestLifecycle.requested_model)
+            & catalog_request(),
+        ),
+        models.c.model,
+    )
+
+
+async def catalog_model_names(
+    session: AsyncSession, *, tenant_id: UUID, start_at: datetime, end_at: datetime
+) -> list[str]:
+    """The bounded names of the catalog models in traffic, as the inventory keys them."""
+    models = catalog_models(*_window(tenant_id, start_at, end_at))
+    return list(
+        await session.scalars(
+            select(models.c.model).distinct().order_by(models.c.model)
+        )
+    )
+
+
+def _window(tenant_id: UUID, start_at: datetime, end_at: datetime) -> tuple[Any, ...]:
+    return (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= start_at,
+        RequestLifecycle.started_at < end_at,
+    )
 
 
 class ModelInventoryReadModel:
@@ -106,12 +200,9 @@ class ModelInventoryReadModel:
                 )
             )
         ).all()
-        joined, target, catalog = traffic_routes(tenant_id)
-        window = (
-            RequestLifecycle.organization_id == tenant_id,
-            RequestLifecycle.started_at >= start_at,
-            RequestLifecycle.started_at < end_at,
-        )
+        joined, target = registry_traffic(tenant_id)
+        window = _window(tenant_id, start_at, end_at)
+        catalog, model = catalog_traffic(*window)
         measures = (
             func.count().label("requests"),
             func.min(RequestLifecycle.started_at).label("first_seen"),
@@ -135,14 +226,10 @@ class ModelInventoryReadModel:
         }
         catalog_rows = (
             await session.execute(
-                select(
-                    RequestLifecycle.provider,
-                    RequestLifecycle.requested_model,
-                    *measures,
-                )
-                .select_from(joined)
-                .where(*window, catalog)
-                .group_by(RequestLifecycle.provider, RequestLifecycle.requested_model)
+                select(RequestLifecycle.provider, model.label("model"), *measures)
+                .select_from(catalog)
+                .where(*window)
+                .group_by(RequestLifecycle.provider, model)
             )
         ).all()
         registry_items = [
@@ -169,7 +256,7 @@ class ModelInventoryReadModel:
                 deployment_id=None,
                 alias=None,
                 provider=row.provider,
-                model=row.requested_model,
+                model=row.model,
                 deployment_kind=None,
                 declared_version=None,
                 owner=None,

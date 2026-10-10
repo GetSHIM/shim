@@ -34,7 +34,10 @@ rule and subject.
 The reconciliation worker evaluates every rule for every organization that is
 not archived, once at start and then every `FINDINGS_EVALUATION_INTERVAL_SECONDS`
 (default 900, from 60 to 86,400). Each organization is one short transaction; a
-failure is logged with its type and the next organization still runs.
+failure is logged with its type and the next organization still runs. Inside it
+each rule runs in its own savepoint: a rule that fails is rolled back alone and
+logged with its rule ids, the other rules still write their findings, and the
+failed rule's open findings are not resolved by the 7-day rule on that pass.
 
 - A rule that fires creates a finding, or updates the open one: `last_seen_at`,
   `occurrences`, `summary`, `evidence`, `impact`, `rule_version` and
@@ -91,9 +94,12 @@ Each linked repeat has a class from how the previous request ended:
 | `completed` | `after_success` |
 | still running | `pending` (left out of impact, classed again on a later pass) |
 
-Requests without a digest (written before the digest existed, or without prompt
-material) are never linked; the rules count them through `repeat_chain_length`
-as before. Repeated identical requests sent on purpose, such as an evaluation
+Requests without a digest (written before the digest existed, without prompt
+material, or with personal data, whose digest is cleared) are never linked; the
+rules count them through `repeat_chain_length` as before. For repeat spend, such
+a request is not counted when the key's previous digest-less request carries a
+`repeat_chain_length` one lower, started within 900 seconds and was refunded:
+an SDK retry after a 503 is not waste with personal data either. Repeated identical requests sent on purpose, such as an evaluation
 batch, look the same: suppress the finding when the pattern is intended.
 
 ## gateway.retry_storm
@@ -131,7 +137,8 @@ retries), and raise its timeout when abandoned requests co-occur.
 **Checks.** For each API key, month to date (UTC), the known cost of
 [linked repeats](#linked-repeats) whose previous request was billed (it has a
 spend settlement), plus, for requests without a repeat digest, the cost of
-those with `repeat_chain_length` of 2 or more. It fires when that cost is at
+those with `repeat_chain_length` of 2 or more that did not follow a refunded
+request (see [linked repeats](#linked-repeats)). It fires when that cost is at
 least 1 USD and at least 10 percent of the key's known spend. Unpriced requests
 count toward neither. Severity medium. Rule version 2.
 
@@ -199,7 +206,11 @@ busier, or has no traffic at all.
 routes by catalog on purpose. For each provider and model, the requests of the
 last 7 days that reached the provider's public endpoint (`deployment_kind:
 unknown`, after spend reservation). It fires at 5 or more. Severity medium.
-Subject: `{"provider", "model"}`.
+Subject: `{"provider", "model"}`. The model is the price-book entry the requested
+name matched, as the gateway matched it (a dated snapshot counts under its
+family entry), `model not specified` for a Responses request that named none,
+and `other` for a name the current price book no longer matches. The requested
+name itself is caller text and never becomes a key.
 
 **Why.** Once a tenant keeps a registry, model use outside it is use nobody
 listed: the answer to "is your model list complete" is no.
@@ -228,7 +239,8 @@ medium. Subject: the API key.
 **Why.** Such a request skips the stored key's monthly spend limit and the
 managed secret.
 
-**Evidence and impact.** Requests per provider, up to 10 models, up to 20
+**Evidence and impact.** Requests per provider, up to 10 models (named as in
+[`gateway.unregistered_model`](#gatewayunregistered_model)), up to 20
 request ids, the settled cost and a note that these requests skipped the spend
 limit and the stored key. Nothing derived from the caller's provider key is
 recorded. Impact is the requests and their settled cost.

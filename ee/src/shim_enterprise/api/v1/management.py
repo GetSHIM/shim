@@ -116,9 +116,13 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim_enterprise.observability.analytics_projection import RequestLog
-from shim_enterprise.observability.model_inventory import ModelInventoryReadModel
+from shim_enterprise.observability.model_inventory import (
+    ModelInventoryReadModel,
+    shown_model,
+)
 from shim_enterprise.observability.outcomes import (
     OUTCOMES,
+    CompletionOutcome,
     OutcomeGroup,
     OutcomeRatesReadModel,
 )
@@ -234,7 +238,6 @@ _MAX_SYNC_WINDOW = timedelta(days=31)
 _MAX_SYNC_REQUEST_EXPORT_ROWS = 10_000
 _MAX_PROMPT_VERSIONS = 200
 _SYSTEM_PROMPT_HASH_PATTERN = r"^hmac-sha256:v1:[0-9a-f]{64}$"
-_COMPLETION_OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
 _TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
 _MAX_SYNC_BUDGETS = 100
 _MAX_SYNC_BUDGET_DELIVERIES = 100
@@ -892,9 +895,7 @@ RequestActivityStatus = Literal[
     "failed",
     "unknown",
 ]
-CompletionOutcomeFilter = Literal[
-    "complete", "truncated", "empty", "refused", "filtered", "none"
-]
+CompletionOutcomeFilter = Literal[CompletionOutcome, "none"]
 
 
 class RequestActivityView(BaseModel):
@@ -2932,7 +2933,7 @@ async def list_prompt_versions(
             prompt_hash.label("system_prompt_hash"),
             RequestLifecycle.started_at,
             RequestLifecycle.api_key_id,
-            RequestLifecycle.requested_model,
+            shown_model(RequestLifecycle.requested_model).label("model"),
             RequestLifecycle.status,
             outcome.label("outcome"),
             metadata["shim_latency_ms"].as_integer().label("latency"),
@@ -2956,10 +2957,10 @@ async def list_prompt_versions(
                 func.max(versions.c.started_at).label("last_seen"),
                 func.count().label("requests"),
                 func.array_agg(distinct(versions.c.api_key_id)).label("api_keys"),
-                func.array_agg(distinct(versions.c.requested_model)).label("models"),
+                func.array_agg(distinct(versions.c.model)).label("models"),
                 *(
                     func.count().filter(versions.c.outcome == name).label(name)
-                    for name in _COMPLETION_OUTCOMES
+                    for name in OUTCOMES
                 ),
                 func.count()
                 .filter(
@@ -2988,7 +2989,7 @@ async def list_prompt_versions(
                 api_keys=[key for key in row.api_keys if key is not None][:10],
                 models=row.models[:10],
                 outcomes=PromptVersionOutcomes(
-                    **{name: getattr(row, name) for name in _COMPLETION_OUTCOMES}
+                    **{name: getattr(row, name) for name in OUTCOMES}
                 ),
                 failed=row.failed,
                 p95_shim_latency_ms=round(row.p95) if row.p95 is not None else None,
@@ -4617,7 +4618,7 @@ async def model_inventory(
     end: datetime | None = Query(
         default=None, description="Exclusive end; defaults to the current time."
     ),
-    user: User = Depends(require("deployments.read")),
+    user: User = Depends(require("deployments.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ModelInventoryView:
     end_at = _aware(end or datetime.now(timezone.utc))

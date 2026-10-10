@@ -8,7 +8,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import event, insert, select, update
+from sqlalchemy import event, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
@@ -20,6 +20,7 @@ from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     EPHEMERAL_BYOK_SPEND_POLICY_VERSION,
 )
+from shim_enterprise.observability.model_inventory import UNSPECIFIED_MODEL
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
@@ -27,6 +28,7 @@ from shim_enterprise.tenants.models import (
     ProviderSecret,
     User,
 )
+from shim.gateway.kernel.result import UNSPECIFIED_PROVIDER_MODEL
 
 NOW = datetime(2026, 10, 8, 12, 7, tzinfo=timezone.utc)
 BUCKET = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
@@ -204,7 +206,7 @@ async def _plans(db, run) -> list[str]:
     sent: list[tuple[str, object]] = []
 
     def capture(conn, cursor, statement, parameters, context, executemany):
-        if statement.lstrip().upper().startswith("SELECT"):
+        if statement.lstrip().upper().startswith(("SELECT", "WITH")):
             sent.append((statement, parameters))
 
     event.listen(connection.sync_connection, "before_cursor_execute", capture)
@@ -320,7 +322,7 @@ async def test_unused_deployment_fires_after_thirty_quiet_days(
 
 
 @pytest.mark.asyncio
-async def test_unused_deployments_read_the_requests_once_for_every_alias(
+async def test_deployment_rules_read_the_requests_once_for_every_alias(
     db, test_api_key
 ) -> None:
     aliases = [
@@ -333,12 +335,14 @@ async def test_unused_deployments_read_the_requests_once_for_every_alias(
 
     async def run() -> None:
         detections.extend(
-            await service._unused_deployments(db, test_api_key.organization_id, NOW)
+            await service._deployments(db, test_api_key.organization_id, NOW)
         )
 
     plans = await _plans(db, run)
 
-    assert sorted(d.subject["alias"] for d in detections) == sorted(aliases[2:])
+    unused = [d for d in detections if d.rule_id == service.UNUSED_DEPLOYMENT]
+    assert sorted(d.subject["alias"] for d in unused) == sorted(aliases[2:])
+    assert len(plans) == 2
     scans = [
         line
         for plan in plans
@@ -970,6 +974,46 @@ async def test_repeat_spend_counts_only_repeats_of_billed_requests(
 
 
 @pytest.mark.asyncio
+async def test_a_retry_with_personal_data_after_a_refund_is_not_waste(
+    db, test_api_key
+) -> None:
+    start = datetime(2026, 10, 1, 1, tzinfo=timezone.utc)
+    # Personal data clears the digest to JSON null; only the chain is left.
+    pii = {"repeat_digest": None}
+    other = _other_key(db, test_api_key)
+    await db.flush()
+    _request(db, test_api_key, start, status="provider_error", metadata=pii)
+    _request(db, other, start + timedelta(seconds=1), cost="1", metadata=pii)
+    _request(
+        db, test_api_key, start + timedelta(seconds=5), repeat=2, cost="5", metadata=pii
+    )
+    _request(db, test_api_key, start + timedelta(hours=1), cost="1", metadata=pii)
+    again = _request(
+        db,
+        test_api_key,
+        start + timedelta(hours=1, seconds=5),
+        repeat=2,
+        cost="2",
+        metadata=pii,
+    )
+
+    (spend,) = [
+        d
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.REPEAT_SPEND
+    ]
+    stored = await db.scalar(
+        select(RequestLifecycle.lifecycle_metadata).where(
+            RequestLifecycle.request_id == again
+        )
+    )
+
+    assert "repeat_digest" in stored and stored["repeat_digest"] is None
+    assert spend.impact == {"cost_usd": "2.00000000", "requests": 1}
+    assert spend.evidence["request_ids"] == [again]
+
+
+@pytest.mark.asyncio
 async def test_a_renamed_alias_keeps_its_traffic(db, test_api_key) -> None:
     alias = await _deployment(db, test_api_key, age=timedelta(days=60))
     deployment = await db.scalar(
@@ -1138,6 +1182,55 @@ async def test_catalog_traffic_beside_a_registry_is_an_unregistered_model(
     assert sorted(finding.evidence["request_ids"]) == sorted(ids)
     assert finding.impact == {"cost_usd": "0.50000000", "requests": 5}
     assert service.RULES[finding.rule_id][1] == 3
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_or_unspecified_model_keys_a_bounded_finding(
+    db, test_api_key
+) -> None:
+    await _deployment(db, test_api_key, age=timedelta(days=1))
+    for _ in range(5):
+        _catalog_request(db, test_api_key, "gpt-5-mini-" + "x" * 13_000)
+        _catalog_request(db, test_api_key, UNSPECIFIED_PROVIDER_MODEL)
+
+    found = {
+        d.subject_key: d.subject
+        for d in await _evaluate(db, test_api_key)
+        if d.rule_id == service.UNREGISTERED_MODEL
+    }
+
+    assert found == {
+        "openai:gpt-5-mini": {"provider": "openai", "model": "gpt-5-mini"},
+        f"openai:{UNSPECIFIED_MODEL}": {
+            "provider": "openai",
+            "model": UNSPECIFIED_MODEL,
+        },
+    }
+    assert len(await _findings(db, test_api_key)) == 2
+
+
+@pytest.mark.asyncio
+async def test_one_failing_rule_leaves_the_others_and_its_findings(
+    db, test_api_key, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    await _storm(db, test_api_key)
+    await _deployment(db, test_api_key, age=timedelta(days=60))
+    await _evaluate(db, test_api_key)
+
+    async def broken(session, tenant_id, now):
+        await session.execute(text("SELECT 1 / 0"))
+
+    monkeypatch.setattr(service, "_retry_storms", broken)
+    later = NOW + timedelta(days=8)
+    with caplog.at_level(logging.ERROR, logger=service.__name__):
+        detections = await _evaluate(db, test_api_key, later)
+
+    by_rule = {f.rule_id: f for f in await _findings(db, test_api_key)}
+    assert service.UNUSED_DEPLOYMENT in {d.rule_id for d in detections}
+    assert by_rule[service.UNUSED_DEPLOYMENT].last_seen_at == later
+    # A rule that could not run says nothing about its open findings.
+    assert by_rule[service.RETRY_STORM].status_id != service.STATUS_RESOLVED
+    assert "Findings rule failed" in caplog.text
 
 
 @pytest.mark.asyncio

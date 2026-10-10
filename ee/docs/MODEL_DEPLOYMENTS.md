@@ -74,7 +74,11 @@ kept by hand:
   and `byok_requests` (requests that carried their own provider key);
 - one `catalog` item per provider and model that requests reached through the
   provider's public endpoint (`deployment_kind: unknown`) after spend
-  reservation, with the same counts and `registered: false`.
+  reservation, with the same counts and `registered: false`. The model is the
+  price-book entry the requested name matched (a dated snapshot counts under its
+  family entry), `model not specified` for a Responses request that named no
+  model, and `other` for a name the current price book no longer matches: the
+  requested name is caller text of any length and is never an item's key.
 
 Registry items come first, then catalog items, each by requests; at most 500
 items, `truncated: true` beyond, plus totals. What the inventory cannot show:
@@ -82,8 +86,8 @@ the names of unknown models that were refused (caller-controlled text is never
 recorded), and servers that receive no traffic through shim. Two findings act
 on it: [`gateway.unregistered_model`](FINDINGS.md#gatewayunregistered_model) and
 [`gateway.byok_usage`](FINDINGS.md#gatewaybyok_usage). The ISO/IEC 42001
-readiness report lists the inventory's catalog models as "Models in traffic
-outside the registry", so the two never disagree.
+readiness report lists the same catalog model names (from a names-only read)
+as "Models in traffic outside the registry", so the two never disagree.
 
 ## Idle deployments
 

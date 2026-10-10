@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 from uuid import UUID
 
 from sqlalchemy import Text, cast, func, select
@@ -15,7 +15,9 @@ from shim_enterprise.tenants.models import ApiKey, Team
 
 OutcomeGroup = Literal["model", "api_key", "team"]
 MAX_OUTCOME_GROUPS = 200
-OUTCOMES = ("complete", "truncated", "empty", "refused", "filtered")
+# How an answer ended, from its native finish signal (completion_outcome).
+CompletionOutcome = Literal["complete", "truncated", "empty", "refused", "filtered"]
+OUTCOMES: tuple[str, ...] = get_args(CompletionOutcome)
 _COUNTS = ("settled", *OUTCOMES, "analysed", "soft_refused")
 
 

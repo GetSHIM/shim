@@ -152,7 +152,8 @@ A new digest is a new prompt version. `GET /api/v1/management/prompt-versions`
 (`start` and `end`, default the last 7 days, at most 31; optional `api_key_id`
 and `model`, a case-insensitive substring) by digest. Each item has
 `system_prompt_hash`, `first_seen` and `last_seen` within the window,
-`requests`, up to 10 `api_keys` and `models`, `outcomes` (the counts of each
+`requests`, up to 10 `api_keys` and `models` (a Responses request that named no
+model shows as `model not specified`), `outcomes` (the counts of each
 `completion_outcome`), `failed` (requests that ended `provider_error`,
 `timeout`, `internal_error` or `failed`) and `p95_shim_latency_ms` over completed
 requests. Requests without a digest form one item with
