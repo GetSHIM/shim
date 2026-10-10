@@ -1,0 +1,708 @@
+{
+  "format": "shim.language.corpus",
+  "version": 1,
+  "cases": [
+    {
+      "id": "tr-01",
+      "text": "Merhaba, hesabımdaki son işlemleri görmek istiyorum, nasıl yapabilirim?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-02",
+      "text": "Kredi kartı ekstremi neden bu ay iki kez geldi, kontrol eder misiniz?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-03",
+      "text": "Bu raporu yarın sabaha kadar hazırlayabilir misin, müşteri bekliyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-04",
+      "text": "Şifremi unuttum ve mobil uygulamaya giriş yapamıyorum, yardımcı olur musunuz?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-05",
+      "text": "Toplantı notlarını kısa bir özet halinde yazar mısın?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-06",
+      "text": "Faiz oranları geçen aya göre biraz yükseldi, bunun nedenini açıklar mısın?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-07",
+      "text": "Müşterinin şikayetine nazik ama net bir cevap yazmamız gerekiyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-08",
+      "text": "Bu kodu deploy etmeden önce testleri çalıştırdın mı, sonuçlar nasıl?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-09",
+      "text": "API anahtarını ortam değişkenine koydum ama servis hâlâ hata veriyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-10",
+      "text": "Lütfen bu e-postayı daha resmi bir dille yeniden yaz.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-11",
+      "text": "Havale ile EFT arasındaki fark nedir, hangisi daha hızlı?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-12",
+      "text": "Kampanya metnini Instagram için daha kısa ve samimi hale getir.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-13",
+      "text": "Sunucu loglarında timeout hataları görüyorum, sebebi ne olabilir?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-14",
+      "text": "Bu sözleşmedeki fesih maddesini sade bir Türkçe ile anlatır mısın?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-15",
+      "text": "Yeni çalışanlar için kısa bir oryantasyon planı hazırla.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-16",
+      "text": "Dün akşamki kesinti yüzünden birçok müşteri işlem yapamadı.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-17",
+      "text": "Bütçe tablosunda hangi kalemler geçen yıla göre arttı?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-18",
+      "text": "Kullanıcılar şikayet ediyor, uygulama açılışta çok yavaş yükleniyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-19",
+      "text": "Bu cümleyi İngilizceye çevirir misin: toplantı ertelendi.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-20",
+      "text": "Kredi başvurum neden reddedildi, tekrar başvurabilir miyim?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-21",
+      "text": "cok guzel olmus, bu konuda bana biraz daha yardim eder misin",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-22",
+      "text": "simdi sunucuyu yeniden baslattim ama hala ayni hatayi veriyor",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-23",
+      "text": "hesabimdan para cekemiyorum, kartim bloke olmus olabilir mi",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-24",
+      "text": "yarin icin toplanti saatini degistirebilir misin, ogleden sonra daha iyi",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-25",
+      "text": "bu raporda neden eksik veri var, kontrol etmemiz lazim",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-26",
+      "text": "musteri temsilcisine baglanmak istiyorum lutfen",
+      "expect": "tr",
+      "mixed": false,
+      "known_gap": "ASCII-folded Turkish with one function word and no Turkish letter does not qualify."
+    },
+    {
+      "id": "tr-27",
+      "text": "Pull request'i inceledim, birkaç küçük düzeltme dışında her şey iyi görünüyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-28",
+      "text": "Dashboard'daki grafikler gerçek zamanlı güncellenmiyor, cache sorunu olabilir.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-29",
+      "text": "Kubernetes cluster'ında pod'lar sürekli yeniden başlıyor, nedenini bulamadım.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-30",
+      "text": "Endpoint'e gelen istek sayısı son bir saatte iki katına çıktı.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-31",
+      "text": "Sayın müşterimiz, talebiniz alınmıştır ve en kısa sürede dönüş yapılacaktır.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-32",
+      "text": "Hesap özetinizi internet şubesi üzerinden indirebilirsiniz.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-33",
+      "text": "İşleminiz güvenlik nedeniyle geçici olarak durdurulmuştur.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-34",
+      "text": "Kartınızın limiti yetersiz olduğu için ödeme gerçekleştirilemedi.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-35",
+      "text": "Bu öneriyi yöneticimle paylaşmadan önce senin fikrini almak istedim.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-36",
+      "text": "Rapor çok uzun olmuş, ana noktaları üç maddede toplayabilir misin?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-37",
+      "text": "Öğle yemeğinden sonra ekiple kısa bir değerlendirme yapacağız.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-38",
+      "text": "Ürün açıklamasını daha anlaşılır ve kısa yazmamız gerekiyor.",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-39",
+      "text": "Geçen hafta gönderdiğim belgeleri aldınız mı, bir sorun var mı?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-40",
+      "text": "Bunu neden böyle yaptığını anlamadım, biraz açıklar mısın?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "en-01",
+      "text": "Can you summarize the meeting notes in a few short bullet points?",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-02",
+      "text": "The deployment failed because the database migration timed out.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-03",
+      "text": "Please rewrite this email so that it sounds more formal and polite.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-04",
+      "text": "What is the difference between a wire transfer and an ACH payment?",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-05",
+      "text": "I think the cache is not being invalidated after each update.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-06",
+      "text": "I tried restarting the service but I still see the same error.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-07",
+      "text": "I am not sure if I understood the question, could you clarify it?",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-08",
+      "text": "I flew to İstanbul last week and met Şükrü at the airport.",
+      "expect": "en",
+      "mixed": false,
+      "known_gap": "Two Turkish names in a short English sentence score enough Turkish letters to read as mixed."
+    },
+    {
+      "id": "en-09",
+      "text": "Our team in Ankara will review the proposal before Friday.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-10",
+      "text": "The customer from Eskişehir asked about the delayed shipment.",
+      "expect": "en",
+      "mixed": false,
+      "known_gap": "A Turkish place name with ş in a short English sentence reads as mixed."
+    },
+    {
+      "id": "en-11",
+      "text": "Ayşe and Mehmet joined the project in March and they are doing well.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-12",
+      "text": "Run the tests again and check whether the build passes.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-13",
+      "text": "The endpoint returns a 500 error when the payload is empty.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-14",
+      "text": "Use a smaller batch size if the job runs out of memory.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-15",
+      "text": "This function should return an empty list instead of null.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-16",
+      "text": "Thanks for the quick reply, that answers my question.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-17",
+      "text": "Could you explain why the interest rate went up this month?",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-18",
+      "text": "The report is too long, can you cut it down to one page?",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-19",
+      "text": "Our support team will get back to you within two business days.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-20",
+      "text": "Your account has been temporarily locked for security reasons.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-21",
+      "text": "We noticed unusual activity on your card and blocked the transaction.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-22",
+      "text": "If you have any questions, please do not hesitate to contact us.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-23",
+      "text": "The quarterly results were better than we expected.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-24",
+      "text": "Let me know when you are free to discuss the roadmap.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-25",
+      "text": "I would like to know how the new pricing will affect existing customers.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-26",
+      "text": "It looks like the API key has expired, so you need to create a new one.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-27",
+      "text": "The logs show that most of the requests are coming from one client.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-28",
+      "text": "We should add an index on that column to speed up the query.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-29",
+      "text": "Here is a short summary of the changes in this release.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-30",
+      "text": "There are three steps to set up the integration with your bank.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-31",
+      "text": "The meeting with the team from Izmir was moved to next Tuesday.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-32",
+      "text": "Kemal said that the contract will be signed after the review.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-33",
+      "text": "Sure, here is the corrected version of the paragraph.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-34",
+      "text": "Yes, that works for me, thank you for the update.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-35",
+      "text": "The answer depends on how many users are active at the same time.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-36",
+      "text": "All of the files have been uploaded to the shared folder.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-37",
+      "text": "I have attached the invoice and the signed agreement to this email.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-38",
+      "text": "Make sure that the environment variables are set before you start the server.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-39",
+      "text": "Most of the errors happen during the nightly batch job.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-40",
+      "text": "This is the final version of the document, please do not change it.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "mixed-01",
+      "text": "Merhaba, the deployment failed again ve loglarda bir şey göremedim, can you check it?",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-02",
+      "text": "Toplantı yarın saat onda, please bring the latest numbers with you.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-03",
+      "text": "The report is ready ama bazı tablolar eksik, bunları sonra ekleyeceğim.",
+      "expect": "tr",
+      "mixed": true,
+      "known_gap": "The English clause has two function words, under 0.3 of the Turkish score."
+    },
+    {
+      "id": "mixed-04",
+      "text": "Bu hatayı daha önce gördün mü? It happens when the cache is cold.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-05",
+      "text": "I think we should wait, çünkü müşteri henüz onay vermedi.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-06",
+      "text": "Lütfen şunu kontrol et: the API returns an empty list for every request.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-07",
+      "text": "Thanks a lot, bu çok işime yaradı and I will try it tomorrow.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-08",
+      "text": "Kredi başvurusu reddedildi because the income was not verified yet.",
+      "expect": "en",
+      "mixed": true
+    },
+    {
+      "id": "mixed-09",
+      "text": "We need the numbers by Friday, yoksa sunum için yetişmeyecek.",
+      "expect": "tr",
+      "mixed": true
+    },
+    {
+      "id": "mixed-10",
+      "text": "Şimdi deniyorum, but the server is still very slow for some reason.",
+      "expect": "en",
+      "mixed": true
+    },
+    {
+      "id": "other-latin-01",
+      "text": "Ich möchte meine Kontoauszüge für den letzten Monat herunterladen.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-02",
+      "text": "Können Sie mir bitte erklären, warum die Zahlung abgelehnt wurde?",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-03",
+      "text": "Je voudrais savoir pourquoi ma carte a été bloquée ce matin.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-04",
+      "text": "Merci beaucoup pour votre réponse rapide et très claire.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-05",
+      "text": "¿Podría explicarme por qué la transferencia todavía no ha llegado?",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-06",
+      "text": "Necesito cambiar la contraseña de mi cuenta lo antes posible.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-07",
+      "text": "Kunt u mij vertellen wanneer de betaling wordt verwerkt?",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-08",
+      "text": "Wij hebben uw aanvraag ontvangen en nemen snel contact op.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-09",
+      "text": "Mən bu gün banka getmək istəyirəm, amma vaxtım yoxdur.",
+      "expect": "other",
+      "mixed": false,
+      "known_gap": "Azerbaijani shares Turkish letters and function words."
+    },
+    {
+      "id": "other-latin-10",
+      "text": "Hesabımdakı pulu başqa karta köçürmək istəyirəm, kömək edin.",
+      "expect": "other",
+      "mixed": false,
+      "known_gap": "Azerbaijani shares Turkish letters and function words."
+    },
+    {
+      "id": "non-latin-01",
+      "text": "أريد معرفة رصيد حسابي الحالي من فضلك",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-02",
+      "text": "لماذا تم رفض عملية الدفع الخاصة بي اليوم",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-03",
+      "text": "Я хочу узнать, почему мой платеж был отклонен вчера вечером.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-04",
+      "text": "Пожалуйста, пришлите мне выписку по счету за прошлый месяц.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-05",
+      "text": "Θα ήθελα να μάθω γιατί η κάρτα μου μπλοκαρίστηκε σήμερα.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-06",
+      "text": "Μπορείτε να μου στείλετε το τελευταίο τιμολόγιο παρακαλώ;",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-07",
+      "text": "我想知道，为什么我的付款被拒绝了，请帮我查一下。",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "non-latin-08",
+      "text": "你好，请把上个月的账单发给我，谢谢你的帮助。",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "short-01",
+      "text": "Tamam",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-02",
+      "text": "OK thanks",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-03",
+      "text": "Evet, olur",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-04",
+      "text": "yes",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-05",
+      "text": "Peki",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-06",
+      "text": "Hi there",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-07",
+      "text": "Merci",
+      "expect": "unknown",
+      "mixed": false
+    },
+    {
+      "id": "short-08",
+      "text": "👍 👍",
+      "expect": "unknown",
+      "mixed": false
+    }
+  ]
+}

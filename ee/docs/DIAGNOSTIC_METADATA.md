@@ -221,6 +221,11 @@ stored in clear, which is what the switch is for; tool definitions are never
 stored or hashed. The keys are listed in the
 [community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery).
 
+`response_analysis.language` labels the last user question and the answer
+`tr`, `en`, `other` or `unknown`, with `answer_mixed` and the two word counts.
+It is a heuristic for Turkish and English only and records no word or score;
+how it decides is in the same cookbook section.
+
 `rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
 matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
 when the rule's evaluation failed), blocks first and then by id, at most 32;
