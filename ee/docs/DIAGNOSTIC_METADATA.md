@@ -226,6 +226,14 @@ stored or hashed. The keys are listed in the
 It is a heuristic for Turkish and English only and records no word or score;
 how it decides is in the same cookbook section.
 
+`response_analysis.schema` says whether the answer or each tool call matched
+the schema the request asked for: `expected`, `valid` (`null` when undecided),
+the JSON Pointer and keyword of the first failure, the tool name for a tool
+call, the unsupported keywords met, `strict` and a `reason` when it was not
+checked. It holds schema property names and indices, never a value. The subset
+and the reasons are in the community
+[cookbook](../../docs/COOKBOOK.md#check-structured-output).
+
 `rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
 matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
 when the rule's evaluation failed), blocks first and then by id, at most 32;

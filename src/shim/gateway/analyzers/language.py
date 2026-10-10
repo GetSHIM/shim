@@ -8,6 +8,7 @@ import re
 from typing import Any, Literal
 import unicodedata
 
+from shim.gateway.analyzers.schema import requested_output
 from shim.gateway.pipeline.analysis import AnalysisContext
 
 Label = Literal["tr", "en", "other", "unknown"]
@@ -100,32 +101,8 @@ def label(text: str) -> tuple[Label, bool, int]:
     return larger, False, len(words)
 
 
-_JSON_FORMATS = frozenset({"json_object", "json_schema"})
-
-
-def _at(value: Any, *keys: str) -> Any:
-    for key in keys:
-        value = value.get(key) if isinstance(value, dict) else None
-    return value
-
-
 def _asks_for_json(payload: dict[str, Any], protocol: str) -> bool:
-    if protocol == "chat":
-        return _at(payload, "response_format", "type") in _JSON_FORMATS
-    if protocol == "responses":
-        return _at(payload, "text", "format", "type") in _JSON_FORMATS
-    if protocol == "messages":
-        return bool(
-            _at(payload, "output_config", "format") or payload.get("output_format")
-        )
-    if protocol == "generate_content":
-        config = payload.get("generationConfig")
-        return isinstance(config, dict) and (
-            config.get("responseMimeType") == "application/json"
-            or "responseSchema" in config
-            or "responseJsonSchema" in config
-        )
-    return False
+    return requested_output(payload, protocol) is not None
 
 
 def _text(content: Any, kinds: frozenset[str]) -> str:
