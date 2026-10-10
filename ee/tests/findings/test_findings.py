@@ -3,7 +3,8 @@ from decimal import Decimal
 import json
 import logging
 from types import SimpleNamespace
-from uuid import uuid4
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim.findings import Finding as FindingV1
+from shim.jsonschema_subset import check
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.database import get_db
@@ -671,14 +673,14 @@ _EVIDENCE = {
 
 
 def _row(rule_id: str = service.ANSWER_QUALITY, **values) -> SimpleNamespace:
-    spec = service.RULES[rule_id]
+    spec = service.RULES.get(rule_id) or service.RULES[service.ANSWER_QUALITY]
     return SimpleNamespace(
         **{
             "id": uuid4(),
             "source": "gateway",
             "rule_id": rule_id,
             "rule_version": 1,
-            "subject": _SUBJECTS[rule_id],
+            "subject": _SUBJECTS.get(rule_id, {"model": "gpt-5-mini"}),
             "title": spec.TITLE,
             "summary": "stored",
             "severity_id": spec.SEVERITY_ID,
@@ -686,10 +688,12 @@ def _row(rule_id: str = service.ANSWER_QUALITY, **values) -> SimpleNamespace:
             "first_seen_at": NOW,
             "last_seen_at": NOW + timedelta(minutes=5),
             "occurrences": 1,
-            "evidence": _EVIDENCE[rule_id],
+            "evidence": _EVIDENCE.get(rule_id, {}),
             "impact": None,
             "remediation": {"text": "stored", "reversible": True, "doc": spec.PLAYBOOK},
             "resolved_at": None,
+            "resolved_by": None,
+            "organization_id": UUID(int=9),
             **values,
         }
     )
@@ -849,3 +853,127 @@ async def test_the_four_rules_on_seeded_rows_give_valid_findings(
         finding = service.finding_from_row(row)
         assert FindingV1.model_validate(finding.model_dump(mode="json")) == finding
         assert row.summary == finding.summary.en
+
+
+_SCHEMA = json.loads(
+    (Path(__file__).parents[3] / "docs" / "schemas" / "finding-v1.json").read_text()
+)
+
+
+def _published(finding: FindingV1) -> bool:
+    """Valid against the published file, as far as the repository's validator reads it."""
+
+    result = check(finding.model_dump(mode="json"), _SCHEMA)
+    return result.valid is None and result.unsupported == (
+        "pattern",
+        "patternProperties",
+    )
+
+
+def test_every_rules_finding_validates_against_the_published_schema() -> None:
+    for rule_id in service.RULES:
+        assert _published(service.finding_from_row(_row(rule_id)))
+    resolved = service.finding_from_row(
+        _row(status_id=4, resolved_at=NOW, resolved_by="system")
+    )
+    assert (resolved.resolved_at, resolved.resolved_by) == (NOW, "system")
+    assert _published(resolved)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _row("gateway.retired_rule"),
+        _row(service.RETRY_STORM, evidence={"request_ids": ["req_a"]}),
+        _row(
+            service.RETRY_STORM,
+            evidence={**_EVIDENCE[service.RETRY_STORM], "Not A Name": 1},
+        ),
+        _row(subject={"team_id": "t-1"}),
+    ],
+    ids=["unknown-rule", "missing-measurement", "bad-measurement", "new-subject"],
+)
+def test_a_row_this_build_cannot_render_keeps_its_stored_text(row, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger=service.__name__)
+
+    finding = service.finding_from_row(row)
+
+    assert (finding.title, finding.summary.en, finding.summary.tr) == (
+        row.title,
+        "stored",
+        "stored",
+    )
+    assert (finding.subject.kind, finding.subject.id) == ("tenant", str(UUID(int=9)))
+    assert finding.measurements == {} and finding.evidence == []
+    assert finding.remediation.text.en == "stored"
+    assert _published(finding)
+    assert f"id={row.id}" in caplog.text and "stored" not in caplog.text
+    assert service.ocsf_detection_finding(row)["unmapped"]["rule_id"] == row.rule_id
+
+
+def test_the_ocsf_export_keeps_rule_subject_and_occurrences() -> None:
+    row = _row(service.UNUSED_DEPLOYMENT, occurrences=3, rule_version=1)
+
+    unmapped = service.ocsf_detection_finding(row)["unmapped"]
+
+    assert {
+        key: unmapped[key]
+        for key in ("rule_id", "rule_version", "subject", "occurrences")
+    } == {
+        "rule_id": service.UNUSED_DEPLOYMENT,
+        "rule_version": 1,
+        "subject": {
+            "kind": "deployment",
+            "id": "22222222-2222-2222-2222-222222222222",
+        },
+        "occurrences": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_one_status_vocabulary_for_the_filter_the_patch_and_the_answer(
+    db, test_api_key, test_user_with_org
+) -> None:
+    user = test_user_with_org
+    await _storm(db, test_api_key)
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _evaluate(db, test_api_key)
+    storm, unused = await _findings(db, test_api_key)
+    unused.status_id = 2
+    db.add(
+        Finding(
+            **{
+                **_copy(storm),
+                "id": uuid4(),
+                "rule_id": "gateway.retired_rule",
+                "subject_key": "retired",
+            }
+        )
+    )
+    await db.flush()
+    url = "/api/v1/management/findings"
+    user.role = "admin"
+
+    async with _client(db, user) as client:
+        listed = await client.get(url, params={"status": "open"})
+        exported = await client.get(f"{url}/export", params={"status": "open"})
+        legacy = (await client.get(url, params={"status": "in_progress"})).json()
+        dismissed = await client.patch(
+            f"{url}/{storm.id}", json={"status": "dismissed"}
+        )
+        by_v1 = (await client.get(url, params={"status": "dismissed"})).json()
+        kept = await client.patch(f"{url}/{unused.id}", json={"status": "open"})
+        reopened = await client.patch(f"{url}/{storm.id}", json={"status": "open"})
+
+    assert listed.status_code == exported.status_code == 200
+    assert listed.json()["total"] == 3
+    assert {item["status"] for item in listed.json()["items"]} == {"open"}
+    assert len(exported.text.splitlines()) == 3
+    assert [item["id"] for item in legacy["items"]] == [str(unused.id)]
+    assert (dismissed.json()["status"], dismissed.json()["status_detail"]) == (
+        "dismissed",
+        "suppressed",
+    )
+    assert [item["id"] for item in by_v1["items"]] == [str(storm.id)]
+    assert kept.json()["status_detail"] == "in_progress"
+    assert reopened.json()["status_detail"] == "new"

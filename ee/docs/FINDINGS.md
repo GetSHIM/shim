@@ -19,8 +19,13 @@ The API returns every finding in the published
 `window` (first and last time seen), `occurrences`, `evidence` (up to 20 request
 references), `measurements` (the measured numbers), `impact` (`requests`, `usd`,
 `risk_class`), `remediation` (`mode`, which stays `observe` for now, `max_mode`,
-`reversible`, `blast_radius`, the fix `text`) and `playbook` (the rule's section
-below).
+`reversible`, `blast_radius`, the fix `text`), `playbook` (the rule's section
+below), and `resolved_at` and `resolved_by` once resolved. v0.3.0 answered in a
+shape of its own; [what changed](../../docs/FINDINGS_SCHEMA.md#what-changes-for-existing-apps).
+A row this build cannot render (a rule it does not have, a measurement its
+template lacks, a subject of a later kind) is served with its stored English
+title and summary, the tenant as its subject and no evidence or measurements,
+and logged by id; a list or an export never fails on it.
 
 | Stored `severity_id` | `severity` | | Stored `status_id` | `status` / `status_detail` |
 | --- | --- | --- | --- | --- |
@@ -59,9 +64,9 @@ cannot change them.
 
 | Route | Who | What |
 | --- | --- | --- |
-| `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`new`, `in_progress`, `suppressed`, `resolved`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
+| `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`open`, `dismissed`, `resolved`, or the workflow states `new`, `in_progress`, `suppressed`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
 | `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding (Finding v1) |
-| `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": "in_progress" \| "suppressed" \| "resolved" \| "new"}`; recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
+| `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": ...}` with the same values as the filter (`open` keeps an open finding's state and reopens a closed one as `new`, `dismissed` is `suppressed`); recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
 | `GET /api/v1/management/findings/export` | Owner, admin, auditor | NDJSON, one OCSF Detection Finding per line, with the same filters; at most 10,000 (422 beyond) |
 
 Each export line is an OCSF 1.3.0 Detection Finding: `class_uid` 2004,
@@ -72,10 +77,10 @@ otherwise the last time it was seen), `severity_id`, `status_id`,
 `metadata.version` `1.3.0`, `metadata.product` `{"name": "shim", "vendor_name":
 "shim"}`, and `finding_info` with `uid`, `title`, `desc` (the summary),
 `first_seen_time` and `last_seen_time`. `unmapped` holds `schema_version` (`"1"`),
-`summary_tr`, and `evidence`, `measurements`, `impact` and `remediation` in
-their Finding v1 shapes. The list and detail routes return `{"items": [Finding],
-"total", "limit", "offset"}` and a Finding; the PATCH body is unchanged and the
-answer is the updated Finding.
+`summary_tr`, `rule_id`, `rule_version`, `occurrences`, and `subject`,
+`evidence`, `measurements`, `impact` and `remediation` in their Finding v1
+shapes. The list and detail routes return `{"items": [Finding], "total",
+"limit", "offset"}` and a Finding; the PATCH answer is the updated Finding.
 
 ## gateway.retry_storm
 

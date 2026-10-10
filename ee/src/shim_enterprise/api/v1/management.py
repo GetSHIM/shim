@@ -741,7 +741,15 @@ class PromptVersionPage(BaseModel):
     truncated: bool
 
 
-FindingStatus = Literal["new", "in_progress", "suppressed", "resolved"]
+# Finding v1's status, or the workflow state v0.3.0 used, in the filter and the PATCH alike.
+FindingStatus = Literal[
+    "open", "dismissed", "resolved", "new", "in_progress", "suppressed"
+]
+_FINDING_STATUS_IDS: dict[str, tuple[int, ...]] = {
+    "open": (STATUS_IDS["new"], STATUS_IDS["in_progress"]),
+    "dismissed": (STATUS_IDS["suppressed"],),
+    **{name: (status_id,) for name, status_id in STATUS_IDS.items()},
+}
 _FINDING_STATUSES = {value: name for name, value in STATUS_IDS.items()}
 
 
@@ -3037,7 +3045,7 @@ def _finding_filters(
 ) -> list[Any]:
     filters = [Finding.organization_id == _tenant_id(user)]
     if status_filter is not None:
-        filters.append(Finding.status_id == STATUS_IDS[status_filter])
+        filters.append(Finding.status_id.in_(_FINDING_STATUS_IDS[status_filter]))
     if rule_id is not None:
         filters.append(Finding.rule_id == rule_id)
     if severity_id is not None:
@@ -3130,7 +3138,9 @@ async def update_finding(
 ) -> FindingV1:
     finding = await _owned_finding(session, user, finding_id, lock=True)
     before = _FINDING_STATUSES[finding.status_id]
-    target = STATUS_IDS[patch.status]
+    allowed = _FINDING_STATUS_IDS[patch.status]
+    # "open" keeps an open finding's workflow state and reopens a closed one as new.
+    target = finding.status_id if finding.status_id in allowed else allowed[0]
     conflict = HTTPException(
         status_code=409, detail="Another open finding exists for this subject"
     )
@@ -3164,7 +3174,9 @@ async def update_finding(
             str(finding.id),
             details={
                 "rule_id": finding.rule_id,
-                **change_details({"status": before}, {"status": patch.status}),
+                **change_details(
+                    {"status": before}, {"status": _FINDING_STATUSES[target]}
+                ),
             },
         )
         await session.commit()

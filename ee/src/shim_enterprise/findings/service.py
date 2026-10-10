@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import ARRAY, Text, func, select, type_coerce, update
@@ -15,13 +15,13 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.findings import (
-    EvidenceRef,
     Finding as FindingV1,
-    Impact,
-    Remediation,
-    Subject,
-    Text as FindingText,
-    Window,
+    FindingEvidence,
+    FindingImpact,
+    FindingRemediation,
+    FindingSubject,
+    FindingText,
+    FindingWindow,
 )
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.findings.models import Finding
@@ -539,53 +539,91 @@ _STATUSES: dict[
 
 
 def finding_from_row(row: Finding) -> FindingV1:
-    spec = RULES[row.rule_id]
-    values = measurements(row.evidence)
-    field, kind = next(item for item in _SUBJECT_KINDS if item[0] in row.subject)
+    """Total: a row this build cannot render keeps its stored English text.
+
+    An unknown rule, a measurement its template lacks or a subject of a later kind
+    degrades that one row, so a list or an export never fails on it.
+    """
+
     status, status_detail = _STATUSES[row.status_id]
-    impact = row.impact or {}
-    usd = impact.get("cost_usd")
-    return FindingV1(
-        schema_version="1",
-        id=str(row.id),
-        # Validated by the model; the column holds one of its sources.
-        source=cast(Literal["gateway", "litellm", "shim-cli"], row.source),
-        rule_id=row.rule_id,
-        rule_version=row.rule_version,
-        title=spec.TITLE,
-        summary=FindingText(
-            en=render(spec.SUMMARY["en"], values), tr=render(spec.SUMMARY["tr"], values)
-        ),
-        severity=SEVERITIES[row.severity_id - 1],
-        status=status,
-        status_detail=status_detail,
-        subject=Subject(kind=kind, id=str(row.subject[field])),
-        window=Window(
+    common: dict[str, Any] = {
+        "schema_version": "1",
+        "id": str(row.id),
+        "source": row.source,
+        "rule_id": row.rule_id,
+        "rule_version": row.rule_version,
+        "severity": SEVERITIES[row.severity_id - 1],
+        "status": status,
+        "status_detail": status_detail,
+        "window": FindingWindow(
             start=row.first_seen_at.astimezone(timezone.utc),
             end=row.last_seen_at.astimezone(timezone.utc),
         ),
-        occurrences=row.occurrences,
-        evidence=[
-            EvidenceRef(kind="request", id=request_id)
-            for request_id in row.evidence.get("request_ids") or []
-        ],
-        measurements=values,
-        impact=Impact(
-            requests=impact.get("requests"),
-            tokens=None,
-            usd=None if usd is None else format(Decimal(str(usd)), "f"),
-            risk_class=spec.RISK_CLASS,
-        ),
-        remediation=Remediation(
+        "occurrences": row.occurrences,
+        "resolved_at": row.resolved_at and row.resolved_at.astimezone(timezone.utc),
+        "resolved_by": row.resolved_by,
+    }
+    try:
+        spec = RULES[row.rule_id]
+        values = measurements(row.evidence)
+        field, kind = next(item for item in _SUBJECT_KINDS if item[0] in row.subject)
+        impact = row.impact or {}
+        usd = impact.get("cost_usd")
+        return FindingV1(
+            **common,
+            title=spec.TITLE,
+            summary=FindingText(
+                en=render(spec.SUMMARY["en"], values),
+                tr=render(spec.SUMMARY["tr"], values),
+            ),
+            subject=FindingSubject(kind=kind, id=str(row.subject[field])),
+            evidence=[
+                FindingEvidence(kind="request", id=request_id)
+                for request_id in row.evidence.get("request_ids") or []
+            ],
+            measurements=values,
+            impact=FindingImpact(
+                requests=impact.get("requests"),
+                tokens=None,
+                usd=None if usd is None else format(Decimal(str(usd)), "f"),
+                risk_class=spec.RISK_CLASS,
+            ),
+            remediation=FindingRemediation(
+                mode="observe",
+                max_mode=spec.MAX_MODE,
+                action=None,
+                reversible=bool(row.remediation.get("reversible", spec.REVERSIBLE)),
+                blast_radius=spec.BLAST_RADIUS,
+                proof_after=None,
+                text=FindingText(**spec.REMEDIATION_TEXT),
+            ),
+            playbook=row.remediation.get("doc") or spec.PLAYBOOK,
+        )
+    except (KeyError, IndexError, ValueError, StopIteration) as exc:
+        logger.warning(
+            "Finding degraded to the row's own text id=%s type=%s",
+            row.id,
+            type(exc).__name__,
+        )
+    stored = str(row.remediation.get("text") or row.title)[:500]
+    return FindingV1(
+        **common,
+        title=row.title[:200],
+        summary=FindingText(en=row.summary[:500], tr=row.summary[:500]),
+        subject=FindingSubject(kind="tenant", id=str(row.organization_id)),
+        evidence=[],
+        measurements={},
+        impact=FindingImpact(requests=None, tokens=None, usd=None, risk_class=None),
+        remediation=FindingRemediation(
             mode="observe",
-            max_mode=spec.MAX_MODE,
+            max_mode="observe",
             action=None,
-            reversible=bool(row.remediation.get("reversible", spec.REVERSIBLE)),
-            blast_radius=spec.BLAST_RADIUS,
+            reversible=row.remediation.get("reversible") is True,
+            blast_radius="tenant",
             proof_after=None,
-            text=FindingText(**spec.REMEDIATION_TEXT),
+            text=FindingText(en=stored, tr=stored),
         ),
-        playbook=row.remediation.get("doc") or spec.PLAYBOOK,
+        playbook="ee/docs/FINDINGS.md#gateway-findings",
     )
 
 
@@ -624,7 +662,16 @@ def ocsf_detection_finding(row: Finding) -> dict[str, Any]:
             "summary_tr": finding.summary.tr,
             **{
                 key: v1[key]
-                for key in ("evidence", "measurements", "impact", "remediation")
+                for key in (
+                    "rule_id",
+                    "rule_version",
+                    "subject",
+                    "occurrences",
+                    "evidence",
+                    "measurements",
+                    "impact",
+                    "remediation",
+                )
             },
         },
     }
