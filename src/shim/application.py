@@ -32,7 +32,7 @@ from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
-from shim.gateway.request_policy import LocalRequestPolicyResolver
+from shim.gateway.request_policy import AgentLoop, LocalRequestPolicyResolver, TaskCaps
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
@@ -140,6 +140,15 @@ def create_community_app(
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
                     injection_markers=configured.SHIM_INJECTION_MARKERS,
                     price_tier_warning=configured.SHIM_PRICE_TIER_WARNING == "on",
+                    task_caps=TaskCaps(
+                        max_calls=configured.SHIM_TASK_MAX_CALLS,
+                        max_cost_usd=configured.SHIM_TASK_MAX_COST_USD,
+                        window_seconds=configured.SHIM_TASK_WINDOW_SECONDS,
+                    ),
+                    agent_loop=AgentLoop(
+                        action=configured.SHIM_AGENT_LOOP,
+                        repeats=configured.SHIM_AGENT_LOOP_REPEATS,
+                    ),
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

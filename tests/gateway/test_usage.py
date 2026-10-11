@@ -14,6 +14,7 @@ import pytest
 
 from shim.gateway.streaming import StreamFinalization
 from shim.gateway.kernel.result import InferenceTiming, PreparedInference
+from shim.gateway.request_policy import TaskCaps
 from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.gateway.usage import JSONL_PROTOCOLS, LocalUsageLifecycle
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
@@ -45,7 +46,10 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             tags=("risk", "batch"),
             task_id=None,
             trace_id=None,
+            tool_call_repeats=None,
+            task_calls=None,
         ),
+        task_caps=TaskCaps(),
         deployment_kind="unknown",
         response_scan="off",
         response_analysis=(),
@@ -178,6 +182,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "tags",
         "task_id",
         "trace_id",
+        "tool_call_repeats",
+        "task_calls",
         "system_prompt_hash",
         "deployment_kind",
         "warnings",
@@ -215,6 +221,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "cost_center": "risk",
         "task_id": None,
         "trace_id": None,
+        "tool_call_repeats": None,
+        "task_calls": None,
         "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
@@ -1800,3 +1808,54 @@ async def test_the_jsonl_event_carries_the_task_and_trace_ids(
 
     event = json.loads(stream.getvalue())
     assert (event["task_id"], event["trace_id"]) == (task_id, trace_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("unpriced", "added"), [(False, True), (True, False)])
+async def test_a_tasks_settled_cost_is_added_after_the_response_not_before(
+    unpriced, added
+) -> None:
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    released = asyncio.Event()
+    calls: list[dict] = []
+
+    async def add_cost(tenant_id, task_key, **values):
+        calls.append(values)
+        await released.wait()
+
+    counter = SimpleNamespace(add_cost=add_cost)
+    processor = module.ResponsePostprocessor(
+        SimpleNamespace(finalize=AsyncMock()),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+        task_counter=counter,
+    )
+    prepared = _prepared()
+    prepared.unpriced = unpriced
+    prepared.task_caps = TaskCaps(max_cost_usd=Decimal("1"), window_seconds=600)
+    prepared.admission.task_id = "task-1"
+
+    response = await processor.finalize(
+        prepared,
+        ProviderNonStream(
+            {
+                "choices": [
+                    {"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+            },
+            None,
+        ),
+        stream_session=None,
+    )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)
+    assert len(processor._finalization_tasks) == (1 if added else 0)
+    released.set()
+    await processor.drain()
+    assert [(c["window_seconds"], c["micro_usd"] > 0) for c in calls] == (
+        [(600, True)] if added else []
+    )

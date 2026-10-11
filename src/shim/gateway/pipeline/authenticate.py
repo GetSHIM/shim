@@ -109,6 +109,8 @@ class AuthenticateStage:
             injection_markers=policy.injection_markers,
             price_tier_warning=policy.price_tier_warning,
             restore_withheld=policy.restore_withheld,
+            task_caps=policy.task_caps,
+            agent_loop=policy.agent_loop,
             rules=policy.rules,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),

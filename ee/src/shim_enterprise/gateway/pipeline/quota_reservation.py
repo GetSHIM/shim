@@ -378,6 +378,8 @@ class DurableAccountingCoordinator:
                         tags=admission.tags,
                         task_id=admission.task_id,
                         trace_id=admission.trace_id,
+                        tool_call_repeats=admission.tool_call_repeats,
+                        task_calls=admission.task_calls,
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,

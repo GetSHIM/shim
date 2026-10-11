@@ -238,6 +238,11 @@ a placeholder.
 `traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
 the lifecycle metadata only; reads and filters by task come with the task view.
 
+`tool_call_repeats` (how many times the latest tool call of the request's history
+was seen for its task, else its key, within the loop window) and `task_calls` (the
+task's calls after this one, only while a task cap is set) are written at
+reservation, `null` when not computed.
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the

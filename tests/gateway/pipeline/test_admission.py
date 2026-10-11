@@ -98,6 +98,7 @@ async def test_admission_blocks_repeat_before_durable_reservation() -> None:
     assert loop_detector.check_exact_repeat.await_args.kwargs == {
         "limit": 8,
         "window_seconds": 300,
+        "turn_key": None,
     }
 
 
@@ -1036,3 +1037,217 @@ async def test_the_task_id_comes_from_its_header_else_the_incoming_trace(
     assert (
         REGISTRY.get_sample_value("shim_task_id_rejected_total") or 0
     ) - rejected == (1 if sent and task_id != sent else 0)
+
+
+def _history(protocol: str, arguments: str | dict, name: str = "read_file") -> dict:
+    if protocol == "chat":
+        return {
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            ]
+        }
+    if protocol == "responses":
+        return {
+            "input": [
+                {"role": "user", "content": "go"},
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": name,
+                    "arguments": arguments,
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+            ]
+        }
+    if protocol == "messages":
+        return {
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": name,
+                            "input": arguments,
+                        }
+                    ],
+                },
+            ]
+        }
+    return {
+        "contents": [
+            {"role": "user", "parts": [{"text": "go"}]},
+            {
+                "role": "model",
+                "parts": [{"functionCall": {"name": name, "args": arguments}}],
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("protocol", "first", "second"),
+    [
+        ("chat", '{"path": "a", "line": 1}', '{"line": 1, "path": "a"}'),
+        ("chat", "not json at all", "not json at all"),
+        ("responses", '{"path": "a"}', '{ "path" : "a" }'),
+        ("messages", {"path": "a", "line": 1}, {"line": 1, "path": "a"}),
+        ("generate_content", {"path": "a"}, {"path": "a"}),
+    ],
+)
+def test_the_tool_signature_reads_the_latest_call_and_ignores_key_order(
+    protocol, first, second
+) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    signature = _tool_signature(_history(protocol, first), protocol)
+
+    assert signature is not None and len(signature) == 64
+    assert _tool_signature(_history(protocol, second), protocol) == signature
+    assert (
+        _tool_signature(_history(protocol, first, name="write_file"), protocol)
+        != signature
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"messages": [{"role": "user", "content": "no tools"}]},
+        {"messages": "x", "input": "plain", "contents": None},
+        {},
+    ],
+)
+def test_a_history_without_a_tool_call_has_no_signature(payload) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    for protocol in ("chat", "responses", "messages", "generate_content"):
+        assert _tool_signature(payload, protocol) is None
+
+
+def _loop_stage(turn_repeats: int):
+    detector = SimpleNamespace(
+        check_exact_repeat=AsyncMock(
+            return_value=LoopDetectionResult("SAFE", 1, turn_repeats)
+        )
+    )
+    stage = AdmissionStage(
+        SimpleNamespace(headers={"x-shim-task-id": "task-1"}),
+        SimpleNamespace(admit=AsyncMock()),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=detector,
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+    return stage, detector
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "repeats", "verdict", "refused"),
+    [
+        ("count", 4, None, False),
+        ("count", 5, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("count", 9, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("block", 5, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("block", 6, ("deny", "AGENT_LOOP_DETECTED"), True),
+    ],
+)
+async def test_a_repeated_tool_call_is_counted_and_blocked_only_when_asked(
+    action, repeats, verdict, refused
+) -> None:
+    from shim.gateway.request_policy import AgentLoop
+
+    stage, detector = _loop_stage(repeats)
+    prepared = replace(
+        _prepared("x"),
+        payload={"model": "gpt-5.6-luna", **_history("chat", '{"path": "a"}')},
+        agent_loop=AgentLoop(action=action),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.status_code == 429
+        assert error.value.detail["code"] == "AGENT_LOOP_DETECTED"
+        assert error.value.headers == {"x-should-retry": "false"}
+    else:
+        assert (await stage.run(prepared)).admission.tool_call_repeats == repeats
+    verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
+    assert verdicts.get("task.agent_loop") == verdict
+    assert detector.check_exact_repeat.await_args.kwargs["turn_key"] is not None
+
+
+@pytest.mark.asyncio
+async def test_with_the_loop_signal_off_nothing_is_computed() -> None:
+    from shim.gateway.request_policy import AgentLoop
+
+    stage, detector = _loop_stage(9)
+    prepared = replace(
+        _prepared("x"),
+        payload={"model": "gpt-5.6-luna", **_history("chat", "{}")},
+        agent_loop=AgentLoop(action="off"),
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.admission.tool_call_repeats is None
+    assert detector.check_exact_repeat.await_args.kwargs["turn_key"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "refused_on"), [({"x-shim-task-id": "t-1"}, 3), ({}, None)]
+)
+async def test_a_task_past_its_calls_cap_is_refused_and_untasked_calls_pass(
+    headers, refused_on
+) -> None:
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, _, _ = _limit_stage(headers)
+    outcomes = []
+    for _ in range(3):
+        prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=2))
+        try:
+            admitted = await stage.run(prepared)
+            outcomes.append(admitted.admission.task_calls)
+        except HTTPException as error:
+            assert error.detail["code"] == "TASK_LIMIT_EXCEEDED"
+            assert error.headers == {"x-should-retry": "false"}
+            assert error.detail["message"] == (
+                "This task reached its limit of 2 calls within 3600 seconds."
+            )
+            outcomes.append("refused")
+
+    assert outcomes == ([1, 2, "refused"] if refused_on else [None, None, None])
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() -> None:
+    from shim.gateway.admission import TaskAdmission
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, _, _ = _limit_stage({"x-shim-task-id": "t-1"})
+    stage.task_counter = SimpleNamespace(
+        admit_call=AsyncMock(return_value=TaskAdmission(0, 0, True, unavailable=True))
+    )
+    prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
+
+    await stage.run(prepared)
+
+    verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
+    assert verdicts["task.limit"] == ("error", "TASK_COUNTER_UNAVAILABLE")

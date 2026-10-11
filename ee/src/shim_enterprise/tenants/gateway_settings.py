@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
+from shim.gateway.request_policy import AgentLoop, TaskCaps
 from shim.privacy.policies import effective_entity_actions
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,8 @@ class GatewaySettings(BaseModel):
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
     restore_withheld: dict[str, RestoreGrant] = {}
+    task_caps: TaskCaps = TaskCaps()
+    agent_loop: AgentLoop = AgentLoop()
 
     @field_validator("response_analysis")
     @classmethod
@@ -98,6 +101,9 @@ class GatewaySettingsPatch(BaseModel):
     price_tier_warning: bool | None = None
     # Replaces the stored grants whole; {} restores every type for everyone again.
     restore_withheld: dict[str, RestoreGrant] | None = None
+    # Merged into the stored values field by field; null removes a cap.
+    task_caps: TaskCaps | None = None
+    agent_loop: AgentLoop | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -168,6 +174,32 @@ def _restore_direction(
     return "relaxing" if restore_relaxed(before, after) else "tightening"
 
 
+def _looser(before: Any, after: Any) -> bool:
+    return before is not None and (after is None or after > before)
+
+
+def _caps_direction(before: TaskCaps, after: TaskCaps) -> Direction:
+    return (
+        "relaxing"
+        if _looser(before.max_calls, after.max_calls)
+        or _looser(before.max_cost_usd, after.max_cost_usd)
+        or after.window_seconds < before.window_seconds
+        else "tightening"
+    )
+
+
+_LOOP_ACTIONS = ("off", "count", "block")
+
+
+def _loop_direction(before: AgentLoop, after: AgentLoop) -> Direction:
+    return (
+        "relaxing"
+        if _LOOP_ACTIONS.index(after.action) < _LOOP_ACTIONS.index(before.action)
+        or after.repeats > before.repeats
+        else "tightening"
+    )
+
+
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
@@ -175,6 +207,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # A report, not a protection.
     "price_tier_warning": _neutral,
     "restore_withheld": _restore_direction,
+    "task_caps": _caps_direction,
+    "agent_loop": _loop_direction,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

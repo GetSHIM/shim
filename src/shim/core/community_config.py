@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 from typing import Annotated, Literal
 
@@ -63,6 +64,11 @@ class CommunitySettings(BaseSettings):
     SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
     SHIM_PRICE_TIER_WARNING: Literal["off", "on"] = "off"
     SHIM_TRACE_PARENT: Literal["ignore", "honor"] = "ignore"
+    SHIM_TASK_MAX_CALLS: int | None = Field(default=None, ge=1, le=100_000)
+    SHIM_TASK_MAX_COST_USD: Decimal | None = Field(default=None, gt=0, le=100_000)
+    SHIM_TASK_WINDOW_SECONDS: int = Field(default=3600, ge=60, le=86_400)
+    SHIM_AGENT_LOOP: Literal["off", "count", "block"] = "count"
+    SHIM_AGENT_LOOP_REPEATS: int = Field(default=5, ge=3, le=100)
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,

@@ -16,6 +16,8 @@ from typing import Literal, Protocol
 class LoopDetectionResult:
     status: Literal["SAFE", "WARNING", "BLOCKED"]
     chain_length: int
+    # Times the latest tool call of this turn key was seen in the window.
+    turn_repeats: int = 0
 
 
 class LoopDetector(Protocol):
@@ -26,7 +28,32 @@ class LoopDetector(Protocol):
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAdmission:
+    calls: int
+    cost_micro_usd: int
+    allowed: bool
+    unavailable: bool = False
+
+
+class TaskCounter(Protocol):
+    async def admit_call(
+        self,
+        tenant_id: str,
+        task_key: str,
+        *,
+        max_calls: int | None,
+        max_cost_micro_usd: int | None,
+        window_seconds: int,
+    ) -> TaskAdmission: ...
+
+    async def add_cost(
+        self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
+    ) -> None: ...
 
 
 class _FixedWindowCounters:
@@ -142,10 +169,20 @@ class InMemoryLoopDetector:
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult:
         _validate_repeat_window(organization_id, limit, window_seconds)
+        turns = (
+            self._counters.increment(
+                (organization_id, "turn", turn_key),
+                amount=1,
+                window_seconds=window_seconds,
+            )
+            if turn_key
+            else 0
+        )
         if not prompt:
-            return LoopDetectionResult("SAFE", 0)
+            return LoopDetectionResult("SAFE", 0, turns)
         digest = hashlib.sha256(prompt.encode()).hexdigest()
         count = self._counters.increment(
             (organization_id, digest),
@@ -153,7 +190,59 @@ class InMemoryLoopDetector:
             window_seconds=window_seconds,
         )
         status = "BLOCKED" if count > limit else "WARNING" if count == limit else "SAFE"
-        return LoopDetectionResult(status, count)
+        return LoopDetectionResult(status, count, turns)
+
+
+class InMemoryTaskCounter:
+    """Calls and settled cost per task in bounded, per-process windows from the first call."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 10_000,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        self.max_entries = max_entries
+        self.clock = clock
+        # (tenant, task key) -> [calls, cost in micro-dollars, expiry]
+        self.tasks: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+
+    def _entry(self, key: tuple[str, str], window_seconds: int) -> list[float]:
+        now = self.clock()
+        entry = self.tasks.get(key)
+        if entry is not None and entry[2] > now:
+            return entry
+        self.tasks.pop(key, None)
+        # ponytail: evicts oldest first; an expiry heap if task counts grow large.
+        while len(self.tasks) >= self.max_entries:
+            self.tasks.popitem(last=False)
+        self.tasks[key] = entry = [0, 0, now + window_seconds]
+        return entry
+
+    async def admit_call(
+        self,
+        tenant_id: str,
+        task_key: str,
+        *,
+        max_calls: int | None,
+        max_cost_micro_usd: int | None,
+        window_seconds: int,
+    ) -> TaskAdmission:
+        entry = self._entry((tenant_id, task_key), window_seconds)
+        calls, cost = int(entry[0]), int(entry[1])
+        if (max_calls is not None and calls + 1 > max_calls) or (
+            max_cost_micro_usd is not None and cost >= max_cost_micro_usd
+        ):
+            return TaskAdmission(calls, cost, allowed=False)
+        entry[0] = calls + 1
+        return TaskAdmission(calls + 1, cost, allowed=True)
+
+    async def add_cost(
+        self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
+    ) -> None:
+        self._entry((tenant_id, task_key), window_seconds)[1] += micro_usd
 
 
 def _validate_rate_window(

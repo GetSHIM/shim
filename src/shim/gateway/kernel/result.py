@@ -22,6 +22,7 @@ from shim.billing.pricing import (
 from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
+from shim.gateway.request_policy import AgentLoop, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
@@ -129,6 +130,8 @@ class AdmissionState:
     repeat_chain_length: int | None = None
     task_id: str | None = None
     trace_id: str | None = None
+    tool_call_repeats: int | None = None
+    task_calls: int | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
@@ -167,6 +170,8 @@ class PreparedInference:
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
     restore_withheld: frozenset[str] = frozenset()
+    task_caps: TaskCaps = field(default_factory=TaskCaps)
+    agent_loop: AgentLoop = field(default_factory=AgentLoop)
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )

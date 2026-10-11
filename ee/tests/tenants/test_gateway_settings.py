@@ -115,6 +115,12 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "injection_markers": "off",
             "price_tier_warning": False,
             "restore_withheld": {},
+            "task_caps": {
+                "max_calls": None,
+                "max_cost_usd": None,
+                "window_seconds": 3600,
+            },
+            "agent_loop": {"action": "count", "repeats": 5},
         },
         "revision": 0,
         "updated_at": None,
@@ -423,6 +429,72 @@ async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_priv
     assert not any(
         event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "before", "after", "direction"),
+    [
+        ("task_caps", {}, {"max_calls": 10}, "tightening"),
+        ("task_caps", {"max_calls": 10}, {"max_calls": 20}, "relaxing"),
+        ("task_caps", {"max_calls": 10}, {}, "relaxing"),
+        ("task_caps", {"max_cost_usd": "1"}, {"max_cost_usd": "0.5"}, "tightening"),
+        (
+            "task_caps",
+            {"max_calls": 10},
+            {"max_calls": 10, "window_seconds": 60},
+            "relaxing",
+        ),
+        ("agent_loop", {}, {"action": "block"}, "tightening"),
+        ("agent_loop", {"action": "block"}, {"action": "count"}, "relaxing"),
+        ("agent_loop", {}, {"action": "off"}, "relaxing"),
+        ("agent_loop", {}, {"repeats": 9}, "relaxing"),
+        ("agent_loop", {"repeats": 9}, {"repeats": 3}, "tightening"),
+    ],
+)
+def test_raising_a_task_cap_or_easing_the_loop_action_relaxes(
+    field, before, after, direction
+) -> None:
+    classified, relaxed = classify_change(
+        GatewaySettings.model_validate({field: before}),
+        GatewaySettings.model_validate({field: after}),
+    )
+
+    assert classified == direction
+    assert relaxed == ([field] if direction == "relaxing" else [])
+
+
+@pytest.mark.asyncio
+async def test_a_task_caps_patch_changes_only_the_fields_it_names(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+    await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"task_caps": {"max_calls": 10, "window_seconds": 600}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    view = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"task_caps": {"max_cost_usd": "0.5"}}),
+        _request(),
+        admin,
+        db,
+    )
+    cleared = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"task_caps": {"max_calls": None}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    caps = view.settings.task_caps
+    assert (caps.max_calls, str(caps.max_cost_usd), caps.window_seconds) == (
+        10,
+        "0.5",
+        600,
+    )
+    assert cleared.settings.task_caps.max_calls is None
+    assert cleared.settings.task_caps.window_seconds == 600
 
 
 def test_a_stored_key_this_build_does_not_know_is_ignored_and_logged_once(

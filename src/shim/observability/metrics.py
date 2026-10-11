@@ -201,6 +201,16 @@ PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "Requests whose distinct detected values reached the bulk threshold.",
     ("provider",),
 )
+TASK_LIMIT_REFUSALS_TOTAL = Counter(
+    "shim_task_limit_refusals_total",
+    "Calls refused because their task reached a cap, by cap (calls, cost).",
+    ("cap",),
+)
+AGENT_LOOP_SIGNALS_TOTAL = Counter(
+    "shim_agent_loop_signals_total",
+    "Repeated tool calls that reached the loop threshold, by action (count, block).",
+    ("action",),
+)
 TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",

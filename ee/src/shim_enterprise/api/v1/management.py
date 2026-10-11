@@ -2690,7 +2690,17 @@ async def update_gateway_settings(
         )
         assert row is not None
     before = stored_settings(row.settings)
-    after = GatewaySettings.model_validate({**before.model_dump(), **changes})
+    stored = before.model_dump()
+    # A nested setting changes only the fields the PATCH names.
+    after = GatewaySettings.model_validate(
+        stored
+        | {
+            key: {**stored[key], **value}
+            if isinstance(getattr(before, key), BaseModel)
+            else value
+            for key, value in changes.items()
+        }
+    )
     for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
         ids = {
             value

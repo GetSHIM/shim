@@ -109,3 +109,54 @@ async def test_in_memory_rate_limiter_refuses_without_consuming() -> None:
     assert not await limiter.allow("fresh", limit=10, window_seconds=60, amount=11)
     assert "fresh" not in limiter._counters.windows
     assert await limiter.allow("fresh", limit=10, window_seconds=60, amount=10)
+
+
+@pytest.mark.asyncio
+async def test_the_loop_detector_counts_a_turn_key_beside_the_prompt() -> None:
+    from shim.gateway.admission import LoopDetectionResult
+
+    detector = InMemoryLoopDetector()
+
+    plain = await detector.check_exact_repeat("org", "a", limit=8, window_seconds=60)
+    turns = [
+        await detector.check_exact_repeat(
+            "org", f"prompt {i}", limit=8, window_seconds=60, turn_key="turn-1"
+        )
+        for i in range(3)
+    ]
+    other = await detector.check_exact_repeat(
+        "org", "b", limit=8, window_seconds=60, turn_key="turn-2"
+    )
+
+    assert plain == LoopDetectionResult("SAFE", 1, 0)
+    assert [result.turn_repeats for result in turns] == [1, 2, 3]
+    assert [result.chain_length for result in turns] == [1, 1, 1]
+    assert other.turn_repeats == 1
+
+
+@pytest.mark.asyncio
+async def test_the_task_counter_caps_calls_exactly_and_cost_after_it_lands() -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    now = [0.0]
+    counter = InMemoryTaskCounter(max_entries=2, clock=lambda: now[0])
+    admit = lambda key="t": counter.admit_call(  # noqa: E731
+        "org", key, max_calls=2, max_cost_micro_usd=500, window_seconds=60
+    )
+
+    first, second, third = [await admit() for _ in range(3)]
+    assert [(a.calls, a.allowed) for a in (first, second, third)] == [
+        (1, True),
+        (2, True),
+        (2, False),
+    ]
+    await counter.add_cost("org", "c", micro_usd=499, window_seconds=60)
+    assert (await admit("c")).allowed is True
+    await counter.add_cost("org", "c", micro_usd=1, window_seconds=60)
+    refused = await admit("c")
+    assert (refused.allowed, refused.cost_micro_usd) == (False, 500)
+    now[0] = 61.0
+    assert (await admit()).calls == 1, "a new window starts after expiry"
+    await admit("d")
+    await admit("e")
+    assert len(counter.tasks) == 2, "entries stay bounded"

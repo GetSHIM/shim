@@ -50,6 +50,7 @@ from shim.gateway.contracts.context import (
 )
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.pipeline.admission import AdmissionStage
+from shim.gateway.request_policy import TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -119,7 +120,10 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             maximum_output_tokens=30,
             task_id=None,
             trace_id=None,
+            tool_call_repeats=None,
+            task_calls=None,
         ),
+        task_caps=TaskCaps(),
         payload={"messages": []},
         privacy=PrivacyOutcome(
             action=PrivacyAction.DISABLED,
@@ -3488,6 +3492,8 @@ async def test_the_reservation_records_the_task_and_trace_ids(
             policy=QuotaPolicySnapshot("test", None, None, None),
             task_id=task_id,
             trace_id=trace_id,
+            tool_call_repeats=2 if task_id else None,
+            task_calls=3 if task_id else None,
         ),
     )
 
@@ -3498,3 +3504,6 @@ async def test_the_reservation_records_the_task_and_trace_ids(
     ).scalar_one()
     metadata = lifecycle.lifecycle_metadata
     assert (metadata["task_id"], metadata["trace_id"]) == (task_id, trace_id)
+    assert (metadata["tool_call_repeats"], metadata["task_calls"]) == (
+        (2, 3) if task_id else (None, None)
+    )

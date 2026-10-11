@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from functools import partial
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
+from hashlib import sha256
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +20,9 @@ from starlette.background import BackgroundTask
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.analyzers import ANALYZERS
+from shim.gateway.admission import TaskCounter
 from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
-from shim.gateway.pipeline.admission import candidate_count
+from shim.gateway.pipeline.admission import candidate_count, micro_usd
 from shim.gateway.pipeline.analysis import (
     AnalysisContext,
     AnalysisToolCall,
@@ -132,9 +135,11 @@ class ResponsePostprocessor:
         *,
         heartbeat_interval_seconds: float,
         output_hash_salt: str | None,
+        task_counter: TaskCounter | None = None,
     ) -> None:
         self._finalization_tasks: set[asyncio.Task[Any]] = set()
         self.usage = usage
+        self.task_counter = task_counter
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.output_hash_salt = output_hash_salt
 
@@ -145,6 +150,29 @@ class ResponsePostprocessor:
             )
             for task in pending:
                 task.cancel()
+
+    def _add_task_cost(self, prepared: PreparedInference, cost: Decimal | None) -> None:
+        """Off the response path: the settled cost of a task with a cost cap."""
+        caps, admission = prepared.task_caps, prepared.admission
+        amount = micro_usd(cost)
+        if (
+            self.task_counter is None
+            or caps.max_cost_usd is None
+            or admission is None
+            or admission.task_id is None
+            or not amount
+        ):
+            return
+        task = asyncio.create_task(
+            self.task_counter.add_cost(
+                str(prepared.tenant_id),
+                sha256(admission.task_id.encode()).hexdigest(),
+                micro_usd=amount,
+                window_seconds=caps.window_seconds,
+            )
+        )
+        self._finalization_tasks.add(task)
+        task.add_done_callback(self._finalization_tasks.discard)
 
     def _start_after_answer(
         self, prepared: PreparedInference, answer: _Answer
@@ -362,6 +390,7 @@ class ResponsePostprocessor:
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
         record_settled_usage(prepared, terminal.usage)
         await self.usage.finalize(prepared, terminal)
+        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
         scan = prepared.response_scan == "count"
         analyzers = _analyzers(prepared)
         if lifecycle_status == "completed" and (scan or analyzers):
@@ -421,6 +450,7 @@ class ResponsePostprocessor:
             )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
+            self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
             if (scan or analyzers) and terminal.terminal_status == "completed":
                 # Detached: the stream body ends only after this finalizer returns.
                 self._start_after_answer(

@@ -331,6 +331,10 @@ class LocalUsageLifecycle:
             "tags": list(admission.tags) if admission is not None else [],
             "task_id": admission.task_id if admission is not None else None,
             "trace_id": admission.trace_id if admission is not None else None,
+            "tool_call_repeats": admission.tool_call_repeats
+            if admission is not None
+            else None,
+            "task_calls": admission.task_calls if admission is not None else None,
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None
             ),

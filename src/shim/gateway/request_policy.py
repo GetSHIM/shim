@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
 from typing import Literal, Protocol
 
-from pydantic import SecretBytes
+from pydantic import Field, SecretBytes
 
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
@@ -27,6 +28,21 @@ class RequestPolicyContext:
     team_id: str | None = None
 
 
+class TaskCaps(FrozenContractModel):
+    """Calls and settled cost one agent task may use; off until a cap is set."""
+
+    max_calls: int | None = Field(default=None, ge=1, le=100_000)
+    max_cost_usd: Decimal | None = Field(default=None, gt=0, le=100_000)
+    window_seconds: int = Field(default=3600, ge=60, le=86_400)
+
+
+class AgentLoop(FrozenContractModel):
+    """What a tool call repeated in one task's history does: counted by default."""
+
+    action: Literal["off", "count", "block"] = "count"
+    repeats: int = Field(default=5, ge=3, le=100)
+
+
 class ResolvedRequestPolicy(FrozenContractModel):
     tenant_id: TenantId
     tenant_policy: TenantPolicy
@@ -44,6 +60,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     price_tier_warning: bool = False
     # Enterprise: entity types this caller's key and team may not see restored.
     restore_withheld: frozenset[str] = frozenset()
+    task_caps: TaskCaps = TaskCaps()
+    agent_loop: AgentLoop = AgentLoop()
     rules: RuleSet | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
@@ -60,6 +78,7 @@ class LocalRequestPolicyResolver:
     """Resolve the fixed single-user community policy."""
 
     __slots__ = (
+        "_agent_loop",
         "_bulk_threshold",
         "_entity_actions",
         "_injection_markers",
@@ -69,6 +88,7 @@ class LocalRequestPolicyResolver:
         "_rate_limit_tpm",
         "_response_analysis",
         "_response_scan",
+        "_task_caps",
     )
 
     def __init__(
@@ -83,6 +103,8 @@ class LocalRequestPolicyResolver:
         response_analysis: tuple[str, ...] = (),
         injection_markers: Literal["off", "count", "warn"] = "off",
         price_tier_warning: bool = False,
+        task_caps: TaskCaps = TaskCaps(),
+        agent_loop: AgentLoop = AgentLoop(),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -93,6 +115,8 @@ class LocalRequestPolicyResolver:
         self._response_analysis = response_analysis
         self._injection_markers: Literal["off", "count", "warn"] = injection_markers
         self._price_tier_warning = price_tier_warning
+        self._task_caps = task_caps
+        self._agent_loop = agent_loop
 
     async def resolve(
         self,
@@ -126,4 +150,6 @@ class LocalRequestPolicyResolver:
             response_analysis=self._response_analysis,
             injection_markers=self._injection_markers,
             price_tier_warning=self._price_tier_warning,
+            task_caps=self._task_caps,
+            agent_loop=self._agent_loop,
         )

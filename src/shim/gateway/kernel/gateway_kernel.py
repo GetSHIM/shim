@@ -13,7 +13,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from starlette.responses import Response, JSONResponse
 
 from shim.core.middleware import AsyncRateLimiter
-from shim.gateway.admission import LoopDetector
+from shim.gateway.admission import InMemoryTaskCounter, LoopDetector, TaskCounter
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.pipeline.admission import AdmissionStage
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
@@ -84,6 +84,7 @@ class GatewayKernel:
         | None = None,
         approval_gate: ApprovalGate | None = None,
         honor_trace_parent: bool = False,
+        task_counter: TaskCounter | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -94,10 +95,12 @@ class GatewayKernel:
         self.loop_repeat_limit = loop_repeat_limit
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
+        self.task_counter = task_counter or InMemoryTaskCounter()
         self.postprocessor = ResponsePostprocessor(
             usage,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             output_hash_salt=output_hash_salt,
+            task_counter=self.task_counter,
         )
         self.chain_store = chain_store
         self.policy_resolver = policy_resolver
@@ -208,6 +211,7 @@ class GatewayKernel:
             loop_repeat_limit=self.loop_repeat_limit,
             loop_window_seconds=self.loop_window_seconds,
             cost_tag_max_length=self.cost_tag_max_length,
+            task_counter=self.task_counter,
         )
         try:
             prepared = await run_stage(admission_stage, prepared)

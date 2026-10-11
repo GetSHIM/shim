@@ -12,13 +12,19 @@ from shim.gateway.admission import LoopDetectionResult
 
 logger = logging.getLogger(__name__)
 
+# With a second key, the agent-loop turn is counted in the same round trip.
 _INCREMENT_WINDOW = """
-local value = redis.call('INCR', KEYS[1])
-local ttl = redis.call('TTL', KEYS[1])
-if ttl < 0 then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+local counts = {}
+for index, key in ipairs(KEYS) do
+    counts[index] = redis.call('INCR', key)
+    if redis.call('TTL', key) < 0 then
+        redis.call('EXPIRE', key, ARGV[1])
+    end
 end
-return value
+if #KEYS == 1 then
+    return counts[1]
+end
+return counts
 """
 
 # Carries the digest to the quota reservation in the same task without a core contract.
@@ -48,6 +54,7 @@ class LoopDetectionService:
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult:
         if not organization_id.strip():
             raise ValueError("repeat window requires a tenant identity")
@@ -63,17 +70,18 @@ class LoopDetectionService:
         if redis is None:
             logger.warning("Repeat window unavailable; admission continues")
             return LoopDetectionResult("SAFE", 0)
+        keys = [key, *([f"turn:{organization_id}:{turn_key}"] if turn_key else [])]
         try:
-            count = int(
-                await redis.eval(
-                    _INCREMENT_WINDOW,
-                    1,
-                    key,
-                    window_seconds,
-                )
+            counted = await redis.eval(
+                _INCREMENT_WINDOW, len(keys), *keys, window_seconds
+            )
+            count, turns = (
+                (int(counted[0]), int(counted[1]))
+                if isinstance(counted, list)
+                else (int(counted), 0)
             )
         except Exception as exc:
             logger.error("Repeat window failed open type=%s", type(exc).__name__)
             return LoopDetectionResult("SAFE", 0)
         status = "BLOCKED" if count > limit else "WARNING" if count == limit else "SAFE"
-        return LoopDetectionResult(status, count)
+        return LoopDetectionResult(status, count, turns)

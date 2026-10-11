@@ -21,6 +21,7 @@ from shim.api.v1.gemini import router as gemini_router
 from shim_enterprise.api.enterprise_deps import DatabaseGatewayAuthenticator
 from shim_enterprise.billing.quota import BurstRateLimiter
 from shim_enterprise.cache.circuit_breaker import RedisCircuitBreaker
+from shim_enterprise.cache.task_counters import RedisTaskCounter
 from shim_enterprise.cache.loop_detection import LoopDetectionService
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.core.config import settings
@@ -228,6 +229,7 @@ def _create_gateway_kernel(
             else None
         ),
         honor_trace_parent=settings.SHIM_TRACE_PARENT == "honor",
+        task_counter=RedisTaskCounter(cache),
     )
 
 

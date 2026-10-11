@@ -16,6 +16,31 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AgentLoop": {
+        "additionalProperties": false,
+        "description": "What a tool call repeated in one task's history does: counted by default.",
+        "properties": {
+          "action": {
+            "default": "count",
+            "enum": [
+              "off",
+              "count",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "repeats": {
+            "default": 5,
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Repeats",
+            "type": "integer"
+          }
+        },
+        "title": "AgentLoop",
+        "type": "object"
+      },
       "AnchorMismatch": {
         "properties": {
           "anchor_date": {
@@ -4905,6 +4930,13 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "agent_loop": {
+            "$ref": "#/components/schemas/AgentLoop",
+            "default": {
+              "action": "count",
+              "repeats": 5
+            }
+          },
           "injection_markers": {
             "default": "off",
             "enum": [
@@ -4935,6 +4967,12 @@
             "default": {},
             "title": "Restore Withheld",
             "type": "object"
+          },
+          "task_caps": {
+            "$ref": "#/components/schemas/TaskCaps-Output",
+            "default": {
+              "window_seconds": 3600
+            }
           }
         },
         "title": "GatewaySettings",
@@ -4943,6 +4981,16 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "agent_loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "injection_markers": {
             "anyOf": [
               {
@@ -4997,6 +5045,16 @@
               }
             ],
             "title": "Restore Withheld"
+          },
+          "task_caps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "GatewaySettingsPatch",
@@ -12443,6 +12501,91 @@
           "entitlements"
         ],
         "title": "SubscriptionView",
+        "type": "object"
+      },
+      "TaskCaps-Input": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
+        "type": "object"
+      },
+      "TaskCaps-Output": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
         "type": "object"
       },
       "TeamInput": {

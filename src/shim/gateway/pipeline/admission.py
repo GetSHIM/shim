@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from decimal import ROUND_CEILING, Decimal
+import hashlib
 import json
 import re
 from typing import TYPE_CHECKING
@@ -16,7 +18,12 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from shim.billing.attribution import CostAttribution
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.core.middleware import AsyncRateLimiter
-from shim.gateway.admission import LoopDetectionResult, LoopDetector
+from shim.gateway.admission import (
+    InMemoryTaskCounter,
+    LoopDetectionResult,
+    LoopDetector,
+    TaskCounter,
+)
 
 from shim.gateway.kernel.result import (
     AdmissionState,
@@ -25,7 +32,11 @@ from shim.gateway.kernel.result import (
 )
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.pipeline.privacy import _is_protocol_field
-from shim.observability.metrics import TASK_ID_REJECTED_TOTAL
+from shim.observability.metrics import (
+    AGENT_LOOP_SIGNALS_TOTAL,
+    TASK_ID_REJECTED_TOTAL,
+    TASK_LIMIT_REFUSALS_TOTAL,
+)
 from shim.rules.evaluate import in_scope, settle_matches
 from shim.rules.request_limit import request_measures
 
@@ -80,6 +91,7 @@ class AdmissionStage:
         loop_repeat_limit: int,
         loop_window_seconds: int,
         cost_tag_max_length: int,
+        task_counter: TaskCounter | None = None,
     ) -> None:
         if loop_repeat_limit < 2 or loop_window_seconds < 1:
             raise ValueError("loop-detection bounds are invalid")
@@ -92,6 +104,7 @@ class AdmissionStage:
         self.loop_repeat_limit = loop_repeat_limit
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
+        self.task_counter = task_counter or InMemoryTaskCounter()
         self.loop_result = LoopDetectionResult("SAFE", 0)
         self.reserved = False
 
@@ -279,11 +292,25 @@ class AdmissionStage:
                 "protocol": value.protocol,
             }
         )
+        task_id, trace_id = _task_identity(self.invocation.headers)
+        signature = (
+            _tool_signature(payload, value.protocol)
+            if value.agent_loop.action != "off"
+            else None
+        )
+        turn_key = (
+            hashlib.sha256(
+                f"{task_id or value.api_key_id}|{signature}".encode()
+            ).hexdigest()
+            if signature is not None
+            else None
+        )
         self.loop_result = await self.loop_detector.check_exact_repeat(
             str(value.tenant_id),
             repeat_material,
             limit=self.loop_repeat_limit,
             window_seconds=self.loop_window_seconds,
+            turn_key=turn_key,
         )
         repeated = self.loop_result.status == "BLOCKED"
         value.record_verdict(
@@ -307,7 +334,30 @@ class AdmissionStage:
                 },
                 headers={"Retry-After": str(self.loop_window_seconds)},
             )
-        task_id, trace_id = _task_identity(self.invocation.headers)
+        tool_call_repeats = self.loop_result.turn_repeats if turn_key else None
+        if tool_call_repeats is not None and tool_call_repeats >= (
+            repeats := value.agent_loop.repeats
+        ):
+            block = value.agent_loop.action == "block" and tool_call_repeats > repeats
+            AGENT_LOOP_SIGNALS_TOTAL.labels(action="block" if block else "count").inc()
+            value.record_verdict(
+                "task.agent_loop",
+                stage="admission",
+                outcome="deny" if block else "allow",
+                reason_code="AGENT_LOOP_DETECTED" if block else "AGENT_LOOP_SUSPECTED",
+                policy=value.agent_loop.model_dump(),
+            )
+            if block:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AGENT_LOOP_DETECTED",
+                        "message": f"The same tool call was repeated {tool_call_repeats} "
+                        f"times within {self.loop_window_seconds} seconds.",
+                    },
+                    headers={"x-should-retry": "false"},
+                )
+        task_calls = await self._admit_task_call(value, task_id)
         admission = AdmissionState(
             estimated_input_tokens=input_tokens,
             maximum_output_tokens=output_tokens,
@@ -316,6 +366,8 @@ class AdmissionStage:
             repeat_chain_length=self.loop_result.chain_length or None,
             task_id=task_id,
             trace_id=trace_id,
+            tool_call_repeats=tool_call_repeats,
+            task_calls=task_calls,
         )
         if value.protocol != "count_tokens":
             await self.usage.admit(value, admission)
@@ -325,6 +377,54 @@ class AdmissionStage:
             admission=admission,
             rules_evaluated=value.rules_evaluated or limited,
         )
+
+    async def _admit_task_call(
+        self, value: PreparedInference, task_id: str | None
+    ) -> int | None:
+        """The task's calls after this one, or None while no cap is set."""
+        caps = value.task_caps
+        if task_id is None or (caps.max_calls is None and caps.max_cost_usd is None):
+            return None
+        task = await self.task_counter.admit_call(
+            str(value.tenant_id),
+            hashlib.sha256(task_id.encode()).hexdigest(),
+            max_calls=caps.max_calls,
+            max_cost_micro_usd=micro_usd(caps.max_cost_usd),
+            window_seconds=caps.window_seconds,
+        )
+        refused = not task.allowed
+        value.record_verdict(
+            "task.limit",
+            stage="admission",
+            outcome="error" if task.unavailable else "deny" if refused else "allow",
+            reason_code="TASK_COUNTER_UNAVAILABLE"
+            if task.unavailable
+            else "TASK_LIMIT_EXCEEDED"
+            if refused
+            else "TASK_LIMIT_PASSED",
+            policy=caps.model_dump(mode="json"),
+        )
+        if refused:
+            cap = (
+                "calls"
+                if caps.max_calls is not None and task.calls >= caps.max_calls
+                else "cost"
+            )
+            TASK_LIMIT_REFUSALS_TOTAL.labels(cap=cap).inc()
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "TASK_LIMIT_EXCEEDED",
+                    "message": (
+                        f"This task reached its limit of {caps.max_calls} calls"
+                        if cap == "calls"
+                        else f"This task reached its cost limit of {caps.max_cost_usd} USD"
+                    )
+                    + f" within {caps.window_seconds} seconds.",
+                },
+                headers={"x-should-retry": "false"},
+            )
+        return task.calls
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:
         assert output.admission is not None
@@ -384,6 +484,80 @@ def _check_catalog_limits(
             )
     if approximate_tokens + output > window:
         value.warn("CONTEXT_MAY_EXCEED")
+
+
+def micro_usd(amount: Decimal | None) -> int | None:
+    return (
+        None
+        if amount is None
+        else int((amount * 1_000_000).to_integral_value(ROUND_CEILING))
+    )
+
+
+def _arguments(value: object) -> object:
+    """Chat and Responses send arguments as a JSON string; parsed when valid."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
+    """A digest of the latest assistant turn's tool calls: names and canonical arguments."""
+    calls: list[tuple[object, object]] = []
+    if protocol == "chat":
+        for message in _listed(payload.get("messages")):
+            if isinstance(message, Mapping) and message.get("role") == "assistant":
+                turn = [
+                    (
+                        call["function"].get("name"),
+                        _arguments(call["function"].get("arguments")),
+                    )
+                    for call in _listed(message.get("tool_calls"))
+                    if isinstance(call, Mapping)
+                    and isinstance(call.get("function"), Mapping)
+                ]
+                calls = turn or calls
+    elif protocol == "responses":
+        previous = None
+        for item in _listed(payload.get("input")):
+            kind = item.get("type") if isinstance(item, Mapping) else None
+            if kind == "function_call" and isinstance(item, Mapping):
+                call = (item.get("name"), _arguments(item.get("arguments")))
+                # Calls of one turn sit next to each other; an output ends the turn.
+                calls = [*calls, call] if previous == "function_call" else [call]
+            previous = kind
+    elif protocol in {"messages", "count_tokens"}:
+        for message in _listed(payload.get("messages")):
+            if isinstance(message, Mapping) and message.get("role") == "assistant":
+                turn = [
+                    (block.get("name"), block.get("input"))
+                    for block in _listed(message.get("content"))
+                    if isinstance(block, Mapping) and block.get("type") == "tool_use"
+                ]
+                calls = turn or calls
+    elif protocol == "generate_content":
+        for content in _listed(payload.get("contents")):
+            if isinstance(content, Mapping) and content.get("role") == "model":
+                turn = [
+                    (part["functionCall"].get("name"), part["functionCall"].get("args"))
+                    for part in _listed(content.get("parts"))
+                    if isinstance(part, Mapping)
+                    and isinstance(part.get("functionCall"), Mapping)
+                ]
+                calls = turn or calls
+    if not calls:
+        return None
+    canonical = json.dumps(
+        [protocol, calls], sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _listed(value: object) -> list:
+    return value if isinstance(value, list) else []
 
 
 def _task_identity(headers: Mapping[str, str]) -> tuple[str | None, str | None]:

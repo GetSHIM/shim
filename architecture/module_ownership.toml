@@ -37,7 +37,7 @@ forbidden_noncloud_import_roots = [
 "shim.core.community_config" = ["CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
-"shim.gateway.admission" = ["LoopDetectionResult"]
+"shim.gateway.admission" = ["LoopDetectionResult", "TaskAdmission"]
 "shim.gateway.analyzers" = ["ANALYZERS", "ANALYZER_NAMES"]
 "shim.gateway.api.errors" = ["gateway_exception_handler"]
 "shim.gateway.auth" = ["authentication_error", "select_gateway_credential"]
@@ -71,7 +71,12 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
 "shim.gateway.pipeline.openai_execution" = ["OpenAIExecution"]
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
-"shim.gateway.request_policy" = ["RequestPolicyContext", "ResolvedRequestPolicy"]
+"shim.gateway.request_policy" = [
+  "AgentLoop",
+  "RequestPolicyContext",
+  "ResolvedRequestPolicy",
+  "TaskCaps",
+]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
 "shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded", "system_prompt_hash"]
 "shim.observability.logging" = [
@@ -347,6 +352,7 @@ enterprise = [
   "ee/src/shim_enterprise/cache/circuit_breaker.py",
   "ee/src/shim_enterprise/cache/loop_detection.py",
   "ee/src/shim_enterprise/cache/redis_index.py",
+  "ee/src/shim_enterprise/cache/task_counters.py",
   "ee/src/shim_enterprise/compliance/__init__.py",
   "ee/src/shim_enterprise/compliance/adapters/__init__.py",
   "ee/src/shim_enterprise/compliance/adapters/anthropic.py",
@@ -478,6 +484,7 @@ enterprise = [
   "ee/tests/gateway/api/test_permission_matrix.py",
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
+  "ee/tests/gateway/cache/test_task_counters.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
   "ee/tests/gateway/pipeline/test_decisions.py",
   "ee/tests/gateway/pipeline/test_scan.py",

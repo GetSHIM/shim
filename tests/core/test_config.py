@@ -261,3 +261,36 @@ def test_the_trace_parent_setting_is_ignore_or_honor(value) -> None:
     )
     with pytest.raises(ValidationError):
         CommunitySettings(_env_file=None, SHIM_TRACE_PARENT="follow")
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"SHIM_TASK_MAX_CALLS": 0},
+        {"SHIM_TASK_MAX_CALLS": 100_001},
+        {"SHIM_TASK_MAX_COST_USD": "0"},
+        {"SHIM_TASK_MAX_COST_USD": "100000.01"},
+        {"SHIM_TASK_WINDOW_SECONDS": 59},
+        {"SHIM_TASK_WINDOW_SECONDS": 86_401},
+        {"SHIM_AGENT_LOOP": "warn"},
+        {"SHIM_AGENT_LOOP_REPEATS": 2},
+        {"SHIM_AGENT_LOOP_REPEATS": 101},
+    ],
+)
+def test_task_cap_and_loop_settings_refuse_values_out_of_bounds(values) -> None:
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, **values)
+
+
+def test_task_caps_are_off_and_the_loop_signal_counts_by_default() -> None:
+    settings = CommunitySettings(_env_file=None)
+
+    assert (settings.SHIM_TASK_MAX_CALLS, settings.SHIM_TASK_MAX_COST_USD) == (
+        None,
+        None,
+    )
+    assert (settings.SHIM_TASK_WINDOW_SECONDS, settings.SHIM_AGENT_LOOP) == (
+        3600,
+        "count",
+    )
+    assert settings.SHIM_AGENT_LOOP_REPEATS == 5

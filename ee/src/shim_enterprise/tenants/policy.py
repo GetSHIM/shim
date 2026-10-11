@@ -379,6 +379,8 @@ class TenantRequestPolicyResolver:
                 ),
                 injection_markers=tenant_settings.gateway_settings.injection_markers,
                 price_tier_warning=tenant_settings.gateway_settings.price_tier_warning,
+                task_caps=tenant_settings.gateway_settings.task_caps,
+                agent_loop=tenant_settings.gateway_settings.agent_loop,
                 restore_withheld=frozenset(
                     kind
                     for kind, grant in tenant_settings.gateway_settings.restore_withheld.items()

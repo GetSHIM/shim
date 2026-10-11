@@ -163,7 +163,8 @@ Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
-`repeat_chain_length`, `cost_center`, `tags`, `task_id`, `trace_id`, `system_prompt_hash`,
+`repeat_chain_length`, `cost_center`, `tags`, `task_id`, `trace_id`,
+`tool_call_repeats`, `task_calls`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
 `bulk_disclosure`, `warnings` and `policy_verdicts`, and `injection_markers` when
 [the marker scan](#count-instructions-hidden-in-tool-results) is on. The three count maps give values by
@@ -378,6 +379,8 @@ except openai.APIStatusError as error:
 | One request larger than the whole `DEFAULT_TPM_LIMIT`; the message gives its approximate size and the limit | 429 `RATE_LIMIT_EXCEEDED` | `x-should-retry: false`, no `Retry-After` |
 | More than `LOOP_REPEAT_LIMIT` (default 8) identical prompts within `LOOP_WINDOW_SECONDS` (default 300) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: <LOOP_WINDOW_SECONDS>` |
 | One client IP over `GLOBAL_RATE_LIMIT_PER_MINUTE` (default 1,000) | 429 `RATE_LIMIT_EXCEEDED` on provider routes; elsewhere 429 `{"detail": "Too Many Requests"}` without a code | `Retry-After: 60` |
+| An agent task reached `SHIM_TASK_MAX_CALLS` calls, or its recorded cost reached `SHIM_TASK_MAX_COST_USD`, within `SHIM_TASK_WINDOW_SECONDS` | 429 `TASK_LIMIT_EXCEEDED`; the message names the cap | `x-should-retry: false`: start a new task or raise the cap |
+| With `SHIM_AGENT_LOOP=block`, the same tool call repeated more than `SHIM_AGENT_LOOP_REPEATS` times in one task within `LOOP_WINDOW_SECONDS` | 429 `AGENT_LOOP_DETECTED` | `x-should-retry: false`: change the agent's step |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
 | Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
 | Provider refused the provider key (401) | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
@@ -411,6 +414,23 @@ Notes:
   The default 300-second `Retry-After` is longer than the pinned SDKs honour
   (120 seconds for `openai`, 60 for `anthropic`), so their automatic retry comes
   sooner and is refused again. Handle `repeated_requests` in your own code.
+- Agent tasks. A request names its task with `X-Shim-Task-Id` (or the incoming
+  `traceparent`, see [observe the gateway](#observe-the-gateway)). Task caps are off
+  until set: `SHIM_TASK_MAX_CALLS` (1 to 100,000) caps calls exactly;
+  `SHIM_TASK_MAX_COST_USD` (more than 0, at most 100,000) stops the next call once
+  the task's settled cost of priced requests has reached it, so one admitted call can
+  cross it, concurrent calls can each pass before any cost lands, and unpriced
+  requests add nothing; `SHIM_TASK_WINDOW_SECONDS` (60 to 86,400, default 3600)
+  is how long a task's counters live from its first call. A request without a task
+  id is never capped. Counters live in the process. The loop signal is on by
+  default: `SHIM_AGENT_LOOP=count` digests the latest tool call in the request's
+  history (name and canonical arguments, never the text) and counts it per task
+  (else per key) within `LOOP_WINDOW_SECONDS`; the usage event's
+  `tool_call_repeats` shows the count, `task_calls` the task's calls after this one,
+  and at `SHIM_AGENT_LOOP_REPEATS` (3 to 100, default 5) the `task.agent_loop`
+  verdict reads `AGENT_LOOP_SUSPECTED`. `block` refuses above the threshold; `off`
+  computes nothing. An agent loop grows its history every turn, so the exact-repeat
+  limit above never catches it.
 - After five provider failures with no success in between, the provider's
   circuit opens for 60 seconds. A provider 429 neither opens nor closes it.
 - The per-IP limit counts the connecting address. Behind a proxy, list the
