@@ -8,7 +8,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, TypeIs
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
@@ -35,7 +35,7 @@ from shim_enterprise.tenants.models import (
     OrganizationRole,
     User,
 )
-from shim_enterprise.tenants.teams import synchronize_oidc_teams
+from shim_enterprise.tenants.teams import plausible_email, synchronize_oidc_teams
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["identity"])
@@ -174,21 +174,6 @@ async def _custom_role(
     return next((found[slug] for slug in slugs if slug in found), None)
 
 
-def _plausible_email(email: Any) -> TypeIs[str]:
-    """Basic syntax only: the IdP vouched for it, and on-prem domains like `.local`
-    are not globally deliverable. 320 is the `users.email` column width."""
-    if not isinstance(email, str) or len(email.casefold()) > 320:
-        return False
-    local, at, domain = email.partition("@")
-    return bool(
-        at
-        and local
-        and domain
-        and "@" not in domain
-        and all(c.isprintable() and not c.isspace() for c in email)
-    )
-
-
 async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> User:
     issuer, subject = claims.get("iss"), claims.get("sub")
     if (
@@ -234,7 +219,7 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
         if claims.get("email_verified") is not True:
             raise HTTPException(403, "A verified email address is required")
         email = claims.get("email")
-        if not _plausible_email(email):
+        if not plausible_email(email):
             raise HTTPException(403, "A verified email address is required")
         email = email.casefold()
         if await session.scalar(select(User.id).where(func.lower(User.email) == email)):

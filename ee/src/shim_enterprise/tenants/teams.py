@@ -1,5 +1,6 @@
 """Tenant-scoped team access and identity-provider membership synchronization."""
 
+from typing import Any, TypeIs
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -11,6 +12,22 @@ from shim_enterprise.tenants.models import Organization, Team, TeamMembership, U
 from shim_enterprise.tenants.permissions import user_permissions
 
 ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
+
+
+def plausible_email(email: Any) -> TypeIs[str]:
+    """Basic syntax only: the IdP vouched for it, and on-prem domains like `.local`
+    are not globally deliverable.
+    Shared by OIDC sign-in and team invites. 320 is the `users.email` column width."""
+    if not isinstance(email, str) or len(email.casefold()) > 320:
+        return False
+    local, at, domain = email.partition("@")
+    return bool(
+        at
+        and local
+        and domain
+        and "@" not in domain
+        and all(c.isprintable() and not c.isspace() for c in email)
+    )
 
 
 def member_team_ids(user: User, *, administer: bool = False):

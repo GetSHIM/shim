@@ -68,6 +68,8 @@ the feature:
   "message": "This feature needs one of the plans listed in eligible_plans."}}
 ```
 
+An invite accepts any address with one `@`, no whitespace and at most 320 characters, so internal domains such as `ali@corp.local` work. shim does not email the invite: the creating call returns the token for you to pass on. On-prem installs use OIDC instead.
+
 Signing in creates a personal workspace. Accepting an invitation
 (`POST /api/v1/management/team/invites/accept`) moves the user out of it:
 

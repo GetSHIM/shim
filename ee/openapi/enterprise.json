@@ -12178,7 +12178,6 @@
       "TeamInviteInput": {
         "properties": {
           "email": {
-            "format": "email",
             "title": "Email",
             "type": "string"
           },

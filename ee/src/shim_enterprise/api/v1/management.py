@@ -34,7 +34,6 @@ from starlette.types import Message
 from pydantic import (
     BaseModel,
     ConfigDict,
-    EmailStr,
     Field,
     computed_field,
     field_validator,
@@ -195,6 +194,7 @@ from shim_enterprise.tenants.service import create_api_key as create_tenant_api_
 from shim_enterprise.tenants.teams import (
     may_hold_team_key,
     member_team_ids,
+    plausible_email,
     require_team,
 )
 from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
@@ -555,8 +555,15 @@ class TeamMemberView(BaseModel):
 
 
 class TeamInviteInput(BaseModel):
-    email: EmailStr
+    email: str
     role: Literal["admin", "member", "auditor"] = "member"
+
+    @field_validator("email")
+    @classmethod
+    def _internal_domains_are_valid(cls, email: str) -> str:
+        if not plausible_email(email):
+            raise ValueError("not a valid email address")
+        return email.casefold()
 
 
 class TeamInviteView(BaseModel):
@@ -1320,7 +1327,7 @@ async def create_team_invite(
         .where(Organization.id == tenant_id)
         .with_for_update(of=Organization)
     )
-    normalized_email = str(payload.email).strip().casefold()
+    normalized_email = payload.email
     member = (
         await session.execute(
             select(User).where(

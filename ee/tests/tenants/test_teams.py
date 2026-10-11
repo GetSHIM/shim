@@ -40,6 +40,7 @@ from shim_enterprise.tenants.models import (
     TeamMembership,
     User,
 )
+from shim_enterprise.tenants.plans import activate_organization_plan
 from shim_enterprise.tenants.service import authenticate_api_key, create_api_key
 from shim_enterprise.tenants.teams import synchronize_oidc_teams
 
@@ -1038,3 +1039,32 @@ async def test_only_organization_admins_change_the_customer_provider_key_policy(
         )
     ]
     assert events[0].payload["endpoint"] == "tenant.provider_key_policy_updated"
+
+
+@pytest.mark.asyncio
+async def test_invites_take_internal_domains_and_refuse_malformed_addresses(
+    db, test_user_with_org
+):
+    owner = test_user_with_org
+    owner.role = "owner"
+    await activate_organization_plan(db, owner.organization_id, "enterprise")
+    app = FastAPI()
+    app.include_router(management.router)
+    app.dependency_overrides[get_current_user] = lambda: owner
+    app.dependency_overrides[get_db] = lambda: db
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://test"
+    ) as client:
+        for address in ("Ali@Corp.Local", "a@example.test"):
+            created = await client.post("/team/invites", json={"email": address})
+            assert created.status_code == 201, created.text
+            assert created.json()["email"] == address.casefold()
+        for address in (
+            "no-at-sign",
+            "a@",
+            "@corp.local",
+            "a b@corp.local",
+            "a@" + "b" * 320,
+        ):
+            refused = await client.post("/team/invites", json={"email": address})
+            assert refused.status_code == 422, address
