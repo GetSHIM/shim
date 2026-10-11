@@ -16,7 +16,14 @@ from shim_enterprise.observability.enterprise_metrics import (
     REQUEST_APPROVAL_DECISIONS_TOTAL,
 )
 from shim_enterprise.rules.models import OrganizationRuleSet
-from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
+from shim_enterprise.archive.models import RequestArchive
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    ServiceAccountCredential,
+    Team,
+    User,
+)
 
 
 async def _tenant(db) -> dict:
@@ -73,12 +80,12 @@ def _approval(tenant: dict, **values) -> RequestApproval:
     return RequestApproval(
         **{
             "expires_at": datetime.now(timezone.utc) + timedelta(hours=24),
+            "api_key_id": tenant["key"].id,
+            "requested_by": tenant["key_owner"].id,
             **values,
         },
         id=uuid4(),
         organization_id=tenant["organization"].id,
-        api_key_id=tenant["key"].id,
-        requested_by=tenant["key_owner"].id,
         team_id=tenant["team"].id,
         request_digest=uuid4().hex * 2,
         request_id=f"req_apr_{uuid4().hex}",
@@ -93,7 +100,9 @@ def _approval(tenant: dict, **values) -> RequestApproval:
     )
 
 
-async def _call(db, user: User, method: str, path: str, **params) -> httpx.Response:
+async def _call(
+    db, user: User, method: str, path: str, json: dict | None = None, **params
+) -> httpx.Response:
     await db.flush()
     app = FastAPI()
     app.include_router(management_router, prefix="/api/v1")
@@ -103,7 +112,7 @@ async def _call(db, user: User, method: str, path: str, **params) -> httpx.Respo
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         return await client.request(
-            method, f"/api/v1/management/approvals{path}", params=params
+            method, f"/api/v1/management/approvals{path}", params=params, json=json
         )
 
 
@@ -289,3 +298,157 @@ async def test_who_may_decide_and_read(db) -> None:
         )
         == "pending"
     )
+
+
+async def _service_key(db, tenant: dict, created_by: User) -> ApiKey:
+    """A gateway key the service account owns; `created_by` made its credential."""
+    db.add(
+        ServiceAccountCredential(
+            organization_id=tenant["organization"].id,
+            user_id=tenant["service"].id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-sa",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+            created_by=created_by.id,
+        )
+    )
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=tenant["organization"].id,
+        user_id=tenant["service"].id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-sak",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(key)
+    await db.flush()
+    return key
+
+
+@pytest.mark.asyncio
+async def test_no_one_decides_for_a_service_account_key_they_hold(db) -> None:
+    tenant = await _tenant(db)
+    key = await _service_key(db, tenant, created_by=tenant["admin"])
+    row = _approval(tenant, api_key_id=key.id, requested_by=tenant["service"].id)
+    db.add(row)
+
+    holder = await _call(db, tenant["admin"], "POST", f"/{row.id}/approve")
+    other = await _call(db, tenant["owner"], "POST", f"/{row.id}/approve")
+
+    assert holder.status_code == 403
+    assert holder.json()["detail"]["code"] == "APPROVER_NOT_ELIGIBLE"
+    assert other.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_without_a_recorded_requester_the_key_owner_still_cannot_decide(
+    db,
+) -> None:
+    tenant = await _tenant(db)
+    row = _approval(tenant, requested_by=None)
+    db.add(row)
+
+    owner_of_key = await _call(db, tenant["key_owner"], "POST", f"/{row.id}/approve")
+    other = await _call(db, tenant["admin"], "POST", f"/{row.id}/approve")
+
+    assert owner_of_key.status_code == 403
+    assert other.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_decided_or_expired_row_keeps_no_digest(db) -> None:
+    tenant = await _tenant(db)
+    rejected, expired, approved = (
+        _approval(tenant),
+        _approval(tenant, expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc)),
+        _approval(tenant),
+    )
+    db.add_all([rejected, expired, approved])
+
+    await _call(db, tenant["admin"], "POST", f"/{rejected.id}/reject")
+    await _call(db, tenant["admin"], "POST", f"/{approved.id}/approve")
+    await _call(db, tenant["admin"], "GET", "")
+
+    digests = dict(
+        (
+            await db.execute(
+                select(RequestApproval.id, RequestApproval.request_digest).where(
+                    RequestApproval.organization_id == tenant["organization"].id
+                )
+            )
+        ).all()
+    )
+    assert digests[rejected.id] is None and digests[expired.id] is None
+    # An approved row is still matched against the request sent again.
+    assert digests[approved.id] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_key_s_pending_requests_are_rejected_at_once(db, audit_events) -> None:
+    tenant = await _tenant(db)
+    other_key = await _service_key(db, tenant, created_by=tenant["owner"])
+    mine = [_approval(tenant) for _ in range(3)]
+    done = _approval(tenant, status="used")
+    elsewhere = _approval(tenant, api_key_id=other_key.id)
+    db.add_all([*mine, done, elsewhere])
+    body = {"api_key_id": str(tenant["key"].id)}
+
+    refused = await _call(db, tenant["key_owner"], "POST", "/reject", json=body)
+    rejected = await _call(db, tenant["admin"], "POST", "/reject", json=body)
+
+    assert refused.status_code == 403
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json() == {"rejected": 3}
+    statuses = dict(
+        (
+            await db.execute(
+                select(RequestApproval.id, RequestApproval.status).where(
+                    RequestApproval.organization_id == tenant["organization"].id
+                )
+            )
+        ).all()
+    )
+    assert {statuses[row.id] for row in mine} == {"rejected"}
+    assert (statuses[done.id], statuses[elsewhere.id]) == ("used", "pending")
+    events = [
+        event["extra"]
+        for event in await audit_events(tenant["organization"].id)
+        if event["endpoint"] == "tenant.request_approvals_rejected"
+    ]
+    assert events == [
+        {
+            "subject_id": str(tenant["key"].id),
+            "rejected": 3,
+            "actor_type": "user_jwt",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_note_says_when_the_request_archive_holds_the_content(db) -> None:
+    tenant = await _tenant(db)
+    archived, plain = _approval(tenant), _approval(tenant)
+    db.add_all([archived, plain])
+    db.add(
+        RequestArchive(
+            organization_id=tenant["organization"].id,
+            request_id=archived.request_id,
+            api_key_id=tenant["key"].id,
+            protocol="chat",
+            model="gpt-5.6-luna",
+            matched=[],
+            masked_payload=b"x",
+            edit_map=b"x",
+            size_bytes=1,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+    )
+
+    notes = {
+        item["id"]: (item["content"], item["content_note"])
+        for item in (await _call(db, tenant["admin"], "GET", "")).json()["items"]
+    }
+
+    assert notes[str(archived.id)] == (None, "content is in the request archive")
+    assert notes[str(plain.id)] == (None, "content is not stored")

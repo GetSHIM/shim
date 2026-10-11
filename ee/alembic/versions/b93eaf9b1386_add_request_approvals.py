@@ -1,7 +1,8 @@
 """Add request approvals.
 
 A row is a request a tenant rule held until an administrator decides. It holds a
-keyed digest of the request, counts, sizes and ids; never the request content.
+keyed digest of the request while it can be used, counts, sizes and ids; never
+the request content.
 
 Revision: b93eaf9b1386
 Parent: e76342d08c22
@@ -29,7 +30,7 @@ def upgrade() -> None:
         sa.Column("api_key_id", sa.UUID(), nullable=False),
         sa.Column("requested_by", sa.UUID(), nullable=True),
         sa.Column("team_id", sa.UUID(), nullable=True),
-        sa.Column("request_digest", sa.String(length=64), nullable=False),
+        sa.Column("request_digest", sa.String(length=64), nullable=True),
         sa.Column("request_id", sa.String(length=64), nullable=False),
         sa.Column("protocol", sa.String(length=24), nullable=False),
         sa.Column("provider", sa.String(length=16), nullable=False),

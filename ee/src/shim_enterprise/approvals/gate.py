@@ -14,12 +14,13 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.gateway.kernel.result import PreparedInference
 from shim.rules.approval import ApprovalDecision, ApprovalRequest
 from shim_enterprise.approvals.models import RequestApproval
 from shim_enterprise.core.config import settings
+from shim_enterprise.core.database import delete_in_batches
 from shim_enterprise.observability.enterprise_metrics import REQUEST_APPROVALS_TOTAL
 from shim_enterprise.outbox.handlers import APPROVAL_REQUESTED
 from shim_enterprise.outbox.publisher import OutboxWriter
@@ -28,6 +29,10 @@ from shim_enterprise.tenants.models import ApiKey
 APPROVAL_PENDING_TTL = timedelta(hours=24)
 APPROVAL_USE_TTL = timedelta(minutes=60)
 APPROVAL_PENDING_LIMIT = 200
+# One key holds at most a quarter of the queue, so it cannot fill it alone.
+APPROVAL_PENDING_PER_KEY = 50
+# A row is kept this long after it was held, then deleted.
+APPROVAL_RETENTION = timedelta(days=30)
 
 
 @cache
@@ -60,7 +65,10 @@ def request_digest(
 
 
 async def expire_overdue(session: AsyncSession, tenant: UUID, *where: Any) -> None:
-    """Lazy expiry: a pending row past its lifetime, an approval past its use-by."""
+    """Lazy expiry: a pending row past its lifetime, an approval past its use-by.
+
+    A row that can no longer be used keeps no digest of the request (legal rule).
+    """
     await session.execute(
         update(RequestApproval)
         .where(
@@ -75,7 +83,18 @@ async def expire_overdue(session: AsyncSession, tenant: UUID, *where: Any) -> No
             ),
             *where,
         )
-        .values(status="expired")
+        .values(status="expired", request_digest=None)
+    )
+
+
+async def delete_old_approvals(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    return await delete_in_batches(
+        session_factory,
+        RequestApproval,
+        RequestApproval.created_at < func.now() - APPROVAL_RETENTION,
+        order_by=RequestApproval.created_at,
     )
 
 
@@ -117,7 +136,7 @@ class EnterpriseApprovalGate:
             presented = _uuid(request.presented_id)
             if presented is not None:
                 presented_row = (
-                    *same,
+                    RequestApproval.organization_id == tenant,
                     RequestApproval.id == presented,
                     RequestApproval.api_key_id == prepared.api_key_id,
                 )
@@ -125,6 +144,7 @@ class EnterpriseApprovalGate:
                     update(RequestApproval)
                     .where(
                         *presented_row,
+                        RequestApproval.request_digest == digest,
                         RequestApproval.status == "approved",
                         RequestApproval.use_by > func.now(),
                     )
@@ -132,11 +152,13 @@ class EnterpriseApprovalGate:
                         status="used",
                         used_at=func.now(),
                         used_request_id=str(prepared.request_id),
+                        request_digest=None,
                     )
                     .returning(RequestApproval.id)
                 )
                 if used is not None:
                     return ApprovalDecision("approved", str(used))
+                # A rejected row kept no digest: the key's own id is refused.
                 rejected = await session.scalar(
                     select(RequestApproval.id).where(
                         *presented_row, RequestApproval.status == "rejected"
@@ -154,14 +176,24 @@ class EnterpriseApprovalGate:
             )
             if pending is not None:
                 return ApprovalDecision("required", str(pending))
-            waiting = await session.scalar(
-                select(func.count()).where(
-                    RequestApproval.organization_id == tenant,
-                    RequestApproval.status == "pending",
-                    RequestApproval.expires_at > func.now(),
+            waiting, from_key = (
+                await session.execute(
+                    select(
+                        func.count(),
+                        func.count().filter(
+                            RequestApproval.api_key_id == prepared.api_key_id
+                        ),
+                    ).where(
+                        RequestApproval.organization_id == tenant,
+                        RequestApproval.status == "pending",
+                        RequestApproval.expires_at > func.now(),
+                    )
                 )
-            )
-            if (waiting or 0) >= APPROVAL_PENDING_LIMIT:
+            ).one()
+            if (
+                waiting >= APPROVAL_PENDING_LIMIT
+                or from_key >= APPROVAL_PENDING_PER_KEY
+            ):
                 return ApprovalDecision("queue_full", None)
             return ApprovalDecision(
                 "required",

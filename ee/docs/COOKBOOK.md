@@ -910,9 +910,12 @@ them, once.
 3. An owner or admin who does not own the key reads
    `GET /api/v1/management/approvals?status=pending` (or `/{id}`): the rules,
    key, requester, team, provider, model, `stream`, detected entity and rule
-   counts, `input_bytes` and `estimated_input_tokens`. The content is not
-   stored, so `content` is null. They decide with
-   `POST /api/v1/management/approvals/{id}/approve` or `/reject`.
+   counts, `input_bytes` and `estimated_input_tokens`. `content` is null:
+   `content_note` says `content is not stored`, or `content is in the request
+   archive` when the [request archive](#keep-matched-requests-and-open-one) kept
+   it. They decide with `POST /api/v1/management/approvals/{id}/approve` or
+   `/reject`; `POST /api/v1/management/approvals/reject` with
+   `{"api_key_id": ...}` rejects all of one key's pending requests at once.
 4. The client sends the identical request with
    `X-Shim-Approval-Id: <id>` within 60 minutes of the approval. It goes out
    once, with the term unmasked; a second send with the same id is held again
@@ -936,13 +939,14 @@ Notes:
 - "The same request" is the same tenant, key, protocol, model, `stream` and
   body, field for field; key order and whitespace do not matter. Change
   anything and it needs its own approval.
-- A pending approval lives 24 hours; at most 200 wait per tenant, after which
-  new ones answer 403 `APPROVAL_QUEUE_FULL`. An approval is used up when the
+- A pending approval lives 24 hours; at most 200 wait per tenant and 50 per
+  key, after which new ones answer 403 `APPROVAL_QUEUE_FULL`. Rows are deleted
+  30 days after they were held. An approval is used up when the
   request is sent, even if the provider then fails.
 - Token counting (`/v1/messages/count_tokens`) with a held term answers 403
   `APPROVAL_REQUIRED` and creates no approval: a count sends the content too.
-- The key's owner and service accounts cannot decide (403
-  `APPROVER_NOT_ELIGIBLE`); an auditor can read the list. Only a pending,
+- The key's owner, whoever created or rotated the key of a service account that
+  owns it, and service accounts cannot decide (403 `APPROVER_NOT_ELIGIBLE`); an auditor can read the list. Only a pending,
   unexpired approval can be decided (409 `APPROVAL_STATE_CONFLICT` otherwise).
 - The request list shows `approval_id` on the held, refused and sending
   requests, and `GET /api/v1/management/requests?approval_id=<id>` finds them.

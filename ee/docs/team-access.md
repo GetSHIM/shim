@@ -38,7 +38,7 @@ write nor own gateway keys.
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
 | `plans.approve` | Approve or reject a pending plan ([four eyes](POLICY_DECISIONS.md#four-eyes)); never a service account, nor the plan's creator or submitter, nor who created or rotated their service-account key. While four eyes is on, the last two holders cannot be demoted or removed (409 `FOUR_EYES_UNAVAILABLE`) | x | x | | |
-| `requests.approve` | Read and decide [request approvals](POLICY_DECISIONS.md#request-approval); never a service account, nor the owner of the key that sent the request | x | x | | |
+| `requests.approve` | Read and decide [request approvals](POLICY_DECISIONS.md#request-approval); never a service account, nor the owner of the key that sent the request, nor who created or rotated its service account's key | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
 | `config.manage` | Signing keys and file mode | x | | | |
 

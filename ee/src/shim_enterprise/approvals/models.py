@@ -1,4 +1,7 @@
-"""A held request: who sent it, what matched and how big it was; never its content."""
+"""A held request: who sent it, what matched and how big it was; never its content.
+
+Its keyed digest lives only while the row can still be used.
+"""
 
 from __future__ import annotations
 
@@ -68,7 +71,8 @@ class RequestApproval(Base):
     )
     requested_by: Mapped[UUID | None] = mapped_column(SqlUUID(as_uuid=True))
     team_id: Mapped[UUID | None] = mapped_column(SqlUUID(as_uuid=True))
-    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Cleared once the row can no longer be used: used, expired or rejected.
+    request_digest: Mapped[str | None] = mapped_column(String(64))
     request_id: Mapped[str] = mapped_column(String(64), nullable=False)
     protocol: Mapped[str] = mapped_column(String(24), nullable=False)
     provider: Mapped[str] = mapped_column(String(16), nullable=False)

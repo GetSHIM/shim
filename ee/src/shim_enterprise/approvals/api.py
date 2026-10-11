@@ -7,17 +7,19 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import AwareDatetime, BaseModel
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.approvals.gate import APPROVAL_USE_TTL, expire_overdue
 from shim_enterprise.approvals.models import ApprovalStatus, RequestApproval
+from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.core.database import get_db
 from shim_enterprise.observability.enterprise_metrics import (
     REQUEST_APPROVAL_DECISIONS_TOTAL,
 )
+from shim_enterprise.policy.plans import key_holders
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import ApiKey, Team, User
@@ -72,11 +74,23 @@ class ApprovalView(BaseModel):
     input_bytes: int
     estimated_input_tokens: int | None
     content: None = None
-    content_note: Literal["content is not stored"] = "content is not stored"
+    content_note: Literal[
+        "content is not stored", "content is in the request archive"
+    ] = "content is not stored"
 
 
 class ApprovalPage(BaseModel):
     items: list[ApprovalView]
+
+
+class BulkReject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key_id: UUID
+
+
+class BulkRejected(BaseModel):
+    rejected: int
 
 
 async def _views(
@@ -116,6 +130,14 @@ async def _views(
         )
     )
     names = {rule.get("id"): rule.get("name") for rule in stored or []}
+    archived = set(
+        await session.scalars(
+            select(RequestArchive.request_id).where(
+                RequestArchive.organization_id == tenant,
+                RequestArchive.request_id.in_({row.request_id for row in rows}),
+            )
+        )
+    )
     views = []
     for row in rows:
         key = keys.get(row.api_key_id)
@@ -155,6 +177,9 @@ async def _views(
                 detected=row.detected,
                 input_bytes=row.input_bytes,
                 estimated_input_tokens=row.estimated_input_tokens,
+                content_note="content is in the request archive"
+                if row.request_id in archived
+                else "content is not stored",
             )
         )
     return views
@@ -219,6 +244,31 @@ async def get_approval(
     return view
 
 
+async def _may_decide(
+    session: AsyncSession, user: User, api_key_id: UUID, requesters: set[UUID | None]
+) -> None:
+    """Refuse service accounts, and anyone who holds the key: its owner, the
+    recorded requester, and whoever created or rotated their service-account key.
+    With nobody on record to exclude, nobody decides."""
+    tenant = user.organization_id
+    owner = await session.scalar(
+        select(ApiKey.user_id).where(
+            ApiKey.organization_id == tenant, ApiKey.id == api_key_id
+        )
+    )
+    known = {value for value in (owner, *requesters) if value is not None}
+    holders = await key_holders(session, tenant, known)
+    if user.kind != "human" or not holders or user.id in holders:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "APPROVER_NOT_ELIGIBLE",
+                "hint": "Ask another administrator; the key owner, whoever holds "
+                "its service account's key, and service accounts cannot decide.",
+            },
+        )
+
+
 async def _decide(
     session: AsyncSession,
     user: User,
@@ -237,15 +287,9 @@ async def _decide(
                 "send the request again for a new one.",
             },
         )
-    if user.kind != "human" or user.id == row.requested_by:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "APPROVER_NOT_ELIGIBLE",
-                "hint": "Ask another administrator; the key owner and service "
-                "accounts cannot decide.",
-            },
-        )
+    await _may_decide(session, user, row.api_key_id, {row.requested_by})
+    # A rejected row can no longer be used, so it keeps no digest.
+    kept = {} if decision == "approved" else {"request_digest": None}
     row = await session.scalar(
         update(RequestApproval)
         .where(RequestApproval.id == row.id)
@@ -254,6 +298,7 @@ async def _decide(
             decided_by=user.id,
             decided_at=func.now(),
             use_by=func.now() + APPROVAL_USE_TTL if decision == "approved" else None,
+            **kept,
         )
         .returning(RequestApproval)
         .execution_options(populate_existing=True)
@@ -293,3 +338,50 @@ async def reject_request(
     session: AsyncSession = Depends(get_db),
 ) -> ApprovalView:
     return await _decide(session, user, approval_id, "rejected")
+
+
+@router.post("/reject", response_model=BulkRejected)
+async def reject_pending(
+    payload: BulkReject,
+    user: User = Depends(_DECIDE),
+    session: AsyncSession = Depends(get_db),
+) -> BulkRejected:
+    """Reject every pending request of one key, as one decision."""
+    tenant = user.organization_id
+    key = RequestApproval.api_key_id == payload.api_key_id
+    await expire_overdue(session, tenant, key)
+    pending = (
+        await session.execute(
+            select(RequestApproval.id, RequestApproval.requested_by)
+            .where(
+                RequestApproval.organization_id == tenant,
+                key,
+                RequestApproval.status == "pending",
+            )
+            .with_for_update()
+        )
+    ).all()
+    await _may_decide(
+        session, user, payload.api_key_id, {row.requested_by for row in pending}
+    )
+    if pending:
+        await session.execute(
+            update(RequestApproval)
+            .where(RequestApproval.id.in_([row.id for row in pending]))
+            .values(
+                status="rejected",
+                decided_by=user.id,
+                decided_at=func.now(),
+                request_digest=None,
+            )
+        )
+        await _audit(
+            session,
+            user,
+            "tenant.request_approvals_rejected",
+            str(payload.api_key_id),
+            details={"rejected": len(pending)},
+        )
+    await session.commit()
+    REQUEST_APPROVAL_DECISIONS_TOTAL.labels(decision="rejected").inc(len(pending))
+    return BulkRejected(rejected=len(pending))

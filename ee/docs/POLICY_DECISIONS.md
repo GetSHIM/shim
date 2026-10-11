@@ -159,19 +159,29 @@ database transaction, never open across the provider call:
   this purpose from `COMPLIANCE_HASH_SALT` (else `SECRET_KEY`), of the tenant,
   key, protocol, model, `stream` and the canonical JSON of the request as it
   entered the privacy stage. Unmasked, because random placeholders would make
-  every masked request unique. Only the digest is stored; `request_approvals`
-  holds ids, counts, sizes and times, never content, a term or a pattern.
+  every masked request unique. Only the digest is stored, and only while the row
+  can still be used: a row that becomes `used`, `expired` or `rejected` clears
+  it, because the digest is derived from a request that may carry personal data.
+  `request_approvals` holds ids, counts, sizes and times, never content, a term
+  or a pattern, and the audit maintenance worker deletes a row 30 days after it
+  was held (in batches, like the request archive).
 - One approval allows one send, within 60 minutes of the approval; it is
   consumed before the provider call, so a failed attempt needs a new approval.
-  A pending approval lives 24 hours; at most 200 wait per tenant. These are
-  constants, not settings. Expiry is lazy: the gateway and every read of the
-  approvals API store `expired`, and no worker runs.
+  A pending approval lives 24 hours; at most 200 wait per tenant and 50 per key,
+  so one key cannot fill the queue. These are constants, not settings. Expiry is
+  lazy: the gateway and every read of the approvals API store `expired`.
 - A presented `X-Shim-Approval-Id` that does not fit (unknown, another tenant
   or key, another request, used, expired, malformed) is ignored rather than
   refused, so ids cannot be probed and a changed request gets its own approval.
-- The approver is always a second person: never the key owner, never a service
-  account, whatever the tenant's [four eyes](#four-eyes) setting (that governs
-  settings changes).
+  A rejected id is refused for its key whatever is sent with it, since the
+  rejected row kept no digest.
+- The approver is always a second person: never a service account, nor the key's
+  owner, nor the recorded requester, nor whoever created or rotated the key of a
+  service account that owns the key, whatever the tenant's
+  [four eyes](#four-eyes) setting (that governs settings changes). With nobody on
+  record to exclude, nobody decides. `POST /approvals/reject` with an
+  `api_key_id` rejects every pending request of that key as one decision, under
+  the same rule (audited as `tenant.request_approvals_rejected` with the count).
 - Decisions are audited as `tenant.request_approval_approved` and
   `tenant.request_approval_rejected` (approval id, rule ids, key id, model,
   request id). The creation and the use are on the requests themselves, as

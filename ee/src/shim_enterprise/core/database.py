@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import DateTime, func, text
+from sqlalchemy import DateTime, delete, func, select, text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -82,3 +84,36 @@ async def bounded_read(session: AsyncSession) -> AsyncIterator[None]:
                 "message": "The read took too long; ask for a shorter window.",
             },
         ) from None
+
+
+DELETE_BATCH = 1_000
+DELETE_BATCHES = 50
+
+
+async def delete_in_batches(
+    session_factory: async_sessionmaker[AsyncSession],
+    model: Any,
+    *where: Any,
+    order_by: Any,
+) -> int:
+    """Delete the matching rows, oldest first, in bounded batches of one transaction each."""
+    deleted = 0
+    for _ in range(DELETE_BATCHES):
+        async with session_factory.begin() as session:
+            batch = cast(
+                CursorResult[Any],
+                await session.execute(
+                    delete(model).where(
+                        model.id.in_(
+                            select(model.id)
+                            .where(*where)
+                            .order_by(order_by)
+                            .limit(DELETE_BATCH)
+                        )
+                    )
+                ),
+            ).rowcount
+        deleted += batch
+        if batch < DELETE_BATCH:
+            break
+    return deleted

@@ -31,6 +31,7 @@ from shim.privacy.policies import (
 )
 from shim.rules.model import RuleMatch
 from shim_enterprise.archive import service
+from shim_enterprise.core import database
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.config import Settings, settings
@@ -383,8 +384,8 @@ async def test_only_expired_rows_go_in_bounded_batches_whatever_the_switches(
     db, factory, test_org, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", False)
-    monkeypatch.setattr(service, "DELETE_BATCH", 2)
-    monkeypatch.setattr(service, "DELETE_BATCHES", 2)
+    monkeypatch.setattr(database, "DELETE_BATCH", 2)
+    monkeypatch.setattr(database, "DELETE_BATCHES", 2)
     expired = [
         await _row(db, test_org.id, expires_in=-timedelta(days=1)) for _ in range(5)
     ]

@@ -884,8 +884,11 @@
             "type": "null"
           },
           "content_note": {
-            "const": "content is not stored",
             "default": "content is not stored",
+            "enum": [
+              "content is not stored",
+              "content is in the request archive"
+            ],
             "title": "Content Note",
             "type": "string"
           },
@@ -2726,6 +2729,34 @@
           "alert_thresholds_percent"
         ],
         "title": "BudgetView",
+        "type": "object"
+      },
+      "BulkReject": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "format": "uuid",
+            "title": "Api Key Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_key_id"
+        ],
+        "title": "BulkReject",
+        "type": "object"
+      },
+      "BulkRejected": {
+        "properties": {
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rejected"
+        ],
+        "title": "BulkRejected",
         "type": "object"
       },
       "ByScopeView": {
@@ -19001,6 +19032,53 @@
           }
         ],
         "summary": "List Approvals",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/reject": {
+      "post": {
+        "description": "Reject every pending request of one key, as one decision.",
+        "operationId": "reject_pending_api_v1_management_approvals_reject_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkReject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkRejected"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Pending",
         "tags": [
           "approvals"
         ]

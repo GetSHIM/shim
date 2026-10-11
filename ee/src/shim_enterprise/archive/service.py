@@ -7,12 +7,11 @@ from collections.abc import Callable
 from datetime import timedelta
 import json
 import logging
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select, update
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.gateway.kernel.result import PreparedInference
@@ -20,6 +19,7 @@ from shim.privacy.pii_scrubber import PIIScrubberService
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.config import settings
+from shim_enterprise.core.database import delete_in_batches
 from shim_enterprise.observability.enterprise_metrics import (
     REQUEST_ARCHIVE_WRITES_TOTAL,
 )
@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 
 MAX_ARCHIVED_BYTES = 2_000_000
 MAX_MATCHED = 64
-DELETE_BATCH = 1_000
-DELETE_BATCHES = 50
 
 
 def matched(prepared: PreparedInference) -> list[dict[str, Any]]:
@@ -188,24 +186,9 @@ async def shorten_retention(session: AsyncSession, tenant_id: UUID, days: int) -
 
 
 async def delete_expired(session_factory: async_sessionmaker[AsyncSession]) -> int:
-    """Delete expired rows in bounded batches, each its own transaction."""
-    deleted = 0
-    for _ in range(DELETE_BATCHES):
-        async with session_factory.begin() as session:
-            batch = cast(
-                CursorResult[Any],
-                await session.execute(
-                    delete(RequestArchive).where(
-                        RequestArchive.id.in_(
-                            select(RequestArchive.id)
-                            .where(RequestArchive.expires_at < func.now())
-                            .order_by(RequestArchive.expires_at)
-                            .limit(DELETE_BATCH)
-                        )
-                    )
-                ),
-            ).rowcount
-        deleted += batch
-        if batch < DELETE_BATCH:
-            break
-    return deleted
+    return await delete_in_batches(
+        session_factory,
+        RequestArchive,
+        RequestArchive.expires_at < func.now(),
+        order_by=RequestArchive.expires_at,
+    )

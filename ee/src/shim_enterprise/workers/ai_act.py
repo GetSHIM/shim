@@ -16,6 +16,7 @@ from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.ai_act.oversight import expire_pending, run_oversight_evaluation
 from shim_enterprise.ai_act.retention import archive_expired
 from shim_enterprise.ai_act.worm import archive_pass, build_client, unavailable_reason
+from shim_enterprise.approvals.gate import delete_old_approvals
 from shim_enterprise.archive.service import delete_expired
 from shim_enterprise.compliance.services.monthly_evidence import (
     generate_due_monthly_evidence,
@@ -40,6 +41,7 @@ class MaintenanceSummary:
     monthly_evidence: int = 0
     incident_reminders: int = 0
     request_archive_deleted: int = 0
+    request_approvals_deleted: int = 0
     worm_archived: int = 0
     errors: int = 0
 
@@ -71,6 +73,7 @@ class AuditMaintenanceWorker:
             archive = await archive_expired(session)
         # Expired archived requests go whatever the switches say, in bounded batches.
         deleted = await delete_expired(self.session_factory)
+        approvals_deleted = await delete_old_approvals(self.session_factory)
         worm, worm_failures = 0, 0
         if unavailable_reason() is None:
             try:
@@ -97,6 +100,7 @@ class AuditMaintenanceWorker:
             archive_eligible=int(archive["eligible"]),
             monthly_evidence=monthly,
             request_archive_deleted=deleted,
+            request_approvals_deleted=approvals_deleted,
             worm_archived=worm,
         )
 

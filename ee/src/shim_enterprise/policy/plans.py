@@ -20,6 +20,7 @@ from shim_enterprise.tenants.gateway_settings import stored_settings
 from shim_enterprise.tenants.models import (
     Organization,
     OrganizationGatewaySettings,
+    ServiceAccountCredential,
     User,
 )
 from shim_enterprise.tenants.permissions import BUILTIN_ROLE_PERMISSIONS
@@ -116,6 +117,21 @@ async def count_approvers(session: AsyncSession, organization_id: UUID) -> int:
         )
         or 0
     )
+
+
+async def key_holders(
+    session: AsyncSession, organization_id: UUID, user_ids: set[UUID]
+) -> set[UUID]:
+    """The users, and whoever created or rotated their service-account key."""
+    if not user_ids:
+        return set()
+    creators = await session.scalars(
+        select(ServiceAccountCredential.created_by).where(
+            ServiceAccountCredential.organization_id == organization_id,
+            ServiceAccountCredential.user_id.in_(user_ids),
+        )
+    )
+    return user_ids | set(creators)
 
 
 async def require_two_approvers(

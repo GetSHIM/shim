@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from unittest.mock import patch
 from uuid import uuid4
@@ -26,7 +26,10 @@ from shim.rules.model import RuleMatch
 from shim_enterprise.approvals import gate as gate_module
 from shim_enterprise.approvals.gate import (
     APPROVAL_PENDING_LIMIT,
+    APPROVAL_PENDING_PER_KEY,
+    APPROVAL_RETENTION,
     EnterpriseApprovalGate,
+    delete_old_approvals,
     request_digest,
 )
 from shim_enterprise.approvals.models import RequestApproval
@@ -300,6 +303,7 @@ async def test_an_approval_is_consumed_once(tenants, gate, async_engine) -> None
     assert (used.outcome, used.approval_id) == ("approved", held.approval_id)
     assert rows[held.approval_id].status == "used"
     assert rows[held.approval_id].used_request_id == str(sent.request_id)
+    assert rows[held.approval_id].request_digest is None
     assert third.outcome == "required" and third.approval_id != held.approval_id
     assert rows[third.approval_id].status == "pending"
 
@@ -345,7 +349,7 @@ async def test_a_rejected_id_is_refused(tenants, gate, async_engine) -> None:
     _, _, _, [key, _] = tenants[0]
     prepared, payload = _prepared(key)
     held = await gate.check(prepared, _ask(payload))
-    await _set(async_engine, held.approval_id, status="rejected")
+    await _set(async_engine, held.approval_id, status="rejected", request_digest=None)
 
     decision = await gate.check(_prepared(key)[0], _ask(payload, held.approval_id))
 
@@ -374,29 +378,50 @@ async def test_a_pending_row_past_its_lifetime_expires_and_a_new_one_is_held(
     assert statuses == {held.approval_id: "expired", renewed.approval_id: "pending"}
 
 
+def _pending(organization_id, key_id, count: int, start: int = 0) -> list[dict]:
+    return [
+        {
+            "organization_id": organization_id,
+            "api_key_id": key_id,
+            "request_digest": f"{index:064x}",
+            "request_id": f"req_fill_{index}",
+            "protocol": "chat",
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "stream": False,
+            "rule_ids": ["kasa"],
+            "input_bytes": 1,
+            "expires_at": datetime(2999, 1, 1, tzinfo=timezone.utc),
+        }
+        for index in range(start, start + count)
+    ]
+
+
 @pytest.mark.asyncio
 async def test_two_hundred_pending_fill_the_queue(tenants, gate, async_engine) -> None:
-    organization, _, _, [key, _] = tenants[0]
+    organization, user, _, [key, _] = tenants[0]
     async with async_sessionmaker(async_engine).begin() as session:
-        await session.execute(
-            insert(RequestApproval),
-            [
-                {
-                    "organization_id": organization.id,
-                    "api_key_id": key.id,
-                    "request_digest": f"{index:064x}",
-                    "request_id": f"req_fill_{index}",
-                    "protocol": "chat",
-                    "provider": "openai",
-                    "model": "gpt-5.6-luna",
-                    "stream": False,
-                    "rule_ids": ["kasa"],
-                    "input_bytes": 1,
-                    "expires_at": datetime(2999, 1, 1, tzinfo=timezone.utc),
-                }
-                for index in range(APPROVAL_PENDING_LIMIT - 1)
-            ],
-        )
+        others = [
+            ApiKey(
+                id=uuid4(),
+                organization_id=organization.id,
+                user_id=user.id,
+                key_hash=uuid4().hex,
+                prefix="sk-shim-apr",
+                is_active=True,
+            )
+            for _ in range(4)
+        ]
+        session.add_all(others)
+        await session.flush()
+        # 199 waiting, none of the keys at its own limit.
+        rows = [
+            row
+            for index, other in enumerate(others)
+            for row in _pending(organization.id, other.id, 40, start=index * 40)
+        ]
+        rows += _pending(organization.id, key.id, 39, start=160)
+        await session.execute(insert(RequestApproval), rows)
     last = _prepared(key, content=f"{TERM} 200")
 
     held = await gate.check(last[0], _ask(last[1]))
@@ -406,6 +431,43 @@ async def test_two_hundred_pending_fill_the_queue(tenants, gate, async_engine) -
     assert held.outcome == "required"
     assert (full.outcome, full.approval_id) == ("queue_full", None)
     assert len(await _rows(async_engine, organization.id)) == APPROVAL_PENDING_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_one_key_fills_only_its_own_share_of_the_queue(
+    tenants, gate, async_engine
+) -> None:
+    organization, _, _, [key, other_key] = tenants[0]
+    async with async_sessionmaker(async_engine).begin() as session:
+        await session.execute(
+            insert(RequestApproval),
+            _pending(organization.id, key.id, APPROVAL_PENDING_PER_KEY),
+        )
+    flooding = _prepared(key, content=f"{TERM} more")
+    another = _prepared(other_key, content=f"{TERM} other")
+
+    full = await gate.check(flooding[0], _ask(flooding[1]))
+    held = await gate.check(another[0], _ask(another[1]))
+
+    assert (full.outcome, full.approval_id) == ("queue_full", None)
+    assert held.outcome == "required"
+
+
+@pytest.mark.asyncio
+async def test_rows_older_than_the_retention_are_deleted(tenants, async_engine) -> None:
+    organization, _, _, [key, _] = tenants[0]
+    old, recent = _pending(organization.id, key.id, 2)
+    old["created_at"] = func.now() - APPROVAL_RETENTION - timedelta(minutes=1)
+    async with async_sessionmaker(async_engine).begin() as session:
+        await session.execute(insert(RequestApproval), [recent])
+        await session.execute(insert(RequestApproval).values(**old))
+
+    deleted = await delete_old_approvals(async_sessionmaker(async_engine))
+
+    assert deleted >= 1
+    assert [row.request_id for row in await _rows(async_engine, organization.id)] == [
+        recent["request_id"]
+    ]
 
 
 @pytest.mark.asyncio
@@ -433,3 +495,24 @@ async def test_concurrent_twins_make_one_row_and_one_notice(
     assert [notice.aggregate_id for notice in notices] == [str(row.id)]
     assert notices[0].payload["rule_ids"] == ["kasa"]
     assert TERM not in json.dumps(notices[0].payload)
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_worker_deletes_old_approvals(monkeypatch) -> None:
+    from shim_enterprise.workers import ai_act
+
+    async def none(*_args, **_kwargs):
+        return 0, 0
+
+    async def seven(_factory) -> int:
+        return 7
+
+    monkeypatch.setattr(ai_act, "delete_old_approvals", seven)
+    monkeypatch.setattr(ai_act, "generate_due_monthly_evidence", none)
+    monkeypatch.setattr(ai_act, "remind_incident_deadlines", none)
+    monkeypatch.setattr(ai_act.settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
+    monkeypatch.setattr(ai_act.settings, "OVERSIGHT_ENABLED", False)
+
+    summary = await ai_act.AuditMaintenanceWorker(interval_seconds=60).run_once()
+
+    assert summary.request_approvals_deleted == 7

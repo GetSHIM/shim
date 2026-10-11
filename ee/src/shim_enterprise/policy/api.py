@@ -26,12 +26,13 @@ from shim_enterprise.policy.plans import (
     combine_risk,
     current_version,
     four_eyes_on,
+    key_holders,
     lock_tenant,
     record_managed_write,
 )
 from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.tenants.models import ServiceAccountCredential, User
+from shim_enterprise.tenants.models import User
 from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/policy", tags=["policy"])
@@ -554,15 +555,12 @@ async def _pending_for(session: AsyncSession, user: User, plan_id: UUID) -> Poli
             status_code=409,
             detail={"code": "PLAN_STATE_CONFLICT", "status": plan.status},
         )
-    authors = {plan.created_by, plan.submitted_by} - {None}
-    # Whoever created or rotated an author's service-account key holds it too.
-    key_holders = await session.scalars(
-        select(ServiceAccountCredential.created_by).where(
-            ServiceAccountCredential.organization_id == organization_id,
-            ServiceAccountCredential.user_id.in_([UUID(author) for author in authors]),
-        )
-    )
-    if user.kind != "human" or str(user.id) in authors or user.id in set(key_holders):
+    authors = {
+        UUID(author) for author in (plan.created_by, plan.submitted_by) if author
+    }
+    if user.kind != "human" or user.id in await key_holders(
+        session, organization_id, authors
+    ):
         raise HTTPException(status_code=403, detail={"code": "APPROVER_NOT_ELIGIBLE"})
     return plan
 
