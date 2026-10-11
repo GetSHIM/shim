@@ -17,6 +17,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the privacy settings](#change-the-privacy-settings)
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
+- [Keep a data type inside](#keep-a-data-type-inside)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -278,8 +279,9 @@ settings again after the rollback ends.
 
 Keep your own words and codes out of prompts: project names, product codes,
 customer lists. One set per tenant, replaced whole, beside the privacy
-settings. Two kinds are available: `term` (a word list) and `pattern` (code
-shapes); the others are listed as unavailable until their release.
+settings. Three kinds are available: `term` (a word list), `pattern` (code
+shapes) and `destination` ([a data type kept inside](#keep-a-data-type-inside));
+the others are listed as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (`rules.read`: owner, admin
    or auditor):
@@ -345,12 +347,46 @@ revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
 `RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
-does not have) or `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
+does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope) or
+`RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
 413. Every change records `tenant.rules_updated` with ids, kinds and counts,
 never a term; weakening an enforced rule also records
 `tenant.privacy_protection_relaxed` and alerts your forward targets
 ([decision evidence](POLICY_DECISIONS.md#tenant-rules)). Gateways pick up a new
 revision at once.
+
+## Keep a data type inside
+
+Let your own model servers see real national ids while cloud models get a
+placeholder, or nothing at all.
+
+1. Register your servers as `internal` [model deployments](MODEL_DEPLOYMENTS.md)
+   and the cloud ones as `external`. A catalog route (no deployment) is `unknown`,
+   which rules treat as external.
+2. Set the type's base action to what every target may see, here `monitor`:
+   `PUT /api/v1/management/settings/pii` with
+   `{"entity_actions": {"TR_NATIONAL_ID": "monitor"}}`.
+3. Add a `destination` rule that tightens it for external targets, in `monitor`
+   state first:
+
+```json
+{"revision": 3, "rules": [
+  {"id": "tckn_stays_inside", "name": "National ids stay inside", "kind": "destination",
+   "action": "mask", "state": "monitor", "scope": {"deployment_kinds": ["external"]},
+   "match": {"entity_types": ["TR_NATIONAL_ID"]}}
+]}
+```
+
+4. Watch `rule_matches` in the request list (`?rule_id=tckn_stays_inside`), then send
+   the set again with `"state": "enforced"`. Requests to internal deployments keep the
+   value; external and unclassified ones get a placeholder, restored in the answer.
+   With `"action": "block"` they are refused with 400 `RULE_BLOCKED` and
+   `X-Shim-Rule-Id: tckn_stays_inside` before any provider call.
+
+Notes: a rule can only tighten; a base `mask` cannot be loosened to `monitor` for
+internal targets. Changing a deployment from `external` to `internal` is recorded as
+a relaxation, and the operator can restrict `internal` to listed origins with
+`MODEL_DEPLOYMENT_INTERNAL_ORIGINS` ([model deployments](MODEL_DEPLOYMENTS.md)).
 
 ## Read the daily privacy card
 

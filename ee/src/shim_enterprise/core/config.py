@@ -25,6 +25,8 @@ class Settings(CommunitySettings):
     DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     MODEL_DEPLOYMENT_REQUIRED: bool = False
     MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
+    # Empty: a deployment is internal when its tenant says so.
+    MODEL_DEPLOYMENT_INTERNAL_ORIGINS: list[str] = []
     ALERT_ALLOWED_ORIGINS: list[str] = []
     # The model-deployment name shipped in 0.1.4; existing installs still set it.
     OUTBOUND_CA_BUNDLE: str | None = Field(

@@ -1275,3 +1275,133 @@ async def test_the_database_refuses_an_invalid_price_and_a_zero_window(
 
     with pytest.raises(IntegrityError):
         await db.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("internal_origins", "kinds"),
+    [
+        ([], {"internal-a": "internal", "internal-b": "internal"}),
+        (["https://a.internal"], {"internal-a": "internal", "internal-b": "external"}),
+    ],
+)
+async def test_an_internal_row_outside_the_operator_list_is_treated_as_external(
+    db, test_api_key, origins, monkeypatch, internal_origins, kinds
+):
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", internal_origins)
+    await _deployments(db, test_api_key)
+    ids = {}
+    async with _gateway(
+        db, test_api_key, lambda request: _success(request, False, "chat")
+    ) as (client, _, _):
+        for alias in kinds:
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": alias, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200, response.text
+            ids[alias] = response.headers["x-shim-request-id"]
+
+    for alias, kind in kinds.items():
+        row = (
+            await db.execute(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id == ids[alias]
+                )
+            )
+        ).scalar_one()
+        verdicts = {
+            verdict["rule_id"]: verdict["reason_code"]
+            for verdict in row.lifecycle_metadata["policy_verdicts"]
+        }
+        assert row.lifecycle_metadata["deployment_kind"] == kind
+        assert verdicts.get("deployment.classification") == (
+            None if kind == "internal" else "INTERNAL_ORIGIN_NOT_APPROVED"
+        )
+
+
+@pytest.mark.asyncio
+async def test_relabelling_internal_relaxes_and_follows_the_operator_list(
+    db, test_api_key, test_user_with_org, origins, monkeypatch
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    rows = await _deployments(db, test_api_key)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    payload = {
+        "alias": "relabelled",
+        "provider": "openai",
+        "upstream_model": "custom-v1",
+        "base_url": "https://a.internal/v1",
+        "provider_secret_id": str(rows[0].provider_secret_id),
+        "deployment_kind": "internal",
+        "declared_version": "sha256:v1",
+        "owner": "Platform",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        created = await client.post("/model-deployments", json=payload)
+        assert created.status_code == 201, created.text
+        url = f"/model-deployments/{created.json()['id']}"
+        external = {**payload, "deployment_kind": "external"}
+        assert (await client.put(url, json=external)).status_code == 200
+        assert (await client.put(url, json=payload)).status_code == 200
+
+        monkeypatch.setattr(
+            settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", ["https://b.internal"]
+        )
+        refused = [
+            await client.put(url, json=payload),
+            await client.post("/model-deployments", json={**payload, "alias": "x"}),
+        ]
+        allowed = [
+            await client.put(url, json=external),
+            await client.post(
+                "/model-deployments",
+                json={**payload, "alias": "y", "base_url": "https://b.internal/v1"},
+            ),
+        ]
+    assert [response.status_code for response in refused] == [422, 422]
+    assert {response.json()["detail"] for response in refused} == {
+        "Deployment origin is not an operator-approved internal origin"
+    }
+    assert [response.status_code for response in allowed] == [200, 201]
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    extras = [
+        (event.payload.get("endpoint"), event.payload.get("extra", {}))
+        for event in events
+    ]
+    updates = [
+        (extra["before"], extra["after"])
+        for endpoint, extra in extras
+        if endpoint == "tenant.model_deployment_updated"
+    ]
+    assert [
+        extra["relaxed"]
+        for endpoint, extra in extras
+        if endpoint == "tenant.privacy_protection_relaxed"
+    ] == [[f"deployment_kind.{created.json()['id']}"]]
+    assert sorted(map(str, updates)) == sorted(
+        map(
+            str,
+            [
+                ({"deployment_kind": "internal"}, {"deployment_kind": "external"}),
+                ({"deployment_kind": "external"}, {"deployment_kind": "internal"}),
+                ({"deployment_kind": "internal"}, {"deployment_kind": "external"}),
+            ],
+        )
+    )

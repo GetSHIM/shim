@@ -6,6 +6,7 @@ import shim.rules.kinds as kinds
 import shim.rules.patterns as patterns
 from shim.rules import RuleSet, RuleSetError, validate_rule_set
 from shim.rules.content import PatternMatch, TermMatch
+from shim.rules.destination import DestinationMatch
 
 
 def _rule(**values) -> dict:
@@ -140,6 +141,7 @@ def test_a_kind_is_unavailable_until_its_prd_adds_a_match_model() -> None:
         **dict.fromkeys(kinds.KINDS),
         "term": TermMatch,
         "pattern": PatternMatch,
+        "destination": DestinationMatch,
     }
     assert {kind: spec.point for kind, spec in kinds.KINDS.items()} == {
         "term": "privacy",

@@ -171,6 +171,7 @@ from shim_enterprise.tenants.models import (
     User,
 )
 from shim_enterprise.tenants.deployments import (
+    internal_origin_approved,
     require_model_aliases,
     validate_deployment_url,
 )
@@ -5871,6 +5872,13 @@ class _DeploymentResource:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
             )
+        if payload.deployment_kind == "internal" and not internal_origin_approved(
+            payload.base_url
+        ):
+            raise HTTPException(
+                422,
+                detail="Deployment origin is not an operator-approved internal origin",
+            )
         return _deployment_state(payload.model_dump())
 
     async def apply(
@@ -5923,6 +5931,27 @@ class _DeploymentResource:
             item_id,
             details={**details, **version_detail(policy_version)},
         )
+        # Destination rules let an internal target see what an external one may not.
+        if before is not None and (
+            before["deployment_kind"],
+            after["deployment_kind"],
+        ) == ("external", "internal"):
+            relaxed = [f"deployment_kind.{item_id}"]
+            event_id = await _audit(
+                session,
+                actor,
+                "tenant.privacy_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+            await ComplianceForwarderService().send_privacy_protection_relaxed(
+                session,
+                TenantId(organization_id),
+                fields=relaxed,
+                actor=str(actor.id),
+                actor_email=actor.email,
+                event_id=event_id,
+            )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         if before is None:

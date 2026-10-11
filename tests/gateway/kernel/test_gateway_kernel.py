@@ -1552,3 +1552,165 @@ async def test_a_failing_scan_is_recorded_and_the_request_goes_on(monkeypatch) -
     assert response.status_code == 200 and len(calls) == 1
     assert "x-shim-warnings" not in response.headers
     assert line["injection_markers"] == {"error": True}
+
+
+_TCKN = "10000000146"
+
+
+def _destination(action="mask", state="enforced", kinds=("external",)):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "tckn_stays_inside",
+                    "name": "TCKN stays inside",
+                    "kind": "destination",
+                    "action": action,
+                    "state": state,
+                    "scope": {"deployment_kinds": list(kinds)},
+                    "match": {"entity_types": ["TR_NATIONAL_ID"]},
+                }
+            ],
+        }
+    )
+
+
+async def _call_with_destination(
+    rules, route="chat", *, kind="unknown", actions=None, payload=None
+):
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
+
+    async def classify(prepared):
+        return replace(prepared, deployment_kind=kind)
+
+    events = io.StringIO()
+    path, auth, build = _ROUTES[route]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps(actions or {"TR_NATIONAL_ID": "monitor"}),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
+            kernel.prepare_inference = classify
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, "x-provider-key": "provider-secret"},
+                    json=payload or build(f"TCKN {_TCKN} için başvuru"),
+                )
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, calls, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "masked"), [("internal", False), ("external", True), ("unknown", True)]
+)
+async def test_an_enforced_destination_mask_applies_only_to_targets_in_scope(
+    kind, masked
+) -> None:
+    response, calls, [line] = await _call_with_destination(_destination(), kind=kind)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert (_TCKN not in calls[0].content.decode()) is masked
+    if masked:
+        assert line["rule_matches"] == [
+            {
+                "rule_id": "tckn_stays_inside",
+                "kind": "destination",
+                "action": "mask",
+                "state": "enforced",
+                "count": 1,
+            }
+        ]
+        assert line["privacy_counts"] == {"TR_NATIONAL_ID": 1}
+    else:
+        assert "rule_matches" not in line
+        assert line["monitored_entities"] == {"TR_NATIONAL_ID": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "count_tokens", "gemini"])
+async def test_an_enforced_destination_block_refuses_before_the_provider(
+    route,
+) -> None:
+    response, calls, _ = await _call_with_destination(
+        _destination("block"), route, kind="external"
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED"
+    assert response.headers["x-shim-rule-id"] == "tckn_stays_inside"
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_rule_detects_a_type_the_base_leaves_off_and_changes_nothing() -> (
+    None
+):
+    response, calls, [line] = await _call_with_destination(
+        _destination("mask", "monitor"), actions={"TR_NATIONAL_ID": "off"}
+    )
+
+    assert response.status_code == 200 and _TCKN in calls[0].content.decode()
+    assert line["rule_matches"][0]["state"] == "monitor"
+    assert line["rule_matches"][0]["count"] == 1
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["rule.tckn_stays_inside"] == "RULE_WOULD_MASK"
+
+
+@pytest.mark.asyncio
+async def test_the_base_block_keeps_its_code_over_a_destination_block() -> None:
+    response, calls, _ = await _call_with_destination(
+        _destination("block"), actions={"TR_NATIONAL_ID": "block"}
+    )
+
+    assert response.headers["x-shim-error-code"] == "PII_BLOCKED"
+    assert "x-shim-rule-id" not in response.headers and calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "status"), [("enforced", 400), ("monitor", 200)])
+async def test_an_enforced_destination_block_refuses_media_it_cannot_search(
+    state, status
+) -> None:
+    actions = {name: "off" for name in effective_entity_actions()} | {
+        "TR_NATIONAL_ID": "monitor"
+    }
+    payload = {
+        "model": "gpt-5-nano",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "read this card"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.test/card.png"},
+                    },
+                ],
+            }
+        ],
+    }
+
+    response, calls, _ = await _call_with_destination(
+        _destination("block", state), actions=actions, payload=payload
+    )
+
+    assert response.status_code == status
+    assert len(calls) == (status == 200)

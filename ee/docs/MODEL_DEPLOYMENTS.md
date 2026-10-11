@@ -24,6 +24,21 @@ with `OUTBOUND_CA_BUNDLE` (the earlier name `MODEL_DEPLOYMENT_CA_BUNDLE` is stil
 read); certificate verification stays enabled.
 Enforce DNS and outbound network policy at the deployment boundary as well.
 
+`deployment_kind` (`internal` or `external`) is what the tenant admin declares;
+shim does not derive it. [Destination rules](POLICY_DECISIONS.md#destination-rules)
+let an `internal` target see a data type an `external` one may not, so changing an
+existing deployment from `external` to `internal` is a relaxation: it records
+`tenant.privacy_protection_relaxed` with `relaxed: ["deployment_kind.<deployment id>"]`
+and alerts the tenant's forward targets, beside the update's own before and after.
+The reverse, and creating an `internal` deployment, write no relaxation. The
+operator can also set `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`, a JSON list of origins in
+the same format as `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` (empty by default, which keeps
+`internal` the tenant's word). When it is set, a create or update with
+`deployment_kind: internal` and a base URL outside it answers 422 "Deployment origin
+is not an operator-approved internal origin", and a row stored as `internal` before
+the list existed is treated as `external` for each request, recorded with the verdict
+`deployment.classification` (`INTERNAL_ORIGIN_NOT_APPROVED`).
+
 For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.

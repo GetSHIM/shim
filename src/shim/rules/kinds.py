@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from shim.rules.content import PatternMatch, TermMatch
+from shim.rules.destination import DestinationMatch
 from shim.rules.model import (
     LIMITS,
     Rule,
@@ -40,7 +41,9 @@ KINDS: dict[RuleKind, KindSpec] = {
         PatternMatch,
     ),
     "record_set": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
-    "destination": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
+    "destination": KindSpec(
+        "privacy", ("monitor", "warn", "mask", "block"), DestinationMatch
+    ),
     "request_limit": KindSpec("admission", ("monitor", "warn", "block")),
     "parameter_pin": KindSpec("settings", ("monitor", "warn", "set", "block")),
     "route": KindSpec("resolver", ("route",)),
@@ -95,6 +98,13 @@ def validate_rule_set(
                 "RULE_ACTION_UNAVAILABLE",
                 f"rules[{index}].action",
                 f"action {rule.action} is not available for kind {rule.kind}",
+            )
+        # Unscoped, it would only repeat the tenant's base action for the type.
+        if rule.kind == "destination" and rule.scope == RuleScope():
+            raise RuleSetError(
+                "RULE_SCOPE_REQUIRED",
+                f"rules[{index}].scope",
+                "a destination rule needs at least one scope list",
             )
         try:
             match = spec.match.model_validate(rule.match, context={"stored": stored})

@@ -85,8 +85,9 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term` and `pattern` kinds are
-available; `GET /rules` lists the others with `available: false` and the reason.
+`match`. A new rule starts in `monitor`. The `term`, `pattern` and `destination`
+kinds are available; `GET /rules` lists the others with `available: false` and the
+reason.
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
@@ -108,6 +109,27 @@ is replaced by a `<LABEL_…>` placeholder and counted in `pii_entities` under i
 label; `block` and `require_approval` matches keep the text for the decision
 point. Rule matches never enter `monitored_entities` or `blocked_entities`.
 Protocol identifiers are not searched, and a term in one never refuses a request.
+
+### Destination rules
+
+A `destination` rule names 1 to 32 built-in entity types (`match.entity_types`) and
+needs at least one scope list (422 `RULE_SCOPE_REQUIRED` without one), typically
+`deployment_kinds: ["external"]`. A target is `internal` or `external` as its
+[deployment](MODEL_DEPLOYMENTS.md) says; a catalog route and every Gemini request
+are `unknown`, which a scope listing `external` matches. For a request in the rule's
+scope, the privacy stage looks for every type the rule names, also when the base
+action is `off`. The action applied to the text is the stronger of the base action
+and every enforced `mask` rule naming the type (`block` > `mask` > `mask_last4` >
+`monitor` > `off`); a rule never weakens the base action, and a rule in state
+`monitor` only counts. Each rule whose types were found records a `rule_matches`
+entry counting the distinct values; an enforced `block` refuses at the decision
+point with `RULE_BLOCKED`, and `warn` adds `RULE_WARN`. A type the base itself
+blocks keeps `PII_BLOCKED` or `SECRET_BLOCKED`, decided first. A value found only
+because a rule named its type is sent unchanged unless an enforced `mask` applies,
+and counts in `monitored_entities`. Like an enforced content rule, an enforced
+`block` destination rule refuses images and files it cannot search. To keep a type
+inside, set its base action to the weakest action wanted everywhere and add a rule
+that tightens it for external targets.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

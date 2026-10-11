@@ -39,6 +39,7 @@ from shim.privacy.policies import (
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.privacy.injection import scan_payload
 from shim.rules.content import ContentRules, content_rules
+from shim.rules.destination import destination_actions
 from shim.rules.evaluate import in_scope
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,12 @@ class PrivacyStage:
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
         content = content_rules(value.rules, lambda rule: in_scope(rule, value, tags))
+        destinations = [
+            rule
+            for rule in (value.rules.rules if value.rules is not None else ())
+            if rule.kind == "destination" and in_scope(rule, value, tags)
+        ]
+        actions = destination_actions(actions, destinations)
         scrub = partial(
             scrub_payload,
             value.payload,
@@ -249,6 +256,11 @@ class PrivacyStage:
             request_model=value.model,
             unmasked=unmasked,
             content=content,
+            # An enforced block cannot see inside media either.
+            protects=any(
+                (rule.state, rule.action) == ("enforced", "block")
+                for rule in destinations
+            ),
             placeholder_key=None
             if value.placeholder_key is None
             else placeholder_period_key(
@@ -343,11 +355,20 @@ class PrivacyStage:
                         len(content.values.get(rule.id, ())),
                         error=rule.id in content.errors,
                     )
+        detected = (
+            Counter(privacy.pii_entities)
+            + Counter(privacy.monitored_entities)
+            + Counter(privacy.blocked_entities)
+        )
+        for rule in destinations:
+            count = sum(detected[name] for name in rule.match["entity_types"])
+            if count:
+                value.record_rule_match(rule, count)
         return replace(
             value,
             payload=safe_payload,
             privacy=privacy,
-            rules_evaluated=content is not None,
+            rules_evaluated=content is not None or bool(destinations),
         )
 
     def trace_metadata(
@@ -368,15 +389,18 @@ def scrub_payload(
     unmasked: dict[str, str] | None = None,
     placeholder_key: bytes | None = None,
     content: ContentRules | None = None,
+    protects: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
-    protects = any(
-        action in {"mask", "mask_last4", "block"} for action in actions.values()
-    ) or (content is not None and content.protects)
+    protects = (
+        protects
+        or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
+        or (content is not None and content.protects)
+    )
     unmasked = {} if unmasked is None else unmasked
 
     placeholders_by_value = {
