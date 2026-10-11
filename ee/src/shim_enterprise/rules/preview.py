@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim.rules import Rule, RuleSet, RuleSetError, load_rule_set, validate_rule_set
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.config import settings
+from shim_enterprise.core.database import QUERY_CANCELED, bound_statements
 from shim_enterprise.rules.models import (
     OrganizationRuleSet,
     RuleDefinition,
@@ -36,8 +37,6 @@ _TRUNCATED = (
     "{} requests in the window matched more rules than were recorded, so this "
     "count is a lower bound"
 )
-# PostgreSQL's query_canceled, which a statement timeout raises.
-_QUERY_CANCELED = "57014"
 
 Basis = Literal["metadata", "monitor_history", "none"]
 
@@ -229,7 +228,7 @@ async def preview_rule(
     basis: Basis = "none"
     covered_start, requests, errors = start, None, None
     by_scope, note = _empty_scope(), NO_HISTORY
-    await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+    await bound_statements(session)
     try:
         # A savepoint, so a statement timeout leaves the caller's transaction usable.
         async with session.begin_nested():
@@ -261,7 +260,7 @@ async def preview_rule(
                 basis, requests, errors = "metadata", counted["requests"], 0
                 by_scope, note = counted["by_scope"], counted["note"]
     except DBAPIError as error:
-        if getattr(error.orig, "pgcode", None) != _QUERY_CANCELED:
+        if getattr(error.orig, "pgcode", None) != QUERY_CANCELED:
             raise
         basis, covered_start, requests, errors = "none", start, None, None
         by_scope, note = _empty_scope(), _TOO_SLOW

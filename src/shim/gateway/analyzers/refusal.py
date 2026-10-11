@@ -59,6 +59,8 @@ _MARKERS = tuple(
     (marker["id"], tuple(_words(phrase) for phrase in marker["phrases"]))
     for marker in _DATA["markers"]
 )
+# The ids a stored `marker` can take: a reader keeps only these.
+MARKER_IDS: frozenset[str] = frozenset(marker for marker, _ in _MARKERS)
 _UNLESS = tuple(_words(phrase) for phrase in _DATA["unless_followed_by"])
 # Reported speech ("yardımcı olamam dedi") only right after the phrase.
 _REPORTED = tuple(_words(phrase) for phrase in _DATA["unless_directly_followed_by"])

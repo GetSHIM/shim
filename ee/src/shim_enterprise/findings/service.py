@@ -16,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
+    exists,
     Integer,
     Numeric,
     Text,
@@ -33,7 +34,7 @@ from sqlalchemy import (
     type_coerce,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, array, insert
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, insert
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +47,9 @@ from shim.findings import (
     FindingText,
     FindingWindow,
 )
+from shim.gateway.analyzers.refusal import MARKER_IDS
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.core.database import bound_statements
 from shim_enterprise.findings.models import ExternalUsageRecord, Finding
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.latency import FIRST_BYTE_SQL, SWEEP_SQL
@@ -57,7 +60,7 @@ from shim_enterprise.observability.model_inventory import (
     registry_traffic,
     shown_model,
 )
-from shim_enterprise.tenants.gateway_settings import stored_settings
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
     ModelDeployment,
     Organization,
@@ -141,6 +144,7 @@ CACHE_CHURN_MIN_PROMPT_TOKENS = 1_024
 CACHE_CHURN_MAX_CACHE_READ_SHARE = Decimal("0.5")
 EVIDENCE_DEAD_TOOLS = 20
 EVIDENCE_TOOL_SETS = 3
+EVIDENCE_ORDERS = 10
 # Latency of registry deployments, from the request timestamps.
 COLD_START_WINDOW_HOURS = 24
 COLD_START_LOOKBACK = timedelta(hours=24)
@@ -172,7 +176,6 @@ _SUBJECT_ID_LENGTH = 200
 # Stored values that become evidence only in these shapes: a keyed prompt digest
 # and a refusal marker id of the analyzer's phrase list.
 _PROMPT_HASH = re.compile(r"hmac-sha256:v1:[0-9a-f]{64}")
-_MARKER_ID = re.compile(r"[a-z]{2}\.[a-z0-9_]{1,48}")
 EVIDENCE_KEY_IDS = 10
 EVIDENCE_MODELS = 10
 EVIDENCE_MODELS_PER_KEY = 5
@@ -777,13 +780,17 @@ async def apply_modes(
             row.remediation = {**row.remediation, **ladder}
 
 
-async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
+async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySettings:
     stored = await session.scalar(
         select(OrganizationGatewaySettings.settings).where(
             OrganizationGatewaySettings.organization_id == tenant_id
         )
     )
-    return {} if stored is None else stored_settings(stored).finding_modes
+    return GatewaySettings() if stored is None else stored_settings(stored)
+
+
+async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
+    return (await _tenant_settings(session, tenant_id)).finding_modes
 
 
 # A retry storm's fix follows the class most of its repeats belong to.
@@ -1595,6 +1602,22 @@ def _per_key(rows: Any) -> dict[UUID, list[Any]]:
     return keys
 
 
+def _by_model(
+    groups: list[Any], total: str, affected: str, shown: str | None = None
+) -> list[dict[str, Any]]:
+    """Per model, two counts summed over the query's other split, most counted first."""
+    models: dict[str, list[int]] = {}
+    for row in groups:
+        counted = models.setdefault(row.model, [0, 0])
+        counted[0] += getattr(row, total)
+        counted[1] += getattr(row, affected)
+    ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
+    return [
+        {"model": name, total: counts[0], shown or affected: counts[1]}
+        for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
+    ]
+
+
 def _quality_finding(
     rule_id: str,
     key_id: UUID,
@@ -1712,16 +1735,11 @@ async def _schema_errors(
     )
     detections = []
     for key_id, groups in sorted(_per_key(rows).items()):
-        models: dict[str, list[int]] = {}
         kinds: dict[str, int] = {}
         for row in groups:
-            counted = models.setdefault(row.model, [0, 0])
-            counted[0] += row.checked
-            counted[1] += row.invalid
             for name, value in (("checked", row.checked), ("invalid", row.invalid)):
                 field = f"{name}_{row.expected}"
                 kinds[field] = kinds.get(field, 0) + value
-        ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
         found = _quality_finding(
             SCHEMA_ERRORS,
             key_id,
@@ -1735,10 +1753,7 @@ async def _schema_errors(
                 for value in row.request_ids or ()
             ],
             **dict(sorted(kinds.items())),
-            models=[
-                {"model": name, "checked": counts[0], "invalid": counts[1]}
-                for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
-            ],
+            models=_by_model(groups, "checked", "invalid"),
         )
         if found is not None:
             detections.append(found)
@@ -1771,17 +1786,12 @@ async def _soft_refusals(
     )
     detections = []
     for key_id, groups in sorted(_per_key(rows).items()):
-        models: dict[str, list[int]] = {}
         markers: dict[str, int] = {}
         for row in groups:
-            counted = models.setdefault(row.model, [0, 0])
-            counted[0] += row.analysed
-            counted[1] += row.refused
             # Marker ids are the analyzer's fixed vocabulary; anything else is dropped.
-            if row.refused and row.marker and _MARKER_ID.fullmatch(row.marker):
+            if row.refused and row.marker in MARKER_IDS:
                 name = f"marker_{row.marker.replace('.', '_')}"
                 markers[name] = markers.get(name, 0) + row.refused
-        ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
         top_markers = sorted(markers.items(), key=lambda item: (-item[1], item[0]))
         found = _quality_finding(
             SOFT_REFUSALS,
@@ -1796,10 +1806,7 @@ async def _soft_refusals(
                 for value in row.request_ids or ()
             ],
             **dict(top_markers[:EVIDENCE_MARKERS]),
-            models=[
-                {"model": name, "analysed": counts[0], "soft_refusals": counts[1]}
-                for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
-            ],
+            models=_by_model(groups, "analysed", "refused", "soft_refusals"),
         )
         if found is not None:
             detections.append(found)
@@ -1936,9 +1943,9 @@ async def _oversized_parts(
     return detections
 
 
-# The offer counts per key and tool, with the key's offering requests and the
-# tool names its answers called, for keys that offered tools often enough and
-# called at least one.
+# Per key with dead tools: its offering requests, the distinct tools its answers
+# called, the dead tools most offered first, and the requests that offered one.
+# Offers and calls both come from analysed rows, so the two compare.
 _DEAD_TOOLS = text(
     """
     WITH key_rows AS (
@@ -1954,6 +1961,7 @@ _DEAD_TOOLS = text(
         WHERE organization_id = :tenant_id
           AND started_at >= :start AND started_at <= :now
           AND api_key_id IS NOT NULL
+          AND metadata -> 'response_analysis' ? 'shape'
     ),
     offering AS (
         SELECT api_key_id, count(*) AS offering
@@ -1966,15 +1974,39 @@ _DEAD_TOOLS = text(
         SELECT api_key_id, array_agg(DISTINCT name) AS names
         FROM key_rows, jsonb_array_elements_text(called) AS name
         GROUP BY api_key_id
+    ),
+    dead AS (
+        -- A Responses built-in tool is called as <name>_call.
+        SELECT key_rows.api_key_id, tool, count(*) AS offers
+        FROM key_rows
+        JOIN offering USING (api_key_id)
+        JOIN calls USING (api_key_id),
+             jsonb_array_elements_text(key_rows.offered) AS tool
+        WHERE tool <> ALL(calls.names) AND tool || '_call' <> ALL(calls.names)
+        GROUP BY key_rows.api_key_id, tool, offering.offering
+        HAVING count(*) >= offering.offering * CAST(:share AS numeric)
+    ),
+    hits AS (
+        SELECT api_key_id, count(*) AS requests
+        FROM key_rows
+        WHERE EXISTS (SELECT 1 FROM dead
+                      WHERE dead.api_key_id = key_rows.api_key_id
+                        AND key_rows.offered ? dead.tool)
+        GROUP BY api_key_id
     )
-    SELECT key_rows.api_key_id, tool, count(*) AS offers, offering.offering,
-           calls.names AS called
-    FROM key_rows
-    JOIN offering ON offering.api_key_id = key_rows.api_key_id
-    JOIN calls ON calls.api_key_id = key_rows.api_key_id,
-         jsonb_array_elements_text(key_rows.offered) AS tool
-    GROUP BY key_rows.api_key_id, tool, offering.offering, calls.names
-    ORDER BY key_rows.api_key_id, offers DESC, tool
+    SELECT dead.api_key_id, offering.offering,
+           cardinality(calls.names) AS called, count(*) AS dead_tools,
+           (array_agg(dead.tool ORDER BY dead.offers DESC, dead.tool))
+               [1:CAST(:listed AS integer)] AS tools,
+           (array_agg(dead.offers ORDER BY dead.offers DESC, dead.tool))
+               [1:CAST(:listed AS integer)] AS offers,
+           hits.requests
+    FROM dead
+    JOIN offering USING (api_key_id)
+    JOIN calls USING (api_key_id)
+    JOIN hits USING (api_key_id)
+    GROUP BY dead.api_key_id, offering.offering, calls.names, hits.requests
+    ORDER BY dead.api_key_id
     """
 )
 # When each organization's dead tools are next due, in this worker's memory as
@@ -1987,64 +2019,38 @@ async def _dead_tools(
 ) -> list[Detection]:
     if now < _dead_tools_due.get(tenant_id, now):
         return []
-    start = now - timedelta(days=DEAD_TOOLS_WINDOW_DAYS)
-    keys: dict[UUID, list[Any]] = {}
-    for row in await session.execute(
+    rows = await session.execute(
         _DEAD_TOOLS,
         {
             "tenant_id": tenant_id,
-            "start": start,
+            "start": now - timedelta(days=DEAD_TOOLS_WINDOW_DAYS),
             "now": now,
             "minimum": DEAD_TOOLS_MIN_REQUESTS,
+            "share": DEAD_TOOLS_MIN_OFFER_SHARE,
+            "listed": EVIDENCE_DEAD_TOOLS,
         },
-    ):
-        keys.setdefault(row.api_key_id, []).append(row)
+    )
     _dead_tools_due[tenant_id] = now + timedelta(hours=DEAD_TOOLS_EVALUATION_HOURS)
-    detections = []
-    for key_id, tools in keys.items():
-        called = set(tools[0].called)
-        offering = tools[0].offering
-        # A Responses built-in tool is called as <name>_call.
-        dead = [
-            row
-            for row in tools
-            if row.offers >= offering * DEAD_TOOLS_MIN_OFFER_SHARE
-            and row.tool not in called
-            and f"{row.tool}_call" not in called
-        ][:EVIDENCE_DEAD_TOOLS]
-        if not dead:
-            continue
-        offered = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"][
-            "tools_offered"
-        ]
-        requests = await session.scalar(
-            select(func.count()).where(
-                RequestLifecycle.organization_id == tenant_id,
-                RequestLifecycle.started_at >= start,
-                RequestLifecycle.started_at <= now,
-                RequestLifecycle.api_key_id == key_id,
-                offered.has_any(array([row.tool for row in dead])),
-            )
+    return [
+        Detection(
+            rule_id=DEAD_TOOLS,
+            subject_key=f"api_key:{row.api_key_id}",
+            subject={"api_key_id": str(row.api_key_id)},
+            evidence={
+                "window_days": DEAD_TOOLS_WINDOW_DAYS,
+                "offering_requests": row.offering,
+                "dead_tools": row.dead_tools,
+                "called_tools": row.called,
+                # Allowlisted tool names (S37) stay in the stored row only.
+                "tools": [
+                    {"name": tool[:64], "offered": offers}
+                    for tool, offers in zip(row.tools, row.offers, strict=True)
+                ],
+            },
+            impact={"cost_usd": None, "requests": row.requests},
         )
-        detections.append(
-            Detection(
-                rule_id=DEAD_TOOLS,
-                subject_key=f"api_key:{key_id}",
-                subject={"api_key_id": str(key_id)},
-                evidence={
-                    "window_days": DEAD_TOOLS_WINDOW_DAYS,
-                    "offering_requests": offering,
-                    "dead_tools": len(dead),
-                    "called_tools": len(called),
-                    # Allowlisted tool names (S37) stay in the stored row only.
-                    "tools": [
-                        {"name": row.tool[:64], "offered": row.offers} for row in dead
-                    ],
-                },
-                impact={"cost_usd": None, "requests": requests},
-            )
-        )
-    return detections
+        for row in rows
+    ]
 
 
 async def _cache_order_churn(
@@ -2062,14 +2068,18 @@ async def _cache_order_churn(
         )
         > 0
     )
-    rows = await session.execute(
+    per_order = (RequestLifecycle.api_key_id, tool_set, order)
+    rows = (
         select(
             RequestLifecycle.api_key_id,
             tool_set.label("tool_set"),
-            func.count().label("requests"),
-            func.count().filter(cached).label("cache_reads"),
-            func.array_agg(distinct(RequestLifecycle.provider)).label("providers"),
-            _request_ids(true()).label("request_ids"),
+            order.label("tool_order"),
+            RequestLifecycle.provider,
+            RequestLifecycle.request_id,
+            RequestLifecycle.started_at,
+            cached.label("cached"),
+            func.count().over(partition_by=per_order).label("in_order"),
+            (func.row_number().over(partition_by=per_order) == 1).label("first"),
         )
         .join(
             RequestLog,
@@ -2083,41 +2093,52 @@ async def _cache_order_churn(
             tool_set.is_not(None),
             order.is_not(None),
         )
-        .group_by(RequestLifecycle.api_key_id, tool_set, order)
+        .subquery()
     )
-    sets: dict[tuple[UUID, str], list[Any]] = {}
-    for row in rows:
-        sets.setdefault((row.api_key_id, row.tool_set), []).append(row)
+    # One row per key and tool set, however many orders its requests came in.
+    sets = await session.execute(
+        select(
+            rows.c.api_key_id,
+            func.count().label("requests"),
+            func.count().filter(rows.c.cached).label("cache_reads"),
+            func.count(distinct(rows.c.tool_order)).label("orders"),
+            func.max(rows.c.in_order).label("dominant"),
+            type_coerce(
+                func.array_agg(
+                    aggregate_order_by(rows.c.in_order, rows.c.in_order.desc())
+                ).filter(rows.c.first),
+                ARRAY(Integer),
+            )[1:EVIDENCE_ORDERS].label("requests_per_order"),
+            func.array_agg(distinct(rows.c.provider)).label("providers"),
+            _request_ids(true(), rows.c.request_id, rows.c.started_at).label(
+                "request_ids"
+            ),
+        )
+        .group_by(rows.c.api_key_id, rows.c.tool_set)
+        .having(func.count() >= CACHE_CHURN_MIN_REQUESTS)
+    )
     churned: dict[UUID, list[dict[str, Any]]] = {}
-    for (key_id, _), orders in sets.items():
-        requests = sum(row.requests for row in orders)
-        reads = sum(row.cache_reads for row in orders)
-        dominant = max(row.requests for row in orders)
+    for row in sets:
         if (
-            requests >= CACHE_CHURN_MIN_REQUESTS
-            and len(orders) >= 2
-            and Decimal(dominant) / requests < CACHE_CHURN_MAX_DOMINANT_SHARE
-            and Decimal(reads) / requests < CACHE_CHURN_MAX_CACHE_READ_SHARE
+            row.orders >= 2
+            and Decimal(row.dominant) / row.requests < CACHE_CHURN_MAX_DOMINANT_SHARE
+            and Decimal(row.cache_reads) / row.requests
+            < CACHE_CHURN_MAX_CACHE_READ_SHARE
         ):
-            churned.setdefault(key_id, []).append(
+            churned.setdefault(row.api_key_id, []).append(
                 {
-                    "requests": requests,
-                    "orders": len(orders),
-                    "requests_per_order": sorted(
-                        (row.requests for row in orders), reverse=True
+                    "requests": row.requests,
+                    "orders": row.orders,
+                    "requests_per_order": list(row.requests_per_order),
+                    "cache_read_share": str(
+                        round(Decimal(row.cache_reads) / row.requests, 4)
                     ),
-                    "cache_read_share": str(round(Decimal(reads) / requests, 4)),
                     "providers": sorted(
-                        {
-                            provider
-                            for row in orders
-                            for provider in row.providers or ()
-                            if provider in PROVIDERS
-                        }
+                        provider
+                        for provider in row.providers or ()
+                        if provider in PROVIDERS
                     ),
-                    "request_ids": [
-                        value for row in orders for value in row.request_ids or ()
-                    ],
+                    "request_ids": list(row.request_ids or ()),
                 }
             )
     detections = []
@@ -2157,11 +2178,11 @@ async def _cache_order_churn(
 
 
 # A registry deployment's requests with their idle gap (seconds since the previous
-# request of the same deployment; a lookback day earlier counts, and no previous
-# request is a gap of the whole lookback) and their first byte (TTFT for a stream,
-# provider latency for JSON). Warm requests' median first byte makes a cold start
-# relative: a gap of at least the idle threshold, and a timeout or a first byte of
-# at least max(minimum, factor x warm median).
+# request of the same deployment, stream or not; a lookback day earlier counts, and
+# no previous request is a gap of the whole lookback) and their first byte. Only a
+# stream can be a cold start, as a JSON answer's first byte includes its generation.
+# Warm streams' median TTFT makes it relative: a gap of at least the idle threshold,
+# and a timeout or a TTFT of at least max(minimum, factor x warm median).
 _DEPLOYMENT_REQUESTS = """
     rows AS (
         SELECT metadata ->> 'deployment_id' AS deployment_id, request_id, started_at,
@@ -2182,12 +2203,12 @@ _DEPLOYMENT_REQUESTS = """
     warm AS (
         SELECT deployment_id,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS first_byte
-        FROM windowed WHERE gap < :idle_seconds AND first_byte IS NOT NULL
+        FROM windowed WHERE stream AND gap < :idle_seconds AND first_byte IS NOT NULL
         GROUP BY deployment_id
     ),
     classified AS (
         SELECT windowed.*, warm.first_byte AS warm_first_byte,
-               windowed.gap >= :idle_seconds AND (
+               windowed.stream AND windowed.gap >= :idle_seconds AND (
                    windowed.status = 'timeout'
                    OR windowed.first_byte >= greatest(
                        :min_first_byte, :factor * coalesce(warm.first_byte, 0)
@@ -2265,7 +2286,8 @@ def _ms(value: float | None) -> int | None:
 
 
 # Per deployment and hour of the window: streams, their p95 TTFT without the cold
-# starts, and the most streams in flight at once; and the 7-day baseline before.
+# starts, and the most requests (streams or not) in flight at once; and the 7-day
+# baseline before.
 _QUEUEING = text(
     "WITH"
     + _DEPLOYMENT_REQUESTS.format(first_byte=FIRST_BYTE_SQL.format(t=""))
@@ -2304,7 +2326,7 @@ _QUEUEING = text(
         WHERE l.organization_id = :tenant_id
           AND l.started_at >= CAST(:lookback AS timestamptz)
           AND l.started_at <= CAST(:now AS timestamptz)
-          AND l.stream AND l.provider_started_at IS NOT NULL
+          AND l.provider_started_at IS NOT NULL
           AND l.metadata ->> 'deployment_id' IN (SELECT deployment_id FROM hours)
     ),
     clipped AS (
@@ -2686,19 +2708,29 @@ async def evaluate_organization(
         (_byok_usage, (BYOK_USAGE,)),
         (_answer_quality, (ANSWER_QUALITY,)),
         (_outcome_rates, (TRUNCATION_RATE, REFUSAL_RATE)),
-        (_language_drift, (LANGUAGE_DRIFT,)),
-        (_schema_errors, (SCHEMA_ERRORS,)),
-        (_soft_refusals, (SOFT_REFUSALS,)),
-        (_oversized_parts, (OVERSIZED_PARTS,)),
-        (_dead_tools, (DEAD_TOOLS,)),
-        (_cache_order_churn, (CACHE_ORDER_CHURN,)),
-        (_cold_starts, (COLD_START,)),
-        (_queueing, (QUEUEING,)),
+    )
+    settings = await _tenant_settings(session, tenant_id)
+    analysed = set(settings.response_analysis)
+    registry = await session.scalar(
+        select(exists().where(ModelDeployment.organization_id == tenant_id))
+    )
+    # Rules over analyzer output or registry traffic run only when there can be
+    # some, and every statement after this point is bounded.
+    bounded = (
+        (_language_drift, (LANGUAGE_DRIFT,), "language" in analysed),
+        (_schema_errors, (SCHEMA_ERRORS,), "schema" in analysed),
+        (_soft_refusals, (SOFT_REFUSALS,), "refusal" in analysed),
+        (_oversized_parts, (OVERSIZED_PARTS,), "shape" in analysed),
+        (_dead_tools, (DEAD_TOOLS,), "shape" in analysed),
+        (_cache_order_churn, (CACHE_ORDER_CHURN,), "shape" in analysed),
+        (_cold_starts, (COLD_START,), registry),
+        (_queueing, (QUEUEING,), registry),
     )
     detections: list[Detection] = []
     failed: list[str] = []
-    modes = await finding_modes(session, tenant_id)
-    for rule, rule_ids in rules:
+    modes = settings.finding_modes
+
+    async def run(rule: Any, rule_ids: tuple[str, ...]) -> None:
         try:
             async with session.begin_nested():
                 found = await rule(session, tenant_id, now)
@@ -2707,7 +2739,7 @@ async def evaluate_organization(
                         session, tenant_id, detection, now=now, modes=modes
                     )
         except Exception as exc:
-            failed += rule_ids
+            failed.extend(rule_ids)
             logger.error(
                 "Findings rule failed organization_id=%s rules=%s type=%s",
                 tenant_id,
@@ -2715,7 +2747,14 @@ async def evaluate_organization(
                 type(exc).__name__,
             )
         else:
-            detections += found
+            detections.extend(found)
+
+    for rule, rule_ids in rules:
+        await run(rule, rule_ids)
+    await bound_statements(session)
+    for rule, rule_ids, wanted in bounded:
+        if wanted:
+            await run(rule, rule_ids)
     await apply_modes(session, tenant_id, modes)
     await session.execute(
         update(Finding)

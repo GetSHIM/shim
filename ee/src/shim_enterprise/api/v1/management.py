@@ -123,7 +123,7 @@ from shim_enterprise.compliance.url_guard import (
     assert_safe_forward_url,
 )
 from shim_enterprise.core.config import settings
-from shim_enterprise.core.database import get_db
+from shim_enterprise.core.database import bounded_read, get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
@@ -3131,14 +3131,15 @@ async def latency(
             status_code=422,
             detail="hour buckets cover at most 7 days, day buckets at most 31",
         )
-    return await latency_by_group(
-        session,
-        _tenant_id(user),
-        start=start_at,
-        end=end_at,
-        group_by=group_by,
-        bucket=bucket,
-    )
+    async with bounded_read(session):
+        return await latency_by_group(
+            session,
+            _tenant_id(user),
+            start=start_at,
+            end=end_at,
+            group_by=group_by,
+            bucket=bucket,
+        )
 
 
 class LanguageCostGroupView(BaseModel):

@@ -13,7 +13,12 @@ from shim.jsonschema_subset import check
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.findings import service
 from shim_enterprise.findings.models import Finding
-from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    OrganizationGatewaySettings,
+    User,
+)
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 HASH = "hmac-sha256:v1:" + "a" * 64
@@ -67,6 +72,16 @@ def _schema(valid: bool | None, expected: str = "json_schema", **values) -> dict
 
 def _refusal(soft: bool, marker: str | None = None) -> dict:
     return {"refusal": {"soft_refusal": soft, "marker": marker}}
+
+
+async def _analyse(db, key: ApiKey, *names: str) -> None:
+    db.add(
+        OrganizationGatewaySettings(
+            organization_id=key.organization_id,
+            settings={"response_analysis": list(names)},
+        )
+    )
+    await db.flush()
 
 
 async def _detections(db, key: ApiKey, rule) -> list[service.Detection]:
@@ -280,7 +295,9 @@ async def test_soft_refusals_fire_at_50_answers_and_5_percent(
 
 @pytest.mark.asyncio
 async def test_a_marker_outside_the_vocabulary_is_dropped(db, test_api_key) -> None:
-    db.add_all(_row(test_api_key, _refusal(True, "Sorry, I can't")) for _ in range(5))
+    db.add_all(_row(test_api_key, _refusal(True, "Sorry, I can't")) for _ in range(4))
+    # Shaped like a marker id, but not one the analyzer has.
+    db.add(_row(test_api_key, _refusal(True, "en.made_up")))
     db.add_all(_row(test_api_key, _refusal(False)) for _ in range(45))
 
     [detection] = await _detections(db, test_api_key, service._soft_refusals)
@@ -327,7 +344,7 @@ async def test_the_worker_raises_the_three_findings_in_observe(
     db.add_all(
         _row(test_api_key, _refusal(True, "tr.yardimci_olamam")) for _ in range(50)
     )
-    await db.flush()
+    await _analyse(db, test_api_key, "language", "schema", "refusal")
 
     await service.evaluate_organization(db, test_api_key.organization_id, now=NOW)
     rows = list(
@@ -351,3 +368,25 @@ async def test_the_worker_raises_the_three_findings_in_observe(
             check(service.finding_from_row(row).model_dump(mode="json"), SCHEMA).valid
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_the_worker_skips_a_rule_whose_analyzer_the_tenant_does_not_run(
+    db, test_api_key
+) -> None:
+    db.add_all(_row(test_api_key, _language(answer="en")) for _ in range(20))
+    db.add_all(_row(test_api_key, _schema(False)) for _ in range(20))
+    db.add_all(
+        _row(test_api_key, _refusal(True, "tr.yardimci_olamam")) for _ in range(50)
+    )
+    await _analyse(db, test_api_key, "language")
+
+    await service.evaluate_organization(db, test_api_key.organization_id, now=NOW)
+
+    assert set(
+        await db.scalars(
+            select(Finding.rule_id).where(
+                Finding.organization_id == test_api_key.organization_id
+            )
+        )
+    ) == {service.LANGUAGE_DRIFT}

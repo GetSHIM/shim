@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 
-from sqlalchemy import DateTime, func
+from fastapi import HTTPException
+from sqlalchemy import DateTime, func, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -50,3 +53,32 @@ AsyncSessionLocal = async_sessionmaker(
 async def get_db() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+# What one statement of a read, a preview or a findings pass may take.
+STATEMENT_TIMEOUT = "10s"
+# PostgreSQL's query_canceled, which a statement timeout raises.
+QUERY_CANCELED = "57014"
+
+
+async def bound_statements(session: AsyncSession) -> None:
+    """Every later statement of this transaction stops after STATEMENT_TIMEOUT."""
+    await session.execute(text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'"))
+
+
+@asynccontextmanager
+async def bounded_read(session: AsyncSession) -> AsyncIterator[None]:
+    """A read whose statements are bounded; one that runs out answers 503."""
+    await bound_statements(session)
+    try:
+        yield
+    except DBAPIError as error:
+        if getattr(error.orig, "pgcode", None) != QUERY_CANCELED:
+            raise
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "QUERY_TIMEOUT",
+                "message": "The read took too long; ask for a shorter window.",
+            },
+        ) from None

@@ -6,7 +6,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import event
+from sqlalchemy import event, select, text
 
 from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1.router import management_router
@@ -14,7 +14,16 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings import service
 from shim_enterprise.observability.analytics_projection import RequestLog
-from shim_enterprise.tenants.models import ApiKey, Organization, Team, User
+from shim_enterprise.api.v1 import management
+from shim_enterprise.findings.models import Finding
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ModelDeployment,
+    Organization,
+    ProviderSecret,
+    Team,
+    User,
+)
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 HOUR = datetime(2026, 10, 11, 10, 0, tzinfo=timezone.utc)
@@ -318,6 +327,9 @@ async def test_head_of_line_compares_short_streams_with_and_without_a_long_reque
             first_byte=200.0,
             prompt_tokens=500,
         )
+    # At the long request's start it is in flight; at its end it no longer is.
+    _request(db, key, HOUR, first_byte=2_000.0, prompt_tokens=500)
+    _request(db, key, HOUR + timedelta(minutes=5), first_byte=200.0, prompt_tokens=500)
 
     model = (await _read(db, user, group_by="model")).json()["groups"][0]
     by_key = (await _read(db, user, group_by="api_key")).json()["groups"][0]
@@ -332,8 +344,8 @@ async def test_head_of_line_compares_short_streams_with_and_without_a_long_reque
     ).json()["groups"][0]
 
     assert model["head_of_line"] == {
-        "behind_long": {"ttft_ms_p50": 2_000.0, "streams": 3},
-        "alone": {"ttft_ms_p50": 200.0, "streams": 2},
+        "behind_long": {"ttft_ms_p50": 2_000.0, "streams": 4},
+        "alone": {"ttft_ms_p50": 200.0, "streams": 3},
     }
     assert (by_key["head_of_line"], by_key["head_of_line_unavailable_reason"]) == (
         None,
@@ -480,3 +492,160 @@ async def test_no_queueing_without_baseline_or_concurrency(db) -> None:
     await db.flush()
 
     assert await service._queueing(db, key.organization_id, NOW) == []
+
+
+@pytest.mark.asyncio
+async def test_slow_json_answers_after_a_gap_are_not_cold_starts(db) -> None:
+    _, key = await _tenant(db)
+    deployment = str(uuid4())
+    # A JSON answer's first byte includes its generation: 12 s is a long answer.
+    for index in range(5):
+        _deployment_request(
+            db,
+            key,
+            deployment,
+            NOW - timedelta(hours=4) + timedelta(minutes=30 * index),
+            12_000.0,
+            stream=False,
+            seconds=12,
+        )
+    await db.flush()
+
+    assert await service._cold_starts(db, key.organization_id, NOW) == []
+
+
+@pytest.mark.asyncio
+async def test_peak_concurrency_of_queueing_counts_json_requests_too(db) -> None:
+    _, key = await _tenant(db)
+    deployment = str(uuid4())
+    await _baseline(db, key, deployment)
+    for index in range(2):
+        hour = NOW - timedelta(hours=5 - index)
+        await _busy_hour(db, key, deployment, hour, together=1)
+        for second in range(1, 5):
+            _deployment_request(
+                db,
+                key,
+                deployment,
+                hour + timedelta(seconds=second),
+                30_000.0,
+                stream=False,
+                seconds=60,
+            )
+    await db.flush()
+
+    [detection] = await service._queueing(db, key.organization_id, NOW)
+
+    assert detection.evidence["peak_concurrency"] == 5
+    assert detection.impact["requests"] == 20
+
+
+async def _registry(db, key) -> str:
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=key.organization_id,
+        provider="openai",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(secret)
+    await db.flush()
+    deployment = ModelDeployment(
+        id=uuid4(),
+        organization_id=key.organization_id,
+        alias=f"internal-{uuid4().hex[:8]}",
+        provider="openai",
+        upstream_model="custom-model",
+        base_url="https://a.internal/v1",
+        provider_secret_id=secret.id,
+        timeout_seconds=5,
+        deployment_kind="internal",
+        declared_version="v1",
+        owner="Platform",
+    )
+    db.add(deployment)
+    await db.flush()
+    return str(deployment.id)
+
+
+def _cold_burst(db, key, deployment: str) -> None:
+    for index in range(3):
+        burst = NOW - timedelta(hours=20 - index * 2)
+        _deployment_request(db, key, deployment, burst, 15_000.0)
+        for second in (1, 2, 3):
+            _deployment_request(
+                db, key, deployment, burst + timedelta(seconds=second), 300.0
+            )
+
+
+@pytest.mark.asyncio
+async def test_the_worker_runs_the_deployment_rules_only_with_a_registry(db) -> None:
+    _, without = await _tenant(db)
+    _, registered = await _tenant(db)
+    _cold_burst(db, without, str(uuid4()))
+    _cold_burst(db, registered, await _registry(db, registered))
+    await db.flush()
+
+    for key in (without, registered):
+        await service.evaluate_organization(db, key.organization_id, now=NOW)
+
+    found = {
+        (row.organization_id, row.rule_id)
+        for row in await db.scalars(
+            select(Finding).where(
+                Finding.organization_id.in_(
+                    [without.organization_id, registered.organization_id]
+                )
+            )
+        )
+    }
+    assert found == {(registered.organization_id, service.COLD_START)}
+
+
+@pytest.mark.asyncio
+async def test_the_new_findings_rules_run_under_a_statement_timeout(
+    db, monkeypatch
+) -> None:
+    _, key = await _tenant(db)
+    await _registry(db, key)
+    seen: dict[str, str] = {}
+
+    def watched(name: str):
+        rule = getattr(service, name)
+
+        async def run(session, tenant_id, now):
+            seen[name] = await session.scalar(text("SHOW statement_timeout"))
+            return await rule(session, tenant_id, now)
+
+        return run
+
+    for name in ("_retry_storms", "_cold_starts", "_queueing"):
+        monkeypatch.setattr(service, name, watched(name))
+
+    await service.evaluate_organization(db, key.organization_id, now=NOW)
+
+    assert seen == {"_retry_storms": "0", "_cold_starts": "10s", "_queueing": "10s"}
+
+
+@pytest.mark.asyncio
+async def test_the_read_runs_under_a_statement_timeout_and_a_slow_one_is_503(
+    db, monkeypatch
+) -> None:
+    user, _ = await _tenant(db)
+
+    answered = await _read(db, user)
+    bound = await db.scalar(text("SHOW statement_timeout"))
+
+    async def slow(session, *_args, **_kwargs):
+        await session.execute(text("SET LOCAL statement_timeout = '50ms'"))
+        await session.execute(text("SELECT pg_sleep(1)"))
+
+    monkeypatch.setattr(management, "latency_by_group", slow)
+    refused = await _read(db, user)
+
+    assert answered.status_code == 200
+    assert bound == "10s"
+    assert refused.status_code == 503
+    assert refused.json()["detail"]["code"] == "QUERY_TIMEOUT"

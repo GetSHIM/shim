@@ -362,10 +362,14 @@ indexed `started_at` window; there is no rollup table. Its measures:
   `completed_at` (still running: to the window's end), clipped to every bucket it
   overlaps, swept in time order with an end before a start at the same instant;
   a request without `provider_started_at` never reached the provider and is not
-  counted.
+  counted;
+- head of line: one time-ordered pass per group over long requests' starts and
+  ends and short streams' starts counts the long requests in flight when each
+  short stream starts (a long request covers its start, not its end).
 
-The findings `gateway.cold_start` and `gateway.queueing` use the same first byte and
-sweep ([findings](FINDINGS.md#gatewaycold_start)).
+The findings `gateway.cold_start` and `gateway.queueing` use the same sweep;
+`gateway.cold_start` reads only streams' first byte
+([findings](FINDINGS.md#gatewaycold_start)).
 
 ## Tokens per character by language
 

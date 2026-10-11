@@ -148,58 +148,64 @@ _BUCKETS_SQL = """
     GROUP BY grp, bucket
 """
 
-# Peak concurrency per group and bucket; a request still open runs to the window's end.
+# Peak concurrency per group and bucket; a request still open runs to the window's
+# end. Each span meets only the buckets it overlaps, never every bucket.
 _PEAK_SQL = """
     WITH {base},
     spans AS (
-        SELECT grp, provider_started_at AS s,
-               coalesce(completed_at, CAST(:end AS timestamptz)) AS e
+        SELECT grp, provider_started_at AT TIME ZONE 'UTC' AS s,
+               coalesce(completed_at, CAST(:end AS timestamptz)) AT TIME ZONE 'UTC' AS e
         FROM base WHERE {chosen} AND provider_started_at IS NOT NULL
     ),
-    buckets AS (
-        SELECT generate_series(
-            date_trunc(CAST(:bucket AS text), CAST(:start AS timestamptz) AT TIME ZONE 'UTC'),
-            CAST(:end AS timestamptz) AT TIME ZONE 'UTC',
-            CAST(:step AS interval)
-        ) AS bucket
-    ),
     clipped AS (
-        SELECT spans.grp, buckets.bucket,
-               greatest(spans.s AT TIME ZONE 'UTC', buckets.bucket) AS s,
-               least(spans.e AT TIME ZONE 'UTC',
-                     buckets.bucket + CAST(:step AS interval)) AS e
-        FROM spans JOIN buckets
-          ON spans.s AT TIME ZONE 'UTC' < buckets.bucket + CAST(:step AS interval)
-         AND spans.e AT TIME ZONE 'UTC' > buckets.bucket
+        SELECT spans.grp, b.bucket,
+               greatest(spans.s, b.bucket) AS s,
+               least(spans.e, b.bucket + CAST(:step AS interval)) AS e
+        FROM spans
+        CROSS JOIN LATERAL generate_series(
+            date_trunc(CAST(:bucket AS text), spans.s),
+            least(spans.e, CAST(:end AS timestamptz) AT TIME ZONE 'UTC'),
+            CAST(:step AS interval)
+        ) AS b(bucket)
+        WHERE b.bucket < spans.e
     ),
     {sweep}
     SELECT grp, bucket, peak FROM peaks
 """
 
 # Short streams that started while a long request of the same group was in flight,
-# against short streams that started with none.
+# against short streams that started with none: one time-ordered pass per group
+# counts the long requests in flight (an end before a start before a short stream
+# at the same instant, so a long request covers [start, end)).
 _HEAD_OF_LINE_SQL = """
     WITH {base},
-    long AS (
-        SELECT grp, provider_started_at AS s,
-               coalesce(completed_at, CAST(:end AS timestamptz)) AS e
+    events AS (
+        SELECT grp, provider_started_at AS at, 1 AS rank, 1 AS delta,
+               NULL::float AS first_byte
         FROM base
         WHERE {chosen} AND prompt_tokens >= :long_tokens
           AND provider_started_at IS NOT NULL
+        UNION ALL
+        SELECT grp, coalesce(completed_at, CAST(:end AS timestamptz)), 0, -1, NULL
+        FROM base
+        WHERE {chosen} AND prompt_tokens >= :long_tokens
+          AND provider_started_at IS NOT NULL
+        UNION ALL
+        SELECT grp, started_at, 2, 0, first_byte
+        FROM base
+        WHERE {chosen} AND stream AND prompt_tokens <= :short_tokens
+          AND first_byte IS NOT NULL
     ),
     short AS (
-        SELECT b.grp, b.first_byte,
-               EXISTS (SELECT 1 FROM long
-                       WHERE long.grp IS NOT DISTINCT FROM b.grp
-                         AND long.s <= b.started_at AND b.started_at < long.e) AS behind
-        FROM base b
-        WHERE {chosen} AND b.stream AND b.prompt_tokens <= :short_tokens
-          AND b.first_byte IS NOT NULL
+        SELECT grp, rank, first_byte,
+               sum(delta) OVER (PARTITION BY grp ORDER BY at, rank
+                                ROWS UNBOUNDED PRECEDING) > 0 AS behind
+        FROM events
     )
     SELECT grp, behind,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS ttft_p50,
            count(*) AS streams
-    FROM short GROUP BY grp, behind
+    FROM short WHERE rank = 2 GROUP BY grp, behind
 """
 
 

@@ -13,7 +13,12 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.findings import service
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.observability.analytics_projection import RequestLog
-from shim_enterprise.tenants.models import ApiKey, Organization, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    Organization,
+    OrganizationGatewaySettings,
+    User,
+)
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 SCHEMA = json.loads(
@@ -401,6 +406,12 @@ async def test_the_worker_raises_the_three_in_observe_and_only_for_shape_rows(
             calls=["lookup"] if index == 0 else None,
             prompt_tokens=2_000,
         )
+    db.add(
+        OrganizationGatewaySettings(
+            organization_id=test_api_key.organization_id,
+            settings={"response_analysis": ["shape"]},
+        )
+    )
     await db.flush()
 
     await service.evaluate_organization(db, test_api_key.organization_id, now=NOW)
@@ -427,3 +438,102 @@ async def test_the_worker_raises_the_three_in_observe_and_only_for_shape_rows(
             check(service.finding_from_row(row).model_dump(mode="json"), SCHEMA).valid
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_the_worker_skips_the_three_while_the_shape_analyzer_is_off(
+    db, test_api_key
+) -> None:
+    for index in range(50):
+        _add(
+            db,
+            test_api_key,
+            _shape(
+                tool_count=2,
+                tools_offered=["lookup", "create"],
+                tool_definition_chars=45_000,
+                tools_order_digest=("a" if index % 2 else "b") * 64,
+                tools_set_digest="1" * 64,
+            ),
+            calls=["lookup"] if index == 0 else None,
+            prompt_tokens=2_000,
+        )
+    await db.flush()
+
+    assert (
+        await service.evaluate_organization(db, test_api_key.organization_id, now=NOW)
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_calls_outside_analysed_rows_do_not_hide_a_dead_tool(
+    db, test_api_key
+) -> None:
+    for index in range(50):
+        _add(
+            db,
+            test_api_key,
+            _shape(tool_count=2, tools_offered=["lookup", "create"]),
+            calls=["lookup"] if index == 0 else None,
+        )
+    # Rows from before the analyzer ran: their calls are not compared with offers.
+    for _ in range(5):
+        _add(db, test_api_key, None, calls=["create"])
+
+    [detection] = await _run(db, test_api_key, service._dead_tools)
+
+    assert detection.evidence["tools"] == [{"name": "create", "offered": 50}]
+
+
+@pytest.mark.asyncio
+async def test_dead_tools_take_one_statement_for_any_number_of_keys(
+    db, test_api_key
+) -> None:
+    second = ApiKey(
+        id=uuid4(),
+        organization_id=test_api_key.organization_id,
+        user_id=test_api_key.user_id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-two",
+        tier="enterprise",
+        is_active=True,
+    )
+    db.add(second)
+    await db.flush()
+    for key in (test_api_key, second):
+        for index in range(50):
+            _add(
+                db,
+                key,
+                _shape(tool_count=2, tools_offered=["lookup", "create"]),
+                calls=["lookup"] if index == 0 else None,
+            )
+    await db.flush()
+    connection = await db.connection()
+    sent: list[str] = []
+
+    def capture(_conn, _cursor, statement, *_args) -> None:
+        sent.append(statement)
+
+    event.listen(connection.sync_connection, "before_cursor_execute", capture)
+    try:
+        found = await service._dead_tools(db, test_api_key.organization_id, NOW)
+    finally:
+        event.remove(connection.sync_connection, "before_cursor_execute", capture)
+
+    assert len(found) == 2
+    assert {detection.impact["requests"] for detection in found} == {50}
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_order_per_request_is_aggregated_not_listed(db, test_api_key) -> None:
+    _orders(db, test_api_key, [f"{index:064x}" for index in range(30)])
+
+    [detection] = await _run(db, test_api_key, service._cache_order_churn)
+
+    churned = detection.evidence["sets"][0]
+    assert (detection.evidence["orders"], churned["orders"]) == (30, 30)
+    assert churned["requests_per_order"] == [1] * 10
+    assert len(detection.evidence["request_ids"]) == 20

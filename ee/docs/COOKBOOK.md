@@ -1182,8 +1182,10 @@ curl 'http://localhost:8000/api/v1/management/latency?group_by=team&bucket=hour'
 
 Notes: an app is an API key; apps sharing a key separate with `X-Shim-Tag` and
 `group_by=tag` (a request with two tags counts in both). Requests without a team,
-tag or deployment are one group with `id: null`. How speed and concurrency are
-derived is in [diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
+tag or deployment are one group with `id: null`. Each statement of the read may
+take 10 seconds; past that the answer is 503 `QUERY_TIMEOUT`: ask for a shorter
+window. How speed and concurrency are derived is in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
 
 ## How much more do Turkish answers cost on each model
 

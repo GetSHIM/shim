@@ -61,6 +61,13 @@ each rule runs in its own savepoint: a rule that fails is rolled back alone and
 logged with its rule ids, the other rules still write their findings, and the
 failed rule's open findings are not resolved by the 7-day rule on that pass.
 
+Rules that read analyzer output run only while the tenant runs that analyzer
+(`response_analysis`): `language_drift` needs `language`, `schema_errors`
+`schema`, `soft_refusals` `refusal`, and the three waste rules `shape`. The
+cold-start and queueing rules run only when the tenant has a registered
+deployment. Every statement of these rules has a 10-second statement timeout; one
+that runs out fails its rule for that pass, as above.
+
 - A rule that fires creates a finding, or updates the open one: `last_seen_at`,
   `occurrences`, `summary`, `evidence`, `impact`, `rule_version` and
   `remediation`, so an open finding of an earlier rule version moves to the new
@@ -489,7 +496,8 @@ provider marks itself are [`gateway.refusal_rate`](#gatewayrefusal_rate).
 
 **Resolves** after 7 days below the threshold.
 
-A tenant that has not turned an analyzer on gets no finding from its rule.
+A tenant that has not turned an analyzer on gets no finding from its rule: the
+rule does not run.
 
 ## gateway.oversized_parts
 
@@ -557,8 +565,8 @@ time.
 
 **Evidence and impact.** The firing sets, the requests in them, the number of
 orders and the cache-read share of the largest set, and per set (at most three)
-the requests per order, the cache-read share and the providers; up to 20 request
-ids. Tool names are not repeated. Impact is the requests; no tokens or money.
+the requests of its ten most used orders, the cache-read share and the providers;
+up to 20 request ids. A set is one row of the query however many orders it has. Tool names are not repeated. Impact is the requests; no tokens or money.
 
 **Fix.** Send the tools in a fixed order, for example sorted by name, and keep the
 system prompt free of per-request values.
@@ -570,10 +578,12 @@ system prompt free of per-request values.
 **Checks.** For each [registered deployment](MODEL_DEPLOYMENTS.md#cold-starts-and-timeouts),
 the requests of the last 24 hours. A request's idle gap is the time since the
 deployment's previous request (requests from the day before count; none at all is
-a gap of a day). A request is a cold start when its gap is at least 600 seconds
-and it ended `timeout`, or its first byte (TTFT for a stream, the provider latency
-for JSON) is at least 10,000 ms and at least five times the median first byte of
-the deployment's warm requests (gap under 600 seconds). It fires at 3 cold starts.
+a gap of a day; JSON requests count toward the gap). A stream is a cold start when
+its gap is at least 600 seconds and it ended `timeout`, or its TTFT is at least
+10,000 ms and at least five times the median TTFT of the deployment's warm streams
+(gap under 600 seconds). JSON answers are never cold starts: their first byte
+includes the generation, so a slow answer after a quiet half hour is not a load.
+It fires at 3 cold starts.
 Catalog routes are never subjects. Severity low. Subject: the deployment. Max mode
 `observe`, blast radius `deployment`, risk class `reliability`.
 
@@ -581,7 +591,7 @@ Catalog routes are never subjects. Severity low. Subject: the deployment. Max mo
 for it to load again, sometimes past the deployment's timeout.
 
 **Evidence and impact.** Cold starts, timeouts among them, the median gap, the
-median first byte of cold and warm requests, and up to 20 request ids. Impact is
+median TTFT of cold and warm streams, and up to 20 request ids. Impact is
 the cold requests.
 
 **Fix.** Keep the model loaded between requests (the model server's keep-alive or
@@ -595,10 +605,11 @@ timeouts.
 **Checks.** For each registered deployment with at least 50 streams in the 7 days
 before the last 24 hours, their median TTFT is the baseline. An hour of the last
 24 is congested when it has at least 10 streams, their p95 TTFT (cold starts left
-out) is at least three times the baseline, and at least 4 streams were in flight
-at once (the [latency read](COOKBOOK.md#read-latency-per-team-and-app)'s peak
-concurrency). It fires at 2 congested hours. JSON answers are not counted: their
-latency includes generation. Severity low. Subject: the deployment. Max mode
+out) is at least three times the baseline, and at least 4 requests, streams or
+JSON, were in flight at once (the
+[latency read](COOKBOOK.md#read-latency-per-team-and-app)'s peak concurrency). It
+fires at 2 congested hours. JSON answers' latency is not in the p95: it includes
+generation. Severity low. Subject: the deployment. Max mode
 `observe`, blast radius `deployment`, risk class `reliability`.
 
 **Why.** When more requests arrive than a deployment serves at once, they wait in
