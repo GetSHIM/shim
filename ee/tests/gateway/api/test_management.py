@@ -411,6 +411,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "monitored_entities",
         "blocked_entities",
         "bulk_disclosure",
+        "injection_markers",
         "response_entities",
         "response_analysis",
         "rule_matches",

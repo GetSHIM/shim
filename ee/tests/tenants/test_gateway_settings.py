@@ -110,7 +110,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
 
     assert view.settings == GatewaySettings()
     assert view.model_dump(mode="json") == {
-        "settings": {"response_analysis": []},
+        "settings": {"response_analysis": [], "injection_markers": "off"},
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
