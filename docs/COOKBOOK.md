@@ -609,16 +609,19 @@ The markers are those shim-cli flags, in English and Turkish, typed with or
 without Turkish letters: `INSTRUCTION_OVERRIDE` ("ignore all previous
 instructions", "önceki tüm talimatları yok say"; only an order, so "kuralları yok
 saydık" is not one), `ROLE_REASSIGNMENT` ("you are now", "bundan sonra sen
-yöneticisin"), `SYSTEM_IMPERSONATION` (a `System:` or `[sistem]` line,
-`<important_instructions>`), `SECRECY_REQUEST` ("do not tell the user",
-"kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width characters, bidi controls
-and Unicode tag characters, read before anything is removed). Text under 24
-characters is skipped, and each tool result or document is read up to its first
-1,000,000 characters.
+yöneticisin"), `SYSTEM_IMPERSONATION` (a `[sistem]` line, or a `System:` line
+that goes on as a sentence, so YAML `system: production` and a `## System:
+overview` heading are not one; `<important_instructions>`), `SECRECY_REQUEST`
+("do not tell the user", "kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width
+characters, bidi controls and Unicode tag characters, read before anything is
+removed). A phrase may run across a line break; only a full stop ends it. Text
+under 24 characters is skipped, and each tool result or document is read up to
+its first 1,000,000 characters.
 
 What is read: Chat `tool` and `function` messages; Responses
 `function_call_output`, `custom_tool_call_output` and `mcp_call` outputs; Anthropic
-`tool_result`, `search_result` and text `document` blocks; Gemini
+`tool_result` (with any `document` inside it), `search_result` and text
+`document` blocks; Gemini
 `functionResponse.response`. What you type, system prompts, answers and images are
 never read: they are your own instructions. Nothing is ever blocked, rewritten or
 said to the model; a scan that fails records `{"error": true}` and the request
