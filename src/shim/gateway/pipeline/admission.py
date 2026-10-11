@@ -504,50 +504,56 @@ def _arguments(value: object) -> object:
     return value
 
 
+def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
+    """The tool calls of one assistant (or model) turn, or [] for any other turn."""
+    if not isinstance(turn, Mapping):
+        return []
+    if protocol == "chat" and turn.get("role") == "assistant":
+        return [
+            (
+                call["function"].get("name"),
+                _arguments(call["function"].get("arguments")),
+            )
+            for call in _listed(turn.get("tool_calls"))
+            if isinstance(call, Mapping) and isinstance(call.get("function"), Mapping)
+        ]
+    if protocol in {"messages", "count_tokens"} and turn.get("role") == "assistant":
+        return [
+            (block.get("name"), block.get("input"))
+            for block in _listed(turn.get("content"))
+            if isinstance(block, Mapping) and block.get("type") == "tool_use"
+        ]
+    if protocol == "generate_content" and turn.get("role") == "model":
+        return [
+            (part["functionCall"].get("name"), part["functionCall"].get("args"))
+            for part in _listed(turn.get("parts"))
+            if isinstance(part, Mapping)
+            and isinstance(part.get("functionCall"), Mapping)
+        ]
+    return []
+
+
 def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
-    """A digest of the latest assistant turn's tool calls: names and canonical arguments."""
+    """A digest of the latest assistant turn's tool calls: names and canonical arguments.
+
+    Read from the end, so a long history costs one turn.
+    """
     calls: list[tuple[object, object]] = []
-    if protocol == "chat":
-        for message in _listed(payload.get("messages")):
-            if isinstance(message, Mapping) and message.get("role") == "assistant":
-                turn = [
-                    (
-                        call["function"].get("name"),
-                        _arguments(call["function"].get("arguments")),
-                    )
-                    for call in _listed(message.get("tool_calls"))
-                    if isinstance(call, Mapping)
-                    and isinstance(call.get("function"), Mapping)
-                ]
-                calls = turn or calls
-    elif protocol == "responses":
-        previous = None
-        for item in _listed(payload.get("input")):
-            kind = item.get("type") if isinstance(item, Mapping) else None
-            if kind == "function_call" and isinstance(item, Mapping):
-                call = (item.get("name"), _arguments(item.get("arguments")))
-                # Calls of one turn sit next to each other; an output ends the turn.
-                calls = [*calls, call] if previous == "function_call" else [call]
-            previous = kind
-    elif protocol in {"messages", "count_tokens"}:
-        for message in _listed(payload.get("messages")):
-            if isinstance(message, Mapping) and message.get("role") == "assistant":
-                turn = [
-                    (block.get("name"), block.get("input"))
-                    for block in _listed(message.get("content"))
-                    if isinstance(block, Mapping) and block.get("type") == "tool_use"
-                ]
-                calls = turn or calls
-    elif protocol == "generate_content":
-        for content in _listed(payload.get("contents")):
-            if isinstance(content, Mapping) and content.get("role") == "model":
-                turn = [
-                    (part["functionCall"].get("name"), part["functionCall"].get("args"))
-                    for part in _listed(content.get("parts"))
-                    if isinstance(part, Mapping)
-                    and isinstance(part.get("functionCall"), Mapping)
-                ]
-                calls = turn or calls
+    if protocol == "responses":
+        # Calls of one turn sit next to each other; anything else ends the turn.
+        for item in reversed(_listed(payload.get("input"))):
+            if isinstance(item, Mapping) and item.get("type") == "function_call":
+                calls.append((item.get("name"), _arguments(item.get("arguments"))))
+            elif calls:
+                break
+        calls.reverse()
+    else:
+        turns = payload.get(
+            "contents" if protocol == "generate_content" else "messages"
+        )
+        for turn in reversed(_listed(turns)):
+            if calls := _turn_calls(turn, protocol):
+                break
     if not calls:
         return None
     canonical = json.dumps(
