@@ -168,6 +168,8 @@ class ShimPhoneRecognizer(PhoneRecognizer):
     # 0532.1234567 is a dotted phone; 0.123 is a decimal.
     _DECIMAL = re.compile(r"(?!0\d)\d+\.\d+")
     _TURKISH = re.compile(r"(?:90)?0?5\d{9}|0[2-4]\d{9}")
+    _NOT_DIGIT = re.compile(r"\D")
+    _FORMATTED = re.compile(r"[\s()+]")
     _CUE = re.compile(
         r"\b(?:tel|telefon|phone|gsm|cep|mobile|mobil|cell|fax|whatsapp|call|contact|"
         r"numara|num|no)"
@@ -200,11 +202,13 @@ class ShimPhoneRecognizer(PhoneRecognizer):
             return False
         bare = self._BARE.fullmatch(raw)
         window = max(0, start - 24)
-        if (bare and self._TURKISH.fullmatch(raw)) or self._CUE.search(
+        if self._TURKISH.fullmatch(self._NOT_DIGIT.sub("", raw)) or self._CUE.search(
             text, window, start
         ):
             return True
-        if _glued_to_identifier(text, start):
+        # Digits joined by "-", "_" or "." can end a name, claude-sonnet-4-5-20250929;
+        # a space, a bracket or a "+" makes a phone: "musteri-0532 123 45 67".
+        if _glued_to_identifier(text, start) and not self._FORMATTED.search(raw):
             return False
         return not (
             bare
@@ -216,9 +220,11 @@ class ShimPhoneRecognizer(PhoneRecognizer):
 class ShimIpRecognizer(IpRecognizer):
     """A version string, or a run of more than four numbers, is not an IP address."""
 
+    # No "v": a glued "v1.2.3.4" never matches an address, and a lone one is a flag
+    # or a letter, "curl -v 203.0.113.9" and "server v 192.168.1.1".
     # A bare "ver" after a word is the Turkish verb: "izin ver 10.0.0.5" is an address.
     _VERSION_CUE = re.compile(
-        r"(?:\b(?:v|version|sürüm|ver\.)|(?<!\w\s)\bver)\W{0,2}$", re.IGNORECASE
+        r"(?:\b(?:version|sürüm|ver\.)|(?<!\w\s)\bver)\W{0,2}$", re.IGNORECASE
     )
 
     def analyze(

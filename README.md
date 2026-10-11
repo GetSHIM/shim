@@ -52,7 +52,9 @@ request it:
   `token budget` stays prose), Turkish (`şifre:`, `parolanız:`) included. A
   digit run counts as a phone number unless something marks it as another kind
   of number: an order, invoice, timestamp or amount word in front of it, a
-  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`). A ten-digit
+  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`); a number
+  written with a space, a bracket or a `+` is a phone number even there
+  (`musteri-0532 123 45 67`, `user-+905321234567`). A ten-digit
   number that passes the Turkish tax-number checksum, about one in ten does,
   counts as a tax number under the same rule, unless a tax word (`vergi`,
   `VKN`, `tax`) is in front of it. A number that passes the Luhn check is
