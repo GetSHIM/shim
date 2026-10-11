@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from uuid import UUID
 
@@ -31,12 +32,16 @@ State = dict[str, Any]
 
 class Impact(TypedDict):
     requests: int | None
-    basis: Literal["metadata", "none"]
+    basis: Literal["metadata", "monitor_history", "none"]
     window_days: int
     note: str | None
 
 
 Change = tuple["ManagedResource", str, State | None, State | None]
+
+# The source of the managed write in progress, for the one check that differs by
+# source: a restore may re-create an enforced rule without a preview.
+WRITE_SOURCE: ContextVar[Source] = ContextVar("policy_write_source", default="api")
 
 
 def no_impact(window_days: int, note: str | None = None) -> Impact:
@@ -200,14 +205,23 @@ async def record_managed_write(
     version = await current_version(session, organization_id) + 1
     if plan_id is None:
         await _refuse_unapproved(session, actor, organization_id, changed, version)
-    yield version
+    token = WRITE_SOURCE.set(source)
+    try:
+        yield version
+    finally:
+        WRITE_SOURCE.reset(token)
     await session.flush()
     snapshot: dict[str, State] = {}
     previous: dict[str, State] = {}
+    items: dict[ManagedResource, list[str]] = {}
     for resource, item, before, _ in changed:
-        current = await resource.snapshot(session, organization_id, [item])
-        snapshot.setdefault(resource.name, {})[item] = current.get(item)
+        items.setdefault(resource, []).append(item)
         previous.setdefault(resource.name, {})[item] = before
+    # One read per resource: a rule set PUT can change a hundred items.
+    for resource, names in items.items():
+        current = await resource.snapshot(session, organization_id, names)
+        for item in names:
+            snapshot.setdefault(resource.name, {})[item] = current.get(item)
     session.add(
         PolicyVersion(
             organization_id=organization_id,

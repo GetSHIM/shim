@@ -17,6 +17,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the privacy settings](#change-the-privacy-settings)
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
+- [Preview a rule before you enforce it](#preview-a-rule-before-you-enforce-it)
+- [Import AIUC rules](#import-aiuc-rules)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -339,7 +341,8 @@ are refused, since they cannot be searched.
 Monitor first: a new rule must start in `state: "monitor"`, where a match is
 recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list
 with `GET /api/v1/management/requests?rule_id=project_names` to see what it
-would have done, then send the set again with `"state": "enforced"`.
+would have done, or [preview it](#preview-a-rule-before-you-enforce-it), then
+send the set again with `"state": "enforced"`.
 
 Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
 revision; read again and resend. A refused set is 422 with `code` and the
@@ -352,6 +355,66 @@ never a term; weakening an enforced rule also records
 `tenant.privacy_protection_relaxed` and alerts your forward targets
 ([decision evidence](POLICY_DECISIONS.md#tenant-rules)). Gateways pick up a new
 revision at once.
+
+## Preview a rule before you enforce it
+
+See how many requests a rule would have hit before it blocks anything.
+
+1. As an owner or admin, send the rule as you would put it:
+   `POST /api/v1/management/rules/preview` with `{"rule": {...}, "window_days": 7}`
+   (1 to 31 days).
+2. Read `basis`, `requests` and `by_scope` (the 20 largest API keys, teams and
+   models):
+   - `monitor_history`: the rule is in your set and has run unchanged; the count
+     is its own monitor matches since its kind, scope or match last changed
+     (`window.covered_days` says how much of the window that covers). A rename,
+     a new action or a new state keeps the history.
+   - `metadata`: the rule's kind can be counted from stored request metadata.
+   - `none`: no history, and its kind cannot be counted without the prompts,
+     which shim does not keep (`term` and `pattern` rules). Start it in monitor.
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/rules/preview \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"rule": {"id": "project_names", "name": "Project code names", "kind": "term",
+       "action": "block", "state": "enforced", "match": {"terms": ["Atlas"]}}}'
+```
+
+Notes: a rule that ran in monitor for 7 days shows its real count, which is the
+number to read before you enforce it. A new rule may start enforced only when a
+preview of exactly that rule (kind, action, scope and match) covered a whole
+window of at least 7 days (`enforce_on_create: true`); the preview then holds
+for 24 hours (`preview_expires_at`), through the PUT or a plan. A plan that
+touches rules shows the same numbers as its impact. `errors` counts requests
+where the rule's evaluation failed, and a request that matched more than 32 rules
+may hide this one, which the `note` says. Previews are recorded as
+`tenant.rule_previewed`; no term, pattern or matched text appears in the answer.
+
+## Import AIUC rules
+
+Bring a shim-security (AIUC) rule file into the gateway's rules once, as a plan.
+
+1. As an owner or admin, send the file:
+   `POST /api/v1/management/rules/import/aiuc` (at most 256 KB; `plans.create`
+   and `rules.write`).
+2. The answer is 201 with a draft `plan` and a `report`; 200 with `"plan": null`
+   when nothing would change, so importing the same file again is safe.
+3. Review the report, then [apply the plan](#plan-apply-and-undo-a-change); a
+   restore undoes it.
+
+| AIUC | Gateway |
+| --- | --- |
+| `term` rule | a `term` rule `aiuc_<id>` in state `monitor`, same action, Turkish endings on |
+| `email`, `secret` rule | the `EMAIL_ADDRESS`, `SECRET` type, raised from `off` to `monitor` only |
+| terms of 2 characters, or repeated after the Turkish fold | dropped, listed by position |
+| `offlineAction`, `updatedAt`, `expiresAt`, `expectedRevision` | ignored, listed |
+
+Notes: an `aiuc_<id>` rule that already exists keeps its scope and goes back to
+`monitor`; an id taken by another kind, a term rule left without terms and a rule
+that would pass a set limit are listed under `not_mapped`. The gateway matches a
+term as a whole word with its Turkish endings, AIUC as an escaped literal, and
+the gateway's `SECRET` type finds more formats than AIUC's four. Nothing is
+exported back to AIUC. The import is recorded as `tenant.rules_imported`.
 
 ## Read the daily privacy card
 

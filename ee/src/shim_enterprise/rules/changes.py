@@ -10,7 +10,7 @@ from shim.rules import ACTION_RANK, Rule, RuleSet
 _ADDITIVE_MATCH_KEYS = frozenset({"terms", "templates", "regexes"})
 
 
-def _match_only_grew(before: dict[str, Any], after: dict[str, Any]) -> bool:
+def match_only_grew(before: dict[str, Any], after: dict[str, Any]) -> bool:
     return before.keys() == after.keys() and all(
         set(value) <= set(after[key])
         if key in _ADDITIVE_MATCH_KEYS
@@ -31,7 +31,7 @@ def _relaxes(before: Rule, after: Rule | None) -> bool:
         # An empty list means everyone; naming some, or dropping one, protects fewer.
         if (not old and new) or (new and not set(old) <= set(new)):
             return True
-    return before.match != after.match and not _match_only_grew(
+    return before.match != after.match and not match_only_grew(
         before.match, after.match
     )
 

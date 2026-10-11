@@ -74,10 +74,7 @@ from shim.rules import (
     KINDS,
     LIMITS,
     Rule,
-    RuleScope,
-    RuleSetError,
     load_rule_set,
-    validate_rule_set,
 )
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
@@ -146,8 +143,14 @@ from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.rules.changes import classify_rule_changes
 from shim_enterprise.rules.models import OrganizationRuleSet
+from shim_enterprise.rules.preview import checked_set
+from shim_enterprise.rules.resource import (
+    RULES,
+    rule_changes,
+    rule_set_row,
+    store_rule_set,
+)
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
     GatewaySettings,
@@ -2400,25 +2403,6 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
     )
 
 
-def _rule_audit(rule: Rule, before: Rule | None) -> dict[str, object]:
-    # Ids, kinds and counts only: never a term, a pattern, a name or a match hash.
-    return {
-        "id": rule.id,
-        "kind": rule.kind,
-        "action": rule.action,
-        "state": rule.state,
-        "scope": [
-            field for field in RuleScope.model_fields if getattr(rule.scope, field)
-        ],
-        "match_changed": before is not None and before.match != rule.match,
-        "counts": {
-            key: len(value)
-            for key, value in rule.match.items()
-            if isinstance(value, list)
-        },
-    }
-
-
 @router.get("/rules", response_model=RuleSetView)
 async def get_rules(
     user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
@@ -2462,15 +2446,8 @@ async def replace_rules(
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        insert(OrganizationRuleSet)
-        .values(organization_id=tenant_id)
-        .on_conflict_do_nothing()
-    )
-    row = await session.get(
-        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
-    )
-    assert row is not None
+    await lock_tenant(session, tenant_id)
+    row = await rule_set_row(session, tenant_id)
     if payload.revision != row.revision:
         raise HTTPException(
             status_code=409,
@@ -2480,128 +2457,16 @@ async def replace_rules(
                 "revision": row.revision,
             },
         )
-    try:
-        after = validate_rule_set(
-            {"revision": row.revision + 1, "rules": payload.rules},
-            approval_available=False,
+    after = checked_set(row.revision + 1, payload.rules)
+    changes = rule_changes(await RULES.snapshot(session, tenant_id, None), after)
+    async with record_managed_write(
+        session, user, tenant_id, changes, source="api"
+    ) as version:
+        await store_rule_set(
+            session, user, row, after, source="api", policy_version=version
         )
-    except RuleSetError as error:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": error.code, "path": error.path, "message": str(error)},
-        ) from None
-    before = load_rule_set(row.revision, row.rules) if row.rules else None
-    stored = {rule.id: rule for rule in before.rules} if before is not None else {}
-    # This release cannot read them, so it keeps them as they are.
-    kept = before.unusable if before is not None else ()
-    if len(after.rules) + len(kept) > LIMITS["rules_per_set"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "RULE_SET_INVALID",
-                "path": "rules",
-                "message": "A rule set holds at most 100 rules, with the "
-                f"{len(kept)} this release cannot run.",
-            },
-        )
-    known: dict[str, set[str]] = {}
-    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
-        ids = {value for rule in after.rules for value in getattr(rule.scope, field)}
-        known[field] = (
-            {
-                str(value)
-                for value in await session.scalars(
-                    select(model.id).where(
-                        model.organization_id == tenant_id, model.id.in_(ids)
-                    )
-                )
-            }
-            if ids
-            else set()
-        )
-    kept_ids = {rule.id for rule in kept}
-    for index, rule in enumerate(after.rules):
-        if rule.id in kept_ids:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_ID_DUPLICATE",
-                    "path": f"rules[{index}].id",
-                    "message": f"rule id {rule.id} is held by a stored rule this "
-                    "release cannot run.",
-                },
-            )
-        for field, values in known.items():
-            for position, value in enumerate(getattr(rule.scope, field)):
-                if value not in values:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={
-                            "code": "RULE_SCOPE_UNKNOWN",
-                            "path": f"rules[{index}].scope.{field}[{position}]",
-                            "message": f"{field} names an id this organization does not have.",
-                        },
-                    )
-        if rule.id not in stored and rule.state != "monitor":
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_MUST_START_IN_MONITOR",
-                    "path": f"rules[{index}].state",
-                    "message": "A new rule starts in state monitor.",
-                },
-            )
-    current = {rule.id: rule for rule in after.rules}
-    await _audit(
-        session,
-        user,
-        "tenant.rules_updated",
-        str(tenant_id),
-        details={
-            "revision": after.revision,
-            "added": [
-                _rule_audit(rule, None) for rule in after.rules if rule.id not in stored
-            ],
-            "changed": [
-                _rule_audit(rule, stored[rule.id])
-                for rule in after.rules
-                if rule.id in stored and stored[rule.id] != rule
-            ],
-            "removed": [
-                _rule_audit(rule, None)
-                for rule in stored.values()
-                if rule.id not in current
-            ],
-        },
-    )
-    relaxed = classify_rule_changes(before, after)
-    if relaxed:
-        event_id = await _audit(
-            session,
-            user,
-            "tenant.privacy_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
-        await ComplianceForwarderService().send_privacy_protection_relaxed(
-            session,
-            TenantId(tenant_id),
-            fields=relaxed,
-            actor=str(user.id),
-            actor_email=user.email,
-            event_id=event_id,
-        )
-    row.rules = [rule.model_dump(mode="json") for rule in after.rules] + [
-        rule.stored for rule in kept
-    ]
-    row.revision = after.revision
-    row.updated_by = str(user.id)
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
-    except Exception as exc:
-        logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
+    await RULES.after_commit(request, tenant_id)
     await session.refresh(row)
     return _rule_set_view(row)
 

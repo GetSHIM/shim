@@ -197,7 +197,7 @@ async def _expire_overdue(
     await session.commit()
 
 
-async def _change(
+async def planned_change(
     session: AsyncSession,
     organization_id: UUID,
     resource_name: str,
@@ -220,13 +220,13 @@ async def _change(
     }
 
 
-async def _new_plan(
+async def new_plan(
     session: AsyncSession,
     actor: User,
     organization_id: UUID,
     changes: list[dict[str, Any]],
     *,
-    source: Literal["api", "restore"],
+    source: Literal["api", "restore", "import"],
     reason: str | None,
 ) -> PolicyPlan:
     plan = PolicyPlan(
@@ -429,7 +429,13 @@ async def create_plan(
                     "errors": f"{resource.name} cannot be deleted",
                 },
             )
-        item = change.item or str(uuid4())
+        if change.item is not None:
+            item = change.item
+        elif new_item := getattr(resource, "new_item", None):
+            # A resource whose items the caller names, as a rule id.
+            item = new_item(change.set or {})
+        else:
+            item = str(uuid4())
         before = None
         if change.item is not None:
             before = (await resource.snapshot(session, organization_id, [item])).get(
@@ -466,7 +472,7 @@ async def create_plan(
                 detail={"change": index, "errors": "The change sets nothing new"},
             )
         changes.append(
-            await _change(
+            await planned_change(
                 session,
                 organization_id,
                 resource.name,
@@ -476,7 +482,7 @@ async def create_plan(
                 window_days,
             )
         )
-    plan = await _new_plan(
+    plan = await new_plan(
         session, user, organization_id, changes, source="api", reason=payload.reason
     )
     await session.commit()
@@ -786,7 +792,9 @@ async def restore_version(
                     )
                 )
             changes.append(
-                await _change(session, organization_id, name, item, now, target, 7)
+                await planned_change(
+                    session, organization_id, name, item, now, target, 7
+                )
             )
     if len(changes) > _MAX_CHANGES:
         raise HTTPException(
@@ -795,7 +803,7 @@ async def restore_version(
     plan = None
     cleanups: list[PostCommit] | None = []
     if changes:
-        plan = await _new_plan(
+        plan = await new_plan(
             session,
             user,
             organization_id,

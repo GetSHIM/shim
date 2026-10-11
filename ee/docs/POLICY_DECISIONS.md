@@ -157,7 +157,9 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
 | `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
-| `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`); never a term, pattern, name or match hash |
+| `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`), and `policy_version`; never a term, pattern, name or match hash |
+| `tenant.rule_previewed` | `rule_id`, `kind`, `basis`, `requests`, `window_days`, `enforce_on_create` |
+| `tenant.rules_imported` | `plan_id` (null when nothing would change), `mapped` and `not_mapped` counts, `source_revision` |
 | `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed, and `policy_version` |
 | `tenant.gateway_protection_relaxed` | `relaxed`: the gateway settings fields whose change their direction classifies as relaxing; written with the update |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
@@ -212,13 +214,14 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Seven resources are managed: every write to them records a version, a plan can
+Eight resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
 | `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off); a field without a direction always |
+| `rules` | rule id | the rule without its id | `PUT /rules` | an enforced rule is removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
 | `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |
@@ -262,6 +265,11 @@ for a type that was `off`, since it was never detected), a key's requests for
 models it would no longer allow, a deployment's requests, and requests above a
 lowered team limit. A budget reports its month-to-date use against the new
 limit, and an oversight policy has no estimate.
+
+A rule change is tightening when it adds an enforced rule, enforces a rule,
+raises its action or only adds terms or patterns to an enforced rule. A plan
+creates a rule with `{"resource": "rules", "item": null, "set": {"id": ...}}`;
+its impact is the [rule preview](#rule-previews).
 
 Restoring a version applies a plan with source `restore` that puts every item a
 version touched back to its state at that version. A revoked key, a team
@@ -316,6 +324,39 @@ Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,
 `tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
 `risk`, `resources`).
+
+## Rule previews
+
+The gateway keeps no prompt, so it cannot replay last week's traffic against a
+new term list. A preview counts only what is honest:
+
+- `monitor_history`: a rule in the set whose kind, scope and match are unchanged
+  has one `rule_matches` entry per request it matched. The count runs from the
+  later of the window start and the moment its definition last changed
+  (`rule_definitions`, a keyed digest of kind, scope and match, never the terms;
+  a rule stored before that table existed is bounded by the set's last write).
+  Requests whose matches were cut at 32 make it a lower bound.
+- `metadata`: a kind whose condition can be checked on stored request metadata
+  registers an estimator under its kind or `<kind>:<match.on>`. None is
+  registered yet: `term` and `pattern` need content.
+- `none`: anything else, or a query over 10 seconds.
+
+So content rules start in `monitor`, and their preview becomes real after they
+have run. A new rule may be stored enforced only with an unexpired preview row of
+the same kind, action, scope and match that covered a whole window of at least 7
+days; a restore may re-create an enforced rule without one, because it brings
+back exactly what was there. Every write to the rule set goes through one path,
+which also keeps the definition rows.
+
+AIUC rule files are imported one way. Rule ids become `aiuc_<slug>` (Turkish
+fold, ASCII, at most 48 characters, `_2`, `_3` for collisions, the first 8 hex
+of the id's SHA-256 when nothing is left); every imported rule starts in
+`monitor` with Turkish endings on. `email` and `secret` map to the per-type
+actions of `EMAIL_ADDRESS` and `SECRET`, raised from `off` to `monitor` only:
+AIUC rules have no scope, a separate rule kind for built-in types would duplicate
+the detector, and an import never raises a type to `mask` or `block` (the AIUC
+action is reported as a hint). The import produces a draft plan and applies
+nothing.
 
 ## Audit evidence bundle
 

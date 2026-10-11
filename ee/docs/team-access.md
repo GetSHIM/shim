@@ -17,7 +17,7 @@ write nor own gateway keys.
 | `settings.read` | Read the privacy, provider-key and gateway settings | x | x | x | x |
 | `settings.write` | Change those settings and the organization name | x | x | | |
 | `rules.read` | Read the rule set | x | x | | x |
-| `rules.write` | Change the rule set | x | x | | |
+| `rules.write` | Change the rule set and [preview a rule](COOKBOOK.md#preview-a-rule-before-you-enforce-it); with `plans.create`, [import AIUC rules](COOKBOOK.md#import-aiuc-rules) | x | x | | |
 | `deployments.read` | List the model registry | x | x | | x |
 | `deployments.manage` | Create, change and health-check deployments | x | x | | |
 | `providers.manage` | List, add, change, verify and delete provider credentials | x | x | | |

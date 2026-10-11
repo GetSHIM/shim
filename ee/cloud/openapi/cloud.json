@@ -16,6 +16,146 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AiucPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedrevision"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "offlineAction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "warn",
+                  "block"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offlineaction"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/AiucRule"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Rules",
+            "type": "array"
+          },
+          "schemaVersion": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schemaversion"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "required": [
+          "rules"
+        ],
+        "title": "AiucPolicy",
+        "type": "object"
+      },
+      "AiucRule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "monitor",
+              "warn",
+              "mask",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "secret",
+              "email",
+              "term"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "terms": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 2,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Terms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "action"
+        ],
+        "title": "AiucRule",
+        "type": "object"
+      },
       "AnchorMismatch": {
         "properties": {
           "anchor_date": {
@@ -2086,6 +2226,43 @@
           "alert_thresholds_percent"
         ],
         "title": "BudgetView",
+        "type": "object"
+      },
+      "ByScopeView": {
+        "properties": {
+          "api_keys": {
+            "items": {
+              "$ref": "#/components/schemas/IdCount"
+            },
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelCount"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/IdCount"
+            },
+            "title": "Teams",
+            "type": "array"
+          },
+          "truncated_rows": {
+            "title": "Truncated Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "api_keys",
+          "teams",
+          "models",
+          "truncated_rows"
+        ],
+        "title": "ByScopeView",
         "type": "object"
       },
       "ChainBreak": {
@@ -5774,6 +5951,24 @@
         "title": "HttpElementLocation",
         "type": "string"
       },
+      "IdCount": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requests"
+        ],
+        "title": "IdCount",
+        "type": "object"
+      },
       "ImageResponseFormat": {
         "additionalProperties": false,
         "description": "Configuration for image-specific output formatting.",
@@ -5845,6 +6040,31 @@
         ],
         "title": "ImageSize",
         "type": "string"
+      },
+      "ImportView": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          }
+        },
+        "required": [
+          "plan",
+          "report"
+        ],
+        "title": "ImportView",
+        "type": "object"
       },
       "IncidentInput": {
         "additionalProperties": false,
@@ -6486,6 +6706,24 @@
         ],
         "title": "Modality",
         "type": "string"
+      },
+      "ModelCount": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
+        "type": "object"
       },
       "ModelDeploymentInput": {
         "additionalProperties": false,
@@ -8997,6 +9235,58 @@
         "title": "PreventiveOverview",
         "type": "object"
       },
+      "PreviewInput": {
+        "properties": {
+          "rule": {
+            "additionalProperties": true,
+            "description": "A rule as in PUT /rules.",
+            "title": "Rule",
+            "type": "object"
+          },
+          "window_days": {
+            "default": 7,
+            "maximum": 31.0,
+            "minimum": 1.0,
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "title": "PreviewInput",
+        "type": "object"
+      },
+      "PreviewWindow": {
+        "properties": {
+          "covered_days": {
+            "title": "Covered Days",
+            "type": "integer"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "days",
+          "covered_days"
+        ],
+        "title": "PreviewWindow",
+        "type": "object"
+      },
       "PrivacyCard": {
         "description": "What shim caught on one local calendar day; counts only.",
         "properties": {
@@ -11073,6 +11363,91 @@
           "unavailable_reason"
         ],
         "title": "RuleKindView",
+        "type": "object"
+      },
+      "RulePreviewView": {
+        "properties": {
+          "basis": {
+            "enum": [
+              "metadata",
+              "monitor_history",
+              "none"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "by_scope": {
+            "$ref": "#/components/schemas/ByScopeView"
+          },
+          "enforce_on_create": {
+            "title": "Enforce On Create",
+            "type": "boolean"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "preview_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Expires At"
+          },
+          "requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/PreviewWindow"
+          }
+        },
+        "required": [
+          "rule_id",
+          "basis",
+          "requests",
+          "errors",
+          "window",
+          "by_scope",
+          "note",
+          "enforce_on_create",
+          "preview_expires_at"
+        ],
+        "title": "RulePreviewView",
         "type": "object"
       },
       "RuleScope": {
@@ -20651,6 +21026,108 @@
         "summary": "Replace Rules",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/rules/import/aiuc": {
+      "post": {
+        "operationId": "import_aiuc_api_v1_management_rules_import_aiuc_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiucPolicy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportView"
+                }
+              }
+            },
+            "description": "Nothing would change"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import Aiuc",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/rules/preview": {
+      "post": {
+        "operationId": "preview_api_v1_management_rules_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RulePreviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview",
+        "tags": [
+          "rules"
         ]
       }
     },
