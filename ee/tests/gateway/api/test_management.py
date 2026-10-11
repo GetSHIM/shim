@@ -1764,9 +1764,11 @@ async def test_the_request_list_filters_on_one_warning_code() -> None:
     assert {"warnings": ["CACHE_NOT_APPLIED"]} in compiled.params.values()
 
 
-def test_the_request_list_filters_on_one_rule_id() -> None:
-    filters = management._request_filters(
-        SimpleNamespace(role="owner", organization_id=uuid4()),
+@pytest.mark.asyncio
+async def test_the_request_list_filters_on_one_rule_id() -> None:
+    filters = await management._request_filters(
+        None,  # type: ignore[arg-type]
+        SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
         start=None,
         end=None,
         status_filter=None,
