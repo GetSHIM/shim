@@ -2462,32 +2462,35 @@ async def get_rules(
     return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))
 
 
-class _RuleSetPutRoute(APIRoute):
-    """Counts the body's bytes as they arrive, so a chunked body cannot pass the limit."""
+def bounded_body(limit: int, message: str) -> type[APIRoute]:
+    """A route that counts the body's bytes as they arrive and refuses past `limit`,
+    so neither a chunked body nor the parser sees more."""
 
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
+    class Bounded(APIRoute):
+        def get_route_handler(
+            self,
+        ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            handler = super().get_route_handler()
 
-        async def bounded(request: Request) -> Response:
-            receive, size = request.receive, 0
+            async def bounded(request: Request) -> Response:
+                receive, size = request.receive, 0
 
-            async def counted() -> Message:
-                nonlocal size
-                message = await receive()
-                size += len(message.get("body", b""))
-                if size > LIMITS["request_bytes"]:
-                    raise HTTPException(
-                        status_code=413,
-                        detail={
-                            "code": "REQUEST_TOO_LARGE",
-                            "message": "A rule set is at most 1,000,000 bytes.",
-                        },
-                    )
-                return message
+                async def counted() -> Message:
+                    nonlocal size
+                    message_in = await receive()
+                    size += len(message_in.get("body", b""))
+                    if size > limit:
+                        raise HTTPException(
+                            status_code=413,
+                            detail={"code": "REQUEST_TOO_LARGE", "message": message},
+                        )
+                    return message_in
 
-            return await handler(Request(request.scope, counted))
+                return await handler(Request(request.scope, counted))
 
-        return bounded
+            return bounded
+
+    return Bounded
 
 
 async def replace_rules(
@@ -2527,7 +2530,9 @@ router.add_api_route(
     replace_rules,
     methods=["PUT"],
     response_model=RuleSetView,
-    route_class_override=_RuleSetPutRoute,
+    route_class_override=bounded_body(
+        LIMITS["request_bytes"], "A rule set is at most 1,000,000 bytes."
+    ),
 )
 
 

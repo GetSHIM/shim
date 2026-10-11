@@ -5,15 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import require
+from shim_enterprise.api.v1.management import bounded_body
 from shim_enterprise.core.database import get_db
 from shim_enterprise.policy.api import PlanView, new_plan, planned_change
-from shim_enterprise.policy.plans import lock_tenant
+from shim_enterprise.policy.plans import current_version, lock_tenant
 from shim_enterprise.policy.resources import REGISTRY
 from shim_enterprise.rules.aiuc import AiucPolicy, map_policy
 from shim_enterprise.rules.models import OrganizationRuleSet, RulePreview
@@ -29,8 +30,6 @@ from shim_enterprise.tenants.models import User
 from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/rules", tags=["rules"])
-
-_MAX_IMPORT_BYTES = 256 * 1024
 
 
 class PreviewInput(BaseModel):
@@ -129,28 +128,19 @@ async def preview(
     return answer
 
 
-@router.post(
-    "/import/aiuc",
-    response_model=ImportView,
-    status_code=201,
-    responses={200: {"model": ImportView, "description": "Nothing would change"}},
-)
 async def import_aiuc(
     payload: AiucPolicy,
-    request: Request,
     response: Response,
     user: User = Depends(require("plans.create")),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    if len(await request.body()) > _MAX_IMPORT_BYTES:
-        raise HTTPException(
-            status_code=413, detail="An AIUC rule file is at most 256 KB"
-        )
     granted = await user_permissions(session, user)
     if "rules.write" not in granted:
         raise HTTPException(status_code=403, detail="Permission required: rules.write")
     tenant_id = user.organization_id
-    await lock_tenant(session, tenant_id)
+    # Planned without the tenant lock (each change reads history); a policy write
+    # in between is caught under the lock below.
+    version = await current_version(session, tenant_id)
     stored = stored_rules(await session.get(OrganizationRuleSet, tenant_id))
     privacy = (await REGISTRY["privacy"].snapshot(session, tenant_id, None))["_"]
     rule_changes, privacy_after, report = map_policy(payload, stored, privacy)
@@ -167,6 +157,13 @@ async def import_aiuc(
             await planned_change(
                 session, tenant_id, "privacy", "_", privacy, privacy_after, 7
             )
+        )
+    await lock_tenant(session, tenant_id)
+    latest = await current_version(session, tenant_id)
+    if latest != version:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
         )
     plan = None
     if changes:
@@ -195,3 +192,16 @@ async def import_aiuc(
     )
     await session.commit()
     return {"plan": plan, "report": report}
+
+
+router.add_api_route(
+    "/import/aiuc",
+    import_aiuc,
+    methods=["POST"],
+    response_model=ImportView,
+    status_code=201,
+    responses={200: {"model": ImportView, "description": "Nothing would change"}},
+    route_class_override=bounded_body(
+        256 * 1024, "An AIUC rule file is at most 256 KB."
+    ),
+)

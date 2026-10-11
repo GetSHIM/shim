@@ -14,6 +14,7 @@ from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.rules import api as rules_api
 from shim_enterprise.rules.aiuc import AiucPolicy, map_policy
 from shim_enterprise.tenants.models import Organization, OrganizationRole, User
 
@@ -135,20 +136,36 @@ async def test_the_file_is_checked_strictly(db, body: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_file_over_256_kb_is_refused(db) -> None:
+@pytest.mark.parametrize("chunked", [False, True])
+async def test_a_file_over_256_kb_is_refused_while_it_arrives(db, chunked) -> None:
     owner = await _owner(db)
-    body = json.dumps({"rules": [_term_rule()]}) + " " * (256 * 1024)
+    head = json.dumps({"rules": [_term_rule()]})[:-1].encode()
+    padding = b" " * (256 * 1024)
+    sent = []
+
+    async def chunks():
+        for chunk in (
+            head,
+            *[padding[i : i + 65_536] for i in range(0, len(padding), 65_536)],
+            b"not json",
+        ):
+            sent.append(chunk)
+            yield chunk
 
     refused = await _call(
         db,
         owner,
         "POST",
         IMPORT,
-        content=body,
+        content=chunks() if chunked else head + padding + b"not json",
         headers={"content-type": "application/json"},
     )
 
+    # Counted as it arrives: never parsed, so the broken tail is not a 422.
     assert refused.status_code == 413
+    assert refused.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
+    if chunked:
+        assert b"not json" not in sent
 
 
 @pytest.mark.parametrize(
@@ -425,3 +442,48 @@ async def test_the_import_needs_rules_write_besides_plans_create(db) -> None:
         "Permission required: rules.write",
     )
     assert member_refused.json()["detail"] == "Permission required: plans.create"
+
+
+@pytest.mark.asyncio
+async def test_the_import_plans_its_changes_before_it_takes_the_tenant_lock(
+    db, monkeypatch
+) -> None:
+    owner = await _owner(db)
+    calls: list[str] = []
+    planned_change, lock_tenant = rules_api.planned_change, rules_api.lock_tenant
+
+    async def planned(*args, **kwargs):
+        calls.append("planned")
+        return await planned_change(*args, **kwargs)
+
+    async def lock(*args, **kwargs):
+        calls.append("lock")
+        return await lock_tenant(*args, **kwargs)
+
+    monkeypatch.setattr(rules_api, "planned_change", planned)
+    monkeypatch.setattr(rules_api, "lock_tenant", lock)
+    body = {"rules": [_term_rule(), _term_rule("atlas", terms=["Atlas Raporu"])]}
+
+    imported = await _call(db, owner, "POST", IMPORT, json=body)
+
+    assert imported.status_code == 201, imported.text
+    # The history queries behind each planned change run without the lock.
+    assert calls == ["planned", "planned", "lock"]
+
+
+@pytest.mark.asyncio
+async def test_a_policy_change_while_the_import_plans_is_a_409(db, monkeypatch) -> None:
+    owner = await _owner(db)
+    original = rules_api.planned_change
+
+    async def planned(*args, **kwargs):
+        monkeypatch.setattr(rules_api, "planned_change", original)
+        assert (await _put(db, owner, [_gateway_rule("other")])).status_code == 200
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(rules_api, "planned_change", planned)
+
+    refused = await _call(db, owner, "POST", IMPORT, json={"rules": [_term_rule()]})
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "POLICY_VERSION_CHANGED"

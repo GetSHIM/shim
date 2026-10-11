@@ -405,8 +405,9 @@ may hide this one, which the `note` says. Previews are recorded as
 Bring a shim-security (AIUC) rule file into the gateway's rules once, as a plan.
 
 1. As an owner or admin, send the file:
-   `POST /api/v1/management/rules/import/aiuc` (at most 256 KB; `plans.create`
-   and `rules.write`).
+   `POST /api/v1/management/rules/import/aiuc` (at most 256 KB, else 413
+   `REQUEST_TOO_LARGE`; `plans.create` and `rules.write`). A 409
+   `POLICY_VERSION_CHANGED` means a policy write landed meanwhile: send it again.
 2. The answer is 201 with a draft `plan` and a `report`; 200 with `"plan": null`
    when nothing would change, so importing the same file again is safe.
 3. Review the report, then [apply the plan](#plan-apply-and-undo-a-change); a

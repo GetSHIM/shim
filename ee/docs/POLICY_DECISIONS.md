@@ -448,8 +448,11 @@ So content rules start in `monitor`, and their preview becomes real after they
 have run. A new rule may be stored enforced only with an unexpired preview row of
 the same kind, action, scope and match that covered a whole window of at least 7
 days; a restore may re-create an enforced rule without one, because it brings
-back exactly what was there. Every write to the rule set goes through one path,
-which also keeps the definition rows.
+back exactly what was there. A new rule has no monitor history, so only a
+`metadata` estimator can give it such a preview: until one is registered, no
+`rule_previews` row is written and every new rule starts in `monitor`. The path
+stays for the estimators later PRDs add. Every write to the rule set goes through
+one path, which also keeps the definition rows.
 
 AIUC rule files are imported one way. Rule ids become `aiuc_<slug>` (Turkish
 fold, ASCII, at most 48 characters, `_2`, `_3` for collisions, the first 8 hex
@@ -459,7 +462,10 @@ actions of `EMAIL_ADDRESS` and `SECRET`, raised from `off` to `monitor` only:
 AIUC rules have no scope, a separate rule kind for built-in types would duplicate
 the detector, and an import never raises a type to `mask` or `block` (the AIUC
 action is reported as a hint). The import produces a draft plan and applies
-nothing.
+nothing. It plans without holding the tenant lock (each planned change reads
+history), then takes the lock and answers 409 `POLICY_VERSION_CHANGED` if a
+policy write landed in between. The body is counted as it arrives: past 256 KB it
+is a 413 `REQUEST_TOO_LARGE` before anything is parsed.
 
 ## Audit evidence bundle
 
