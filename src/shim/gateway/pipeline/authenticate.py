@@ -108,6 +108,7 @@ class AuthenticateStage:
             response_analysis=policy.response_analysis,
             injection_markers=policy.injection_markers,
             price_tier_warning=policy.price_tier_warning,
+            model_retiring_warning=policy.model_retiring_warning,
             restore_withheld=policy.restore_withheld,
             task_caps=policy.task_caps,
             agent_loop=policy.agent_loop,

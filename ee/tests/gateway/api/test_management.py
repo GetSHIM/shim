@@ -2295,3 +2295,180 @@ async def test_requests_filter_by_outcome_and_text_refusal(
     assert [row["request_id"] for row in member_soft_csv] == [ids[0]]
     assert {item["request_id"] for item in member["items"]} == {ids[1], ids[2]}
     assert member["summary"]["outcome_counts"]["truncated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_model_retirements_list_who_uses_a_retiring_model(
+    db, test_user_with_org, test_api_key, test_tier, tmp_path, monkeypatch
+) -> None:
+    from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
+
+    user = test_user_with_org
+    tenant = user.organization_id
+    today = datetime.now(timezone.utc).date()
+    dates = tmp_path / "dates.json"
+    entry = {
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11",
+    }
+    dates.write_text(
+        json.dumps(
+            {
+                "format": "shim.model.lifecycle",
+                "version": 1,
+                "models": {
+                    "openai": {
+                        "gpt-4": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=10)),
+                            "replacement": "gpt-5.6-sol",
+                        },
+                        "gpt-4.1": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=400)),
+                        },
+                    },
+                    "registry": {
+                        "internal-llm": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=20)),
+                        }
+                    },
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(management.settings, "SHIM_MODEL_LIFECYCLE_FILE", dates)
+    other = Organization(id=uuid4(), name="Other", slug=f"retire-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    second = ApiKey(
+        id=uuid4(),
+        user_id=user.id,
+        organization_id=tenant,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-ret",
+        name="batch",
+        tier=test_tier,
+        is_active=True,
+    )
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=tenant,
+        provider="openai",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add_all([second, secret])
+    await db.flush()
+    db.add_all(
+        ModelDeployment(
+            organization_id=tenant,
+            alias=alias,
+            provider="openai",
+            upstream_model=upstream,
+            base_url="https://a.internal/v1",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+        )
+        for alias, upstream in (("internal-llm", "llama"), ("cloud-gpt4", "gpt-4"))
+    )
+    team = uuid4()
+    now = datetime.now(timezone.utc)
+
+    def row(organization_id, key, model, *, age=timedelta(hours=1), **metadata):
+        return RequestLifecycle(
+            request_id=f"req_retire_{uuid4().hex}",
+            organization_id=organization_id,
+            actor_type="api_key" if key else "internal",
+            api_key_id=key.id if key else None,
+            source_endpoint="chat.completions",
+            status="completed",
+            provider="openai",
+            requested_model=model,
+            stream=False,
+            started_at=now - age,
+            lifecycle_metadata=metadata,
+        )
+
+    db.add_all(
+        [
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            # Caller text counts under the entry it matched, never as its own item.
+            row(tenant, test_api_key, "gpt-4-anything-goes"),
+            row(tenant, second, "gpt-4", team_id=str(team), tags=["support", "batch"]),
+            row(tenant, test_api_key, "internal-llm"),
+            row(tenant, test_api_key, "gpt-4.1"),
+            row(tenant, test_api_key, "gpt-5.6-luna"),
+            row(tenant, test_api_key, "gpt-4", age=timedelta(days=40)),
+            row(other.id, None, "gpt-4"),
+        ]
+    )
+    await db.flush()
+    statements: list[str] = []
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            user.role = "owner"
+            soon = await client.get("/api/v1/management/model-retirements")
+            later = await client.get(
+                "/api/v1/management/model-retirements", params={"days": 730}
+            )
+            bounds = [
+                (
+                    await client.get(
+                        "/api/v1/management/model-retirements", params={"days": days}
+                    )
+                ).status_code
+                for days in (0, 731)
+            ]
+            user.role = "member"
+            member = await client.get("/api/v1/management/model-retirements")
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", listener)
+
+    assert soon.status_code == 200, soon.text
+    items = soon.json()
+    assert [(item["provider"], item["model"]) for item in items] == [
+        ("openai", "gpt-4"),
+        ("registry", "internal-llm"),
+    ]
+    gpt4, internal = items
+    assert (gpt4["retires_on"], gpt4["replacement"]) == (
+        str(today + timedelta(days=10)),
+        "gpt-5.6-sol",
+    )
+    assert [
+        (key["id"], key["name"], key["requests"])
+        for key in gpt4["affected"]["api_keys"]
+    ] == [(str(test_api_key.id), test_api_key.name, 3), (str(second.id), "batch", 1)]
+    assert gpt4["affected"]["teams"] == [{"id": str(team), "requests": 1}]
+    assert gpt4["affected"]["tags"] == [
+        {"tag": "support", "requests": 3},
+        {"tag": "batch", "requests": 1},
+    ]
+    assert gpt4["affected"]["aliases"] == ["cloud-gpt4"]
+    assert [key["requests"] for key in internal["affected"]["api_keys"]] == [1]
+    assert internal["affected"]["aliases"] == ["internal-llm"]
+    assert [item["model"] for item in later.json()] == [
+        "gpt-4",
+        "internal-llm",
+        "gpt-4.1",
+    ]
+    assert bounds == [422, 422]
+    assert member.status_code == 403
+    assert any("l.started_at >= " in statement for statement in statements)

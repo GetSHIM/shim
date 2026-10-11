@@ -13,6 +13,7 @@ from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import (
     InFlightEntry,
@@ -93,6 +94,7 @@ class GatewayKernel:
         approval_gate: ApprovalGate | None = None,
         honor_trace_parent: bool = False,
         task_counter: TaskCounter | None = None,
+        model_lifecycle: ModelLifecycle | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -104,6 +106,7 @@ class GatewayKernel:
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
         self.task_counter = task_counter or InMemoryTaskCounter()
+        self.model_lifecycle = model_lifecycle or load_lifecycle()
         # Per process in both editions: a duplicate on another replica is not seen.
         self.inflight = InFlightRegistry()
         self.postprocessor = ResponsePostprocessor(
@@ -223,6 +226,7 @@ class GatewayKernel:
             cost_tag_max_length=self.cost_tag_max_length,
             task_counter=self.task_counter,
             inflight=self.inflight,
+            model_lifecycle=self.model_lifecycle,
         )
         try:
             prepared = await run_stage(admission_stage, prepared)

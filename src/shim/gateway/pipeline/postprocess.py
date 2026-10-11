@@ -21,7 +21,11 @@ from starlette.background import BackgroundTask
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.admission import TaskCounter
-from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
+from shim.gateway.kernel.result import (
+    RECORD_ONLY_WARNINGS,
+    PreparedInference,
+    UNSPECIFIED_PROVIDER_MODEL,
+)
 from shim.gateway.pipeline.admission import candidate_count, micro_usd
 from shim.gateway.pipeline.analysis import (
     AnalysisContext,
@@ -767,8 +771,14 @@ def _gateway_headers(
     upstream_request_id: str | None,
 ) -> dict[str, str]:
     headers = {"X-Shim-Request-Id": str(prepared.request_id)}
-    if prepared.warnings:
-        headers["X-Shim-Warnings"] = ",".join(prepared.warnings)
+    warnings = [
+        code
+        for code in prepared.warnings
+        if prepared.model_retiring_warning == "header"
+        or code not in RECORD_ONLY_WARNINGS
+    ]
+    if warnings:
+        headers["X-Shim-Warnings"] = ",".join(warnings)
     if upstream_request_id:
         header = {
             "anthropic": "request-id",

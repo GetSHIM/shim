@@ -311,3 +311,20 @@ def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
     else:
         with pytest.raises(ValidationError):
             CommunitySettings(_env_file=None, SHIM_INFLIGHT_SHARING=value)
+
+
+def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
+    settings = CommunitySettings(_env_file=None)
+
+    assert settings.SHIM_MODEL_RETIRING_WARNING == "record"
+    assert settings.SHIM_MODEL_LIFECYCLE_FILE is None
+    assert (
+        CommunitySettings(
+            _env_file=None,
+            SHIM_MODEL_RETIRING_WARNING="header",
+            SHIM_MODEL_LIFECYCLE_FILE=str(tmp_path / "dates.json"),
+        ).SHIM_MODEL_LIFECYCLE_FILE
+        == tmp_path / "dates.json"
+    )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_MODEL_RETIRING_WARNING="refuse")

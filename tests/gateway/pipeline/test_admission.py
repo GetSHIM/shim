@@ -1407,3 +1407,49 @@ async def test_a_token_count_and_a_refused_reservation_leave_nothing_behind() ->
     assert counted.admission is not None
     assert counted.admission.inflight_duplicate_of is None
     assert not registry.entries
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retires_on", "warning"),
+    [
+        ("2026-10-20", "MODEL_RETIRING"),
+        ("2026-10-21", None),
+        ("2026-07-21", "MODEL_RETIRED"),
+    ],
+)
+async def test_a_retiring_model_is_warned_ninety_days_ahead_and_still_admitted(
+    retires_on, warning
+) -> None:
+    from shim.billing.lifecycle import ModelLifecycle, Retirement
+
+    lifecycle = ModelLifecycle(
+        {
+            "openai": {
+                "gpt-5.6-luna": Retirement(
+                    retires_on=retires_on,
+                    source="https://developers.openai.com/api/docs/deprecations",
+                    checked_on="2026-07-01",
+                )
+            }
+        }
+    )
+    usage = SimpleNamespace(admit=AsyncMock())
+    stage = AdmissionStage(
+        SimpleNamespace(headers={}),
+        usage,
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+        model_lifecycle=lifecycle,
+    )
+
+    # The request starts on 2026-07-22: 2026-10-20 is 90 days ahead, 2026-10-21 is 91.
+    admitted = await stage.run(_prepared("a question"))
+
+    assert admitted.warnings == ([warning] if warning else [])
+    usage.admit.assert_awaited_once()

@@ -104,6 +104,32 @@ on it: [`gateway.unregistered_model`](FINDINGS.md#gatewayunregistered_model) and
 readiness report lists the same catalog model names (from a names-only read)
 as "Models in traffic outside the registry", so the two never disagree.
 
+## Retiring models
+
+`GET /api/v1/management/model-retirements?days=90` (owners, admins and auditors;
+`days` 1 to 730) lists every model with a retirement date at most `days` away, or
+already past, that the organization used in the last 30 days or has registered:
+`provider`, `model`, `retires_on`, `deprecated_on`, `replacement`, `source`,
+`checked_on`, and `affected` with the API keys (id, name, requests, last used), the
+teams (id, requests), the top 20 tags and the registry aliases whose
+`upstream_model` it is. A request counts under the date entry its model matched,
+never under the caller's own text. It reads one aggregate over `request_lifecycle`
+by `started_at`, plus the registry.
+
+Catalog dates ship with shim. An on-prem or self-hosted model has no provider date,
+so the operator adds one in `SHIM_MODEL_LIFECYCLE_FILE` under the `registry` key,
+with the alias as the model name:
+
+```json
+{"format": "shim.model.lifecycle", "version": 1,
+ "models": {"registry": {"internal-llm": {"retires_on": "2027-03-31",
+   "replacement": "internal-llm-v2", "source": "https://wiki.example.com/llm",
+   "checked_on": "2026-10-11"}}}}
+```
+
+A request to that alias then carries `MODEL_RETIRING` within 90 days of the date. An
+alias without its own entry inherits its upstream model's date.
+
 ## Idle deployments
 
 An internal deployment that served between 1 and 299 requests in 30 days raises

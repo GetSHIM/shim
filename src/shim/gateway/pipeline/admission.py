@@ -16,6 +16,7 @@ from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from shim.billing.attribution import CostAttribution
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import (
@@ -95,6 +96,7 @@ class AdmissionStage:
         cost_tag_max_length: int,
         task_counter: TaskCounter | None = None,
         inflight: InFlightRegistry | None = None,
+        model_lifecycle: ModelLifecycle | None = None,
     ) -> None:
         if loop_repeat_limit < 2 or loop_window_seconds < 1:
             raise ValueError("loop-detection bounds are invalid")
@@ -109,6 +111,7 @@ class AdmissionStage:
         self.cost_tag_max_length = cost_tag_max_length
         self.task_counter = task_counter or InMemoryTaskCounter()
         self.inflight = inflight or InFlightRegistry()
+        self.model_lifecycle = model_lifecycle or load_lifecycle()
         # The shareable leader of this request's key whose answer it may receive.
         self.leader: InFlightEntry | None = None
         self.loop_result = LoopDetectionResult("SAFE", 0)
@@ -144,6 +147,16 @@ class AdmissionStage:
                     "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
                 },
             )
+        # A warning only: the provider's own error stays the truth after the date.
+        retirement = self.model_lifecycle.retirement(
+            value.pricing_model,
+            str(value.provider),
+            value.model if value.target is not None else None,
+        )
+        if retirement is not None and (
+            code := retirement.warning(value.context.started_at.date())
+        ):
+            value.warn(code)
         payload = value.payload
         generation_config = payload.get("generationConfig")
         gemini_max = (

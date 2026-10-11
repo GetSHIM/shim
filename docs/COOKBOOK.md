@@ -473,6 +473,8 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | Code | When | What to do |
 | --- | --- | --- |
 | `MODEL_DEPRECATED` | The catalog marks the model deprecated. It is still served. | Move to a current model before the provider retires it. |
+| `MODEL_RETIRING` | The provider has announced the model's retirement within 90 days. The request goes ahead. | Move to the replacement the provider names before the date. |
+| `MODEL_RETIRED` | The model's retirement date has passed. The request is still sent; the provider answers with its own error, passed on as usual. | Move to the replacement. |
 | `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit where it counts against the window) is above the context window of the model's own catalog entry, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
 | `PRICE_TIER_CROSSED` | `SHIM_PRICE_TIER_WARNING=on` and the request's approximate size (bytes / 4) is above the model's large-context price threshold, so the whole request may be priced at the higher tier. Known before the call, so streams carry it too. | Shorten the input, or count tokens first; the settled tokens still decide the price. |
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
@@ -485,6 +487,21 @@ and restart the gateway. Catalog models with a tier: Gemini 2.5 Pro and 3.1 Pro
 preview above 200,000 tokens, OpenAI gpt-5.4 and later above 272,000; Anthropic
 models have none. It is never added to a token count, and a request warned before
 the call and confirmed after it carries both codes.
+
+`MODEL_RETIRING` and `MODEL_RETIRED` are always written to the usage event's
+`warnings`; they reach `X-Shim-Warnings` (JSON and streams) only with
+`SHIM_MODEL_RETIRING_WARNING=header` (default `record`), so default responses keep
+their headers. The dates come from `src/shim/billing/model_lifecycle.json`, filled
+from the providers' deprecation pages (OpenAI, Anthropic, Google publish no API for
+this) and reviewed like the price catalog; each entry names its `source` and when it
+was `checked_on`. An entry covers its own name and longer dated names, but never a
+name the catalog prices as a model of its own: a retiring `gpt-4` does not warn
+`gpt-4.1`, and a retiring dated snapshot does not warn the alias that points at it
+unless the provider lists the alias too. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
+of the same format to add or override dates; there a provider key may also be
+`registry`, with deployment aliases as model names. A malformed file stops the
+gateway at startup with the setting named. shim never refuses, reroutes or
+substitutes a model because of a date.
 
 shim refuses before the provider only what certainly fails. It counts the
 whitespace-separated words of the prompt text, a lower bound for the public

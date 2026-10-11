@@ -15,6 +15,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import SecretBytes
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from shim.billing.lifecycle import load_lifecycle
 from shim.api.v1.chat import router as chat_router
 from shim.api.v1.community_scan import router as community_scan_router
 from shim.api.v1.gemini import router as gemini_router
@@ -150,6 +151,7 @@ def create_community_app(
                         repeats=configured.SHIM_AGENT_LOOP_REPEATS,
                     ),
                     inflight_sharing=configured.SHIM_INFLIGHT_SHARING == "on",
+                    model_retiring_warning=configured.SHIM_MODEL_RETIRING_WARNING,
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,
@@ -158,6 +160,7 @@ def create_community_app(
                 cost_tag_max_length=configured.COST_TAG_MAX_LENGTH,
                 usage=usage,
                 honor_trace_parent=configured.SHIM_TRACE_PARENT == "honor",
+                model_lifecycle=load_lifecycle(configured.SHIM_MODEL_LIFECYCLE_FILE),
             )
         )
         try:

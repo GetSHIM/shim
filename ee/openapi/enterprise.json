@@ -4805,6 +4805,15 @@
             "title": "Injection Markers",
             "type": "string"
           },
+          "model_retiring_warning": {
+            "default": "record",
+            "enum": [
+              "record",
+              "header"
+            ],
+            "title": "Model Retiring Warning",
+            "type": "string"
+          },
           "price_tier_warning": {
             "default": false,
             "title": "Price Tier Warning",
@@ -4880,6 +4889,21 @@
               }
             ],
             "title": "Injection Markers"
+          },
+          "model_retiring_warning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "record",
+                  "header"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Retiring Warning"
           },
           "price_tier_warning": {
             "anyOf": [
@@ -7017,6 +7041,70 @@
           "owned_by"
         ],
         "title": "ModelRecordView",
+        "type": "object"
+      },
+      "ModelRetirementView": {
+        "properties": {
+          "affected": {
+            "$ref": "#/components/schemas/RetiringAffectedView"
+          },
+          "checked_on": {
+            "format": "date",
+            "title": "Checked On",
+            "type": "string"
+          },
+          "deprecated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deprecated On"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "retires_on": {
+            "format": "date",
+            "title": "Retires On",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "retires_on",
+          "deprecated_on",
+          "replacement",
+          "source",
+          "checked_on",
+          "affected"
+        ],
+        "title": "ModelRetirementView",
         "type": "object"
       },
       "ModelSelectionConfig": {
@@ -10630,7 +10718,9 @@
                     "RULE_WARN",
                     "SEMANTIC_WARN",
                     "INJECTION_MARKERS",
-                    "PRICE_TIER_CROSSED"
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -10860,6 +10950,120 @@
           "approximated"
         ],
         "title": "RestoreView",
+        "type": "object"
+      },
+      "RetiringAffectedView": {
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "api_keys": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringKeyView"
+            },
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTagView"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTeamView"
+            },
+            "title": "Teams",
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_keys",
+          "teams",
+          "tags",
+          "aliases"
+        ],
+        "title": "RetiringAffectedView",
+        "type": "object"
+      },
+      "RetiringKeyView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used": {
+            "format": "date-time",
+            "title": "Last Used",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requests",
+          "last_used"
+        ],
+        "title": "RetiringKeyView",
+        "type": "object"
+      },
+      "RetiringTagView": {
+        "properties": {
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "requests"
+        ],
+        "title": "RetiringTagView",
+        "type": "object"
+      },
+      "RetiringTeamView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requests"
+        ],
+        "title": "RetiringTeamView",
         "type": "object"
       },
       "Retrieval": {
@@ -18575,6 +18779,61 @@
         ]
       }
     },
+    "/api/v1/management/model-retirements": {
+      "get": {
+        "description": "Models retiring within `days` that this organization used in 30 days or registered.",
+        "operationId": "list_model_retirements_api_v1_management_model_retirements_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 90,
+              "maximum": 730,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelRetirementView"
+                  },
+                  "title": "Response List Model Retirements Api V1 Management Model Retirements Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Model Retirements",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/outcomes": {
       "get": {
         "operationId": "outcome_rates_api_v1_management_outcomes_get",
@@ -19704,7 +19963,9 @@
                     "RULE_WARN",
                     "SEMANTIC_WARN",
                     "INJECTION_MARKERS",
-                    "PRICE_TIER_CROSSED"
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -20045,7 +20306,9 @@
                     "RULE_WARN",
                     "SEMANTIC_WARN",
                     "INJECTION_MARKERS",
-                    "PRICE_TIER_CROSSED"
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },

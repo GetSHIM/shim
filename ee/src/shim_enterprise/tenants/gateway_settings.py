@@ -76,6 +76,7 @@ class GatewaySettings(BaseModel):
     response_analysis: list[str] = []
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
+    model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: dict[str, RestoreGrant] = {}
     task_caps: TaskCaps = TaskCaps()
     agent_loop: AgentLoop = AgentLoop()
@@ -100,6 +101,7 @@ class GatewaySettingsPatch(BaseModel):
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
     price_tier_warning: bool | None = None
+    model_retiring_warning: Literal["record", "header"] | None = None
     # Replaces the stored grants whole; {} restores every type for everyone again.
     restore_withheld: dict[str, RestoreGrant] | None = None
     # Merged into the stored values field by field; null removes a cap.
@@ -210,6 +212,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "injection_markers": _marker_direction,
     # A report, not a protection.
     "price_tier_warning": _neutral,
+    # Where a retirement warning is shown; it is always recorded.
+    "model_retiring_warning": _neutral,
     "restore_withheld": _restore_direction,
     "task_caps": _caps_direction,
     "agent_loop": _loop_direction,

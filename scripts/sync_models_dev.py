@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.billing.pricing import _MODALITIES, _STATUSES, _positive_int
 
 
@@ -278,6 +279,25 @@ def render_catalog(catalog: dict[str, object]) -> str:
     return json.dumps(catalog, indent=2, sort_keys=True) + "\n"
 
 
+def lifecycle_report(
+    catalog: dict[str, Any], lifecycle: ModelLifecycle, today: date
+) -> str:
+    """What a reviewer should check in model_lifecycle.json; the file is never changed here."""
+    lines = [
+        f"- `{provider}/{model_id}` is deprecated on Models.dev and has no retirement date."
+        for provider, models in catalog["providers"].items()
+        for model_id, model in models.items()
+        if model.get("status") == "deprecated"
+        and lifecycle.retirement(model_id, provider) is None
+    ] + [
+        f"- `{provider}/{model_id}` was last checked on {entry.checked_on}."
+        for provider, models in lifecycle.models.items()
+        for model_id, entry in models.items()
+        if (today - entry.checked_on).days > 90
+    ]
+    return "## Retirement dates\n\n" + ("\n".join(lines) or "Nothing to review.") + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -285,8 +305,18 @@ def main() -> None:
         action="store_true",
         help="fail when the checked-in catalog differs from Models.dev",
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        help="write what to review in model_lifecycle.json to this file",
+    )
     args = parser.parse_args()
-    rendered = render_catalog(build_catalog(fetch_catalog()))
+    catalog = build_catalog(fetch_catalog())
+    if args.report is not None:
+        args.report.write_text(
+            lifecycle_report(catalog, load_lifecycle(), date.today()), encoding="utf-8"
+        )
+    rendered = render_catalog(catalog)
     current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
     if args.check:
         if current != rendered:

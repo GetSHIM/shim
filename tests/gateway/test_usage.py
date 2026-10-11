@@ -51,6 +51,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             inflight_duplicate_of=None,
         ),
         task_caps=TaskCaps(),
+        model_retiring_warning="record",
         deployment_kind="unknown",
         response_scan="off",
         response_analysis=(),

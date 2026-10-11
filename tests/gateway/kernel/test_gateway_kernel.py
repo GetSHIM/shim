@@ -2317,3 +2317,85 @@ async def test_a_cancelled_twin_stops_waiting_and_the_leader_answers() -> None:
 
     assert answered.status_code == 200
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("mode", "days", "code", "in_header"),
+    [
+        ("record", 10, "MODEL_RETIRING", False),
+        ("header", 10, "MODEL_RETIRING", True),
+        ("header", -1, "MODEL_RETIRED", True),
+    ],
+)
+async def test_a_retiring_model_is_recorded_and_shown_only_when_asked(
+    tmp_path, stream, mode, days, code, in_header
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    lifecycle = tmp_path / "lifecycle.json"
+    lifecycle.write_text(
+        json.dumps(
+            {
+                "format": "shim.model.lifecycle",
+                "version": 1,
+                "models": {
+                    "openai": {
+                        "gpt-5-nano": {
+                            "retires_on": (
+                                datetime.now(UTC).date() + timedelta(days=days)
+                            ).isoformat(),
+                            "source": "https://developers.openai.com/api/docs/deprecations",
+                            "checked_on": "2026-10-11",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if stream:
+            return httpx.Response(
+                200,
+                text=_MARKED_STREAMS["/v1/chat/completions"],
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_MODEL_LIFECYCLE_FILE=lifecycle,
+                SHIM_MODEL_RETIRING_WARNING=mode,
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={
+                        **_ROUTES["chat"][1],
+                        "x-provider-key": "provider-secret",
+                    },
+                    json=_ROUTES["chat_stream" if stream else "chat"][2]("hello"),
+                )
+    [line] = [
+        json.loads(item)
+        for item in events.getvalue().splitlines()
+        if json.loads(item)["event"] == "request"
+    ]
+
+    assert response.status_code == 200 and len(calls) == 1, "still forwarded"
+    assert line["warnings"] == [code]
+    assert (code in response.headers.get("x-shim-warnings", "")) is in_header

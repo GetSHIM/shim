@@ -147,7 +147,11 @@ ResponseWarning = Literal[
     "SEMANTIC_WARN",
     "INJECTION_MARKERS",
     "PRICE_TIER_CROSSED",
+    "MODEL_RETIRING",
+    "MODEL_RETIRED",
 ]
+# Written to the record; in X-Shim-Warnings only when the tenant asks for the header.
+RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,7 @@ class PreparedInference:
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
+    model_retiring_warning: Literal["record", "header"] = "record"
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = field(default_factory=TaskCaps)
     agent_loop: AgentLoop = field(default_factory=AgentLoop)

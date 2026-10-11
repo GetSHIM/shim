@@ -58,6 +58,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
+    model_retiring_warning: Literal["record", "header"] = "record"
     # Enterprise: entity types this caller's key and team may not see restored.
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = TaskCaps()
@@ -84,6 +85,7 @@ class LocalRequestPolicyResolver:
         "_bulk_threshold",
         "_entity_actions",
         "_inflight_sharing",
+        "_model_retiring_warning",
         "_injection_markers",
         "_placeholder_key",
         "_price_tier_warning",
@@ -109,6 +111,7 @@ class LocalRequestPolicyResolver:
         task_caps: TaskCaps = TaskCaps(),
         agent_loop: AgentLoop = AgentLoop(),
         inflight_sharing: bool = False,
+        model_retiring_warning: Literal["record", "header"] = "record",
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -122,6 +125,9 @@ class LocalRequestPolicyResolver:
         self._task_caps = task_caps
         self._agent_loop = agent_loop
         self._inflight_sharing = inflight_sharing
+        self._model_retiring_warning: Literal["record", "header"] = (
+            model_retiring_warning
+        )
 
     async def resolve(
         self,
@@ -158,4 +164,5 @@ class LocalRequestPolicyResolver:
             task_caps=self._task_caps,
             agent_loop=self._agent_loop,
             inflight_sharing=self._inflight_sharing,
+            model_retiring_warning=self._model_retiring_warning,
         )

@@ -260,6 +260,11 @@ point. The `request_limit` kind (`src/shim/rules/request_limit.py`) is evaluated
 admission before the rate limits, where an enforced block refuses; token counting is
 exempt. No other kind ships a matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
+Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`
+(after the date) from `src/shim/billing/lifecycle.py`, which reads the reviewed
+`model_lifecycle.json` and an operator's `SHIM_MODEL_LIFECYCLE_FILE`; both codes stay
+out of `X-Shim-Warnings` unless the tenant's mode is `header`. Nothing is refused
+for a date.
 With `SHIM_INJECTION_MARKERS` (enterprise: the `injection_markers` gateway
 setting) at `count` or `warn`, the privacy stage also counts instruction markers
 in tool results and documents of the raw request (`src/shim/privacy/injection.py`,

@@ -1,0 +1,507 @@
+{
+  "format": "shim.model.lifecycle",
+  "version": 1,
+  "models": {
+    "anthropic": {
+      "claude-sonnet-4-5-20250929": {
+        "retires_on": "2026-11-30",
+        "deprecated_on": "2026-09-30",
+        "replacement": "claude-sonnet-5-5",
+        "source": "https://platform.claude.com/docs/en/about-claude/model-deprecations",
+        "checked_on": "2026-10-11"
+      }
+    },
+    "google": {
+      "gemini-2.5-pro-preview-tts": {
+        "retires_on": "2026-11-17",
+        "replacement": "gemini-3.8-flash-tts",
+        "source": "https://ai.google.dev/gemini-api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      }
+    },
+    "openai": {
+      "gpt-3.5-turbo": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-3.5-turbo-0125": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-3.5-turbo-1106": {
+        "retires_on": "2026-09-28",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-3.5-turbo-completions": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-3.5-turbo-instruct": {
+        "retires_on": "2026-09-28",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-0125-preview": {
+        "retires_on": "2026-03-26",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-0314": {
+        "retires_on": "2026-03-26",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-0613": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-0613-completions": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-1106-preview": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-completions": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-turbo": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-turbo-2024-04-09": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-turbo-completions": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-turbo-preview": {
+        "retires_on": "2026-03-26",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4-turbo-preview-completions": {
+        "retires_on": "2026-03-26",
+        "deprecated_on": "2025-09-26",
+        "replacement": "gpt-5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4.1-nano": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-luna",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4.1-nano-2025-04-14": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-luna",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-2024-05-13": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-audio": {
+        "retires_on": "2027-01-20",
+        "deprecated_on": "2026-07-20",
+        "replacement": "gpt-audio-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-audio-preview": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-audio-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-audio": {
+        "retires_on": "2027-01-20",
+        "deprecated_on": "2026-07-20",
+        "replacement": "gpt-audio-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-audio-preview": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-audio-mini",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-realtime": {
+        "retires_on": "2027-01-20",
+        "deprecated_on": "2026-07-20",
+        "replacement": "gpt-realtime-2.1-mini",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-realtime-preview": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-realtime-mini",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-search-preview-2025-03-11": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-transcribe": {
+        "retires_on": "2027-02-26",
+        "deprecated_on": "2026-08-26",
+        "replacement": "gpt-live-transcribe",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-transcribe-2025-03-20": {
+        "retires_on": "2027-01-20",
+        "deprecated_on": "2026-07-20",
+        "replacement": "gpt-4o-mini-transcribe-2025-12-15",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-tts-2025-03-20": {
+        "retires_on": "2027-01-06",
+        "deprecated_on": "2026-10-01",
+        "replacement": "gpt-realtime-2.1-mini",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-mini-tts-2025-12-15": {
+        "retires_on": "2027-01-06",
+        "deprecated_on": "2026-10-01",
+        "replacement": "gpt-realtime-2.1-mini",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-realtime": {
+        "retires_on": "2027-01-20",
+        "deprecated_on": "2026-07-20",
+        "replacement": "gpt-realtime-2.1",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-realtime-preview": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-realtime-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-realtime-preview-2024-12-17": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-realtime-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-realtime-preview-2025-06-03": {
+        "retires_on": "2026-05-07",
+        "deprecated_on": "2025-09-15",
+        "replacement": "gpt-realtime-1.5",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-search-preview-2025-03-11": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-transcribe": {
+        "retires_on": "2027-02-26",
+        "deprecated_on": "2026-08-26",
+        "replacement": "gpt-live-transcribe",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-4o-transcribe-diarize": {
+        "retires_on": "2027-02-26",
+        "deprecated_on": "2026-08-26",
+        "replacement": "gpt-live-transcribe",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-2025-08-07": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-chat-latest": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-codex": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-mini-2025-08-07": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-nano-2025-08-07": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-luna",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5-pro-2025-10-06": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.1": {
+        "retires_on": "2027-04-01",
+        "deprecated_on": "2026-10-01",
+        "replacement": "gpt-6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.1-chat-latest": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.1-codex": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.1-codex-max": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.1-codex-mini": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.2-chat-latest": {
+        "retires_on": "2026-08-10",
+        "deprecated_on": "2026-05-08",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.2-codex": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.3-chat-latest": {
+        "retires_on": "2026-08-10",
+        "deprecated_on": "2026-05-08",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.3-codex": {
+        "retires_on": "2027-04-01",
+        "deprecated_on": "2026-10-01",
+        "replacement": "gpt-6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.4-cyber": {
+        "retires_on": "2026-10-01",
+        "deprecated_on": "2026-09-11",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "gpt-5.4-nano": {
+        "retires_on": "2027-04-01",
+        "deprecated_on": "2026-10-01",
+        "replacement": "gpt-6-luna",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o1": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o1-2024-12-17": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o1-pro": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o1-pro-2025-03-19": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-2025-04-16": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-deep-research": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-deep-research-2025-06-26": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-mini": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-mini-2025-01-31": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o3-pro-2025-06-10": {
+        "retires_on": "2026-12-11",
+        "deprecated_on": "2026-06-11",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o4-mini": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o4-mini-2025-04-16": {
+        "retires_on": "2026-10-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-terra",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o4-mini-deep-research": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      },
+      "o4-mini-deep-research-2025-06-26": {
+        "retires_on": "2026-07-23",
+        "deprecated_on": "2026-04-22",
+        "replacement": "gpt-5.6-sol",
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11"
+      }
+    }
+  }
+}

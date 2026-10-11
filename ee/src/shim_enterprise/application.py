@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
+from shim.billing.lifecycle import load_lifecycle
 from shim_enterprise.api.enterprise_deps import DatabaseGatewayAuthenticator
 from shim_enterprise.billing.quota import BurstRateLimiter
 from shim_enterprise.cache.circuit_breaker import RedisCircuitBreaker
@@ -230,6 +231,7 @@ def _create_gateway_kernel(
         ),
         honor_trace_parent=settings.SHIM_TRACE_PARENT == "honor",
         task_counter=RedisTaskCounter(cache),
+        model_lifecycle=load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE),
     )
 
 

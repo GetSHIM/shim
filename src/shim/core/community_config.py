@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import json
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -70,6 +71,8 @@ class CommunitySettings(BaseSettings):
     SHIM_AGENT_LOOP: Literal["off", "count", "block"] = "count"
     SHIM_AGENT_LOOP_REPEATS: int = Field(default=5, ge=3, le=100)
     SHIM_INFLIGHT_SHARING: Literal["off", "on"] = "off"
+    SHIM_MODEL_LIFECYCLE_FILE: Path | None = None
+    SHIM_MODEL_RETIRING_WARNING: Literal["record", "header"] = "record"
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,

@@ -150,3 +150,37 @@ def test_catalog_refuses_malformed_source_facts(field, value) -> None:
 
     with pytest.raises(ValueError):
         build_catalog(source)
+
+
+def test_the_report_lists_deprecated_models_without_a_date_and_stale_dates() -> None:
+    from datetime import date
+
+    from scripts.sync_models_dev import lifecycle_report
+    from shim.billing.lifecycle import ModelLifecycle, Retirement
+
+    dated = Retirement(
+        retires_on="2026-10-23",
+        source="https://developers.openai.com/api/docs/deprecations",
+        checked_on="2026-07-01",
+    )
+    lifecycle = ModelLifecycle({"openai": {"gpt-4": dated}})
+    catalog = {
+        "providers": {
+            "openai": {
+                "gpt-4": {"status": "deprecated"},
+                "gpt-4-turbo": {"status": "deprecated"},
+                "gpt-5.6-luna": {},
+            }
+        }
+    }
+
+    fresh = lifecycle_report(catalog, lifecycle, date(2026, 9, 29))
+    stale = lifecycle_report(catalog, lifecycle, date(2026, 9, 30))
+
+    assert "`openai/gpt-4-turbo` is deprecated" in fresh
+    assert "`openai/gpt-4` is deprecated" not in fresh
+    assert "last checked" not in fresh, "90 days old is not stale"
+    assert "`openai/gpt-4` was last checked on 2026-07-01." in stale
+    assert lifecycle_report(
+        {"providers": {}}, ModelLifecycle({}), date(2026, 9, 30)
+    ) == ("## Retirement dates\n\nNothing to review.\n")

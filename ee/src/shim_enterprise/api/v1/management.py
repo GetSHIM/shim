@@ -113,6 +113,7 @@ from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
     assert_safe_forward_url,
 )
+from shim.billing.lifecycle import load_lifecycle
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
@@ -5126,6 +5127,179 @@ async def list_model_deployments(
         .scalars()
         .all()
     )
+
+
+class RetiringKeyView(BaseModel):
+    id: UUID
+    name: str | None
+    requests: int
+    last_used: datetime
+
+
+class RetiringTeamView(BaseModel):
+    id: UUID
+    requests: int
+
+
+class RetiringTagView(BaseModel):
+    tag: str
+    requests: int
+
+
+class RetiringAffectedView(BaseModel):
+    api_keys: list[RetiringKeyView]
+    teams: list[RetiringTeamView]
+    tags: list[RetiringTagView]
+    aliases: list[str]
+
+
+class ModelRetirementView(BaseModel):
+    provider: str
+    model: str
+    retires_on: date
+    deprecated_on: date | None
+    replacement: str | None
+    source: str
+    checked_on: date
+    affected: RetiringAffectedView
+
+
+# One pass over the last 30 days: per model, its keys (with names), teams and tags.
+_RETIREMENT_USAGE = text(
+    """
+    SELECT l.provider, l.requested_model, l.api_key_id, k.name AS key_name,
+           l.metadata->>'team_id' AS team_id, tag,
+           count(DISTINCT l.id) AS requests, max(l.started_at) AS last_used,
+           GROUPING(l.api_key_id) AS key_rollup,
+           GROUPING(l.metadata->>'team_id') AS team_rollup
+    FROM request_lifecycle AS l
+    LEFT JOIN api_keys AS k
+      ON k.organization_id = l.organization_id AND k.id = l.api_key_id
+    LEFT JOIN LATERAL jsonb_array_elements_text(
+      CASE WHEN jsonb_typeof(l.metadata->'tags') = 'array'
+           THEN l.metadata->'tags' ELSE '[]'::jsonb END
+    ) AS tag ON true
+    WHERE l.organization_id = :tenant_id AND l.started_at >= :since
+      AND l.requested_model IS NOT NULL
+    GROUP BY GROUPING SETS (
+      (l.provider, l.requested_model, l.api_key_id, k.name),
+      (l.provider, l.requested_model, l.metadata->>'team_id'),
+      (l.provider, l.requested_model, tag)
+    )
+    """
+)
+
+
+@router.get("/model-retirements", response_model=list[ModelRetirementView])
+async def list_model_retirements(
+    days: int = Query(default=90, ge=1, le=730),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> list[ModelRetirementView]:
+    """Models retiring within `days` that this organization used in 30 days or registered."""
+    tenant_id = _tenant_id(user)
+    lifecycle = load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE)
+    now = datetime.now(timezone.utc)
+    deployments = {
+        alias: (provider, upstream)
+        for alias, provider, upstream in await session.execute(
+            select(
+                ModelDeployment.alias,
+                ModelDeployment.provider,
+                ModelDeployment.upstream_model,
+            ).where(ModelDeployment.organization_id == tenant_id)
+        )
+    }
+
+    def retiring(provider: str | None, model: str) -> tuple[str, str, Any] | None:
+        """The entry a request's model retires under; never the caller's own text."""
+        alias = model if model in deployments else None
+        if alias is not None:
+            provider, model = deployments[alias]
+        for candidate in [provider] if provider else ["openai", "anthropic", "google"]:
+            if (found := lifecycle.match(model, candidate, alias)) is not None:
+                return found
+        return None
+
+    items: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def item(found: tuple[str, str, Any]) -> dict[str, Any]:
+        return items.setdefault(
+            found[:2],
+            {
+                "retirement": found[2],
+                "keys": {},
+                "teams": {},
+                "tags": {},
+                "aliases": set(),
+            },
+        )
+
+    usage = await session.execute(
+        _RETIREMENT_USAGE, {"tenant_id": tenant_id, "since": now - timedelta(days=30)}
+    )
+    for row in usage:
+        matched = retiring(row.provider, row.requested_model)
+        if matched is None:
+            continue
+        found = item(matched)
+        # Several requested names can match one entry, so counts add up.
+        if not row.key_rollup:
+            if row.api_key_id is not None:
+                _, requests, last = found["keys"].get(
+                    row.api_key_id, (None, 0, row.last_used)
+                )
+                found["keys"][row.api_key_id] = (
+                    row.key_name,
+                    requests + row.requests,
+                    max(last, row.last_used),
+                )
+        elif not row.team_rollup:
+            if row.team_id is not None:
+                team = UUID(row.team_id)
+                found["teams"][team] = found["teams"].get(team, 0) + row.requests
+        elif row.tag is not None:
+            found["tags"][row.tag] = found["tags"].get(row.tag, 0) + row.requests
+    for alias, (provider, _) in deployments.items():
+        if (matched := retiring(provider, alias)) is not None:
+            item(matched)["aliases"].add(alias)
+
+    views = []
+    for (provider, model), found in items.items():
+        retirement = found["retirement"]
+        if (retirement.retires_on - now.date()).days > days:
+            continue
+        views.append(
+            ModelRetirementView(
+                provider=provider,
+                model=model,
+                **retirement.model_dump(),
+                affected=RetiringAffectedView(
+                    api_keys=[
+                        RetiringKeyView(
+                            id=key_id, name=name, requests=requests, last_used=last
+                        )
+                        for key_id, (name, requests, last) in sorted(
+                            found["keys"].items(), key=lambda entry: -entry[1][1]
+                        )
+                    ],
+                    teams=[
+                        RetiringTeamView(id=team_id, requests=requests)
+                        for team_id, requests in sorted(
+                            found["teams"].items(), key=lambda entry: -entry[1]
+                        )
+                    ],
+                    tags=[
+                        RetiringTagView(tag=tag, requests=requests)
+                        for tag, requests in sorted(
+                            found["tags"].items(), key=lambda entry: -entry[1]
+                        )[:20]
+                    ],
+                    aliases=sorted(found["aliases"]),
+                ),
+            )
+        )
+    return sorted(views, key=lambda view: (view.retires_on, view.provider, view.model))
 
 
 class ModelInventoryItemView(BaseModel):

@@ -114,6 +114,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "response_analysis": [],
             "injection_markers": "off",
             "price_tier_warning": False,
+            "model_retiring_warning": "record",
             "restore_withheld": {},
             "task_caps": {
                 "max_calls": None,

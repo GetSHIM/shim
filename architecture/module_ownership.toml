@@ -32,6 +32,7 @@ forbidden_noncloud_import_roots = [
 "shim.api.v1.messages" = ["router"]
 "shim.api.v1.responses" = ["router"]
 "shim.billing.attribution" = ["UNTAGGED", "normalize_attribution"]
+"shim.billing.lifecycle" = ["load_lifecycle"]
 "shim.billing.pricing" = ["DEFAULT_PRICE_BOOK", "compute_cost_usd"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["CommunitySettings"]
@@ -152,6 +153,7 @@ public = [
   "src/shim/application.py",
   "src/shim/billing/__init__.py",
   "src/shim/billing/attribution.py",
+  "src/shim/billing/lifecycle.py",
   "src/shim/billing/pricing.py",
   "src/shim/cli.py",
   "src/shim/core/__init__.py",
@@ -231,6 +233,7 @@ public = [
   "src/shim/services/gateway/__init__.py",
   "src/shim/services/gateway/service.py",
   "tests/billing/test_model_catalog_sync.py",
+  "tests/billing/test_model_lifecycle.py",
   "tests/billing/test_pricing.py",
   "tests/community/test_application.py",
   "tests/community/test_community_scan.py",
