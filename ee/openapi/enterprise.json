@@ -1082,6 +1082,104 @@
         "title": "ArchivePurgeView",
         "type": "object"
       },
+      "ArchiveStateView": {
+        "properties": {
+          "anchors_archived": {
+            "title": "Anchors Archived",
+            "type": "integer"
+          },
+          "bucket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bucket"
+          },
+          "chain_tip_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Tip Seq"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "last_archived_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Archived Seq"
+          },
+          "last_error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Type"
+          },
+          "months_archived": {
+            "title": "Months Archived",
+            "type": "integer"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "off",
+              "on",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "state",
+          "unavailable_reason",
+          "bucket",
+          "prefix",
+          "last_archived_seq",
+          "chain_tip_seq",
+          "anchors_archived",
+          "months_archived",
+          "failed",
+          "last_error_type"
+        ],
+        "title": "ArchiveStateView",
+        "type": "object"
+      },
       "ArchivedContentView": {
         "properties": {
           "archived_at": {
@@ -15960,6 +16058,33 @@
         "summary": "Get Session",
         "tags": [
           "identity"
+        ]
+      }
+    },
+    "/api/v1/compliance/archive": {
+      "get": {
+        "description": "Where the write-once copy of this organization's audit evidence stands.",
+        "operationId": "get_archive_state_api_v1_compliance_archive_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveStateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Archive State",
+        "tags": [
+          "compliance"
         ]
       }
     },

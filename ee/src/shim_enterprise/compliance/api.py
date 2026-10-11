@@ -5,16 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from pydantic import EmailStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
+from shim_enterprise.ai_act.worm import archive_state
 from shim_enterprise.api.enterprise_deps import (
     ADMIN_REQUIRED,
     READER_REQUIRED,
@@ -350,6 +351,28 @@ async def create_connector(
         raise
     await session.refresh(connector)
     return _connector_view(connector)
+
+
+class ArchiveStateView(BaseModel):
+    state: Literal["off", "on", "error"]
+    unavailable_reason: str | None
+    bucket: str | None
+    prefix: str
+    last_archived_seq: int | None
+    chain_tip_seq: int | None
+    anchors_archived: int
+    months_archived: int
+    failed: int
+    last_error_type: str | None
+
+
+@router.get("/archive", response_model=ArchiveStateView)
+async def get_archive_state(
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
+    db: AsyncSession = Depends(get_db),
+) -> ArchiveStateView:
+    """Where the write-once copy of this organization's audit evidence stands."""
+    return ArchiveStateView(**await archive_state(db, current_user.organization_id))
 
 
 @router.get("/connectors", response_model=list[ConnectorRead])

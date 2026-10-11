@@ -485,6 +485,36 @@ rows), or export bundles and verify them offline. A float that jsonb
 would store in another form (non-finite, or `abs(value) >= 1e16`) is written to
 the chain as its string, so every stored row re-hashes as written.
 
+### Write-once archive
+
+Optional and off: with `WORM_ARCHIVE_ENABLED` and an S3 bucket created with
+Object Lock and a default retention, the ai_act worker copies, under
+`<WORM_ARCHIVE_PREFIX>/<organization_id>/`, the audit chain in `shim.audit.bundle`
+v1 chunks of at most 10,000 rows (`audit/rows/<from>-<to>.json`, each verifiable
+on its own from its `chain_start`), each daily anchor (`audit/anchors/<date>.json`)
+and each closed monthly evidence file (`evidence/monthly/<YYYY-MM>.pdf`, never a
+partial month). Never the request archive, findings or anything with content.
+
+- **What it adds.** Copies the bucket's lock protects: in compliance mode no one,
+  root included, can delete or overwrite a locked version before its retention
+  ends. The bundle chunks verify with `shim-audit-verify` without the database.
+- **What it does not.** PostgreSQL rows stay as they are: the append-only triggers
+  keep the application from changing them, but a database superuser can still
+  drop them; the bucket copy is what survives that. shim never sets a retention
+  mode, date or legal hold: the bucket's default retention decides, and choosing
+  governance or compliance and the period is the operator's decision. shim
+  refuses to upload unless the bucket reports Object Lock with a default
+  retention (`BUCKET_NOT_LOCKED`) and records a `NOT_LOCKED` failure when an
+  uploaded object reports no lock.
+- Each upload carries its SHA-256 checksum; after a crash, an object already in
+  the bucket with the same checksum is recorded without a second upload. At most
+  50 objects a pass; a failure is recorded per object and retried with the same
+  range. Uploads run outside any database transaction. `worm_archive_objects`
+  holds the references (`ai_act_audit_anchor.external_ref` stays null: the anchor
+  row cannot be updated after insert).
+- Not offered in the hosted cloud. `GET /api/v1/compliance/archive` shows the
+  state to readers, never a credential.
+
 ## KVKK exposure report
 
 `POST /api/v1/compliance/reports/kvkk` counts two sources. Compliance connector

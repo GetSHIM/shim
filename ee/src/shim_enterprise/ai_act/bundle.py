@@ -100,6 +100,26 @@ async def build_audit_bundle(
         raise AuditVerificationLimitExceeded(
             f"bundle export is limited to {MAX_SYNC_AUDIT_ANCHORS} anchors"
         )
+    return await bundle_document(
+        organization_id,
+        rows,
+        anchors,
+        period_start=period_start,
+        period_end=period_end,
+        now=now,
+    )
+
+
+async def bundle_document(
+    organization_id: UUID,
+    rows: list[AIActAuditLog],
+    anchors: list[AIActAuditAnchor],
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    now: datetime,
+) -> dict[str, Any]:
+    """A v1 document for consecutive chain rows; verifiable from its chain_start alone."""
     # Up to 10,000 rows of canonical JSON: keep the CPU work off the event loop.
     exported = await asyncio.to_thread(
         _exported_rows,

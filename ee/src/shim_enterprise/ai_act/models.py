@@ -293,3 +293,53 @@ class ReadinessDeclaration(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class WormArchiveObject(Base, TimestampMixin):
+    """One object copied to the write-once bucket, or the last failure to copy it."""
+
+    __tablename__ = "worm_archive_objects"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('audit_rows', 'audit_anchor', 'evidence_monthly')",
+            name="ck_worm_archive_objects_kind",
+        ),
+        CheckConstraint(
+            "status IN ('stored', 'failed')", name="ck_worm_archive_objects_status"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "kind",
+            "period_key",
+            name="uq_worm_archive_objects_period",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            name="fk_worm_archive_objects_organization",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # "<from>-<to>" for rows, the date for an anchor, the month for a file.
+    period_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_seq: Mapped[int | None] = mapped_column(BigInteger)
+    to_seq: Mapped[int | None] = mapped_column(BigInteger)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    version_id: Mapped[str | None] = mapped_column(String(255))
+    # Null when the pass stopped before the object was built (an unlocked bucket).
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    lock_mode: Mapped[str | None] = mapped_column(String(16))
+    retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_type: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )

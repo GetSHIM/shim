@@ -23,6 +23,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
 - [Export and verify the audit trail](#export-and-verify-the-audit-trail)
+- [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
@@ -568,6 +569,39 @@ Notes:
 python ee/scripts/redrive_audit_events.py --dry-run
 python ee/scripts/redrive_audit_events.py
 ```
+
+## Archive audit evidence to a write-once bucket
+
+Keep a copy of the audit chain, its daily anchors and the monthly evidence files
+that nobody can delete, on S3 or an S3-compatible store with Object Lock
+([what it adds and what it does not](POLICY_DECISIONS.md#write-once-archive)).
+
+1. Create the bucket with Object Lock enabled (it can only be turned on at
+   creation on most stores) and a default retention. Choose the mode and the
+   period yourself: compliance mode cannot be shortened or bypassed by anyone,
+   governance mode can be by a special permission. shim never sets either.
+2. Build the image with the optional dependency:
+   `docker build --build-arg ENTERPRISE_EXTRAS=archive-s3 -f ee/Dockerfile .`
+   (or install `shim-enterprise[archive-s3]`).
+3. Set, for the ai_act worker and the API:
+   `WORM_ARCHIVE_ENABLED=true`, `WORM_ARCHIVE_BUCKET=<bucket>`, optionally
+   `WORM_ARCHIVE_PREFIX` (default `shim`), `WORM_ARCHIVE_REGION` and, for an
+   S3-compatible store, `WORM_ARCHIVE_ENDPOINT_URL` (HTTPS in production).
+   Credentials come from boto3's default chain (environment, shared file, web
+   identity, instance role); shim has no credential setting. The worker needs
+   `s3:PutObject`, `s3:GetObject` (for `HeadObject`) and
+   `s3:GetBucketObjectLockConfiguration`, and egress to the endpoint.
+4. Read the state: `GET /api/v1/compliance/archive` (owners, admins, auditors)
+   answers `state` (`off`, `on` or `error`), the reason when off, the last
+   archived chain position against the tip, anchors and months archived, and the
+   last error type of the past 24 hours.
+
+Notes:
+
+- An unlocked bucket, or one without a default retention, gets nothing:
+  `state: error`, `last_error_type: BUCKET_NOT_LOCKED`.
+- Copies start from the beginning of the chain and catch up 50 objects a pass;
+  PostgreSQL rows are never deleted because a copy exists.
 
 ## Produce a KVKK exposure report
 

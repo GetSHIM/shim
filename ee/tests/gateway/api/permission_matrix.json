@@ -107,6 +107,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "404"
  },
+ "GET /api/v1/compliance/archive": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/compliance/audit/bundle": {
   "admin": "404",
   "auditor": "404",

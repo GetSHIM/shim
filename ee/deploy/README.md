@@ -96,6 +96,10 @@ The default egress policy permits pods in the same namespace and cluster DNS.
 Add only required external namespace/IP and port rules for PostgreSQL, Redis,
 OIDC, Vault, model endpoints and any explicitly enabled connector. NetworkPolicy
 requires an enforcing CNI; verify actual denied traffic, not just resource creation.
+The optional [write-once archive](../docs/COOKBOOK.md#archive-audit-evidence-to-a-write-once-bucket)
+needs an `extraEgress` rule to the bucket endpoint for the ai_act worker, and an
+image built with `--build-arg ENTERPRISE_EXTRAS=archive-s3` (space-separated
+extras; the published image has none).
 For outbound proxies, add `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` to the runtime
 Secret; include internal service names/addresses in `NO_PROXY` and allow the proxy
 in the network policy. The browser also needs access to its customer OIDC origin.

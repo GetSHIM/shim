@@ -112,6 +112,13 @@ class Settings(CommunitySettings):
     AI_ACT_AUDIT_ANCHOR_ENABLED: bool = True
     AI_ACT_AUDIT_WORKER_INTERVAL_SECONDS: int = Field(default=3_600, ge=1)
     OVERSIGHT_ENABLED: bool = False
+    # Copies of the audit chain, anchors and monthly files in an S3 bucket with
+    # Object Lock; the bucket's default retention decides, never shim.
+    WORM_ARCHIVE_ENABLED: bool = False
+    WORM_ARCHIVE_BUCKET: str | None = None
+    WORM_ARCHIVE_PREFIX: str = Field(default="shim", pattern=r"^[a-z0-9-]{1,100}$")
+    WORM_ARCHIVE_ENDPOINT_URL: str | None = None
+    WORM_ARCHIVE_REGION: str | None = None
     OVERSIGHT_DEFAULT_TTL_SECONDS: int = Field(default=3_600, ge=1)
 
     model_config = SettingsConfigDict(env_file="ee/.env")
@@ -238,6 +245,21 @@ class Settings(CommunitySettings):
             ):
                 raise ValueError(
                     "VAULT_ADDR must be an origin; production requires HTTPS"
+                )
+        if self.WORM_ARCHIVE_ENABLED and not self.WORM_ARCHIVE_BUCKET:
+            raise ValueError("WORM_ARCHIVE_ENABLED requires WORM_ARCHIVE_BUCKET")
+        if self.WORM_ARCHIVE_ENDPOINT_URL is not None:
+            endpoint = urlsplit(self.WORM_ARCHIVE_ENDPOINT_URL)
+            if (
+                endpoint.scheme not in {"http", "https"}
+                or not endpoint.hostname
+                or endpoint.username
+                or endpoint.password
+                or (self.ENVIRONMENT == "production" and endpoint.scheme != "https")
+            ):
+                raise ValueError(
+                    "WORM_ARCHIVE_ENDPOINT_URL must be an absolute URL without "
+                    "credentials; production requires HTTPS"
                 )
         if self.REQUEST_ARCHIVE_ENABLED and not self.ENCRYPTION_KEY:
             raise ValueError("REQUEST_ARCHIVE_ENABLED requires ENCRYPTION_KEY")

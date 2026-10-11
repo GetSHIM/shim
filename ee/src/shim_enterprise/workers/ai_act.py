@@ -15,6 +15,7 @@ from shim_enterprise.ai_act.anchor import write_anchor
 from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.ai_act.oversight import expire_pending, run_oversight_evaluation
 from shim_enterprise.ai_act.retention import archive_expired
+from shim_enterprise.ai_act.worm import archive_pass, build_client, unavailable_reason
 from shim_enterprise.archive.service import delete_expired
 from shim_enterprise.compliance.services.monthly_evidence import (
     generate_due_monthly_evidence,
@@ -39,6 +40,7 @@ class MaintenanceSummary:
     monthly_evidence: int = 0
     incident_reminders: int = 0
     request_archive_deleted: int = 0
+    worm_archived: int = 0
     errors: int = 0
 
 
@@ -69,6 +71,15 @@ class AuditMaintenanceWorker:
             archive = await archive_expired(session)
         # Expired archived requests go whatever the switches say, in bounded batches.
         deleted = await delete_expired(self.session_factory)
+        worm, worm_failures = 0, 0
+        if unavailable_reason() is None:
+            try:
+                worm = await archive_pass(self.session_factory, build_client())
+            except Exception as exc:
+                worm_failures = 1
+                logger.error(
+                    "Write-once archive pass failed type=%s", type(exc).__name__
+                )
         # Each organization's file is its own transaction, after the anchors commit.
         monthly, failed = await generate_due_monthly_evidence(
             self.session_factory, now=datetime.now(timezone.utc)
@@ -79,13 +90,14 @@ class AuditMaintenanceWorker:
         )
         return MaintenanceSummary(
             anchored_tenants=anchored,
-            errors=errors + failed + reminder_failures,
+            errors=errors + failed + reminder_failures + worm_failures,
             incident_reminders=reminders,
             oversight_created=int(created["created"]),
             oversight_expired=int(expired["expired"]),
             archive_eligible=int(archive["eligible"]),
             monthly_evidence=monthly,
             request_archive_deleted=deleted,
+            worm_archived=worm,
         )
 
     async def _anchor_tenants(
