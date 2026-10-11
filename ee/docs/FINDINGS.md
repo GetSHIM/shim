@@ -111,6 +111,7 @@ pass, and a lowered one removes the action. Nothing already applied is undone.
 | `gateway.answer_quality`, `gateway.truncation_rate`, `gateway.refusal_rate` | `observe` | none: the prompt, the model or the client's output limit |
 | `gateway.unregistered_model`, `gateway.byok_usage` | `observe` | none: registering needs a secret and an origin; BYOK has no tenant switch |
 | `gateway.language_drift`, `gateway.schema_errors`, `gateway.soft_refusals` | `observe` | none: the prompt, the model choice or the client |
+| `gateway.oversized_parts`, `gateway.dead_tools`, `gateway.cache_order_churn` | `observe` | none: the fix is in the client's code |
 | `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
 | `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
 
@@ -475,6 +476,80 @@ provider marks itself are [`gateway.refusal_rate`](#gatewayrefusal_rate).
 **Resolves** after 7 days below the threshold.
 
 A tenant that has not turned an analyzer on gets no finding from its rule.
+
+## gateway.oversized_parts
+
+**Checks.** For each API key with at least 20 requests in the last 24 hours that
+the `shape` analyzer recorded, the median and p95 of the tool definitions'
+characters, the message count, the history's characters and the largest part's
+characters. It fires when a median reaches its limit: tool definitions 40,000
+characters, history 100 messages or 200,000 characters, the largest part 100,000
+characters. Severity low. Subject: the API key. Max mode `observe`, blast radius
+`key`, risk class `cost`.
+
+**Why.** Every request pays for its whole input. Tools the task does not need, a
+history nobody trims and a whole document where a page would do are paid again on
+every call.
+
+**Evidence and impact.** The analysed request count, how many part kinds crossed,
+per crossed kind its median and p95 (`tool_definitions_*`, `history_messages_*`,
+`history_chars_*`, `large_part_*`) and up to 20 request ids, largest first. Impact
+is the requests over a crossed kind's limit and an estimate of their tokens: the
+characters of the crossed kinds divided by four (`tokens_estimated: true`). Money
+is not shown: tool definitions and early history are usually the provider-cached
+prefix, billed at a fraction of the input price. Images are not judged here.
+
+**Fix.** Send only the tools the task needs, or load them when needed; trim or
+summarise the history in the app; send the relevant part of a document.
+
+**Resolves** after 7 days below the limits.
+
+## gateway.dead_tools
+
+**Checks.** Once a day per organization (a worker restart evaluates again), over
+the last 30 days, for each API key with at least 50 requests that offered tools
+and at least one answer that called a tool: a tool offered in at least half of
+those requests that no answer of the key called, neither as its name nor as
+`<name>_call` (a Responses built-in tool). Severity low. Subject: the API key. Max
+mode `observe`, blast radius `key`, risk class `cost`.
+
+**Why.** A tool definition is paid on every request that offers it, whether or not
+the model ever uses it.
+
+**Evidence and impact.** The requests that offered tools, how many tools are dead
+and how many distinct tools were called. The dead tools' names (at most 20, each
+cut to 64 characters, most offered first) with their offer counts stay in the
+stored row: Finding v1 has no field for them. Impact is the requests that offered
+a dead tool; tokens are not estimated, as the record has no per-tool size.
+
+**Fix.** Remove the tools the app never calls, or load them only when needed. If
+the app's tool calls go through a path shim does not see, suppress the finding.
+
+**Resolves** 7 days after the last daily evaluation that found dead tools.
+
+## gateway.cache_order_churn
+
+**Checks.** For each API key, the requests of the last 24 hours with at least two
+tools and at least 1,024 settled prompt tokens, grouped by the set of tools they
+offered (the `shape` analyzer's set digest). A set with at least 20 requests, two
+or more tool orders, a most frequent order under 80 percent of them and a cache
+read (`cached_input_tokens` above zero) on under 50 percent fires; a request whose
+log has no `cached_input_tokens` counts as no read. Severity low. Subject: the API
+key. Max mode `observe`, blast radius `key`, risk class `cost`.
+
+**Why.** Providers discount a prompt prefix they have cached, and the tools are
+part of that prefix: sending the same tools in another order is a new prefix every
+time.
+
+**Evidence and impact.** The firing sets, the requests in them, the number of
+orders and the cache-read share of the largest set, and per set (at most three)
+the requests per order, the cache-read share and the providers; up to 20 request
+ids. Tool names are not repeated. Impact is the requests; no tokens or money.
+
+**Fix.** Send the tools in a fixed order, for example sorted by name, and keep the
+system prompt free of per-request values.
+
+**Resolves** after 7 days without firing.
 
 ### Model rates and key rates
 

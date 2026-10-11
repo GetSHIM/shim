@@ -667,6 +667,9 @@ _SUBJECTS = {
     service.LANGUAGE_DRIFT: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.SCHEMA_ERRORS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.SOFT_REFUSALS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.OVERSIZED_PARTS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.DEAD_TOOLS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.CACHE_ORDER_CHURN: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.IDLE_INTERNAL_DEPLOYMENT: {
         "deployment_id": "22222222-2222-2222-2222-222222222222",
         "alias": "kurum-llama",
@@ -795,6 +798,39 @@ _EVIDENCE = {
         "marker_tr_yardimci_olamam": 3,
         "models": [{"model": "gpt-5-mini", "analysed": 50, "soft_refusals": 3}],
         "request_ids": ["req_i"],
+    },
+    service.OVERSIZED_PARTS: {
+        "window_hours": 24,
+        "analysed_requests": 20,
+        "crossed_kinds": 1,
+        "tool_definitions_median": 45000,
+        "tool_definitions_p95": 46000,
+        "tokens_estimated": True,
+        "request_ids": ["req_j"],
+    },
+    service.DEAD_TOOLS: {
+        "window_days": 30,
+        "offering_requests": 50,
+        "dead_tools": 2,
+        "called_tools": 1,
+        "tools": [{"name": "create", "offered": 50}, {"name": "delete", "offered": 50}],
+    },
+    service.CACHE_ORDER_CHURN: {
+        "window_hours": 24,
+        "tool_sets": 1,
+        "churned_requests": 20,
+        "orders": 2,
+        "cache_read_share": "0.0000",
+        "sets": [
+            {
+                "requests": 20,
+                "orders": 2,
+                "requests_per_order": [10, 10],
+                "cache_read_share": "0.0000",
+                "providers": ["anthropic"],
+            }
+        ],
+        "request_ids": ["req_k"],
     },
 }
 

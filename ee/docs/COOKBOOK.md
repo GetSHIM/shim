@@ -33,6 +33,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Read and export findings](#read-and-export-findings)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
+- [Why is my request expensive](#why-is-my-request-expensive)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Record an incident](#record-an-incident)
@@ -944,6 +945,30 @@ Notes: each rule needs its analyzer, and a minimum of answers in 24 hours (20,
 that carried personal data, so those never count. An app that expects English
 answers suppresses `gateway.language_drift` for its key. The rules and thresholds
 are in [findings](FINDINGS.md#gatewaylanguage_drift).
+
+## Why is my request expensive
+
+Find the input an app pays for on every request and gets nothing for.
+
+1. As an owner or admin, turn the `shape` analyzer on:
+   `PATCH /api/v1/management/gateway-settings` with
+   `{"response_analysis": ["shape"]}`. It records sizes and the offered tool names
+   after the answer was delivered; requests are never changed.
+2. Read the findings per API key: `gateway.oversized_parts` (tool definitions,
+   history or one part over its limit), `gateway.dead_tools` (tools offered and
+   never called) and `gateway.cache_order_churn` (tools in changing order, so the
+   provider's prompt cache misses).
+
+```console
+curl 'http://localhost:8000/api/v1/management/findings?rule_id=gateway.oversized_parts' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: the fixes are in the app: send fewer tools or load them on demand, trim the
+history, send the relevant part of a document, and send tools in a fixed order. The
+token figure of an oversized finding is an estimate (characters over four) and
+shows no money, since the repeated prefix is often billed at the cache price. The
+rules are in [findings](FINDINGS.md#gatewayoversized_parts).
 
 ## Find truncated and refused answers
 

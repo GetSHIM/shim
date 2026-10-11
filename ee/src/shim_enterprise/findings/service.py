@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import reduce
+import operator
 from types import MappingProxyType, SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -14,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
+    Integer,
     Text,
     and_,
     case,
@@ -24,10 +27,11 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    true,
     type_coerce,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, insert
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by, array, insert
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +46,7 @@ from shim.findings import (
 )
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.findings.models import Finding
+from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.outcomes import OUTCOMES
 from shim_enterprise.observability.model_inventory import (
     byok_request,
@@ -72,6 +77,9 @@ REFUSAL_RATE = "gateway.refusal_rate"
 LANGUAGE_DRIFT = "gateway.language_drift"
 SCHEMA_ERRORS = "gateway.schema_errors"
 SOFT_REFUSALS = "gateway.soft_refusals"
+OVERSIZED_PARTS = "gateway.oversized_parts"
+DEAD_TOOLS = "gateway.dead_tools"
+CACHE_ORDER_CHURN = "gateway.cache_order_churn"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -107,6 +115,23 @@ SOFT_REFUSAL_MIN_ANALYSED = 50
 SOFT_REFUSAL_THRESHOLD = Decimal("0.05")
 SCHEMA_KINDS = ("json_schema", "json_object", "tool_args")
 EVIDENCE_PROMPT_VERSIONS = 5
+# Waste from the shape analyzer's records (S37) and the answers' tool calls (S32).
+WASTE_WINDOW_HOURS = 24
+OVERSIZED_MIN_REQUESTS = 20
+OVERSIZED_TOOL_DEFINITION_CHARS = 40_000
+OVERSIZED_HISTORY_MESSAGES = 100
+OVERSIZED_HISTORY_CHARS = 200_000
+OVERSIZED_LARGEST_PART_CHARS = 100_000
+DEAD_TOOLS_WINDOW_DAYS = 30
+DEAD_TOOLS_MIN_REQUESTS = 50
+DEAD_TOOLS_MIN_OFFER_SHARE = Decimal("0.5")
+DEAD_TOOLS_EVALUATION_HOURS = 24
+CACHE_CHURN_MIN_REQUESTS = 20
+CACHE_CHURN_MAX_DOMINANT_SHARE = Decimal("0.8")
+CACHE_CHURN_MIN_PROMPT_TOKENS = 1_024
+CACHE_CHURN_MAX_CACHE_READ_SHARE = Decimal("0.5")
+EVIDENCE_DEAD_TOOLS = 20
+EVIDENCE_TOOL_SETS = 3
 EVIDENCE_MARKERS = 5
 # Stored values that become evidence only in these shapes: a keyed prompt digest
 # and a refusal marker id of the analyzer's phrase list.
@@ -442,6 +467,80 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="key",
         RISK_CLASS="quality",
         PLAYBOOK=_playbook(SOFT_REFUSALS),
+    ),
+    OVERSIZED_PARTS: RuleSpec(
+        TITLE="Requests from an API key carry oversized parts",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Over {window_hours} hours the median request from this API key "
+            "crossed the size limit in {crossed_kinds} part kinds, over "
+            "{analysed_requests} requests.",
+            "tr": "Son {window_hours} saatte bu API anahtarının {analysed_requests} "
+            "isteğinde ortanca istek {crossed_kinds} parça türünde boyut sınırını aştı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Send only the tools the task needs, or load them when needed; trim "
+            "or summarise the history in the app; send the relevant part of a "
+            "document instead of all of it.",
+            "tr": "Yalnızca görevin gerektirdiği araçları gönderin ya da gerektiğinde "
+            "yükleyin; geçmişi uygulamada kısaltın ya da özetleyin; belgenin tamamı "
+            "yerine ilgili bölümünü gönderin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(OVERSIZED_PARTS),
+    ),
+    DEAD_TOOLS: RuleSpec(
+        TITLE="An API key offers tools its answers never call",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "This API key offered {dead_tools} tools in at least half of its "
+            "{offering_requests} requests with tools over {window_days} days, and no "
+            "answer called them.",
+            "tr": "Bu API anahtarı son {window_days} günde araç sunduğu "
+            "{offering_requests} isteğin en az yarısında {dead_tools} aracı sundu ve "
+            "hiçbir yanıt onları çağırmadı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Remove the tools the app never calls, or load them only when "
+            "needed. If the app's tool calls go through a path shim does not see, "
+            "suppress the finding.",
+            "tr": "Uygulamanın hiç çağırmadığı araçları kaldırın ya da yalnızca "
+            "gerektiğinde yükleyin. Uygulamanın araç çağrıları shim'in görmediği bir "
+            "yoldan geçiyorsa bulguyu bastırın.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(DEAD_TOOLS),
+    ),
+    CACHE_ORDER_CHURN: RuleSpec(
+        TITLE="An API key sends its tools in changing order and misses the cache",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Over {window_hours} hours this API key sent the same tool set in "
+            "{orders} orders across {churned_requests} requests, and the provider's "
+            "prompt cache rarely applied.",
+            "tr": "Son {window_hours} saatte bu API anahtarı aynı araç kümesini "
+            "{churned_requests} istekte {orders} farklı sırayla gönderdi ve "
+            "sağlayıcının istem önbelleği nadiren devreye girdi.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Send the tools in a fixed order, for example sorted by name, and "
+            "keep the system prompt free of per-request values; the provider's prompt "
+            "cache then applies to the shared prefix.",
+            "tr": "Araçları sabit bir sırayla, örneğin ada göre sıralı gönderin ve "
+            "sistem istemine isteğe göre değişen değerler koymayın; sağlayıcının "
+            "istem önbelleği o zaman ortak önek için devreye girer.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(CACHE_ORDER_CHURN),
     ),
 }
 
@@ -1511,6 +1610,356 @@ async def _soft_refusals(
     return detections
 
 
+# Per part kind, the record fields that judge it (a median at or over its limit
+# crosses) and the characters the kind adds to a request.
+_OVERSIZED_KINDS: dict[str, tuple[tuple[tuple[str, str, int], ...], str]] = {
+    "tool_definitions": (
+        (
+            (
+                "tool_definitions",
+                "tool_definition_chars",
+                OVERSIZED_TOOL_DEFINITION_CHARS,
+            ),
+        ),
+        "tool_definition_chars",
+    ),
+    "history": (
+        (
+            ("history_messages", "message_count", OVERSIZED_HISTORY_MESSAGES),
+            ("history_chars", "history_chars", OVERSIZED_HISTORY_CHARS),
+        ),
+        "history_chars",
+    ),
+    "large_part": (
+        (("large_part", "largest_part_chars", OVERSIZED_LARGEST_PART_CHARS),),
+        "largest_part_chars",
+    ),
+}
+
+
+def _shape(field: str) -> Any:
+    shape = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"]
+    return cast(shape[field].as_string(), Integer)
+
+
+def _shape_window(tenant_id: UUID, start: datetime, now: datetime) -> tuple[Any, ...]:
+    return (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= start,
+        RequestLifecycle.started_at <= now,
+        RequestLifecycle.api_key_id.is_not(None),
+        RequestLifecycle.lifecycle_metadata["response_analysis"].has_key("shape"),
+    )
+
+
+async def _oversized_parts(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    window = _shape_window(tenant_id, now - timedelta(hours=WASTE_WINDOW_HOURS), now)
+    fields = sorted(
+        {field for checks, _ in _OVERSIZED_KINDS.values() for _, field, _ in checks}
+    )
+    keys = (
+        await session.execute(
+            select(
+                RequestLifecycle.api_key_id,
+                func.count().label("analysed"),
+                *(
+                    func.percentile_cont(share)
+                    .within_group(_shape(field))
+                    .label(f"{field}_{label}")
+                    for field in fields
+                    for share, label in ((0.5, "median"), (0.95, "p95"))
+                ),
+            )
+            .where(*window)
+            .group_by(RequestLifecycle.api_key_id)
+            .having(func.count() >= OVERSIZED_MIN_REQUESTS)
+        )
+    ).all()
+    detections = []
+    for row in keys:
+        crossed = [
+            (checks, characters)
+            for checks, characters in _OVERSIZED_KINDS.values()
+            if any(
+                getattr(row, f"{field}_median") >= limit for _, field, limit in checks
+            )
+        ]
+        if not crossed:
+            continue
+        # A request counts once it is over a crossed kind's limit, with that kind's characters.
+        over = [
+            (
+                or_(*(_shape(field) >= limit for _, field, limit in checks)),
+                _shape(characters),
+            )
+            for checks, characters in crossed
+        ]
+        any_over = or_(*(condition for condition, _ in over))
+        added = reduce(
+            operator.add,
+            (case((condition, size), else_=0) for condition, size in over),
+        )
+        requests, characters, request_ids = (
+            await session.execute(
+                select(
+                    func.count().filter(any_over),
+                    func.coalesce(func.sum(added), 0),
+                    _request_ids(any_over, started_at=added.desc()),
+                ).where(*window, RequestLifecycle.api_key_id == row.api_key_id)
+            )
+        ).one()
+        detections.append(
+            Detection(
+                rule_id=OVERSIZED_PARTS,
+                subject_key=f"api_key:{row.api_key_id}",
+                subject={"api_key_id": str(row.api_key_id)},
+                evidence={
+                    "window_hours": WASTE_WINDOW_HOURS,
+                    "analysed_requests": row.analysed,
+                    "crossed_kinds": len(crossed),
+                    **{
+                        f"{name}_{label}": round(getattr(row, f"{field}_{label}"))
+                        for checks, _ in crossed
+                        for name, field, _ in checks
+                        for label in ("median", "p95")
+                    },
+                    "tokens_estimated": True,
+                    "request_ids": list(request_ids or []),
+                },
+                # Characters over four, the meter's estimate. No money: tool
+                # definitions and early history are usually the cached prefix.
+                impact={
+                    "cost_usd": None,
+                    "requests": requests,
+                    "tokens": int(characters) // 4,
+                },
+            )
+        )
+    return detections
+
+
+# The offer counts per key and tool, with the key's offering requests and the
+# tool names its answers called, for keys that offered tools often enough and
+# called at least one.
+_DEAD_TOOLS = text(
+    """
+    WITH key_rows AS (
+        -- Anything but an array reads as none, so a malformed row cannot fail the query.
+        SELECT api_key_id,
+               CASE WHEN jsonb_typeof(metadata -> 'response_analysis' -> 'shape'
+                                      -> 'tools_offered') = 'array'
+                    THEN metadata -> 'response_analysis' -> 'shape' -> 'tools_offered'
+                    ELSE '[]'::jsonb END AS offered,
+               CASE WHEN jsonb_typeof(metadata -> 'tool_call_names') = 'array'
+                    THEN metadata -> 'tool_call_names' ELSE '[]'::jsonb END AS called
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= :start AND started_at <= :now
+          AND api_key_id IS NOT NULL
+    ),
+    offering AS (
+        SELECT api_key_id, count(*) AS offering
+        FROM key_rows
+        WHERE jsonb_array_length(offered) > 0
+        GROUP BY api_key_id
+        HAVING count(*) >= :minimum
+    ),
+    calls AS (
+        SELECT api_key_id, array_agg(DISTINCT name) AS names
+        FROM key_rows, jsonb_array_elements_text(called) AS name
+        GROUP BY api_key_id
+    )
+    SELECT key_rows.api_key_id, tool, count(*) AS offers, offering.offering,
+           calls.names AS called
+    FROM key_rows
+    JOIN offering ON offering.api_key_id = key_rows.api_key_id
+    JOIN calls ON calls.api_key_id = key_rows.api_key_id,
+         jsonb_array_elements_text(key_rows.offered) AS tool
+    GROUP BY key_rows.api_key_id, tool, offering.offering, calls.names
+    ORDER BY key_rows.api_key_id, offers DESC, tool
+    """
+)
+# When each organization's dead tools are next due, in this worker's memory as
+# budgets keep theirs: a restart evaluates again, which refreshes the same findings.
+_dead_tools_due: dict[UUID, datetime] = {}
+
+
+async def _dead_tools(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    if now < _dead_tools_due.get(tenant_id, now):
+        return []
+    start = now - timedelta(days=DEAD_TOOLS_WINDOW_DAYS)
+    keys: dict[UUID, list[Any]] = {}
+    for row in await session.execute(
+        _DEAD_TOOLS,
+        {
+            "tenant_id": tenant_id,
+            "start": start,
+            "now": now,
+            "minimum": DEAD_TOOLS_MIN_REQUESTS,
+        },
+    ):
+        keys.setdefault(row.api_key_id, []).append(row)
+    _dead_tools_due[tenant_id] = now + timedelta(hours=DEAD_TOOLS_EVALUATION_HOURS)
+    detections = []
+    for key_id, tools in keys.items():
+        called = set(tools[0].called)
+        offering = tools[0].offering
+        # A Responses built-in tool is called as <name>_call.
+        dead = [
+            row
+            for row in tools
+            if row.offers >= offering * DEAD_TOOLS_MIN_OFFER_SHARE
+            and row.tool not in called
+            and f"{row.tool}_call" not in called
+        ][:EVIDENCE_DEAD_TOOLS]
+        if not dead:
+            continue
+        offered = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"][
+            "tools_offered"
+        ]
+        requests = await session.scalar(
+            select(func.count()).where(
+                RequestLifecycle.organization_id == tenant_id,
+                RequestLifecycle.started_at >= start,
+                RequestLifecycle.started_at <= now,
+                RequestLifecycle.api_key_id == key_id,
+                offered.has_any(array([row.tool for row in dead])),
+            )
+        )
+        detections.append(
+            Detection(
+                rule_id=DEAD_TOOLS,
+                subject_key=f"api_key:{key_id}",
+                subject={"api_key_id": str(key_id)},
+                evidence={
+                    "window_days": DEAD_TOOLS_WINDOW_DAYS,
+                    "offering_requests": offering,
+                    "dead_tools": len(dead),
+                    "called_tools": len(called),
+                    # Allowlisted tool names (S37) stay in the stored row only.
+                    "tools": [
+                        {"name": row.tool[:64], "offered": row.offers} for row in dead
+                    ],
+                },
+                impact={"cost_usd": None, "requests": requests},
+            )
+        )
+    return detections
+
+
+async def _cache_order_churn(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    shape = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"]
+    tool_set, order = (
+        shape["tools_set_digest"].as_string(),
+        shape["tools_order_digest"].as_string(),
+    )
+    # A log row without the field counts as no cache read.
+    cached = (
+        func.coalesce(
+            cast(RequestLog.details["cached_input_tokens"].as_string(), Integer), 0
+        )
+        > 0
+    )
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            tool_set.label("tool_set"),
+            func.count().label("requests"),
+            func.count().filter(cached).label("cache_reads"),
+            func.array_agg(distinct(RequestLifecycle.provider)).label("providers"),
+            _request_ids(true()).label("request_ids"),
+        )
+        .join(
+            RequestLog,
+            (RequestLog.organization_id == RequestLifecycle.organization_id)
+            & (RequestLog.request_id == RequestLifecycle.request_id),
+        )
+        .where(
+            *_shape_window(tenant_id, now - timedelta(hours=WASTE_WINDOW_HOURS), now),
+            _shape("tool_count") >= 2,
+            RequestLog.prompt_tokens >= CACHE_CHURN_MIN_PROMPT_TOKENS,
+            tool_set.is_not(None),
+            order.is_not(None),
+        )
+        .group_by(RequestLifecycle.api_key_id, tool_set, order)
+    )
+    sets: dict[tuple[UUID, str], list[Any]] = {}
+    for row in rows:
+        sets.setdefault((row.api_key_id, row.tool_set), []).append(row)
+    churned: dict[UUID, list[dict[str, Any]]] = {}
+    for (key_id, _), orders in sets.items():
+        requests = sum(row.requests for row in orders)
+        reads = sum(row.cache_reads for row in orders)
+        dominant = max(row.requests for row in orders)
+        if (
+            requests >= CACHE_CHURN_MIN_REQUESTS
+            and len(orders) >= 2
+            and Decimal(dominant) / requests < CACHE_CHURN_MAX_DOMINANT_SHARE
+            and Decimal(reads) / requests < CACHE_CHURN_MAX_CACHE_READ_SHARE
+        ):
+            churned.setdefault(key_id, []).append(
+                {
+                    "requests": requests,
+                    "orders": len(orders),
+                    "requests_per_order": sorted(
+                        (row.requests for row in orders), reverse=True
+                    ),
+                    "cache_read_share": str(round(Decimal(reads) / requests, 4)),
+                    "providers": sorted(
+                        {
+                            provider
+                            for row in orders
+                            for provider in row.providers or ()
+                            if provider in PROVIDERS
+                        }
+                    ),
+                    "request_ids": [
+                        value for row in orders for value in row.request_ids or ()
+                    ],
+                }
+            )
+    detections = []
+    for key_id, found in sorted(churned.items()):
+        found.sort(key=lambda item: -item["requests"])
+        largest = found[0]
+        detections.append(
+            Detection(
+                rule_id=CACHE_ORDER_CHURN,
+                subject_key=f"api_key:{key_id}",
+                subject={"api_key_id": str(key_id)},
+                evidence={
+                    "window_hours": WASTE_WINDOW_HOURS,
+                    "tool_sets": len(found),
+                    "churned_requests": sum(item["requests"] for item in found),
+                    "orders": largest["orders"],
+                    "cache_read_share": largest["cache_read_share"],
+                    "sets": [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "request_ids"
+                        }
+                        for item in found[:EVIDENCE_TOOL_SETS]
+                    ],
+                    "request_ids": [
+                        value for item in found for value in item["request_ids"]
+                    ][:EVIDENCE_REQUEST_IDS],
+                },
+                impact={
+                    "cost_usd": None,
+                    "requests": sum(item["requests"] for item in found),
+                },
+            )
+        )
+    return detections
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -1527,6 +1976,9 @@ async def evaluate_organization(
         (_language_drift, (LANGUAGE_DRIFT,)),
         (_schema_errors, (SCHEMA_ERRORS,)),
         (_soft_refusals, (SOFT_REFUSALS,)),
+        (_oversized_parts, (OVERSIZED_PARTS,)),
+        (_dead_tools, (DEAD_TOOLS,)),
+        (_cache_order_churn, (CACHE_ORDER_CHURN,)),
     )
     detections: list[Detection] = []
     failed: list[str] = []
@@ -1721,7 +2173,7 @@ def finding_from_row(row: Finding) -> FindingV1:
             measurements=values,
             impact=FindingImpact(
                 requests=impact.get("requests"),
-                tokens=None,
+                tokens=impact.get("tokens"),
                 usd=None if usd is None else format(Decimal(str(usd)), "f"),
                 risk_class=spec.RISK_CLASS,
             ),
