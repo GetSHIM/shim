@@ -739,10 +739,12 @@ Make every change that loosens protection wait for a second administrator.
    It needs two active people whose role can approve (owners and admins, not
    service accounts); with fewer the answer is 409 `FOUR_EYES_UNAVAILABLE`.
 2. A direct write that loosens protection (masking off, a raised limit, a
-   model added to a key, a new deployment, a deleted budget, ...) now answers
-   409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the `resource.item.field`
-   names it would loosen, and writes nothing. Tightening and neutral writes are
-   unchanged.
+   model added to a key, a new deployment, a deleted budget, an enforced rule
+   removed, customer provider keys allowed, a forward target disabled or
+   deleted, ...) now answers 409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the
+   `resource.item.field` names it would loosen, and writes nothing. A new API
+   key needs `allowed_models`; widen it later with a plan. Tightening and
+   neutral writes are unchanged.
 3. Make the change a [plan](#plan-apply-and-undo-a-change) instead. Applying a
    loosening plan answers 202 with the plan in `pending_approval` and alerts
    your [forward targets](#send-tenant-alerts) (`kind:
@@ -768,14 +770,16 @@ Notes:
 - A pending plan expires 72 hours after it was submitted. An approval that
   finds an item changed since answers 409 `PLAN_STALE` and the plan keeps
   waiting; reject it and plan again.
-- The creator, the submitter and service accounts get 403
+- The creator, the submitter, whoever created or rotated the key of a service
+  account that created or submitted the plan, and service accounts get 403
   `APPROVER_NOT_ELIGIBLE`. The note is kept on the plan (`context.decision_note`),
   never in the audit chain.
 - Turning four eyes off is itself loosening, so it needs approval too. When
   fewer than two people can approve (an administrator left), an owner may turn
   it off directly; that write is audited as
-  `tenant.four_eyes_single_admin_override` and alerted like a privacy
-  relaxation.
+  `tenant.four_eyes_single_admin_override` and alerted as
+  `gateway_protection_relaxed`. While four eyes is on, demoting or removing
+  one of the last two approvers answers 409 `FOUR_EYES_UNAVAILABLE`.
 - What counts as loosening per resource is in
   [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
 

@@ -81,7 +81,8 @@ async def current_version(session: AsyncSession, organization_id: UUID) -> int:
     )
 
 
-# Custom roles never grant plans.approve, so built-in roles are the approvers.
+# Custom roles never grant plans.approve and hang only off the member role, so
+# built-in roles are the approvers.
 _APPROVER_ROLES = [
     role
     for role, granted in BUILTIN_ROLE_PERMISSIONS.items()
@@ -105,7 +106,6 @@ async def count_approvers(session: AsyncSession, organization_id: UUID) -> int:
                 User.organization_id == organization_id,
                 User.is_active.is_(True),
                 User.kind == "human",
-                User.custom_role_id.is_(None),
                 User.role.in_(_APPROVER_ROLES),
             )
         )
