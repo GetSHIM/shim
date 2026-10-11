@@ -323,6 +323,15 @@
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/findings/rules": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/findings/{finding_id}": {
   "admin": "404",
   "auditor": "404",
@@ -808,6 +817,15 @@
   "service_admin": "200",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/findings/{finding_id}/plan": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
  },
  "POST /api/v1/management/model-deployments": {
   "admin": "422",

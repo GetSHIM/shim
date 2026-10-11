@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 Direction = Literal["tightening", "relaxing", "neutral"]
 FourEyes = Literal["off", "relaxing"]
+FindingMode = Literal["observe", "suggest", "auto"]
 _logged_unknown: set[tuple[str, str]] = set()
 
 
@@ -34,6 +35,8 @@ class GatewaySettings(BaseModel):
     response_analysis: list[str] = []
     # A change that loosens protection needs a second administrator's approval.
     four_eyes: FourEyes = "off"
+    # Per finding rule, how far shim may go; a rule left out observes.
+    finding_modes: dict[str, FindingMode] = {}
 
     @field_validator("response_analysis")
     @classmethod
@@ -46,6 +49,7 @@ class GatewaySettingsPatch(BaseModel):
 
     response_analysis: list[str] | None = None
     four_eyes: FourEyes | None = None
+    finding_modes: dict[str, FindingMode] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -61,6 +65,22 @@ class GatewaySettingsPatch(BaseModel):
     def known_analyzers(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _known_analyzers(value)
 
+    @field_validator("finding_modes")
+    @classmethod
+    def within_ladder(
+        cls, value: dict[str, FindingMode] | None
+    ) -> dict[str, FindingMode] | None:
+        # Here, not at the top: the findings module reads these settings.
+        from shim_enterprise.findings.service import LADDER, MODES
+
+        for rule_id, mode in (value or {}).items():
+            if rule_id not in LADDER:
+                raise ValueError(f"unknown finding rule: {rule_id}")
+            highest = LADDER[rule_id].max_mode
+            if MODES.index(mode) > MODES.index(highest):
+                raise ValueError(f"{rule_id} goes at most to {highest}")
+        return value
+
 
 def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     """Read a stored row as this build knows it; a value of the wrong shape raises.
@@ -70,6 +90,19 @@ def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     """
 
     unknown = {("key", key) for key in set(value) - set(GatewaySettings.model_fields)}
+    # Here, not at the top: the findings module reads these settings.
+    from shim_enterprise.findings.service import LADDER
+
+    modes = value.get("finding_modes")
+    if isinstance(modes, dict):
+        retired_rules = {rule for rule in modes if rule not in LADDER}
+        unknown |= {("finding rule", rule) for rule in retired_rules}
+        value = {
+            **value,
+            "finding_modes": {
+                rule: mode for rule, mode in modes.items() if rule in LADDER
+            },
+        }
     names = value.get("response_analysis")
     if isinstance(names, list):
         retired = {
@@ -100,15 +133,37 @@ def _four_eyes(_before: FourEyes, after: FourEyes) -> Direction:
     return "relaxing" if after == "off" else "tightening"
 
 
+def _finding_modes(
+    before: dict[str, FindingMode], after: dict[str, FindingMode]
+) -> Direction:
+    # auto lets shim act without a person; every other move only shows more.
+    raised = any(
+        mode == "auto" and before.get(rule) != "auto" for rule, mode in after.items()
+    )
+    return "relaxing" if raised else "neutral"
+
+
 # A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
     "four_eyes": _four_eyes,
+    "finding_modes": _finding_modes,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {}
+
+
+def patched(before: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
+    """A PATCH: `finding_modes` merges per rule, and `observe` removes the rule."""
+    after = {**before, **changes}
+    if "finding_modes" in changes:
+        modes = {**before.get("finding_modes", {}), **changes["finding_modes"]}
+        after["finding_modes"] = {
+            rule: mode for rule, mode in modes.items() if mode != "observe"
+        }
+    return after
 
 
 def classify_change(

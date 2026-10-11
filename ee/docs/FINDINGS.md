@@ -18,8 +18,8 @@ The API returns every finding in the published
 `status_detail`, `subject` (`key`, `deployment` or `model` with its id),
 `window` (first and last time seen), `occurrences`, `evidence` (up to 40 request
 references), `measurements` (the measured numbers), `impact` (`requests`, `usd`,
-`risk_class`), `remediation` (`mode`, which stays `observe` for now, `max_mode`,
-`reversible`, `blast_radius`, the fix `text`), `playbook` (the rule's section
+`risk_class`), `remediation` (`mode`, `max_mode` and `action`, see
+[modes](#modes), `reversible`, `blast_radius`, the fix `text`), `playbook` (the rule's section
 below), and `resolved_at` and `resolved_by` once resolved. v0.3.0 answered in a
 shape of its own; [what changed](../../docs/FINDINGS_SCHEMA.md#what-changes-for-existing-apps).
 A row this build cannot render (a rule it does not have, a measurement its
@@ -75,14 +75,58 @@ failed rule's open findings are not resolved by the 7-day rule on that pass.
 Thresholds are fixed constants in `shim_enterprise.findings.service`; tenants
 cannot change them.
 
+## Modes
+
+Per finding type the tenant chooses how far shim may go, in the same words as a
+rule's action:
+
+- `observe` (the default): the finding shows the problem and the fix in words;
+  `action` is `null`.
+- `suggest`: the finding also carries a typed `action` a person can turn into a
+  [policy plan](POLICY_DECISIONS.md#policy-versions-and-plans) with
+  `POST /api/v1/management/findings/{id}/plan`. Nothing changes until someone
+  applies the plan, and a restore undoes it.
+- `auto`: shim may apply the action itself. Only an action that tightens or
+  cheapens and, by the rule's own condition, touches no request that would
+  otherwise be served may be `auto`; today that is disabling a deployment that
+  served nothing in 30 days. No executor is installed yet, so `auto` is stored
+  and shown and works as `suggest`: the finding says `mode: "suggest"`, and the
+  rules read says `effective_mode: "suggest"` with `unavailable_reason:
+  "auto_executor_not_installed"`.
+
+Each rule declares its highest mode (`max_mode`) and its action; a rule whose fix
+is in the client, the prompt or the provider stays `observe`. The tenant sets
+`finding_modes` in its [gateway settings](COOKBOOK.md#change-the-gateway-settings),
+per rule id, at or below the rule's `max_mode` (422 otherwise, naming the rule);
+a PATCH merges per rule, and `observe` removes the rule's entry. Moving a rule to
+`auto` is relaxing (it lets shim act without a person), so
+[four eyes](POLICY_DECISIONS.md#four-eyes) applies; any other move is neutral.
+The worker writes the mode and action on every finding it raises and, each pass,
+on every open finding of the organization, so a changed mode shows after the next
+pass, and a lowered one removes the action. Nothing already applied is undone.
+
+| Rule | `max_mode` | Action |
+| --- | --- | --- |
+| `gateway.retry_storm`, `gateway.repeat_spend` | `observe` | none: the client's timeout and retries |
+| `gateway.answer_quality`, `gateway.truncation_rate`, `gateway.refusal_rate` | `observe` | none: the prompt, the model or the client's output limit |
+| `gateway.unregistered_model`, `gateway.byok_usage` | `observe` | none: registering needs a secret and an origin; BYOK has no tenant switch |
+| `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
+| `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
+
+`deployment.disable` is `{"kind": "deployment.disable", "params":
+{"deployment_id": ...}}`, built from the finding's subject; it is reversible and
+its blast radius is the deployment.
+
 ## API
 
 | Route | Who | What |
 | --- | --- | --- |
 | `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`open`, `dismissed`, `resolved`, or the workflow states `new`, `in_progress`, `suppressed`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
+| `GET /api/v1/management/findings/rules` | Owner, admin, auditor | Per rule: `rule_id`, `rule_version`, `max_mode`, `action_kind`, `mode` (stored, or `observe`), `effective_mode`, `unavailable_reason` and `open_findings`, by rule id |
 | `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding (Finding v1) |
 | `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": ...}` with the same values as the filter (`open` keeps an open finding's state and reopens a closed one as `new`, `dismissed` is `suppressed`); recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
 | `GET /api/v1/management/findings/export` | Owner, admin, auditor | NDJSON, one OCSF Detection Finding per line, with the same filters; at most 10,000 (422 beyond) |
+| `POST /api/v1/management/findings/{id}/plan` | `plans.create` and `deployments.manage` | A draft plan (reason `finding:<id>`) that makes the finding's action: 201; 409 when the finding is not open (`new`, `in_progress`) or has no action; 404 for another organization's finding |
 
 Each export line is an OCSF 1.3.0 Detection Finding: `class_uid` 2004,
 `category_uid` 2, `activity_id` 1 (created, seen once), 2 (updated: seen again
@@ -131,7 +175,7 @@ batch, look the same: suppress the finding when the pattern is intended.
 aligned to the quarter hour in UTC (the current one included). A request counts
 when it is a [linked repeat](#linked-repeats), or, when it has no repeat digest,
 when its `repeat_chain_length` is 2 or more. It fires when one bucket holds at
-least 20 of them. Severity medium. Rule version 2. Max mode `suggest`,
+least 20 of them. Severity medium. Rule version 2. Max mode `observe`,
 blast radius `key`, risk class `cost`.
 
 **Why.** A client that resends the same request quickly is usually retrying
@@ -165,7 +209,7 @@ spend settlement), plus, for requests without a repeat digest, the cost of
 those with `repeat_chain_length` of 2 or more that did not follow a refunded
 request (see [linked repeats](#linked-repeats)). It fires when that cost is at
 least 1 USD and at least 10 percent of the key's known spend. Unpriced requests
-count toward neither. Severity medium. Rule version 2. Max mode `suggest`,
+count toward neither. Severity medium. Rule version 2. Max mode `observe`,
 blast radius `key`, risk class `cost`.
 
 **Why.** Repeated identical requests that cost a tenth of a key's spend are

@@ -4354,6 +4354,84 @@
         "title": "FindingRemediation",
         "type": "object"
       },
+      "FindingRuleView": {
+        "properties": {
+          "action_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Kind"
+          },
+          "effective_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Effective Mode",
+            "type": "string"
+          },
+          "max_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Max Mode",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "open_findings": {
+            "title": "Open Findings",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "const": "auto_executor_not_installed",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "max_mode",
+          "action_kind",
+          "mode",
+          "effective_mode",
+          "unavailable_reason",
+          "open_findings"
+        ],
+        "title": "FindingRuleView",
+        "type": "object"
+      },
       "FindingSubject": {
         "properties": {
           "id": {
@@ -5100,6 +5178,19 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "finding_modes": {
+            "additionalProperties": {
+              "enum": [
+                "observe",
+                "suggest",
+                "auto"
+              ],
+              "type": "string"
+            },
+            "default": {},
+            "title": "Finding Modes",
+            "type": "object"
+          },
           "four_eyes": {
             "default": "off",
             "enum": [
@@ -5124,6 +5215,25 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "finding_modes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "enum": [
+                    "observe",
+                    "suggest",
+                    "auto"
+                  ],
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Modes"
+          },
           "four_eyes": {
             "anyOf": [
               {
@@ -18621,6 +18731,36 @@
         ]
       }
     },
+    "/api/v1/management/findings/rules": {
+      "get": {
+        "operationId": "finding_rules_api_v1_management_findings_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FindingRuleView"
+                  },
+                  "title": "Response Finding Rules Api V1 Management Findings Rules Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Finding Rules",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/findings/{finding_id}": {
       "get": {
         "operationId": "get_finding_api_v1_management_findings__finding_id__get",
@@ -18722,6 +18862,54 @@
         "summary": "Update Finding",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/findings/{finding_id}/plan": {
+      "post": {
+        "operationId": "plan_from_finding_api_v1_management_findings__finding_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan From Finding",
+        "tags": [
+          "findings"
         ]
       }
     },

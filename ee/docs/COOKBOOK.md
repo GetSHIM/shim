@@ -31,6 +31,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Record an incident](#record-an-incident)
@@ -252,6 +253,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
+| `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -889,6 +891,33 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Let shim suggest a fix
+
+Have a finding carry the change that fixes it, ready to plan.
+
+1. As an owner, admin or auditor, read each finding type's highest mode and
+   action: `GET /api/v1/management/findings/rules`.
+2. As an owner or admin, raise a rule:
+   `PATCH /api/v1/management/gateway-settings` with
+   `{"finding_modes": {"gateway.unused_deployment": "suggest"}}`.
+3. After the next evaluation the rule's open findings carry `remediation.action`.
+   Turn one into a plan with `POST /api/v1/management/findings/{id}/plan`, read
+   its effect, and [apply it](#plan-apply-and-undo-a-change); a restore undoes it.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"finding_modes": {"gateway.unused_deployment": "suggest"}}'
+
+curl -X POST "http://localhost:8000/api/v1/management/findings/$FINDING_ID/plan" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: a mode above the rule's highest answers 422 naming the rule. `auto` is
+accepted for `gateway.unused_deployment` but works as `suggest` until an executor
+is installed. Setting a rule back to `observe` removes its action from open
+findings at the next pass. Modes and actions are in [findings](FINDINGS.md#modes).
 
 ## Find truncated and refused answers
 

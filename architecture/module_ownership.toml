@@ -368,6 +368,7 @@ enterprise = [
   "ee/src/shim_enterprise/core/errors.py",
   "ee/src/shim_enterprise/core/license.py",
   "ee/src/shim_enterprise/findings/__init__.py",
+  "ee/src/shim_enterprise/findings/api.py",
   "ee/src/shim_enterprise/findings/models.py",
   "ee/src/shim_enterprise/findings/service.py",
   "ee/src/shim_enterprise/gateway/__init__.py",

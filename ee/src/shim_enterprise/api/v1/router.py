@@ -8,6 +8,7 @@ from shim.api.v1.responses import router as responses_router
 from shim_enterprise.ai_act.api import router as ai_act_router
 from shim_enterprise.api.v1 import management, scan
 from shim_enterprise.compliance.api import router as compliance_router
+from shim_enterprise.findings.api import router as findings_router
 from shim_enterprise.incidents.api import router as incidents_router
 from shim_enterprise.policy.api import router as policy_router
 from shim_enterprise.rules.api import router as rules_router
@@ -34,4 +35,5 @@ management_router.include_router(incidents_router)
 management_router.include_router(ai_act_router)
 management_router.include_router(policy_router)
 management_router.include_router(rules_router)
+management_router.include_router(findings_router)
 management_router.include_router(public_router)

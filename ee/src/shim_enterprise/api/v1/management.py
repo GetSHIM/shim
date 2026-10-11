@@ -115,9 +115,14 @@ from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
+    LADDER,
+    RULE_VERSION,
+    RULE_VERSIONS,
     STATUS_IDS,
     STATUS_RESOLVED,
+    effective_mode,
     finding_from_row,
+    finding_modes,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
@@ -153,9 +158,11 @@ from shim_enterprise.rules.resource import (
 )
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
+    FindingMode,
     GatewaySettings,
     GatewaySettingsPatch,
     classify_change,
+    patched,
     stored_settings,
 )
 from shim_enterprise.tenants.models import (
@@ -2522,7 +2529,7 @@ async def update_gateway_settings(
     tenant_id = _tenant_id(user)
     await lock_tenant(session, tenant_id)
     before = (await GATEWAY_SETTINGS.snapshot(session, tenant_id, None))["_"]
-    after = {**before, **patch.model_dump(mode="json", exclude_unset=True)}
+    after = patched(before, patch.model_dump(mode="json", exclude_unset=True))
     async with record_managed_write(
         session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
     ) as version:
@@ -3335,6 +3342,53 @@ async def export_findings(
         for row in rows
     )
     return Response(body, media_type="application/x-ndjson")
+
+
+class FindingRuleView(BaseModel):
+    rule_id: str
+    rule_version: int
+    max_mode: FindingMode
+    action_kind: str | None
+    mode: FindingMode
+    effective_mode: FindingMode
+    unavailable_reason: Literal["auto_executor_not_installed"] | None
+    open_findings: int
+
+
+# Before /findings/{finding_id}, which would take rules for an id.
+@router.get("/findings/rules", response_model=list[FindingRuleView])
+async def finding_rules(
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> list[FindingRuleView]:
+    tenant_id = _tenant_id(user)
+    modes = await finding_modes(session, tenant_id)
+    open_counts = {
+        rule_id: count
+        for rule_id, count in await session.execute(
+            select(Finding.rule_id, func.count())
+            .where(
+                Finding.organization_id == tenant_id,
+                Finding.status_id != STATUS_RESOLVED,
+            )
+            .group_by(Finding.rule_id)
+        )
+    }
+    return [
+        FindingRuleView(
+            rule_id=rule_id,
+            rule_version=RULE_VERSIONS.get(rule_id, RULE_VERSION),
+            max_mode=ladder.max_mode,
+            action_kind=ladder.action_kind,
+            mode=modes.get(rule_id, "observe"),
+            effective_mode=effective_mode(rule_id, modes),
+            unavailable_reason="auto_executor_not_installed"
+            if modes.get(rule_id) == "auto"
+            else None,
+            open_findings=open_counts.get(rule_id, 0),
+        )
+        for rule_id, ladder in sorted(LADDER.items())
+    ]
 
 
 @router.get("/findings/{finding_id}", response_model=FindingV1)
@@ -5344,7 +5398,7 @@ class _GatewaySettingsResource:
         proposed: State,
     ) -> State:
         patch = _validated(GatewaySettingsPatch, proposed)
-        after = {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
+        after = patched(before or {}, patch.model_dump(mode="json", exclude_unset=True))
         turned_on = after.get("four_eyes") == "relaxing"
         if turned_on and (before or {}).get("four_eyes") != "relaxing":
             await _require_two_approvers(session, actor.organization_id)

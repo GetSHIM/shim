@@ -17,6 +17,7 @@ from shim.findings import Finding as FindingV1
 from shim.jsonschema_subset import check
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings import service
 from shim_enterprise.findings.models import Finding
@@ -24,10 +25,12 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     EPHEMERAL_BYOK_SPEND_POLICY_VERSION,
 )
 from shim_enterprise.observability.model_inventory import UNSPECIFIED_MODEL
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, classify_change
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
     Organization,
+    OrganizationGatewaySettings,
     ProviderSecret,
     User,
 )
@@ -571,7 +574,7 @@ async def test_findings_api_filters_audits_and_exports_ocsf(
     }
     assert record["unmapped"]["schema_version"] == "1"
     assert record["unmapped"]["measurements"]["repeated_requests"] == 20
-    assert record["unmapped"]["remediation"]["max_mode"] == "suggest"
+    assert record["unmapped"]["remediation"]["max_mode"] == "observe"
     assert record["unmapped"]["summary_tr"].startswith("Bir API anahtarı")
     assert all(
         FindingV1.model_validate(item) for item in listed["items"] + [detail.json()]
@@ -1914,3 +1917,372 @@ async def test_rate_findings_break_down_up_to_five_models(db, test_api_key) -> N
     )
     assert [d for d in detections if d.rule_id == service.REFUSAL_RATE] == []
     assert [d for d in detections if d.rule_id == service.ANSWER_QUALITY] == []
+
+
+# --- E42: finding modes ---------------------------------------------------------
+
+
+async def _set_modes(db, organization_id: UUID, modes: dict) -> None:
+    row = await db.get(OrganizationGatewaySettings, organization_id)
+    if row is None:
+        row = OrganizationGatewaySettings(organization_id=organization_id, settings={})
+        db.add(row)
+    row.settings = {"finding_modes": modes}
+    await db.flush()
+
+
+def _admin(organization_id: UUID, role: str = "owner") -> User:
+    return User(
+        id=uuid4(),
+        organization_id=organization_id,
+        email=f"modes-{uuid4().hex}@example.com",
+        role=role,
+        is_active=True,
+        is_verified=True,
+    )
+
+
+async def _deployment_id(db, key, **values) -> str:
+    alias = await _deployment(db, key, **values)
+    return str(
+        await db.scalar(
+            select(ModelDeployment.id).where(
+                ModelDeployment.organization_id == key.organization_id,
+                ModelDeployment.alias == alias,
+            )
+        )
+    )
+
+
+async def _owner(db, organization_id: UUID, role: str = "owner") -> User:
+    user = _admin(organization_id, role)
+    db.add(user)
+    await db.flush()
+    return user
+
+
+def test_the_ladder_covers_every_rule_and_auto_only_unused_deployments() -> None:
+    assert set(service.LADDER) == set(service.RULES)
+    by_mode = {
+        mode: {
+            rule for rule, ladder in service.LADDER.items() if ladder.max_mode == mode
+        }
+        for mode in service.MODES
+    }
+    assert by_mode["auto"] == {service.UNUSED_DEPLOYMENT}
+    assert by_mode["suggest"] == {service.IDLE_INTERNAL_DEPLOYMENT}
+    assert {rule for rule, ladder in service.LADDER.items() if ladder.action_kind} == {
+        service.UNUSED_DEPLOYMENT,
+        service.IDLE_INTERNAL_DEPLOYMENT,
+    }
+    assert all(
+        ladder.action_kind == "deployment.disable"
+        for ladder in service.LADDER.values()
+        if ladder.action_kind
+    )
+
+
+@pytest.mark.parametrize(
+    ("modes", "error"),
+    [
+        ({"gateway.nope": "suggest"}, "unknown finding rule: gateway.nope"),
+        (
+            {service.RETRY_STORM: "suggest"},
+            "gateway.retry_storm goes at most to observe",
+        ),
+        (
+            {service.IDLE_INTERNAL_DEPLOYMENT: "auto"},
+            "gateway.idle_internal_deployment goes at most to suggest",
+        ),
+        ({service.UNUSED_DEPLOYMENT: "always"}, "Input should be"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_finding_modes_are_checked_against_the_ladder(
+    db, test_org, modes, error
+) -> None:
+    async with _client(db, await _owner(db, test_org.id)) as client:
+        refused = await client.patch(
+            "/api/v1/management/gateway-settings", json={"finding_modes": modes}
+        )
+
+    assert refused.status_code == 422
+    assert error in json.dumps(refused.json())
+
+
+@pytest.mark.asyncio
+async def test_finding_modes_merge_per_rule_and_version_with_the_settings(
+    db, test_org
+) -> None:
+    async with _client(db, await _owner(db, test_org.id)) as client:
+        default = (await client.get("/api/v1/management/gateway-settings")).json()
+        await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.UNUSED_DEPLOYMENT: "suggest"}},
+        )
+        both = await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.IDLE_INTERNAL_DEPLOYMENT: "suggest"}},
+        )
+        lowered = await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.UNUSED_DEPLOYMENT: "observe"}},
+        )
+        version = (await client.get("/api/v1/management/policy/versions/3")).json()
+
+    assert default["settings"]["finding_modes"] == {}
+    assert both.json()["settings"]["finding_modes"] == {
+        service.UNUSED_DEPLOYMENT: "suggest",
+        service.IDLE_INTERNAL_DEPLOYMENT: "suggest",
+    }
+    assert lowered.json()["settings"]["finding_modes"] == {
+        service.IDLE_INTERNAL_DEPLOYMENT: "suggest"
+    }
+    assert version["snapshot"]["gateway_settings"]["_"]["finding_modes"] == {
+        service.IDLE_INTERNAL_DEPLOYMENT: "suggest"
+    }
+    assert version["risk"] == "neutral"
+
+
+def test_moving_a_rule_to_auto_relaxes_and_anything_else_is_neutral() -> None:
+    auto = GatewaySettings(finding_modes={service.UNUSED_DEPLOYMENT: "auto"})
+    suggest = GatewaySettings(finding_modes={service.UNUSED_DEPLOYMENT: "suggest"})
+
+    assert classify_change(suggest, auto) == ("relaxing", ["finding_modes"])
+    assert classify_change(GatewaySettings(), auto) == ("relaxing", ["finding_modes"])
+    assert classify_change(GatewaySettings(), suggest) == ("neutral", [])
+    assert classify_change(auto, suggest) == ("neutral", [])
+    assert classify_change(auto, GatewaySettings()) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_four_eyes_refuses_a_direct_move_to_auto(db, test_org) -> None:
+    owner, admin = _admin(test_org.id), _admin(test_org.id, "admin")
+    db.add_all([owner, admin])
+    await db.flush()
+    async with _client(db, owner) as client:
+        await client.patch(
+            "/api/v1/management/gateway-settings", json={"four_eyes": "relaxing"}
+        )
+        refused = await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.UNUSED_DEPLOYMENT: "auto"}},
+        )
+        allowed = await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.UNUSED_DEPLOYMENT: "suggest"}},
+        )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["relaxed"] == ["gateway_settings._.finding_modes"]
+    assert allowed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_worker_writes_the_mode_and_action_each_pass(
+    db, test_api_key
+) -> None:
+    tenant = test_api_key.organization_id
+    deployment_id = await _deployment_id(db, test_api_key, age=timedelta(days=40))
+    await _storm(db, test_api_key)
+    await _evaluate(db, test_api_key)
+    observed = {
+        row.rule_id: dict(row.remediation) for row in await _findings(db, test_api_key)
+    }
+
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "suggest"})
+    await _evaluate(db, test_api_key)
+    suggested = {
+        row.rule_id: dict(row.remediation) for row in await _findings(db, test_api_key)
+    }
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "auto"})
+    await _evaluate(db, test_api_key)
+    automatic = {
+        row.rule_id: dict(row.remediation) for row in await _findings(db, test_api_key)
+    }
+
+    action = {
+        "kind": "deployment.disable",
+        "params": {"deployment_id": deployment_id},
+    }
+    unused, storm = observed[service.UNUSED_DEPLOYMENT], observed[service.RETRY_STORM]
+    assert (unused["mode"], unused["max_mode"], unused["action"]) == (
+        "observe",
+        "auto",
+        None,
+    )
+    assert (storm["mode"], storm["max_mode"], storm["action"]) == (
+        "observe",
+        "observe",
+        None,
+    )
+    assert (unused["reversible"], unused["blast_radius"], unused["proof_after"]) == (
+        True,
+        "deployment",
+        None,
+    )
+    assert (
+        suggested[service.UNUSED_DEPLOYMENT]["mode"],
+        suggested[service.UNUSED_DEPLOYMENT]["action"],
+    ) == ("suggest", action)
+    assert suggested[service.RETRY_STORM]["action"] is None
+    assert (
+        automatic[service.UNUSED_DEPLOYMENT]["mode"],
+        automatic[service.UNUSED_DEPLOYMENT]["action"],
+    ) == ("suggest", action)
+    assert all(
+        _published(service.finding_from_row(row))
+        for row in await _findings(db, test_api_key)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_mode_change_reaches_an_open_finding_that_did_not_fire(
+    db, test_api_key
+) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+    await db.execute(
+        update(ModelDeployment)
+        .where(ModelDeployment.organization_id == tenant)
+        .values(enabled=False)
+    )
+    other = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    await _set_modes(db, other.id, {service.UNUSED_DEPLOYMENT: "suggest"})
+
+    await _evaluate(db, test_api_key, NOW + timedelta(hours=1))
+    [untouched] = await _findings(db, test_api_key)
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "suggest"})
+    await _evaluate(db, test_api_key, NOW + timedelta(hours=2))
+    [raised] = await _findings(db, test_api_key)
+    raised_remediation = dict(raised.remediation)
+    await _set_modes(db, tenant, {})
+    await _evaluate(db, test_api_key, NOW + timedelta(hours=3))
+    [lowered] = await _findings(db, test_api_key)
+
+    assert untouched.id == finding.id and untouched.last_seen_at == NOW
+    assert untouched.remediation["mode"] == "observe"
+    assert raised_remediation["mode"] == "suggest"
+    assert raised_remediation["action"]["kind"] == "deployment.disable"
+    assert (lowered.remediation["mode"], lowered.remediation["action"]) == (
+        "observe",
+        None,
+    )
+    assert service.finding_from_row(lowered).remediation.action is None
+
+
+@pytest.mark.asyncio
+async def test_the_rules_read_lists_every_rule_with_its_modes(db, test_api_key) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _evaluate(db, test_api_key)
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "auto"})
+    member = await _owner(db, tenant, "member")
+
+    async with _client(db, await _owner(db, tenant, "auditor")) as client:
+        read = await client.get("/api/v1/management/findings/rules")
+    async with _client(db, member) as client:
+        refused = await client.get("/api/v1/management/findings/rules")
+
+    items = read.json()
+    assert read.status_code == 200
+    assert [item["rule_id"] for item in items] == sorted(service.RULES)
+    unused = next(
+        item for item in items if item["rule_id"] == service.UNUSED_DEPLOYMENT
+    )
+    assert unused == {
+        "rule_id": service.UNUSED_DEPLOYMENT,
+        "rule_version": 2,
+        "max_mode": "auto",
+        "action_kind": "deployment.disable",
+        "mode": "auto",
+        "effective_mode": "suggest",
+        "unavailable_reason": "auto_executor_not_installed",
+        "open_findings": 1,
+    }
+    storm = next(item for item in items if item["rule_id"] == service.RETRY_STORM)
+    assert (storm["mode"], storm["effective_mode"], storm["unavailable_reason"]) == (
+        "observe",
+        "observe",
+        None,
+    )
+    assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_suggested_action_becomes_a_plan_that_applies_and_restores(
+    db, test_api_key, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGINS", ["https://a.internal"]
+    )
+    tenant = test_api_key.organization_id
+    owner = await _owner(db, tenant)
+    deployment_id = await _deployment_id(db, test_api_key, age=timedelta(days=40))
+    await _storm(db, test_api_key)
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "suggest"})
+    await _evaluate(db, test_api_key)
+    findings = {row.rule_id: row for row in await _findings(db, test_api_key)}
+    unused, storm = findings[service.UNUSED_DEPLOYMENT], findings[service.RETRY_STORM]
+    other = Organization(id=uuid4(), name="Other", slug=f"other-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    stranger, auditor = _admin(other.id), _admin(tenant, "auditor")
+    db.add_all([stranger, auditor])
+    await db.flush()
+
+    async with _client(db, stranger) as client:
+        cross = await client.post(f"/api/v1/management/findings/{unused.id}/plan")
+    async with _client(db, auditor) as client:
+        forbidden = await client.post(f"/api/v1/management/findings/{unused.id}/plan")
+    async with _client(db, owner) as client:
+        no_action = await client.post(f"/api/v1/management/findings/{storm.id}/plan")
+        created = await client.post(f"/api/v1/management/findings/{unused.id}/plan")
+        plan = created.json()
+        applied = await client.post(
+            f"/api/v1/management/policy/plans/{plan['id']}/apply"
+        )
+        disabled = await db.get(
+            ModelDeployment, UUID(deployment_id), populate_existing=True
+        )
+        disabled_state = disabled.enabled
+        restored = await client.post(
+            f"/api/v1/management/policy/versions/{applied.json()['applied_version'] - 1}/restore",
+            json={},
+        )
+        await db.execute(
+            update(Finding)
+            .where(Finding.id == unused.id)
+            .values(status_id=service.STATUS_RESOLVED)
+        )
+        resolved = await client.post(f"/api/v1/management/findings/{unused.id}/plan")
+
+    assert cross.status_code == 404
+    assert forbidden.status_code == 403
+    assert (no_action.status_code, no_action.json()["detail"]) == (
+        409,
+        "The finding suggests no action",
+    )
+    assert created.status_code == 201, created.text
+    assert (plan["status"], plan["reason"]) == ("draft", f"finding:{unused.id}")
+    [change] = plan["changes"]
+    assert (change["resource"], change["item"], change["risk"]) == (
+        "deployments",
+        deployment_id,
+        "tightening",
+    )
+    assert (change["before"]["enabled"], change["after"]["enabled"]) == (True, False)
+    assert applied.json()["status"] == "applied"
+    assert disabled_state is False
+    assert restored.json()["plan"]["status"] == "applied"
+    assert (
+        await db.get(ModelDeployment, UUID(deployment_id), populate_existing=True)
+    ).enabled
+    assert (resolved.status_code, resolved.json()["detail"]) == (
+        409,
+        "The finding is not open",
+    )

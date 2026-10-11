@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple, get_args
 from uuid import UUID
 
 from sqlalchemy import (
@@ -47,7 +47,13 @@ from shim_enterprise.observability.model_inventory import (
     registry_traffic,
     shown_model,
 )
-from shim_enterprise.tenants.models import ModelDeployment, Organization, ProviderSecret
+from shim_enterprise.tenants.gateway_settings import stored_settings
+from shim_enterprise.tenants.models import (
+    ModelDeployment,
+    Organization,
+    OrganizationGatewaySettings,
+    ProviderSecret,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +105,9 @@ STATUS_RESOLVED = STATUS_IDS["resolved"]
 OCSF_VERSION = "1.3.0"
 
 SEVERITIES = ("informational", "low", "medium", "high", "critical")
+# How far shim may go for a finding type, lowest first.
+Mode = Literal["observe", "suggest", "auto"]
+MODES: tuple[Mode, ...] = get_args(Mode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,11 +118,19 @@ class RuleSpec:
     SEVERITY_ID: int
     SUMMARY: Mapping[str, str]
     REMEDIATION_TEXT: Mapping[str, str]
-    MAX_MODE: Literal["observe", "suggest", "auto"]
+    MAX_MODE: Mode
     REVERSIBLE: bool
     BLAST_RADIUS: Literal["key", "team", "deployment", "model", "tenant", "app"]
     RISK_CLASS: Literal["privacy", "cost", "reliability", "quality"]
     PLAYBOOK: str
+    # The typed change a person can plan from the finding; None when the fix is
+    # outside the gateway (the client, the prompt or the provider).
+    ACTION_KIND: str | None = None
+
+
+class RuleLadder(NamedTuple):
+    max_mode: Mode
+    action_kind: str | None
 
 
 def _playbook(rule_id: str) -> str:
@@ -141,7 +158,7 @@ RULES: dict[str, RuleSpec] = {
             "istekler de varsa yeniden denemek yerine istemcinin zaman aşımını "
             "modelin yanıt süresinin üstüne çıkarın.",
         },
-        MAX_MODE="suggest",
+        MAX_MODE="observe",
         REVERSIBLE=True,
         BLAST_RADIUS="key",
         RISK_CLASS="cost",
@@ -164,7 +181,7 @@ RULES: dict[str, RuleSpec] = {
             "yeniden denenebilir hatalarda yeniden deneyin, istemcide "
             "tekilleştirin ya da yanıtı önbelleğe alın.",
         },
-        MAX_MODE="suggest",
+        MAX_MODE="observe",
         REVERSIBLE=True,
         BLAST_RADIUS="key",
         RISK_CLASS="cost",
@@ -188,6 +205,7 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(UNUSED_DEPLOYMENT),
+        ACTION_KIND="deployment.disable",
     ),
     ANSWER_QUALITY: RuleSpec(
         TITLE="A model often truncates, refuses or returns empty answers",
@@ -328,8 +346,55 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(IDLE_INTERNAL_DEPLOYMENT),
+        ACTION_KIND="deployment.disable",
     ),
 }
+
+# Every rule's highest mode and the action it can propose; a new rule declares
+# both in its RuleSpec.
+LADDER: Mapping[str, RuleLadder] = MappingProxyType(
+    {
+        rule_id: RuleLadder(spec.MAX_MODE, spec.ACTION_KIND)
+        for rule_id, spec in RULES.items()
+    }
+)
+
+
+def effective_mode(rule_id: str, modes: Mapping[str, Mode]) -> Mode:
+    mode = min(modes.get(rule_id, "observe"), LADDER[rule_id].max_mode, key=MODES.index)
+    # No executor applies anything yet (E56): auto works as suggest.
+    return "suggest" if mode == "auto" else mode
+
+
+def ladder_remediation(
+    rule_id: str, subject: Mapping[str, Any], modes: Mapping[str, Mode]
+) -> dict[str, Any]:
+    """The ladder fields a finding stores: built from its subject, never from content."""
+    spec, mode = RULES[rule_id], effective_mode(rule_id, modes)
+    action = None
+    if mode != "observe" and spec.ACTION_KIND == "deployment.disable":
+        action = {
+            "kind": spec.ACTION_KIND,
+            "params": {"deployment_id": str(subject["deployment_id"])},
+        }
+    return {
+        "mode": mode,
+        "max_mode": spec.MAX_MODE,
+        "action": action,
+        "reversible": spec.REVERSIBLE,
+        "blast_radius": spec.BLAST_RADIUS,
+        "proof_after": None,
+    }
+
+
+async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
+    stored = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == tenant_id
+        )
+    )
+    return {} if stored is None else stored_settings(stored).finding_modes
+
 
 # A retry storm's fix follows the class most of its repeats belong to.
 STORM_FIXES: dict[str, Mapping[str, str]] = {
@@ -1140,6 +1205,7 @@ async def evaluate_organization(
     )
     detections: list[Detection] = []
     failed: list[str] = []
+    modes = await finding_modes(session, tenant_id)
     for rule, rule_ids in rules:
         try:
             async with session.begin_nested():
@@ -1162,10 +1228,12 @@ async def evaluate_organization(
                         evidence=detection.evidence,
                         impact=detection.impact,
                         remediation={
+                            **ladder_remediation(
+                                detection.rule_id, detection.subject, modes
+                            ),
                             "text": remediation_text(
                                 detection.rule_id, detection.evidence
                             )["en"],
-                            "reversible": spec.REVERSIBLE,
                             "doc": spec.PLAYBOOK,
                         },
                     )
@@ -1199,6 +1267,17 @@ async def evaluate_organization(
             )
         else:
             detections += found
+    # A mode change reaches every open finding, fired in this pass or not.
+    for row in await session.scalars(
+        select(Finding).where(
+            Finding.organization_id == tenant_id,
+            Finding.status_id != STATUS_RESOLVED,
+            Finding.rule_id.in_(list(RULES)),
+        )
+    ):
+        ladder = ladder_remediation(row.rule_id, row.subject, modes)
+        if any(row.remediation.get(key) != value for key, value in ladder.items()):
+            row.remediation = {**row.remediation, **ladder}
     await session.execute(
         update(Finding)
         .where(
@@ -1298,6 +1377,10 @@ def finding_from_row(row: Finding) -> FindingV1:
         field, kind = next(item for item in _SUBJECT_KINDS if item[0] in row.subject)
         impact = row.impact or {}
         usd = impact.get("cost_usd")
+        # A row written before modes existed reads as observe.
+        mode = min(
+            row.remediation.get("mode", "observe"), spec.MAX_MODE, key=MODES.index
+        )
         return FindingV1(
             **common,
             title=spec.TITLE,
@@ -1318,9 +1401,9 @@ def finding_from_row(row: Finding) -> FindingV1:
                 risk_class=spec.RISK_CLASS,
             ),
             remediation=FindingRemediation(
-                mode="observe",
+                mode=mode,
                 max_mode=spec.MAX_MODE,
-                action=None,
+                action=None if mode == "observe" else row.remediation.get("action"),
                 reversible=bool(row.remediation.get("reversible", spec.REVERSIBLE)),
                 blast_radius=spec.BLAST_RADIUS,
                 proof_after=None,
