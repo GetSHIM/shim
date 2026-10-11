@@ -425,6 +425,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         request_id=request_id,
         policy_verdicts=[],
         privacy=privacy,
+        rules_evaluated=False,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
     command = FinalizationCommand(

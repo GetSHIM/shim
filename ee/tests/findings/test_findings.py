@@ -169,7 +169,10 @@ async def test_retry_storm_fires_at_twenty_repeats_in_one_quarter_hour(
         "pairs": [],
     }
     assert storm.impact == {"cost_usd": "0.20000000", "requests": 20}
-    assert storm.remediation is None
+    assert (
+        service.remediation_text(storm.rule_id, storm.evidence)
+        == service.RULES[service.RETRY_STORM].REMEDIATION_TEXT
+    )
 
 
 @pytest.mark.parametrize(
@@ -654,6 +657,14 @@ _SUBJECTS = {
         "alias": "kurum-llama",
     },
     service.ANSWER_QUALITY: {"model": "gpt-5-mini"},
+    service.UNREGISTERED_MODEL: {"provider": "openai", "model": "gpt-5-mini"},
+    service.BYOK_USAGE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.TRUNCATION_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.REFUSAL_RATE: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.IDLE_INTERNAL_DEPLOYMENT: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222",
+        "alias": "kurum-llama",
+    },
 }
 _EVIDENCE = {
     service.RETRY_STORM: {
@@ -687,6 +698,66 @@ _EVIDENCE = {
         "empty_or_refused_rate": "0.0500",
         "threshold_rate": "0.05",
         "request_ids": [],
+    },
+    service.UNREGISTERED_MODEL: {
+        "window_days": 7,
+        "requests": 6,
+        "threshold": 5,
+        "api_keys": 1,
+        "api_key_ids": ["11111111-1111-1111-1111-111111111111"],
+        "teams": 0,
+        "first_seen": BUCKET.isoformat(),
+        "last_seen": BUCKET.isoformat(),
+        "request_ids": ["req_d"],
+        "byok_requests": 0,
+    },
+    service.BYOK_USAGE: {
+        "window_days": 7,
+        "requests": {"openai": 6},
+        "threshold": 5,
+        "models": ["gpt-5-mini"],
+        "request_ids": ["req_e"],
+        "cost_usd": "0.40000000",
+        "note": "These requests skipped the provider spend limit and the "
+        "tenant's stored provider key.",
+    },
+    service.TRUNCATION_RATE: {
+        "window_hours": 24,
+        "settled_requests": 60,
+        "truncated": 4,
+        "rate": "0.0667",
+        "threshold_rate": "0.05",
+        "models": [{"model": "gpt-5-mini", "settled": 60, "truncated": 4}],
+        "request_ids": [],
+    },
+    service.REFUSAL_RATE: {
+        "window_hours": 24,
+        "settled_requests": 60,
+        "refused": 2,
+        "filtered": 1,
+        "empty": 1,
+        "rate": "0.0667",
+        "threshold_rate": "0.05",
+        "models": [
+            {
+                "model": "gpt-5-mini",
+                "settled": 60,
+                "refused": 2,
+                "filtered": 1,
+                "empty": 1,
+            }
+        ],
+        "request_ids": [],
+    },
+    service.IDLE_INTERNAL_DEPLOYMENT: {
+        "window_days": 30,
+        "requests": 12,
+        "threshold": 300,
+        "active_days": 3,
+        "last_request_at": BUCKET.isoformat(),
+        "api_keys": 1,
+        "request_ids": ["req_f"],
+        "hardware_cost": "not recorded",
     },
 }
 
@@ -867,7 +938,12 @@ async def test_the_four_rules_on_seeded_rows_give_valid_findings(
     await _evaluate(db, test_api_key)
     rows = await _findings(db, test_api_key)
 
-    assert {row.rule_id for row in rows} == set(service.RULES)
+    assert {row.rule_id for row in rows} == {
+        service.RETRY_STORM,
+        service.REPEAT_SPEND,
+        service.UNUSED_DEPLOYMENT,
+        service.ANSWER_QUALITY,
+    }
     for row in rows:
         finding = service.finding_from_row(row)
         assert FindingV1.model_validate(finding.model_dump(mode="json")) == finding
@@ -1262,7 +1338,11 @@ async def test_a_storm_of_linked_repeats_names_its_cause(
     assert len(storm.evidence["pairs"]) == 20
     (finding,) = await _findings(db, test_api_key)
     assert finding.rule_version == 2
-    assert finding.remediation["text"] == service.STORM_FIXES["after_error"]
+    assert finding.remediation["text"] == service.STORM_FIXES["after_error"]["en"]
+    assert (
+        service.finding_from_row(finding).remediation.text.tr
+        == service.STORM_FIXES["after_error"]["tr"]
+    )
 
 
 @pytest.mark.asyncio
@@ -1275,7 +1355,10 @@ async def test_a_version_one_finding_is_updated_in_place(db, test_api_key) -> No
 
     (finding,) = await _findings(db, test_api_key)
     assert (finding.rule_version, finding.occurrences) == (2, 2)
-    assert finding.remediation["text"] == service.RULES[service.RETRY_STORM][2]
+    assert (
+        finding.remediation["text"]
+        == service.RULES[service.RETRY_STORM].REMEDIATION_TEXT["en"]
+    )
 
 
 @pytest.mark.parametrize(("repeat_cost", "fires"), [("1.00", True), ("0.99", False)])
@@ -1416,7 +1499,7 @@ async def test_an_internal_deployment_with_little_traffic_is_idle(
     assert finding.evidence["hardware_cost"] == "not recorded"
     assert len(finding.evidence["request_ids"]) == min(requests, 20)
     assert finding.impact == {"cost_usd": None, "requests": requests}
-    assert service.RULES[finding.rule_id][1] == 2
+    assert service.RULES[finding.rule_id].SEVERITY_ID == 2
 
 
 @pytest.mark.asyncio
@@ -1527,7 +1610,7 @@ async def test_catalog_traffic_beside_a_registry_is_an_unregistered_model(
     assert finding.evidence["byok_requests"] == 1
     assert sorted(finding.evidence["request_ids"]) == sorted(ids)
     assert finding.impact == {"cost_usd": "0.50000000", "requests": 5}
-    assert service.RULES[finding.rule_id][1] == 3
+    assert service.RULES[finding.rule_id].SEVERITY_ID == 3
 
 
 @pytest.mark.asyncio
@@ -1724,7 +1807,7 @@ async def test_rate_findings_need_fifty_answers_and_five_percent_per_key(
         request_id for request_id, o in zip(ids, outcomes) if o != "complete"
     )
     assert finding.impact == {"cost_usd": None, "requests": count}
-    assert service.RULES[rule][1] == 2
+    assert service.RULES[rule].SEVERITY_ID == 2
 
 
 @pytest.mark.asyncio
@@ -1746,6 +1829,9 @@ async def test_rate_findings_break_down_up_to_five_models(db, test_api_key) -> N
             for index in range(1, 5)
         ),
     ]
-    assert "completion_outcome=truncated" in service.RULES[finding.rule_id][2]
+    assert (
+        "completion_outcome=truncated"
+        in service.RULES[finding.rule_id].REMEDIATION_TEXT["en"]
+    )
     assert [d for d in detections if d.rule_id == service.REFUSAL_RATE] == []
     assert [d for d in detections if d.rule_id == service.ANSWER_QUALITY] == []
