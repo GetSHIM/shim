@@ -29,18 +29,19 @@ EXCLUSIONS = (
 )
 
 # Settled complete answers with their exclusion reason (the first that applies, in
-# EXCLUSIONS order) or none, and the output price per token their settlement used:
-# the large-context price once the prompt crossed its threshold; none if unpriced.
+# EXCLUSIONS order) or none. The quota settlement holds the settled tokens; the
+# spend settlement, when there is one, the output price per token it used: the
+# large-context price once the prompt crossed its threshold; none if unpriced.
 _ANSWERS = """
     answers AS (
         SELECT l.request_id,
                {group} AS grp,
                {name} AS grp_name,
                (l.metadata ->> 'answer_characters')::int AS characters,
-               s.completion_tokens AS tokens,
+               q.completion_tokens AS tokens,
                l.metadata -> 'response_analysis' -> 'language' ->> 'answer' AS language,
                CASE
-                   WHEN s.estimated THEN 'estimated_usage'
+                   WHEN q.estimated THEN 'estimated_usage'
                    WHEN jsonb_typeof(l.metadata -> 'tool_call_names') = 'array'
                         AND jsonb_array_length(l.metadata -> 'tool_call_names') > 0
                        THEN 'tool_calls'
@@ -57,7 +58,7 @@ _ANSWERS = """
                CASE
                    WHEN s.metadata -> 'pricing' ->> 'pricing_resolution' = 'unknown'
                        THEN NULL
-                   WHEN s.prompt_tokens > (
+                   WHEN q.prompt_tokens > (
                             s.metadata -> 'pricing' ->> 'large_context_threshold'
                         )::int
                        THEN (s.metadata -> 'pricing'
@@ -66,7 +67,11 @@ _ANSWERS = """
                         / 1000000
                END AS price
         FROM request_lifecycle l
-        JOIN usage_ledger s
+        JOIN usage_ledger q
+          ON q.organization_id = l.organization_id
+         AND q.request_id = l.request_id
+         AND q.event_type = 'quota_settlement'
+        LEFT JOIN usage_ledger s
           ON s.organization_id = l.organization_id
          AND s.request_id = l.request_id
          AND s.event_type = 'spend_settlement'
@@ -75,12 +80,17 @@ _ANSWERS = """
           AND l.started_at >= CAST(:start AS timestamptz)
           AND l.started_at < CAST(:end AS timestamptz)
           AND l.metadata ->> 'completion_outcome' = 'complete'
-          AND s.completion_tokens > 0
+          AND q.completion_tokens > 0
     )
 """
-# The provider model the settlement billed, so a registry alias shows what it called.
+# The provider model the spend settlement billed, so a registry alias shows what it
+# called.
 _GROUPS: dict[LanguageCostGroup, tuple[str, str, str]] = {
-    "model": ("coalesce(s.provider_model, s.requested_model)", "NULL::text", ""),
+    "model": (
+        "coalesce(s.provider_model, l.provider_model, l.requested_model)",
+        "NULL::text",
+        "",
+    ),
     "api_key": (
         "l.api_key_id::text",
         "k.name",

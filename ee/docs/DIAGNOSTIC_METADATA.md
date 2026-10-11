@@ -355,7 +355,7 @@ sweep ([findings](FINDINGS.md#gatewaycold_start)).
 
 ## Tokens per character by language
 
-`GET /api/v1/management/language-cost` divides a settlement's billed
+`GET /api/v1/management/language-cost` divides the quota settlement's
 `completion_tokens` by the answer's `answer_characters`, per model or API key and
 per answer language (`response_analysis.language.answer`, `tr` or `en`). No
 tokenizer is used: the provider's own count is the measure. Only the output side
@@ -366,8 +366,9 @@ history and cached prefixes with the question. An answer counts when it ended
 with thoughts is left out too) and its settlement is not estimated; the others
 are counted under `excluded` (`estimated_usage`, `tool_calls`, `reasoning`,
 `short`, `not_analysed`, `language_unknown`, the first that applies). Money uses
-each settlement's own output price, the large-context one once the prompt crossed
-its threshold; unpriced settlements add none.
+the output price the spend settlement recorded, the large-context one once the
+prompt crossed its threshold; unpriced settlements add none. The model is the one
+the spend settlement billed, so a registry alias groups under its provider model.
 
 ## Responses continuation markers
 

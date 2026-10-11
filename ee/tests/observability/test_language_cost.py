@@ -101,31 +101,49 @@ def _answer(
         "organization_id": key.organization_id,
         "api_key_id": key.id,
         "requested_model": model,
-        "provider": "openai",
-        "provider_model": provider_model or model,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": tokens,
-        "total_tokens": prompt_tokens + tokens,
-        "estimated": estimated,
-        "cost_usd": Decimal("0"),
     }
-    reservation = uuid4()
+    provider = {"provider": "openai", "provider_model": provider_model or model}
+    # As finalization writes them: the quota settlement holds the settled tokens,
+    # the spend settlement the cost and the prices it used.
+    quota, spend = uuid4(), uuid4()
     db.add_all(
         [
             UsageLedger(
-                id=reservation,
+                id=quota,
+                event_type="quota_reservation",
+                idempotency_key=f"{request_id}:quota:reservation",
+                estimated=True,
+                **ledger,
+            ),
+            UsageLedger(
+                event_type="quota_settlement",
+                idempotency_key=f"{request_id}:quota:settlement",
+                reservation_event_id=quota,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=tokens,
+                total_tokens=prompt_tokens + tokens,
+                estimated=estimated,
+                **ledger,
+            ),
+            UsageLedger(
+                id=spend,
                 event_type="spend_reservation",
                 idempotency_key=f"{request_id}:spend:reservation",
+                estimated=True,
+                cost_usd=Decimal("0"),
                 **ledger,
+                **provider,
             ),
             UsageLedger(
                 event_type="spend_settlement",
                 idempotency_key=f"{request_id}:spend:settlement",
-                reservation_event_id=reservation,
+                reservation_event_id=spend,
+                cost_usd=Decimal("0"),
                 event_metadata={
                     "pricing": pricing or {"pricing_resolution": "unknown"}
                 },
                 **ledger,
+                **provider,
             ),
         ]
     )
