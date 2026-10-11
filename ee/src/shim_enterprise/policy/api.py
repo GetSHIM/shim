@@ -31,7 +31,7 @@ from shim_enterprise.policy.plans import (
 )
 from shim_enterprise.policy.resources import REGISTRY, ManagedResource, PostCommit
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.models import ServiceAccountCredential, User
 from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/policy", tags=["policy"])
@@ -42,7 +42,7 @@ _MAX_PLAN_BYTES = 256 * 1024
 _MAX_CHANGES = 100
 _MAX_VERSION = 2_147_483_647
 # What /state and one version's states show besides audit.read.
-_STATE_READS = ("deployments.read", "settings.read", "usage.read")
+_STATE_READS = ("deployments.read", "rules.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
 
@@ -554,7 +554,15 @@ async def _pending_for(session: AsyncSession, user: User, plan_id: UUID) -> Poli
             status_code=409,
             detail={"code": "PLAN_STATE_CONFLICT", "status": plan.status},
         )
-    if user.kind != "human" or str(user.id) in {plan.created_by, plan.submitted_by}:
+    authors = {plan.created_by, plan.submitted_by} - {None}
+    # Whoever created or rotated an author's service-account key holds it too.
+    key_holders = await session.scalars(
+        select(ServiceAccountCredential.created_by).where(
+            ServiceAccountCredential.organization_id == organization_id,
+            ServiceAccountCredential.user_id.in_([UUID(author) for author in authors]),
+        )
+    )
+    if user.kind != "human" or str(user.id) in authors or user.id in set(key_holders):
         raise HTTPException(status_code=403, detail={"code": "APPROVER_NOT_ELIGIBLE"})
     return plan
 
@@ -673,8 +681,9 @@ async def _finish_restore(
         .where(
             PolicyPlan.organization_id == plan.organization_id,
             PolicyPlan.status == "applied",
+            # What applied after the restore was planned stays; it was not undone.
             PolicyPlan.applied_version > version,
-            PolicyPlan.id != plan.id,
+            PolicyPlan.applied_version <= plan.base_version,
         )
         .values(status="rolled_back")
     )
@@ -740,6 +749,18 @@ async def restore_version(
         current = await resource.snapshot(session, organization_id, list(items))
         for item, target in items.items():
             now = current.get(item)
+            if name == "budgets" and target is not None:
+                # Alert destinations are secrets a restore cannot bring back.
+                kept = [] if now is None else now["notify_targets"]
+                if target.get("notify_targets") != kept:
+                    not_restored.append(
+                        Unrestored(
+                            resource=name,
+                            item=item,
+                            reason="notify_targets_not_restored",
+                        )
+                    )
+                    target = {**target, "notify_targets": kept}
             if target == now:
                 continue
             if now is None and not resource.creatable:
@@ -785,12 +806,6 @@ async def restore_version(
                 reason = exc.detail if isinstance(exc.detail, str) else "invalid"
                 not_restored.append(Unrestored(resource=name, item=item, reason=reason))
                 continue
-            if now is None and name == "budgets":
-                not_restored.append(
-                    Unrestored(
-                        resource=name, item=item, reason="notify_targets_not_restored"
-                    )
-                )
             changes.append(
                 await planned_change(
                     session, organization_id, name, item, now, target, 7

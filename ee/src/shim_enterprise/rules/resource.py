@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.ids import TenantId
-from shim.rules import ACTION_RANK, LIMITS, Rule, RuleScope, RuleSet
+from shim.rules import LIMITS, Rule, RuleScope, RuleSet
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.policy.plans import (
@@ -24,7 +24,7 @@ from shim_enterprise.policy.plans import (
     State,
     version_detail,
 )
-from shim_enterprise.rules.changes import classify_rule_changes, match_only_grew
+from shim_enterprise.rules.changes import classify_rule_changes, rule_direction
 from shim_enterprise.rules.models import OrganizationRuleSet, RuleDefinition
 from shim_enterprise.rules.preview import (
     checked_set,
@@ -337,24 +337,7 @@ class _RuleResource:
         )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
-        old, new = _rule("rule", before), _rule("rule", after)
-        if classify_rule_changes(
-            None if old is None else RuleSet(revision=1, rules=(old,)),
-            RuleSet(revision=1, rules=() if new is None else (new,)),
-        ):
-            return "relaxing"
-        if (
-            new is not None
-            and new.state == "enforced"
-            and (
-                old is None
-                or old.state == "monitor"
-                or ACTION_RANK[new.action] > ACTION_RANK[old.action]
-                or (old.match != new.match and match_only_grew(old.match, new.match))
-            )
-        ):
-            return "tightening"
-        return "neutral"
+        return rule_direction(_rule("rule", before), _rule("rule", after))
 
     async def impact(
         self,

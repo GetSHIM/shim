@@ -103,6 +103,7 @@ class ComplianceForwarderService:
         actor: str,
         actor_email: str,
         event_id: str,
+        kind: str = "privacy_protection_relaxed",
     ) -> None:
         await self.send_tenant_alert(
             session,
@@ -110,13 +111,13 @@ class ComplianceForwarderService:
             body={
                 "source": "shim",
                 "event_type": "tenant_policy",
-                "kind": "privacy_protection_relaxed",
+                "kind": kind,
                 "fields": fields,
                 "actor": actor,
                 "actor_email": actor_email,
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
             },
-            delivery_key=f"privacy_protection_relaxed:{event_id}",
+            delivery_key=f"{kind}:{event_id}",
         )
 
     async def send_tenant_alert(

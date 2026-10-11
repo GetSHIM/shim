@@ -297,26 +297,35 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Eight resources are managed: every write to them records a version, a plan can
+Ten resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
 | `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off, a finding rule moved to `auto`); a field without a direction always |
-| `rules` | rule id | the rule without its id | `PUT /rules` | an enforced rule is removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
+| `rules` | rule id | the rule without its id | `PUT /rules` | an enforced rule is removed, moved to `monitor`, given a weaker action, a narrower scope, another kind, or a match other than added terms or patterns; the opposite move (a wider scope, a stronger action, enforcing) tightens |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
-| `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
-| `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |
-| `budgets` | budget id | scope, limits, thresholds, `enabled` (never notification targets) | `POST`, `PATCH`, `DELETE /cost/budgets` | deleted; a limit raised or removed; disabled |
-| `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled |
+| `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team or moves to another |
+| `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `external` to `internal`; any change but `owner`, `declared_version`, `timeout_seconds` |
+| `budgets` | budget id | scope, limits, thresholds, `enabled`, notification targets (kind, origin and a digest of the stored reference, never the URL) | `POST`, `PATCH`, `DELETE /cost/budgets` | deleted; a limit raised or removed; disabled; a threshold removed; the targets replaced |
+| `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled; `default_on_timeout` to `allow`; any change to `mode`, `trigger`, `ttl_seconds` |
+| `provider_keys` | `_` | `allow_customer_provider_keys` | `PUT /settings/provider-keys` | turned on |
+| `forward_targets` | target id | `enabled`, `min_severity` | `PATCH`, `DELETE /compliance/forward-targets/{id}` | deleted; disabled; `min_severity` raised |
 
-A field moved the other way is `tightening`, anything else `neutral`; a change
-with both a relaxing and a tightening field is `relaxing`, and so is a plan with
-one relaxing change. Lowering cost (a lower budget, a disabled deployment) counts
-as tightening. Provider credentials, connectors, forward targets, members,
-invitations, service accounts, key issue, rotation and revocation, memberships,
-finding status and readiness declarations are not managed.
+Each resource lists, per field, the direction of a change (one shared rule,
+`classify_fields`); a field it does not list is `relaxing` whatever the change,
+so a field added later fails closed until its direction is written down. A field
+moved the other way is `tightening`, a listed label `neutral`; a change with both
+a relaxing and a tightening field is `relaxing`, and so is a plan with one
+relaxing change. Lowering cost (a lower budget, a disabled deployment) counts
+as tightening. A forward target's destination is a secret, so a plan never
+creates one or moves it; its own route does. Provider credentials, connectors,
+members, invitations, service accounts, key issue, rotation and revocation,
+memberships, finding status and readiness declarations are not managed. A
+restore never brings back a budget's notification targets (their secrets are
+deleted when replaced): they stay as they are and the budget is listed in
+`not_restored` with `notify_targets_not_restored`.
 
 Each managed write takes the organization row lock and, when its items changed,
 inserts one `policy_versions` row in the same transaction: the next `version`
@@ -330,8 +339,9 @@ they belong to; a write without a version carries none.
 A plan (`policy_plans`) is a change set with each change's before and after
 state, risk and estimated impact, created as `draft` and expiring after 7 days.
 Each change also needs what its own route asks for: `settings.write` for
-privacy, `teams.manage` for teams, `deployments.manage`, `budgets.manage`, and
-`compliance.manage` for oversight policies; a key change follows the key
+privacy and provider keys, `rules.write` for rules, `teams.manage` for teams,
+`deployments.manage`, `budgets.manage`, and `compliance.manage` for oversight
+policies and forward targets; a key change follows the key
 route's rules (`keys.manage` for a key without a team, team administration for
 a team's key). This is checked when the plan is created, again for the one who
 applies it, and for every item a restore puts back (403
@@ -368,9 +378,10 @@ version is no longer that one, and changes nothing. A restore, like a plan,
 holds at most 100 changes (422 beyond; restore a later version first), and a
 privacy field added after the restored version takes its default. Reading the
 current state (`/policy/state`) or one version's states needs, besides
-`audit.read`, the reads of what they show: `settings.read`, `usage.read` and
-`deployments.read` (403 naming the missing ones). Plans applied after the version become
-`rolled_back`. Audit actions: `tenant.policy_plan_created`,
+`audit.read`, the reads of what they show: `settings.read`, `usage.read`,
+`rules.read` and `deployments.read` (403 naming the missing ones). Plans applied
+after the version and before the restore was planned become `rolled_back`; a
+plan applied while a restore waited for approval keeps `applied`. Audit actions: `tenant.policy_plan_created`,
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,
 `policy_version`).
@@ -380,12 +391,20 @@ and `tenant.policy_version_restored` (`target_version`, `plan_id`,
 With the gateway setting `four_eyes` at `relaxing`, a change that loosens
 protection needs a second administrator. Turning it on needs at least two
 active human users whose permissions hold `plans.approve` (409
-`FOUR_EYES_UNAVAILABLE` otherwise).
+`FOUR_EYES_UNAVAILABLE` otherwise, also when a plan turning it on is applied).
+While it is on, demoting or removing one of them below two answers the same 409
+(`PATCH`, `DELETE /team/members/{id}`); an identity-provider role change at
+sign-in is applied, since the provider is the source of roles, and leaves the
+owner override below.
 
 - A direct write to a managed resource that classifies as relaxing is refused
   before anything is written: 409 `{"code": "CHANGE_REQUIRES_APPROVAL",
   "relaxed": [...]}`, each entry `resource.item.field` (or `resource.item` for a
   created or deleted item), a field listed when changing it alone would relax.
+  `PUT /rules`, `PUT /settings/provider-keys` and `PATCH`, `DELETE
+  /compliance/forward-targets/{id}` are such writes. `POST /api-keys` without
+  `allowed_models` answers the same 409 with `api_keys.new.allowed_models`:
+  create the key with a model list and widen it through a plan.
 - Applying a relaxing plan, or a restore whose plan relaxes, does not apply it:
   the plan becomes `pending_approval` with `submitted_by` and `submitted_at`,
   expires 72 hours later, and the call answers 202. The same transaction queues
@@ -396,12 +415,13 @@ active human users whose permissions hold `plans.approve` (409
 - `POST /policy/plans/{id}/approve` (`plans.approve`) applies it with the stale
   check, `approved_by` and `approved_at`; `POST .../reject` makes it `rejected`.
   Either needs a `pending_approval` plan (409 `PLAN_STATE_CONFLICT`) and a human
-  who neither created nor submitted it (403 `APPROVER_NOT_ELIGIBLE`). An
+  who neither created nor submitted it, nor created or rotated a key of the
+  service account that did (403 `APPROVER_NOT_ELIGIBLE`). An
   optional `note` is kept on the plan as `context.decision_note`.
 - Turning `four_eyes` off is relaxing. While fewer than two users can approve,
   an owner may still turn it off directly: the write gets a version, the audit
   event `tenant.four_eyes_single_admin_override` and a
-  `privacy_protection_relaxed` alert naming `four_eyes`.
+  `gateway_protection_relaxed` alert naming `four_eyes`.
 
 Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,

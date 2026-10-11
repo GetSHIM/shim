@@ -239,8 +239,19 @@ def _enforced(**values) -> dict:
             _enforced(),
             "relaxing",
         ),
-        (_enforced(scope={"models": ["gpt-5-nano"]}), _enforced(), "neutral"),
+        # A wider scope protects more requests; a narrower one fewer.
+        (_enforced(scope={"models": ["gpt-5-nano"]}), _enforced(), "tightening"),
+        (
+            _enforced(scope={"models": ["gpt-5-nano"]}),
+            _enforced(scope={"models": ["gpt-5-nano", "gpt-5"]}),
+            "tightening",
+        ),
         (_enforced(), _enforced(scope={"models": ["gpt-5-nano"]}), "relaxing"),
+        (_state(scope={"models": ["gpt-5-nano"]}), _state(), "neutral"),
+        # A field the classifier does not weigh relaxes, whichever way it moves.
+        (_enforced(), _enforced(kind="pattern"), "relaxing"),
+        (_enforced(kind="pattern"), _enforced(), "relaxing"),
+        (_enforced(), _enforced(name="Renamed"), "neutral"),
         (_enforced(), None, "relaxing"),
         (_state(), None, "neutral"),
         (_state(), _state(name="Renamed"), "neutral"),

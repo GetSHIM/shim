@@ -86,7 +86,8 @@ async def current_version(session: AsyncSession, organization_id: UUID) -> int:
     )
 
 
-# Custom roles never grant plans.approve, so built-in roles are the approvers.
+# Custom roles never grant plans.approve and hang only off the member role, so
+# built-in roles are the approvers.
 _APPROVER_ROLES = [
     role
     for role, granted in BUILTIN_ROLE_PERMISSIONS.items()
@@ -110,12 +111,37 @@ async def count_approvers(session: AsyncSession, organization_id: UUID) -> int:
                 User.organization_id == organization_id,
                 User.is_active.is_(True),
                 User.kind == "human",
-                User.custom_role_id.is_(None),
                 User.role.in_(_APPROVER_ROLES),
             )
         )
         or 0
     )
+
+
+async def require_two_approvers(
+    session: AsyncSession, organization_id: UUID, *, losing: int = 0
+) -> None:
+    if await count_approvers(session, organization_id) - losing < 2:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUR_EYES_UNAVAILABLE",
+                "message": "Four eyes needs two active administrators.",
+            },
+        )
+
+
+async def keep_two_approvers(
+    session: AsyncSession, member: User, organization_id: UUID, role: str | None
+) -> None:
+    """Under four eyes, refuse to demote (`role`) or remove (None) the second approver."""
+    if (
+        member.kind == "human"
+        and member.role in _APPROVER_ROLES
+        and role not in _APPROVER_ROLES
+        and await four_eyes_on(session, organization_id)
+    ):
+        await require_two_approvers(session, organization_id, losing=1)
 
 
 def relaxed_fields(changes: Sequence[Change]) -> list[str]:
@@ -169,9 +195,14 @@ async def _refuse_unapproved(
             actor=str(actor.id),
             actor_email=actor.email,
             event_id=event_id,
+            kind="gateway_protection_relaxed",
         )
         return
-    raise HTTPException(
+    raise approval_required(relaxed)
+
+
+def approval_required(relaxed: list[str]) -> HTTPException:
+    return HTTPException(
         status_code=409,
         detail={
             "code": "CHANGE_REQUIRES_APPROVAL",

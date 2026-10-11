@@ -171,8 +171,11 @@ async def test_four_eyes_needs_two_active_human_approvers(db) -> None:
         "message": "Four eyes needs two active administrators.",
     }
     assert (refused.status_code, refused.json()["detail"]) == (409, unavailable)
-    assert planned.status_code == 409
-    assert planned.json()["detail"]["errors"] == unavailable
+    assert planned.status_code == 201
+    applied = await _call(
+        db, alone["owner"], "POST", f"{POLICY}/plans/{planned.json()['id']}/apply"
+    )
+    assert (applied.status_code, applied.json()["detail"]) == (409, unavailable)
     assert (inactive.status_code, inactive.json()["detail"]) == (409, unavailable)
     assert accepted.status_code == 200
     assert accepted.json()["settings"]["four_eyes"] == "relaxing"
@@ -666,8 +669,11 @@ async def test_an_owner_left_alone_may_turn_four_eyes_off_directly(db) -> None:
         }
     ]
     [delivery] = await _outbox(db, tenant, COMPLIANCE_DELIVERY)
-    assert delivery.payload["body"]["kind"] == "privacy_protection_relaxed"
+    assert delivery.payload["body"]["kind"] == "gateway_protection_relaxed"
     assert delivery.payload["body"]["fields"] == ["four_eyes"]
+    assert _compliance_text(delivery.payload["body"]).startswith(
+        "shim gateway protection turned off: four_eyes"
+    )
 
 
 @pytest.mark.asyncio
@@ -756,3 +762,479 @@ async def test_the_approval_request_reaches_every_enabled_forward_target(
         f"shim policy plan {plan_id} loosens privacy and waits for a second "
         f"administrator: /api/v1/management/policy/plans/{plan_id}"
     )
+
+
+def _forward_target(tenant: UUID, *, enabled: bool = True) -> ComplianceForwardTarget:
+    return ComplianceForwardTarget(
+        id=uuid4(),
+        organization_id=tenant,
+        kind="slack",
+        endpoint_origin="https://hooks.slack.com",
+        secret_ref=f"fernet:v2:{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        enabled=enabled,
+    )
+
+
+def _rule(state: str) -> dict:
+    return {
+        "id": "falcon",
+        "name": "Project names",
+        "kind": "term",
+        "action": "block",
+        "state": state,
+        "match": {"terms": ["Project Falcon"]},
+    }
+
+
+async def _put_rules(db, user: User, rules: list[dict]) -> httpx.Response:
+    current = await _call(db, user, "GET", f"{MANAGEMENT}/rules")
+    return await _call(
+        db,
+        user,
+        "PUT",
+        f"{MANAGEMENT}/rules",
+        json={"revision": current.json()["revision"], "rules": rules},
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_one_approves_a_plan_of_a_service_account_they_created_or_rotated(
+    db,
+) -> None:
+    users = await _organization(db, "rotator", "admin")
+    owner, rotator, admin = users["owner"], users["rotator"], users["admin"]
+    rotator.role = "owner"
+    await db.flush()
+    await _turn_on(db, owner)
+    created = await _call(
+        db,
+        owner,
+        "POST",
+        f"{MANAGEMENT}/service-accounts",
+        json={"name": "ci", "role": "admin", "expires_in_days": 30},
+    )
+    robot = await db.get(User, UUID(created.json()["id"]))
+    rotated = await _call(
+        db, rotator, "POST", f"{MANAGEMENT}/service-accounts/{robot.id}/rotate"
+    )
+    plan = await _plan(db, robot, _block_email_off())
+
+    submitted = await _call(db, robot, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    refused = [
+        await _call(db, user, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={})
+        for user in (owner, rotator)
+    ]
+    approved = await _call(
+        db, admin, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={}
+    )
+
+    assert (created.status_code, rotated.status_code) == (201, 200)
+    assert submitted.status_code == 202
+    assert [response.status_code for response in refused] == [403, 403]
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "APPROVER_NOT_ELIGIBLE"
+    }
+    assert (approved.status_code, approved.json()["status"]) == (200, "applied")
+
+
+@pytest.mark.asyncio
+async def test_under_four_eyes_the_second_approver_is_neither_demoted_nor_removed(
+    db,
+) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    await _turn_on(db, owner)
+    member = f"{MANAGEMENT}/team/members/{admin.id}"
+
+    refused = [
+        await _call(db, owner, "PATCH", member, json={"role": "member"}),
+        await _call(db, owner, "PATCH", member, json={"role": "auditor"}),
+        await _call(db, owner, "DELETE", member),
+    ]
+    promoted = await _call(db, owner, "PATCH", member, json={"role": "owner"})
+    third = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"four-eyes-{uuid4().hex}@example.com",
+        role="admin",
+        kind="human",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(third)
+    await db.flush()
+    demoted = await _call(db, owner, "PATCH", member, json={"role": "member"})
+    last = await _call(db, owner, "DELETE", f"{MANAGEMENT}/team/members/{third.id}")
+
+    assert [response.status_code for response in refused] == [409] * 3
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "FOUR_EYES_UNAVAILABLE"
+    }
+    assert (promoted.status_code, demoted.status_code) == (200, 200)
+    assert last.json()["detail"]["code"] == "FOUR_EYES_UNAVAILABLE"
+    await db.refresh(third)
+    assert third.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_moving_a_key_to_another_team_relaxes(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    limited = Team(id=uuid4(), organization_id=tenant, name="limited")
+    other = Team(id=uuid4(), organization_id=tenant, name="other")
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=tenant,
+        user_id=admin.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-mv",
+        tier="enterprise",
+        is_active=True,
+        team_id=limited.id,
+    )
+    db.add_all([limited, other])
+    await db.flush()
+    db.add(key)
+    await db.flush()
+    await _turn_on(db, owner)
+
+    moved = await _call(
+        db,
+        admin,
+        "PATCH",
+        f"{MANAGEMENT}/api-keys/{key.id}",
+        json={"team_id": str(other.id)},
+    )
+
+    assert moved.status_code == 409
+    assert moved.json()["detail"]["relaxed"] == [f"api_keys.{key.id}.team_id"]
+    await db.refresh(key)
+    assert key.team_id == limited.id
+
+
+_DEPLOYMENT = {
+    "alias": "a",
+    "provider": "openai",
+    "upstream_model": "m",
+    "base_url": "https://a.internal/v1",
+    "provider_secret_id": str(uuid4()),
+    "timeout_seconds": 60,
+    "deployment_kind": "internal",
+    "declared_version": "v1",
+    "owner": "Platform",
+    "enabled": True,
+    "input_price_per_million": None,
+    "output_price_per_million": None,
+    "context_window": None,
+}
+_OVERSIGHT = {
+    "name": "review",
+    "enabled": True,
+    "mode": "async_review",
+    "trigger": {"pii_detected": True, "models": ["a"]},
+    "ttl_seconds": 600,
+    "default_on_timeout": "deny",
+}
+_TEAM = {
+    "name": "a",
+    "daily_request_limit": 1,
+    "monthly_request_limit": None,
+    "monthly_token_limit": None,
+}
+_BUDGET = {
+    "scope_type": "org",
+    "scope_value": None,
+    "limit_usd": "10",
+    "limit_tokens": None,
+    "alert_thresholds": [0.8, 1.0],
+    "enabled": True,
+    "notify_targets": [{"kind": "slack", "endpoint_origin": "https://h", "id": "a"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("resource", "before", "change", "risk"),
+    [
+        ("deployments", _DEPLOYMENT, {"alias": "b"}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"upstream_model": "n"}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"provider_secret_id": str(uuid4())}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"owner": "Security"}, "neutral"),
+        ("deployments", _DEPLOYMENT, {"enabled": False}, "tightening"),
+        (
+            "oversight_policies",
+            _OVERSIGHT,
+            {"trigger": {"pii_detected": True}},
+            "relaxing",
+        ),
+        ("oversight_policies", _OVERSIGHT, {"default_on_timeout": "allow"}, "relaxing"),
+        ("oversight_policies", _OVERSIGHT, {"name": "renamed"}, "neutral"),
+        ("budgets", _BUDGET, {"alert_thresholds": [1.0]}, "relaxing"),
+        ("budgets", _BUDGET, {"alert_thresholds": [0.5, 0.8, 1.0]}, "tightening"),
+        ("budgets", _BUDGET, {"notify_targets": []}, "relaxing"),
+        ("teams", _TEAM, {"name": "b"}, "neutral"),
+        ("teams", _TEAM, {"daily_request_limit": 2}, "relaxing"),
+        ("teams", _TEAM, {"monthly_request_limit": 5}, "tightening"),
+        ("teams", {**_TEAM, "added_later": 1}, {"added_later": 2}, "relaxing"),
+    ],
+)
+def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
+    resource: str, before: dict, change: dict, risk: str
+) -> None:
+    assert REGISTRY[resource].classify(before, {**before, **change}) == risk
+
+
+@pytest.mark.asyncio
+async def test_replacing_budget_alert_targets_is_versioned_and_relaxes(
+    db, monkeypatch
+) -> None:
+    async def safe(_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.assert_safe_forward_url", safe
+    )
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    created = await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/cost/budgets",
+        json={
+            "scope_type": "org",
+            "limit_usd": "10",
+            "notify_targets": [
+                {"kind": "slack", "endpoint": "https://hooks.slack.com/services/a"}
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    budget = created.json()["id"]
+    state = await _call(db, admin, "GET", f"{POLICY}/state")
+    await _turn_on(db, owner)
+
+    replaced = await _call(
+        db,
+        admin,
+        "PATCH",
+        f"{MANAGEMENT}/cost/budgets/{budget}",
+        json={
+            "notify_targets": [
+                {"kind": "slack", "endpoint": "https://hooks.slack.com/services/b"}
+            ]
+        },
+    )
+
+    [target] = state.json()["resources"]["budgets"][budget]["notify_targets"]
+    assert target["endpoint_origin"] == "https://hooks.slack.com"
+    assert "secret_ref" not in target
+    assert replaced.status_code == 409
+    assert replaced.json()["detail"]["relaxed"] == [f"budgets.{budget}.notify_targets"]
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_loosen_protection_ask_for_a_plan(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = _forward_target(tenant)
+    db.add(target)
+    (await db.get(Organization, tenant)).allow_customer_provider_keys = False
+    await db.flush()
+    assert (await _put_rules(db, admin, [_rule("monitor")])).status_code == 200
+    assert (await _put_rules(db, admin, [_rule("enforced")])).status_code == 200
+    await _turn_on(db, owner)
+    keys = await db.scalar(select(func.count()).where(ApiKey.organization_id == tenant))
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    refused = [
+        await _put_rules(db, admin, []),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": True},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": False}),
+        await _call(db, admin, "PATCH", forward, json={"min_severity": "critical"}),
+        await _call(db, admin, "DELETE", forward),
+        await _call(db, admin, "POST", f"{MANAGEMENT}/api-keys", json={"name": "open"}),
+    ]
+
+    assert [response.status_code for response in refused] == [409] * len(refused)
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "CHANGE_REQUIRES_APPROVAL"
+    }
+    rules = await _call(db, admin, "GET", f"{MANAGEMENT}/rules")
+    assert [rule["state"] for rule in rules.json()["rules"]] == ["enforced"]
+    organization = await db.get(Organization, tenant)
+    await db.refresh(organization)
+    await db.refresh(target)
+    assert organization.allow_customer_provider_keys is False
+    assert (target.enabled, target.min_severity) == (True, "high")
+    assert (
+        await db.scalar(select(func.count()).where(ApiKey.organization_id == tenant))
+        == keys
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_tighten_pass_under_four_eyes(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = _forward_target(tenant, enabled=False)
+    db.add(target)
+    await db.flush()
+    assert (await _put_rules(db, admin, [_rule("monitor")])).status_code == 200
+    await _turn_on(db, owner)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    passed = [
+        await _put_rules(db, admin, [_rule("enforced")]),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": False},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": True}),
+        await _call(
+            db,
+            admin,
+            "POST",
+            f"{MANAGEMENT}/api-keys",
+            json={"name": "limited", "allowed_models": ["gpt-5-nano"]},
+        ),
+    ]
+
+    assert [response.status_code for response in passed] == [200] * len(passed)
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_loosen_protection_pass_with_four_eyes_off(
+    db,
+) -> None:
+    users = await _organization(db, "admin")
+    admin = users["admin"]
+    target = _forward_target(admin.organization_id)
+    db.add(target)
+    (
+        await db.get(Organization, admin.organization_id)
+    ).allow_customer_provider_keys = False
+    await db.flush()
+    await _put_rules(db, admin, [_rule("monitor")])
+    await _put_rules(db, admin, [_rule("enforced")])
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    passed = [
+        await _put_rules(db, admin, []),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": True},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": False}),
+        await _call(db, admin, "POST", f"{MANAGEMENT}/api-keys", json={"name": "open"}),
+        await _call(db, admin, "DELETE", forward),
+    ]
+
+    assert [response.status_code for response in passed] == [200, 200, 200, 200, 204]
+
+
+@pytest.mark.asyncio
+async def test_rules_provider_keys_and_forward_targets_travel_as_plans(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    disabled, deleted = _forward_target(tenant), _forward_target(tenant)
+    db.add_all([disabled, deleted])
+    (await db.get(Organization, tenant)).allow_customer_provider_keys = False
+    await db.flush()
+    await _put_rules(db, admin, [_rule("monitor")])
+    await _put_rules(db, admin, [_rule("enforced")])
+    await _turn_on(db, owner)
+    plan = await _plan(
+        db,
+        admin,
+        {"resource": "rules", "item": "falcon", "delete": True},
+        {
+            "resource": "provider_keys",
+            "item": "_",
+            "set": {"allow_customer_provider_keys": True},
+        },
+        {
+            "resource": "forward_targets",
+            "item": str(disabled.id),
+            "set": {"enabled": False},
+        },
+        {"resource": "forward_targets", "item": str(deleted.id), "delete": True},
+    )
+
+    submitted = await _call(db, admin, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    approved = await _call(
+        db, owner, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={}
+    )
+
+    assert plan["risk"] == "relaxing"
+    assert {change["risk"] for change in plan["changes"]} == {"relaxing"}
+    assert submitted.status_code == 202
+    assert (approved.status_code, approved.json()["status"]) == (200, "applied")
+    rules = await _call(db, admin, "GET", f"{MANAGEMENT}/rules")
+    assert (rules.json()["rules"], rules.json()["revision"]) == ([], 3)
+    organization = await db.get(Organization, tenant)
+    await db.refresh(organization)
+    await db.refresh(disabled)
+    assert organization.allow_customer_provider_keys is True
+    assert disabled.enabled is False
+    assert await db.get(ComplianceForwardTarget, deleted.id) is None
+
+
+@pytest.mark.asyncio
+async def test_an_approved_restore_rolls_back_only_plans_it_undid(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    team = Team(id=uuid4(), organization_id=tenant, name="ops", daily_request_limit=10)
+    db.add(team)
+    await db.flush()
+    await _call(
+        db, owner, "PUT", f"{MANAGEMENT}/settings/pii", json={"block_email": False}
+    )
+    await _call(
+        db, owner, "PUT", f"{MANAGEMENT}/settings/pii", json={"block_email": True}
+    )
+    await _turn_on(db, owner)
+    restore = await _call(db, admin, "POST", f"{POLICY}/versions/1/restore", json={})
+    later = await _plan(
+        db,
+        admin,
+        {
+            "resource": "teams",
+            "item": str(team.id),
+            "set": {"name": "ops", "daily_request_limit": 5},
+        },
+    )
+    applied = await _call(db, admin, "POST", f"{POLICY}/plans/{later['id']}/apply")
+
+    approved = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/plans/{restore.json()['plan']['id']}/approve",
+        json={},
+    )
+
+    assert restore.status_code == 202
+    assert applied.json()["status"] == "applied"
+    assert approved.status_code == 200
+    row = await db.get(PolicyPlan, UUID(later["id"]))
+    await db.refresh(row)
+    assert row.status == "applied"
