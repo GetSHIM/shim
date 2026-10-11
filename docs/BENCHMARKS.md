@@ -57,16 +57,16 @@ uv run python scripts/bench_middleware.py --sizes 1 32 --requests 500 --warmup 5
 | Python | 3.13.5 |
 | Settings | defaults: 200 requests and 20 warm-up per size |
 
-The machine was not idle: other worktrees and test runs were using it (load average
-about 3 on 8 cores). Read the numbers as a trend, not as a guarantee. The p99 column
-at 32 KB and 50 KB moved between runs by more than 2x.
+The machine was idle (no test runs or gateways; load average below 2 on 8 cores). Two runs
+on `ca6b2e9` and one on the night-1 integration branch gave the same medians; the table is the
+second `ca6b2e9` run. p99 moves between runs; read it as a trend.
 
 | ms | chat wall p50 | p95 | p99 | `X-Shim-Latency-Ms` p50 | p95 | p99 | `scan` p50 | p95 | p99 | privacy share |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 KB | 8.5 | 9.8 | 10.5 | 7.0 | 8.1 | 9.0 | 6.7 | 7.5 | 8.0 | 78% |
-| 32 KB | 109.3 | 138.1 | 278.8 | 108.0 | 135.2 | 274.2 | 107.0 | 144.2 | 203.7 | 98% |
-| 50 KB | 168.7 | 275.0 | 330.4 | 167.0 | 258.7 | 324.0 | 165.4 | 188.2 | 275.9 | 98% |
+| 1 KB | 8.5 | 9.0 | 9.6 | 8.0 | 8.0 | 8.0 | 6.7 | 6.9 | 7.3 | 79% |
+| 32 KB | 104.4 | 107.1 | 128.1 | 103.0 | 105.0 | 126.6 | 102.3 | 104.4 | 109.0 | 98% |
+| 50 KB | 160.9 | 192.9 | 278.2 | 159.0 | 189.6 | 276.0 | 158.6 | 163.3 | 177.5 | 99% |
 
-Privacy dominates and grows roughly linearly with size: about 3.4 ms per KB at the
-median. On this run the 100 ms budget for 32 KB prompts is crossed at p50, not
-only at the tail.
+Privacy dominates and grows roughly linearly with size: about 3.2 ms per KB at the
+median. The 100 ms budget for 32 KB prompts is crossed at p50 (about 104 ms), so the
+budget holds up to roughly 30 KB of this PII-dense text.
