@@ -2416,7 +2416,13 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
     )
     await db.flush()
     statements: list[str] = []
-    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    read: list[object] = []
+
+    def listener(*args) -> None:
+        statements.append(args[2])
+        if "FROM request_lifecycle" in args[2]:
+            read.append(args[3])
+
     event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
     application = FastAPI()
     application.include_router(management_router, prefix="/api/v1")
@@ -2440,6 +2446,8 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
                 ).status_code
                 for days in (0, 731)
             ]
+            monkeypatch.setattr(management, "_AFFECTED_LIMIT", 1)
+            capped = await client.get("/api/v1/management/model-retirements")
             user.role = "member"
             member = await client.get("/api/v1/management/model-retirements")
     finally:
@@ -2476,6 +2484,16 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
     assert bounds == [422, 422]
     assert member.status_code == 403
     assert any("l.started_at >= " in statement for statement in statements)
+    # Usage is read only for models retiring within the window, and lists are capped.
+    soon_names, later_names = (
+        next(value for value in parameters if isinstance(value, list))
+        for parameters in read[:2]
+    )
+    assert "gpt-4" in soon_names and "gpt-4.1" not in soon_names
+    assert "gpt-4.1" in later_names
+    [capped_gpt4, _] = capped.json()
+    assert [key["requests"] for key in capped_gpt4["affected"]["api_keys"]] == [3]
+    assert [tag["tag"] for tag in capped_gpt4["affected"]["tags"]] == ["support"]
 
 
 @pytest.mark.asyncio

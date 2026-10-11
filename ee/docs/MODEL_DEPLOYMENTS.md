@@ -149,10 +149,11 @@ as "Models in traffic outside the registry", so the two never disagree.
 already past, that the organization used in the last 30 days or has registered:
 `provider`, `model`, `retires_on`, `deprecated_on`, `replacement`, `source`,
 `checked_on`, and `affected` with the API keys (id, name, requests, last used), the
-teams (id, requests), the top 20 tags and the registry aliases whose
-`upstream_model` it is. A request counts under the date entry its model matched,
-never under the caller's own text. It reads one aggregate over `request_lifecycle`
-by `started_at`, plus the registry.
+teams (id, requests) and tags, at most 100 of each with the busiest first, and
+the registry aliases whose `upstream_model` it is. A request counts under the date
+entry its model matched, never under the caller's own text. It reads one aggregate
+over `request_lifecycle` by `started_at`, only for the model names that can match
+an entry retiring within `days`, plus the registry.
 
 Catalog dates ship with shim. An on-prem or self-hosted model has no provider date,
 so the operator adds one in `SHIM_MODEL_LIFECYCLE_FILE` under the `registry` key,

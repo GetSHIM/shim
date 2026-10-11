@@ -22,6 +22,8 @@ UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 # The repo's existing id rules (deployment aliases, Gemini path ids, the catalog's
 # 200 cap) in one: it bounds what a caller can make the gateway store as a model.
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
+# A dated snapshot id: the model it is dated from, then the date.
+DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 _MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
 _STATUSES = frozenset({"alpha", "beta", "deprecated"})

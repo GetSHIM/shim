@@ -573,8 +573,10 @@ from the providers' deprecation pages (OpenAI, Anthropic, Google publish no API 
 this) and reviewed like the price catalog; each entry names its `source` and when it
 was `checked_on`. An entry covers its own name and longer dated names, but never a
 name the catalog prices as a model of its own: a retiring `gpt-4` does not warn
-`gpt-4.1`, and a retiring dated snapshot does not warn the alias that points at it
-unless the provider lists the alias too. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
+`gpt-4.1`. An undated alias retires with its dated snapshots when every snapshot
+the catalog lists for it retires, on the last of their dates: `claude-sonnet-4-5`
+warns with `claude-sonnet-4-5-20250929`, while `gpt-4o` does not warn for
+`gpt-4o-2024-05-13` alone, since it may point at a later snapshot. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
 of the same format to add or override dates; there a provider key may also be
 `registry`, with deployment aliases as model names. A malformed file stops the
 gateway at startup with the setting named. shim never refuses, reroutes or

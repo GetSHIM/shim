@@ -119,7 +119,7 @@ from shim_enterprise.compliance.url_guard import (
     assert_safe_forward_url,
 )
 from shim.billing.lifecycle import load_lifecycle
-from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
 from shim.core.community_config import AZURE_DEPLOYMENT_NAME
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.secrets.azure import EntraTokenCache
@@ -5789,7 +5789,8 @@ _RETIREMENT_USAGE = text(
            THEN l.metadata->'tags' ELSE '[]'::jsonb END
     ) AS tag ON true
     WHERE l.organization_id = :tenant_id AND l.started_at >= :since
-      AND l.requested_model IS NOT NULL
+      AND (lower(l.requested_model) = ANY(:names)
+           OR lower(l.requested_model) LIKE ANY(:prefixes))
     GROUP BY GROUPING SETS (
       (l.provider, l.requested_model, l.api_key_id, k.name),
       (l.provider, l.requested_model, l.metadata->>'team_id'),
@@ -5797,6 +5798,8 @@ _RETIREMENT_USAGE = text(
     )
     """
 )
+# Per retiring model, at most this many keys, teams and tags, the busiest first.
+_AFFECTED_LIMIT = 100
 
 
 @router.get("/model-retirements", response_model=list[ModelRetirementView])
@@ -5809,6 +5812,14 @@ async def list_model_retirements(
     tenant_id = _tenant_id(user)
     lifecycle = load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE)
     now = datetime.now(timezone.utc)
+    soon = {
+        name
+        for entries in lifecycle.models.values()
+        for name, entry in entries.items()
+        if (entry.retires_on - now.date()).days <= days
+    }
+    if not soon:
+        return []
     deployments = {
         alias: (provider, upstream)
         for alias, provider, upstream in await session.execute(
@@ -5844,8 +5855,20 @@ async def list_model_retirements(
             },
         )
 
+    # Only usage that can match a retiring entry is read: its name, a dated id of
+    # it, the undated alias of a snapshot, or a registry alias.
     usage = await session.execute(
-        _RETIREMENT_USAGE, {"tenant_id": tenant_id, "since": now - timedelta(days=30)}
+        _RETIREMENT_USAGE,
+        {
+            "tenant_id": tenant_id,
+            "since": now - timedelta(days=30),
+            "names": sorted(
+                soon
+                | {DATE_SUFFIX.sub("", name) for name in soon}
+                | {alias.casefold() for alias in deployments}
+            ),
+            "prefixes": sorted(name.replace("_", "\\_") + "-%" for name in soon),
+        },
     )
     for row in usage:
         matched = retiring(row.provider, row.requested_model)
@@ -5890,19 +5913,19 @@ async def list_model_retirements(
                         )
                         for key_id, (name, requests, last) in sorted(
                             found["keys"].items(), key=lambda entry: -entry[1][1]
-                        )
+                        )[:_AFFECTED_LIMIT]
                     ],
                     teams=[
                         RetiringTeamView(id=team_id, requests=requests)
                         for team_id, requests in sorted(
                             found["teams"].items(), key=lambda entry: -entry[1]
-                        )
+                        )[:_AFFECTED_LIMIT]
                     ],
                     tags=[
                         RetiringTagView(tag=tag, requests=requests)
                         for tag, requests in sorted(
                             found["tags"].items(), key=lambda entry: -entry[1]
-                        )[:20]
+                        )[:_AFFECTED_LIMIT]
                     ],
                     aliases=sorted(found["aliases"]),
                 ),

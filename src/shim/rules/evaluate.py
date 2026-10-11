@@ -6,9 +6,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
 from itertools import islice
 import json
-import re
 from typing import TYPE_CHECKING, Literal
 
+from shim.billing.pricing import DATE_SUFFIX
 from shim.observability.metrics import RULE_MATCHES_TOTAL, bounded_label
 from shim.rules.model import Rule, RuleMatch, UnusableRule
 
@@ -16,8 +16,6 @@ if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
 
 MAX_RECORDED_MATCHES = 32
-# A dated snapshot id belongs to the model it is dated from.
-_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 Outcome = Literal["allow", "mask", "deny", "error"]
 
 
@@ -47,7 +45,7 @@ def in_scope(
         and (not scope.tags or not set(scope.tags).isdisjoint(tags))
         and (
             not scope.models
-            or not {model, _DATE_SUFFIX.sub("", model)}.isdisjoint(
+            or not {model, DATE_SUFFIX.sub("", model)}.isdisjoint(
                 entry.casefold() for entry in scope.models
             )
         )

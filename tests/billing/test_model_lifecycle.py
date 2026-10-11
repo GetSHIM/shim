@@ -113,6 +113,30 @@ def test_the_lookup_follows_the_catalog_rule_without_covering_another_model(
     assert upstream is not None and upstream.retires_on == date(2027, 1, 5)
 
 
+def test_an_undated_alias_retires_with_every_snapshot_it_can_resolve_to(
+    tmp_path,
+) -> None:
+    path = tmp_path / "lifecycle.json"
+    path.write_text(
+        _file(
+            {
+                "anthropic": {"claude-sonnet-4-5-20250929": _ENTRY},
+                "openai": {"gpt-4o-2024-05-13": _ENTRY},
+            }
+        )
+    )
+    lifecycle = load_lifecycle(path)
+
+    assert lifecycle.match("Claude-Sonnet-4-5", "anthropic") == (
+        "anthropic",
+        "claude-sonnet-4-5-20250929",
+        Retirement.model_validate(_ENTRY),
+    )
+    # gpt-4o may resolve to a snapshot that is not retiring.
+    assert lifecycle.retirement("gpt-4o", "openai") is None
+    assert load_lifecycle().retirement("claude-sonnet-4-5", "anthropic") is not None
+
+
 def test_an_operator_file_merges_over_the_shipped_dates(tmp_path) -> None:
     shipped = load_lifecycle()
     model, entry = next(iter(shipped.models["openai"].items()))
