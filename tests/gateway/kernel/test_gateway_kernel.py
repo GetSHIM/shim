@@ -828,13 +828,16 @@ _RULE_REPLIES = {
 
 
 class _RulesResolver:
-    def __init__(self, inner, rules) -> None:
+    def __init__(self, inner, rules, record_sets=None) -> None:
         self.inner = inner
         self.rules = rules
+        self.record_sets = record_sets
 
     async def resolve(self, principal):
         policy = await self.inner.resolve(principal)
-        return policy.model_copy(update={"rules": self.rules})
+        return policy.model_copy(
+            update={"rules": self.rules, "record_sets": self.record_sets}
+        )
 
 
 def _rule_set(*rules: tuple[str, str, str]):
@@ -844,7 +847,7 @@ def _rule_set(*rules: tuple[str, str, str]):
     return RuleSet(
         revision=4,
         rules=tuple(
-            Rule(id=rule_id, name="n", kind="record_set", action=action, state=state)
+            Rule(id=rule_id, name="n", kind="parameter_pin", action=action, state=state)
             for rule_id, action, state in rules
         ),
     )
@@ -860,7 +863,7 @@ def _matching_privacy(monkeypatch) -> None:
         stubbed = [
             rule
             for rule in (prepared.rules.rules if prepared.rules else ())
-            if rule.kind == "record_set"
+            if rule.kind == "parameter_pin"
         ]
         for rule in stubbed:
             broken = rule.id.startswith("broken")
@@ -879,6 +882,7 @@ async def _call_with_rules(
     gate=None,
     headers=None,
     settings=None,
+    record_sets=None,
 ):
     _matching_privacy(monkeypatch)
     calls: list[httpx.Request] = []
@@ -912,7 +916,9 @@ async def _call_with_rules(
         )
         async with app.router.lifespan_context(app):
             kernel = app.state.gateway_service.kernel
-            kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
+            kernel.policy_resolver = _RulesResolver(
+                kernel.policy_resolver, rules, record_sets
+            )
             kernel.approval_gate = gate
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app), base_url="http://shim.test"
@@ -961,7 +967,7 @@ async def test_an_enforced_block_refuses_before_any_provider_call(
     assert [match["rule_id"] for match in line["rule_matches"]] == ["alpha", "zeta"]
     assert line["rule_matches"][0] == {
         "rule_id": "alpha",
-        "kind": "record_set",
+        "kind": "parameter_pin",
         "action": "block",
         "state": "enforced",
         "count": 2,
@@ -2535,3 +2541,133 @@ async def test_an_embeddings_relaxation_counts_the_type_and_chat_still_masks() -
     assert embed_sent[0]["input"] == f"TCKN {_TCKN}"
     assert embed_line["monitored_entities"] == {"TR_NATIONAL_ID": 1}
     assert _TCKN not in json.dumps(chat_sent[0])
+
+
+# Record sets (S51): a hashed customer list matched in the privacy stage.
+
+_SET_ID = "00000000-0000-0000-0000-000000000051"
+
+
+def _customer_set():
+    from shim.privacy.record_match import (
+        RecordField,
+        RecordSetIndex,
+        normalize,
+        record_hash,
+    )
+
+    key = bytes(range(32))
+    fields = (RecordField("token", primary=True), RecordField("name"))
+    return RecordSetIndex.records(
+        key,
+        fields,
+        [
+            [
+                record_hash(key, "token", normalize("token", f"MUS{number:06d}")),
+                record_hash(key, "name", normalize("name", name)),
+            ]
+            for number, name in enumerate(["Ayşe Yılmaz", "İsmail Işık"])
+        ],
+    )
+
+
+def _record_rules(action: str, state: str = "enforced"):
+    from shim.rules import Rule, RuleSet
+
+    return RuleSet(
+        revision=3,
+        rules=(
+            Rule(
+                id="customers",
+                name="customers",
+                kind="record_set",
+                action=action,
+                state=state,
+                match={"set_id": _SET_ID, "min_fields": 2, "min_shared": None},
+            ),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_enforced_record_mask_hides_the_name_and_a_tckn_stays_typed(
+    monkeypatch,
+) -> None:
+    response, calls, [line] = await _call_with_rules(
+        monkeypatch,
+        _record_rules("mask"),
+        "chat",
+        text="Müşteri MUS000001, İsmail Işık, TCKN 10000000146 aradı.",
+        record_sets={_SET_ID: _customer_set()},
+    )
+
+    sent = json.loads(calls[0].content)["messages"][0]["content"]
+    assert response.status_code == 200
+    assert "İsmail Işık" not in sent and "MUS000001" not in sent
+    assert sent.count("<RECORD_") == 2 and "<TR_NATIONAL_ID_" in sent
+    assert line["rule_matches"] == [
+        {
+            "rule_id": "customers",
+            "kind": "record_set",
+            "action": "mask",
+            "state": "enforced",
+            "count": 1,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat", "messages", "gemini", "responses"])
+async def test_an_enforced_record_block_refuses_every_protocol_before_the_provider(
+    monkeypatch, route
+) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _record_rules("block"),
+        route,
+        text="MUS000000 numaralı Ayşe Yılmaz",
+        record_sets={_SET_ID: _customer_set()},
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-rule-id"] == "customers"
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_record_rule_counts_and_leaves_the_payload_as_sent(
+    monkeypatch,
+) -> None:
+    text = "MUS000000 numaralı Ayşe Yılmaz için not"
+    monitored, calls, [line] = await _call_with_rules(
+        monkeypatch,
+        _record_rules("block", state="monitor"),
+        "chat",
+        text=text,
+        record_sets={_SET_ID: _customer_set()},
+    )
+
+    assert monitored.status_code == 200
+    assert json.loads(calls[0].content)["messages"][0]["content"] == text
+    assert [(match["state"], match["count"]) for match in line["rule_matches"]] == [
+        ("monitor", 1)
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "status"), [("enforced", 503), ("monitor", 200)])
+async def test_a_set_that_could_not_load_fails_closed_only_when_enforced(
+    monkeypatch, state, status
+) -> None:
+    response, calls, [line] = await _call_with_rules(
+        monkeypatch,
+        _record_rules("block", state=state),
+        "chat",
+        text="MUS000000 Ayşe Yılmaz",
+        record_sets={},
+    )
+
+    assert response.status_code == status
+    if status == 503:
+        assert calls == [] and response.headers.get("retry-after") == "5"
+    else:
+        assert line["rule_matches"][0]["error"] is True

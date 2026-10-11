@@ -12,6 +12,7 @@ from collections.abc import (
     Sequence,
 )
 import asyncio
+import base64
 import csv
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -21,6 +22,7 @@ import io
 import itertools
 import json
 import logging
+import re
 import secrets
 from typing import Annotated, Any, Literal, cast, get_args
 from urllib.parse import urlsplit
@@ -45,6 +47,7 @@ from sqlalchemy import (
     and_,
     case,
     cast as sql_cast,
+    delete,
     distinct,
     func,
     inspect,
@@ -114,6 +117,7 @@ from shim_enterprise.compliance.url_guard import (
     assert_safe_forward_url,
 )
 from shim.billing.lifecycle import load_lifecycle
+from shim.privacy.record_match import FINGERPRINT_VERSION, KEY_BYTES
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
@@ -166,11 +170,18 @@ from shim_enterprise.tenants.models import (
     OrganizationPIIConfig,
     OrganizationRole,
     ProviderSecret,
+    RecordSet,
+    RecordSetChunk,
     ServiceAccountCredential,
     TierDefinition,
     Team,
     TeamMembership,
     User,
+)
+from shim_enterprise.tenants.record_sets import (
+    KEY_PURPOSE as RECORD_SET_KEY_PURPOSE,
+    pack_documents,
+    pack_records,
 )
 from shim_enterprise.tenants.deployments import (
     internal_origin_approved,
@@ -2464,6 +2475,9 @@ async def get_rules(
 class _RuleSetPutRoute(APIRoute):
     """Counts the body's bytes as they arrive, so a chunked body cannot pass the limit."""
 
+    limit = LIMITS["request_bytes"]
+    message = "A rule set is at most 1,000,000 bytes."
+
     def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
         handler = super().get_route_handler()
 
@@ -2474,19 +2488,54 @@ class _RuleSetPutRoute(APIRoute):
                 nonlocal size
                 message = await receive()
                 size += len(message.get("body", b""))
-                if size > LIMITS["request_bytes"]:
+                if size > self.limit:
                     raise HTTPException(
                         status_code=413,
-                        detail={
-                            "code": "REQUEST_TOO_LARGE",
-                            "message": "A rule set is at most 1,000,000 bytes.",
-                        },
+                        detail={"code": "REQUEST_TOO_LARGE", "message": self.message},
                     )
                 return message
 
             return await handler(Request(request.scope, counted))
 
         return bounded
+
+
+def _check_record_set_rule(
+    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int]]
+) -> None:
+    """The set exists here, is active, and is of the kind the match and action imply."""
+
+    found = record_sets.get(str(rule.match["set_id"]))
+    kind = found[0] if found is not None else None
+    if found is None or found[1] < 1:
+        problem = (
+            "names a record set this organization does not have, or one not activated"
+        )
+    elif (rule.match["min_fields"] is not None and kind != "records") or (
+        rule.match["min_shared"] is not None and kind != "fingerprints"
+    ):
+        problem = "min_fields is for a records set, min_shared for a fingerprints set"
+    else:
+        problem = None
+    if problem is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RULE_MATCH_INVALID",
+                "path": f"rules[{index}].match.set_id",
+                "message": problem,
+            },
+        )
+    # Masking a pasted fragment would change the request beyond what the user wrote.
+    if kind == "fingerprints" and rule.action == "mask":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "RULE_ACTION_UNAVAILABLE",
+                "path": f"rules[{index}].action",
+                "message": "a fingerprints set cannot mask; use monitor, warn or block",
+            },
+        )
 
 
 async def replace_rules(
@@ -2554,7 +2603,17 @@ async def replace_rules(
             else set()
         )
     kept_ids = {rule.id for rule in kept}
+    record_sets = {
+        str(set_id): (kind, active)
+        for set_id, kind, active in await session.execute(
+            select(RecordSet.id, RecordSet.kind, RecordSet.active_revision).where(
+                RecordSet.organization_id == tenant_id
+            )
+        )
+    }
     for index, rule in enumerate(after.rules):
+        if rule.kind == "record_set":
+            _check_record_set_rule(rule, index, record_sets)
         if rule.id in kept_ids:
             raise HTTPException(
                 status_code=422,
@@ -2647,6 +2706,466 @@ router.add_api_route(
     response_model=RuleSetView,
     route_class_override=_RuleSetPutRoute,
 )
+
+
+# Record sets (S51): hashed customer records and document fingerprints.
+
+_RECORD_SETS_PER_ORGANIZATION = 10
+_RECORD_SET_LIMITS = {
+    "chunks": 500,
+    "records_per_chunk": 10_000,
+    "documents_per_chunk": 50,
+    "prints_per_document": 20_000,
+    "records": 250_000,
+    "documents": 2_000,
+    "prints": 2_000_000,
+}
+_HASH = re.compile(r"[0-9a-f]{16}")
+
+
+class RecordSetFieldSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    kind: Literal["tckn", "vkn", "iban", "email", "phone", "digits", "token", "name"]
+    primary: bool = False
+    length: tuple[int, int] | None = Field(
+        default=None, description="digits only: the shortest and longest run, 4 to 34."
+    )
+
+    @model_validator(mode="after")
+    def coherent(self) -> RecordSetFieldSpec:
+        if self.kind == "name" and self.primary:
+            raise ValueError("a name field is never primary")
+        if (self.length is not None) != (self.kind == "digits"):
+            raise ValueError("length is given for digits fields, and only for them")
+        if self.length is not None and not 4 <= self.length[0] <= self.length[1] <= 34:
+            raise ValueError("length is a range within 4 to 34")
+        return self
+
+
+class RecordSetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    kind: Literal["records", "fingerprints"]
+    label: str = Field(
+        default="RECORD",
+        max_length=32,
+        pattern=r"^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$",
+    )
+    fields: list[RecordSetFieldSpec] = []
+
+    @model_validator(mode="after")
+    def coherent(self) -> RecordSetCreate:
+        if self.label in effective_entity_actions():
+            raise ValueError(f"{self.label} is a built-in entity type")
+        if self.kind == "fingerprints" and self.fields:
+            raise ValueError("a fingerprints set has no fields")
+        if self.kind == "records" and not (
+            2 <= len(self.fields) <= 6 and any(field.primary for field in self.fields)
+        ):
+            raise ValueError("a records set has 2 to 6 fields, at least one primary")
+        return self
+
+
+class RecordSetView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    kind: Literal["records", "fingerprints"]
+    label: str
+    fields: list[dict[str, Any]]
+    fingerprint_version: int | None
+    active_revision: int
+    previous_revision: int
+    entry_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class RecordSetCreatedView(RecordSetView):
+    hash_key: str = Field(
+        description="Shown once: the base64url key the hashing tool uses."
+    )
+
+
+class RecordSetChunkPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[list[str]] | None = None
+    documents: list[list[str]] | None = None
+
+
+def _record_set_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code, detail={"code": code, "message": message}
+    )
+
+
+async def _record_set(
+    session: AsyncSession, tenant_id: UUID, set_id: UUID
+) -> RecordSet:
+    row = await session.scalar(
+        select(RecordSet)
+        .where(RecordSet.organization_id == tenant_id, RecordSet.id == set_id)
+        .with_for_update()
+    )
+    if row is None:
+        raise _record_set_error(404, "RECORD_SET_NOT_FOUND", "No such record set.")
+    return row
+
+
+async def _invalidate_policy(request: Request, tenant_id: UUID) -> None:
+    try:
+        cache: CacheService = request.app.state.cache
+        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
+    except Exception as exc:
+        logger.warning(
+            "Record set cache invalidation failed type=%s", type(exc).__name__
+        )
+
+
+@router.post("/record-sets", response_model=RecordSetCreatedView, status_code=201)
+async def create_record_set(
+    payload: RecordSetCreate,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant_id = _tenant_id(user)
+    await lock_tenant(session, tenant_id)
+    existing = await session.scalar(
+        select(func.count())
+        .select_from(RecordSet)
+        .where(RecordSet.organization_id == tenant_id)
+    )
+    if (existing or 0) >= _RECORD_SETS_PER_ORGANIZATION:
+        raise _record_set_error(
+            422, "RECORD_SET_LIMIT", "An organization holds at most 10 record sets."
+        )
+    key = base64.urlsafe_b64encode(secrets.token_bytes(KEY_BYTES)).decode()
+    key_ref = await get_secret_store().put_secret(
+        TenantId(tenant_id), RECORD_SET_KEY_PURPOSE, key
+    )
+    row = RecordSet(
+        organization_id=tenant_id,
+        kind=payload.kind,
+        name=payload.name,
+        label=payload.label,
+        fields=[
+            field.model_dump(mode="json", exclude_none=True) for field in payload.fields
+        ],
+        fingerprint_version=FINGERPRINT_VERSION
+        if payload.kind == "fingerprints"
+        else None,
+        key_ref=key_ref,
+        created_by=str(user.id),
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise _record_set_error(
+            409, "RECORD_SET_NAME_TAKEN", "A record set with this name exists."
+        ) from None
+    await _audit(
+        session,
+        user,
+        "tenant.record_set_created",
+        str(tenant_id),
+        details={
+            "record_set_id": str(row.id),
+            "kind": row.kind,
+            "fields": len(row.fields),
+        },
+    )
+    await session.commit()
+    await session.refresh(row)
+    return {**RecordSetView.model_validate(row).model_dump(), "hash_key": key}
+
+
+@router.get("/record-sets", response_model=list[RecordSetView])
+async def list_record_sets(
+    user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    return (
+        await session.scalars(
+            select(RecordSet)
+            .where(RecordSet.organization_id == _tenant_id(user))
+            .order_by(RecordSet.name)
+        )
+    ).all()
+
+
+@router.get("/record-sets/{set_id}", response_model=RecordSetView)
+async def get_record_set(
+    set_id: UUID,
+    user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    row = await session.scalar(
+        select(RecordSet).where(
+            RecordSet.organization_id == _tenant_id(user), RecordSet.id == set_id
+        )
+    )
+    if row is None:
+        raise _record_set_error(404, "RECORD_SET_NOT_FOUND", "No such record set.")
+    return row
+
+
+@router.post("/record-sets/{set_id}/revisions", status_code=201)
+async def open_record_set_revision(
+    set_id: UUID,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    row = await _record_set(session, _tenant_id(user), set_id)
+    uploaded = await session.scalar(
+        select(func.max(RecordSetChunk.revision)).where(
+            RecordSetChunk.record_set_id == set_id
+        )
+    )
+    await session.commit()
+    return {
+        "revision": max(row.active_revision, row.previous_revision, uploaded or 0) + 1
+    }
+
+
+def _hashes(values: list[str], path: str) -> list[int]:
+    if not all(_HASH.fullmatch(value) for value in values):
+        raise _record_set_error(
+            422,
+            "RECORD_SET_CHUNK_INVALID",
+            f"{path} holds a value that is not 16 hex digits.",
+        )
+    return [int(value, 16) for value in values]
+
+
+async def put_record_set_chunk(
+    set_id: UUID,
+    revision: int,
+    chunk_index: int,
+    payload: RecordSetChunkPut,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+    limits = _RECORD_SET_LIMITS
+    if not 0 <= chunk_index < limits["chunks"]:
+        raise _record_set_error(
+            422, "RECORD_SET_CHUNK_INVALID", "A chunk index is 0 to 499."
+        )
+    if revision <= max(row.active_revision, row.previous_revision):
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_SEALED",
+            "Chunks go to a newly opened revision; an activated one never changes.",
+        )
+    if row.kind == "records":
+        if payload.records is None or payload.documents is not None:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A records set takes `records`."
+            )
+        width = len(row.fields)
+        primary = [
+            index for index, field in enumerate(row.fields) if field.get("primary")
+        ]
+        if not 1 <= len(payload.records) <= limits["records_per_chunk"]:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A chunk holds 1 to 10,000 records."
+            )
+        rows = []
+        for number, record in enumerate(payload.records):
+            hashes = _hashes(record, f"records[{number}]")
+            if len(hashes) != width or not any(hashes[index] for index in primary):
+                raise _record_set_error(
+                    422,
+                    "RECORD_SET_CHUNK_INVALID",
+                    f"records[{number}] needs {width} fields and a primary value.",
+                )
+            rows.append(hashes)
+        data, count = pack_records(rows), len(rows)
+    else:
+        if payload.documents is None or payload.records is not None:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A fingerprints set takes `documents`."
+            )
+        if not 1 <= len(payload.documents) <= limits["documents_per_chunk"] or any(
+            len(prints) > limits["prints_per_document"] for prints in payload.documents
+        ):
+            raise _record_set_error(
+                422,
+                "RECORD_SET_CHUNK_INVALID",
+                "A chunk holds 1 to 50 documents of at most 20,000 fingerprints.",
+            )
+        documents = [
+            _hashes(prints, f"documents[{number}]")
+            for number, prints in enumerate(payload.documents)
+        ]
+        data, count = pack_documents(documents), len(documents)
+    await session.merge(
+        RecordSetChunk(
+            record_set_id=set_id,
+            revision=revision,
+            chunk_index=chunk_index,
+            organization_id=tenant_id,
+            entry_count=count,
+            data=data,
+        )
+    )
+    await session.commit()
+    return {"revision": revision, "chunk_index": chunk_index, "entry_count": count}
+
+
+class _RecordSetChunkRoute(_RuleSetPutRoute):
+    limit = 4_000_000
+    message = "A record set chunk is at most 4,000,000 bytes."
+
+
+router.add_api_route(
+    "/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}",
+    put_record_set_chunk,
+    methods=["PUT"],
+    route_class_override=_RecordSetChunkRoute,
+)
+
+
+@router.post(
+    "/record-sets/{set_id}/revisions/{revision}/activate", response_model=RecordSetView
+)
+async def activate_record_set_revision(
+    set_id: UUID,
+    revision: int,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+    chunks = (
+        await session.execute(
+            select(RecordSetChunk.entry_count, func.length(RecordSetChunk.data)).where(
+                RecordSetChunk.record_set_id == set_id,
+                RecordSetChunk.revision == revision,
+            )
+        )
+    ).all()
+    if revision == row.active_revision or not chunks:
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_EMPTY",
+            "That revision is active or holds no chunks.",
+        )
+    entries = sum(count for count, _ in chunks)
+    limits = _RECORD_SET_LIMITS
+    # A document's 4-byte header, then 8 bytes per fingerprint.
+    prints = (sum(size for _, size in chunks) - 4 * entries) // 8
+    too_many = (
+        entries > limits["records"]
+        if row.kind == "records"
+        else entries > limits["documents"] or prints > limits["prints"]
+    )
+    if too_many:
+        raise _record_set_error(
+            422,
+            "RECORD_SET_TOO_LARGE",
+            "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
+            "fingerprints.",
+        )
+    fewer = row.active_revision > 0 and entries < row.entry_count
+    row.previous_revision, row.active_revision, row.entry_count = (
+        row.active_revision,
+        revision,
+        entries,
+    )
+    # One revision back stays for a rollback; every other one goes.
+    await session.execute(
+        delete(RecordSetChunk).where(
+            RecordSetChunk.record_set_id == set_id,
+            RecordSetChunk.revision.not_in(
+                {row.active_revision, row.previous_revision}
+            ),
+        )
+    )
+    await _audit(
+        session,
+        user,
+        "tenant.record_set_revision_activated",
+        str(tenant_id),
+        details={
+            "record_set_id": str(set_id),
+            "revision": revision,
+            "entry_count": entries,
+        },
+    )
+    if fewer:
+        relaxed = [f"record_sets.{set_id}"]
+        event_id = await _audit(
+            session,
+            user,
+            "tenant.privacy_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": relaxed},
+        )
+        await ComplianceForwarderService().send_privacy_protection_relaxed(
+            session,
+            TenantId(tenant_id),
+            fields=relaxed,
+            actor=str(user.id),
+            actor_email=user.email,
+            event_id=event_id,
+        )
+    await session.commit()
+    await _invalidate_policy(request, tenant_id)
+    await session.refresh(row)
+    return row
+
+
+@router.delete("/record-sets/{set_id}", status_code=204)
+async def delete_record_set(
+    set_id: UUID,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+    rule_set = await session.get(OrganizationRuleSet, tenant_id)
+    if any(
+        rule.get("kind") == "record_set"
+        and (rule.get("match") or {}).get("set_id") == str(set_id)
+        for rule in (rule_set.rules if rule_set is not None else [])
+    ):
+        raise _record_set_error(
+            409,
+            "RECORD_SET_IN_USE",
+            "A rule references this record set; remove it first.",
+        )
+    key_ref = row.key_ref
+    await session.delete(row)
+    await _audit(
+        session,
+        user,
+        "tenant.record_set_deleted",
+        str(tenant_id),
+        details={"record_set_id": str(set_id)},
+    )
+    await session.commit()
+    try:
+        await get_secret_store().delete_secret(
+            TenantId(tenant_id),
+            SecretRef(key_ref),
+            expected_purpose=RECORD_SET_KEY_PURPOSE,
+        )
+    except Exception as exc:
+        logger.warning("Record set key deletion failed type=%s", type(exc).__name__)
+    await _invalidate_policy(request, tenant_id)
+    return Response(status_code=204)
 
 
 def _gateway_settings_view(

@@ -113,6 +113,7 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
     assert {name for name, kind in view.kinds.items() if kind.available} == {
         "term",
         "pattern",
+        "record_set",
         "destination",
         "request_limit",
     }
@@ -262,7 +263,7 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
 ) -> None:
     admin = await _admin(db, test_org.id)
 
-    unavailable = await _refused(db, admin, 0, [_rule(kind="record_set")])
+    unavailable = await _refused(db, admin, 0, [_rule(kind="parameter_pin")])
     approval = await _refused(db, admin, 0, [_rule(action="require_approval")])
     unknown_key = await _refused(
         db, admin, 0, [_rule(match={"terms": ["Project"], "regex": "y"})]

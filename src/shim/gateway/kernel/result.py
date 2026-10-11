@@ -26,6 +26,7 @@ from shim.gateway.request_policy import AgentLoop, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
+from shim.privacy.record_match import RecordSetIndex
 from shim.rules.model import Rule, RuleMatch, RuleSet
 
 
@@ -193,6 +194,10 @@ class PreparedInference:
         default=None, repr=False, compare=False
     )
     rules: RuleSet | None = field(default=None, repr=False, compare=False)
+    # Enterprise: the loaded record sets the request's rules reference, by set id.
+    record_sets: Mapping[str, RecordSetIndex] | None = field(
+        default=None, repr=False, compare=False
+    )
     # Whether a rule matcher ran for this request; records say nothing about rules otherwise.
     rules_evaluated: bool = False
     # Request-local, shared by stage replacements like policy_verdicts.
@@ -242,11 +247,17 @@ class PreparedInference:
             )
         )
 
-    def record_rule_match(self, rule: Rule, count: int, *, error: bool = False) -> None:
+    def record_rule_match(
+        self, rule: Rule, count: int, *, error: bool = False, truncated: bool = False
+    ) -> None:
         for index, match in enumerate(self.rule_matches):
             if match.rule_id == rule.id:
                 self.rule_matches[index] = match.model_copy(
-                    update={"count": match.count + count, "error": match.error or error}
+                    update={
+                        "count": match.count + count,
+                        "error": match.error or error,
+                        "truncated": match.truncated or truncated,
+                    }
                 )
                 return
         self.rule_matches.append(
@@ -257,6 +268,7 @@ class PreparedInference:
                 state=rule.state,
                 count=count,
                 error=error,
+                truncated=truncated,
             )
         )
 

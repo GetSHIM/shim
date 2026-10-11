@@ -15,7 +15,9 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -635,3 +637,66 @@ class ModelDeployment(Base, TimestampMixin):
     input_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     output_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     context_window: Mapped[int | None] = mapped_column(Integer)
+
+
+class RecordSet(Base, TimestampMixin):
+    """A tenant's hashed records or document fingerprints; never the records themselves."""
+
+    __tablename__ = "record_sets"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('records', 'fingerprints')", name="ck_record_sets_kind"
+        ),
+        UniqueConstraint("organization_id", "name", name="uq_record_sets_org_name"),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id", name="fk_record_sets_organization", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="RECORD", server_default="RECORD"
+    )
+    fields: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    fingerprint_version: Mapped[int | None] = mapped_column(SmallInteger)
+    key_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    active_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # The revision active before the current one, kept for a one-step rollback.
+    previous_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    entry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
+
+
+class RecordSetChunk(Base):
+    """One uploaded slice of a revision: packed big-endian 8-byte hashes."""
+
+    __tablename__ = "record_set_chunks"
+
+    record_set_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "record_sets.id", name="fk_record_set_chunks_record_set", ondelete="CASCADE"
+        ),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(SqlUUID(as_uuid=True), nullable=False)
+    entry_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)

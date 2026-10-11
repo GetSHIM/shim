@@ -127,6 +127,8 @@ class RuleMatch(_Frozen):
     state: RuleState
     count: int = Field(ge=0)
     error: bool = False
+    # A record set's candidates ran past the per-string cap; the rest were skipped.
+    truncated: bool = False
 
 
 class RuleSetError(ValueError):

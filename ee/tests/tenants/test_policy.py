@@ -251,7 +251,10 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         embeddings_monitor_types=["IBAN_CODE"],
     )
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (row, 0)))
+        # The settings row, then the tenant's active record sets (none).
+        execute=AsyncMock(
+            side_effect=[SimpleNamespace(one_or_none=lambda: (row, 0)), []]
+        )
     )
     cache = _PolicyCache(None)
     api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
@@ -488,3 +491,22 @@ async def test_a_cached_pii_config_without_embeddings_types_relaxes_nothing(
     )
 
     assert resolved.embeddings_monitor_types == monitored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "revisions"),
+    [({}, {}), ({"record_set_revisions": {"s-1": 3}}, {"s-1": 3})],
+)
+async def test_a_cached_pii_config_carries_record_set_revisions_when_it_has_them(
+    cached, revisions
+) -> None:
+    service = policy_module.TenantPolicyService(
+        _PolicyCache({**_SWITCHES, "rules_revision": 0, **cached})
+    )
+
+    resolved = await service.resolve(
+        SimpleNamespace(organization_id=UUID(int=1), tier="managed"), session=None
+    )
+
+    assert resolved.record_set_revisions == revisions

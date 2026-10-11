@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 
 from shim.rules.content import PatternMatch, TermMatch
 from shim.rules.destination import DestinationMatch
+from shim.rules.record_set import RecordSetMatch
 from shim.rules.request_limit import RequestLimitMatch
 from shim.rules.model import (
     LIMITS,
@@ -41,7 +42,9 @@ KINDS: dict[RuleKind, KindSpec] = {
         ("monitor", "warn", "mask", "block", "require_approval"),
         PatternMatch,
     ),
-    "record_set": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
+    "record_set": KindSpec(
+        "privacy", ("monitor", "warn", "mask", "block"), RecordSetMatch
+    ),
     "destination": KindSpec(
         "privacy", ("monitor", "warn", "mask", "block"), DestinationMatch
     ),

@@ -29,14 +29,17 @@ from shim.gateway.request_policy import (
     ResolvedRequestPolicy,
 )
 from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
+from shim.privacy.record_match import RecordSetIndex
 from shim.rules import RuleSet, RuleSetError, load_rule_set
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
+from shim_enterprise.tenants.record_sets import RECORD_SETS
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
     OrganizationGatewaySettings,
     OrganizationPIIConfig,
+    RecordSet,
     TierDefinition,
 )
 
@@ -118,6 +121,8 @@ class ResolvedTenantSettings:
     bulk_threshold: int | None = 50
     response_scan: Literal["off", "count"] = "off"
     embeddings_monitor_types: frozenset[str] = frozenset()
+    # Active revision by record set id; an entry cached by an older release has none.
+    record_set_revisions: Mapping[str, int] = field(default_factory=dict)
     gateway_settings: GatewaySettings = field(default_factory=GatewaySettings)
     rules: RuleSet | None = None
 
@@ -174,6 +179,7 @@ class TenantPolicyService:
         response_scan = switches.pop("response_scan", "off")
         # An entry cached by the previous release has no list: nothing is relaxed.
         embeddings_monitor_types = switches.pop("embeddings_monitor_types", [])
+        record_set_revisions = switches.pop("record_set_revisions", {})
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
             pii_config={key: bool(value) for key, value in switches.items()} or None,
@@ -183,6 +189,7 @@ class TenantPolicyService:
             bulk_threshold=bulk_threshold,
             response_scan=response_scan,
             embeddings_monitor_types=frozenset(embeddings_monitor_types),
+            record_set_revisions=record_set_revisions,
             gateway_settings=gateway_settings,
             rules=await self._rule_set(tenant_id, rules_revision, session)
             if rules_revision
@@ -270,6 +277,17 @@ class TenantPolicyService:
             return None
         row, rules_revision = found
         value: dict[str, Any] = {"rules_revision": rules_revision}
+        revisions = {
+            str(set_id): revision
+            for set_id, revision in await session.execute(
+                select(RecordSet.id, RecordSet.active_revision).where(
+                    RecordSet.organization_id == tenant_id,
+                    RecordSet.active_revision > 0,
+                )
+            )
+        }
+        if revisions:
+            value["record_set_revisions"] = revisions
         if row is not None:
             value |= {
                 **{name: getattr(row, name) for name in PII_CONFIG_DEFAULTS},
@@ -309,6 +327,34 @@ class TenantPolicyService:
         return value
 
 
+async def _record_sets(
+    session: AsyncSession, tenant: ResolvedTenantSettings
+) -> dict[str, RecordSetIndex] | None:
+    """The loaded sets the tenant's record_set rules name; a set not loadable is left out."""
+
+    set_ids = {
+        str(rule.match["set_id"])
+        for rule in (tenant.rules.rules if tenant.rules is not None else ())
+        if rule.kind == "record_set"
+    }
+    if not set_ids:
+        return None
+    loaded = {}
+    for set_id in set_ids:
+        revision = tenant.record_set_revisions.get(set_id, 0)
+        try:
+            index = await RECORD_SETS.get(
+                session, tenant.tenant_id, UUID(set_id), revision
+            )
+        except Exception as exc:
+            # The privacy stage treats a missing set as an evaluation error.
+            logger.error("Record set load failed type=%s", type(exc).__name__)
+            index = None
+        if index is not None:
+            loaded[set_id] = index
+    return loaded
+
+
 class TenantRequestPolicyResolver:
     """Resolve enterprise tenant policy inside one short database session."""
 
@@ -341,6 +387,7 @@ class TenantRequestPolicyResolver:
                 raise TenantPolicyConfigurationError(
                     "tenant policy is invalid"
                 ) from exc
+            record_sets = await _record_sets(session, tenant_settings)
             resolved = ResolvedRequestPolicy(
                 tenant_id=TenantId(tenant_settings.tenant_id),
                 tenant_policy=tenant_policy,
@@ -398,5 +445,6 @@ class TenantRequestPolicyResolver:
                 ),
                 tenant_gateway_settings=tenant_settings.gateway_settings,
                 rules=tenant_settings.rules,
+                record_sets=record_sets,
             )
         return resolved

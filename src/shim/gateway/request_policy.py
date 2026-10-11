@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import Field, SecretBytes
 
@@ -68,6 +68,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     # The request's key may share an identical in-flight answer (S48).
     inflight_sharing: bool = False
     rules: RuleSet | None = None
+    # Enterprise: the loaded record sets the rules reference, by set id.
+    record_sets: Mapping[str, Any] | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
 

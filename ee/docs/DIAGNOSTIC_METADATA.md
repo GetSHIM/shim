@@ -334,7 +334,8 @@ and the reasons are in the community
 
 `rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
 matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
-when the rule's evaluation failed), blocks first and then by id, at most 32;
+when the rule's evaluation failed, and `truncated: true` when a record set's
+candidates in one string ran past 2,000), blocks first and then by id, at most 32;
 `rule_matches_truncated` says whether more matched. Both are written with the
 privacy facts, so a refused request has them too. They are `[]` and `false`
 when a rule matcher ran and nothing matched, and absent when none ran: no

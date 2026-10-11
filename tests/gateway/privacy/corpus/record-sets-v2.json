@@ -1,0 +1,105 @@
+{
+  "format": "shim.record_set.corpus",
+  "version": 2,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "set": {
+    "csv": "record-set-customers.csv",
+    "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "fields": [
+      {
+        "kind": "token",
+        "primary": true
+      },
+      {
+        "kind": "name"
+      },
+      {
+        "kind": "tckn",
+        "primary": true
+      },
+      {
+        "kind": "iban"
+      },
+      {
+        "kind": "email"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "number-and-name",
+      "text": "MUS000001 numaralı Ayşe Yılmaz bugün aradı.",
+      "min_fields": 2,
+      "expect_records": [
+        0
+      ]
+    },
+    {
+      "id": "number-alone",
+      "text": "MUS000001 numaralı müşteri bugün aradı.",
+      "min_fields": 2,
+      "expect_records": []
+    },
+    {
+      "id": "number-alone-enough",
+      "text": "MUS000001 numaralı müşteri bugün aradı.",
+      "min_fields": 1,
+      "expect_records": [
+        0
+      ]
+    },
+    {
+      "id": "tckn-and-iban-spaced",
+      "text": "TCKN 10000000146, IBAN TR33 0006 1005 1978 6457 8413 26",
+      "min_fields": 2,
+      "expect_records": [
+        0
+      ]
+    },
+    {
+      "id": "turkish-case-name",
+      "text": "Müşteri no MUS000002, adı İSMAİL IŞIK.",
+      "min_fields": 2,
+      "expect_records": [
+        1
+      ]
+    },
+    {
+      "id": "lowercase-ascii-name",
+      "text": "mus000002 ismail ışık",
+      "min_fields": 2,
+      "expect_records": [
+        1
+      ]
+    },
+    {
+      "id": "upper-email",
+      "text": "Müşteri MUS000003 CAGRI@EXAMPLE.COM adresinden yazdı.",
+      "min_fields": 2,
+      "expect_records": [
+        2
+      ]
+    },
+    {
+      "id": "wrong-name",
+      "text": "MUS000004 numaralı Gökhan Demir aradı.",
+      "min_fields": 2,
+      "expect_records": []
+    },
+    {
+      "id": "two-records",
+      "text": "MUS000004 Şule Ünal ile MUS000005 Gökhan Demir toplantıda.",
+      "min_fields": 2,
+      "expect_records": [
+        3,
+        4
+      ]
+    },
+    {
+      "id": "unrelated",
+      "text": "Bugün hava güzel; ekip yeni projeyi konuştu.",
+      "min_fields": 1,
+      "expect_records": []
+    }
+  ]
+}

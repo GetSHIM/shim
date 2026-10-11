@@ -66,7 +66,11 @@ def match_records(prepared: PreparedInference) -> dict[str, object]:
     ordered = ordered_matches(prepared.rule_matches)
     return {
         "rule_matches": [
-            match.model_dump(exclude={"error"} if not match.error else set())
+            match.model_dump(
+                exclude={
+                    key for key in ("error", "truncated") if not getattr(match, key)
+                }
+            )
             for match in ordered[:MAX_RECORDED_MATCHES]
         ],
         "rule_matches_truncated": len(ordered) > MAX_RECORDED_MATCHES,

@@ -1,0 +1,78 @@
+# Record sets
+
+A record set lets a tenant rule catch two things no word list can: a customer of yours
+named in a request (a **records** set built from your customer list), and a fragment of a
+confidential document pasted into one (a **fingerprints** set). shim never receives the
+list or the documents, only keyed hashes of them, and request content is never stored.
+
+## What is hashed, and what never leaves your machine
+
+`ee/scripts/hash_record_set.py` runs on your machine with the set's key. It reads the CSV
+or the `.txt`/`.md` documents, and writes or uploads only:
+
+- for a records set, every record as one 8-byte keyed hash per field (BLAKE2b with the
+  set's 32-byte key over the field's normal form). A field is `tckn`, `vkn`, `iban`,
+  `email`, `phone`, `digits` (with a length range), `token` (a customer number) or `name`;
+  a row without a primary value is dropped;
+- for a fingerprints set, every document's winnowed fingerprints: 8-word shingles hashed
+  with the key, keeping the smallest of every window of 4 (fingerprint version 1).
+
+The tool prints counts only. Document labels (`doc-0001`, or the file names with
+`--label-from-filename`) stay in a local `labels.json`; shim never sees them.
+
+**A low-entropy field can be recovered from its hash by anyone who holds both the hashes
+and the key.** A TCKN has 11 digits, so trying every one is cheap with the key. That is
+why the key lives in the secret store, is shown once at creation, and is never returned
+again. In the hosted cloud shim holds both the hashes and the key; record sets are your
+reference data, not request content, so they are available there too.
+
+## Create, upload, activate
+
+1. `POST /api/v1/management/record-sets` (owner or admin, or `rules.write`) with
+   `{"name", "kind", "label", "fields"}`. A records set has 2 to 6 fields, at least one
+   primary; a primary is any kind but `name`, because the gateway finds it by its shape.
+   The answer holds `hash_key` once: save it for the tool.
+2. Run the tool with `--upload <base URL> --token <admin bearer> --set <id>`: it opens a
+   revision, uploads the chunks and activates it. Or write the chunk files with `--out`
+   and send them yourself:
+   `POST .../record-sets/{id}/revisions` opens a revision, `PUT
+   .../revisions/{n}/chunks/{index}` takes one chunk, `POST .../revisions/{n}/activate`
+   checks the totals and activates it.
+3. Add a `record_set` rule (`PUT /api/v1/management/rules`) in `monitor`, watch its
+   `rule_matches`, then enforce it.
+
+Activating keeps the revision before it, so activating that one again is a one-step
+rollback; every other revision's chunks are deleted. Activating a revision with fewer
+entries than the active one is recorded as a relaxation (`record_sets.<id>`). A set a
+rule references cannot be deleted (409 `RECORD_SET_IN_USE`); deleting removes the row,
+its chunks and its key. `GET /record-sets` and `GET /record-sets/{id}` show metadata and
+counts, never hashes or the key.
+
+## Matching
+
+A rule's `match` is `{"set_id", "min_fields": 2}` for a records set (1 to 6: how many of a
+record's fields, the primary included, must appear) or `{"set_id", "min_shared": 6}` for a
+fingerprints set (2 to 200 shared fingerprints). In the privacy stage, for every string:
+
+- records: values shaped like the set's primary fields are hashed and looked up; for each
+  candidate record the other fields are looked for within 300 characters of the hit
+  (names: every one to three letter words). At most 2,000 candidates per string; beyond,
+  the match says `truncated: true`;
+- fingerprints: a string of 40 words or more is fingerprinted and compared.
+
+The count is the distinct records or documents matched in the request. Enforced `mask`
+(records sets only; fingerprints sets refuse it) replaces each matched field with the
+set's label (`<RECORD_…>`), and a built-in type keeps its own (`TR_NATIONAL_ID`).
+Enforced `block` refuses with `RULE_BLOCKED`; `warn` adds `RULE_WARN`. Nothing about a
+match is recorded beyond the rule's count. A set that cannot be loaded is an evaluation
+error: an enforced `mask` or `block` refuses with 503 `PRIVACY_STATE_UNAVAILABLE`
+(`Retry-After: 5`), anything else records the error and continues.
+
+## Limits
+
+10 sets per organization; per set 250,000 records, or 2,000 documents and 2,000,000
+fingerprints; chunks 0 to 499 of at most 10,000 records or 50 documents (20,000
+fingerprints each), 4 MB a body. Each gateway process holds at most 8,000,000 loaded
+hashes and evicts the least recently used set; the first request after an activation
+on each process waits for the set to load. Matching shares the request's 1-second rule
+search budget.

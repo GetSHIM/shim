@@ -275,7 +275,29 @@ class PrivacyStage:
             )
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
-        content = content_rules(value.rules, lambda rule: in_scope(rule, value, tags))
+        content = content_rules(
+            value.rules, lambda rule: in_scope(rule, value, tags), value.record_sets
+        )
+        unloadable = [
+            rule
+            for rule in (content.rules if content is not None else ())
+            if rule.kind == "record_set"
+            and str(rule.match["set_id"]) not in (value.record_sets or {})
+        ]
+        # The set could not be loaded; an enforced rule would not see the text.
+        if any(
+            rule.state == "enforced" and rule.action in {"mask", "block"}
+            for rule in unloadable
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "PRIVACY_STATE_UNAVAILABLE",
+                    "message": "A record set this request is checked against could "
+                    "not be loaded; retry shortly.",
+                },
+                headers={"Retry-After": "5"},
+            )
         destinations = [
             rule
             for rule in (value.rules.rules if value.rules is not None else ())
@@ -387,6 +409,7 @@ class PrivacyStage:
                         rule,
                         len(content.values.get(rule.id, ())),
                         error=rule.id in content.errors,
+                        truncated=rule.id in content.truncated,
                     )
         detected = (
             Counter(privacy.pii_entities)

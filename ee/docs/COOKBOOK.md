@@ -18,6 +18,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
 - [Keep a data type inside](#keep-a-data-type-inside)
+- [Catch your customer list](#catch-your-customer-list)
 - [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
@@ -416,6 +417,33 @@ Notes: a rule can only tighten; a base `mask` cannot be loosened to `monitor` fo
 internal targets. Changing a deployment from `external` to `internal` is recorded as
 a relaxation, and the operator can restrict `internal` to listed origins with
 `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` ([model deployments](MODEL_DEPLOYMENTS.md)).
+
+## Catch your customer list
+
+Refuse, or count, requests that name one of your customers, without sending shim the list.
+
+1. Create a records set: `POST /api/v1/management/record-sets` with
+   `{"name": "customers", "kind": "records", "fields": [{"name": "Müşteri No", "kind":
+   "token", "primary": true}, {"name": "Ad Soyad", "kind": "name"}]}`. Save `hash_key`
+   from the answer into `key.txt`; it is shown once.
+2. Hash and upload the list on your machine:
+
+```console
+python ee/scripts/hash_record_set.py --key-file key.txt --csv customers.csv \
+  --field "Müşteri No=token:primary" --field "Ad Soyad=name" \
+  --upload http://localhost:8000 --token "$USER_TOKEN" --set <set id>
+```
+
+3. Add a rule in `monitor`: `{"id": "customers", "name": "Customer list", "kind":
+   "record_set", "action": "block", "state": "monitor", "match": {"set_id": "<set id>",
+   "min_fields": 2}}`. A request holding a customer's number and name shows in
+   `rule_matches` with `RULE_WOULD_BLOCK`; the number alone, or with another name, does
+   not.
+4. Enforce it: the same request answers 400 `RULE_BLOCKED` with `X-Shim-Rule-Id`.
+
+For documents, create a `fingerprints` set, run the tool with `--documents <folder>`, and
+use `warn` or `block` with `min_shared`. What is hashed, the key, rollback and the limits
+are in [record sets](RECORD_SETS.md).
 
 ## Show masked values only to some teams
 

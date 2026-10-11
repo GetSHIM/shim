@@ -68,7 +68,9 @@ request it:
   refused with 400 before any provider call, naming the type, never the
   value) or `off` (not looked for). Community sets them in `PII_ENTITY_ACTIONS`;
   enterprise per tenant, which can also add its own words and code shapes
-  (project names, `PRJ-####`), found in every Turkish case form. The answer can
+  (project names, `PRJ-####`), found in every Turkish case form, and match requests
+  against keyed hashes of its customer list or of confidential documents, which never
+  leave its machine. The answer can
   also be scanned after it is delivered, counting personal data the request did
   not carry; it is never changed. Enterprise can keep chosen types as
   placeholders in the answer for every gateway key and team without a grant, so a

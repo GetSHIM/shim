@@ -89,9 +89,12 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term`, `pattern`, `destination`
-and `request_limit` kinds are available; `GET /rules` lists the others with
+`match`. A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
+`destination` and `request_limit` kinds are available; `GET /rules` lists the others with
 `available: false` and the reason.
+
+A `record_set` rule matches a hashed customer list or confidential documents' fingerprints
+in the same pass; see [record sets](RECORD_SETS.md).
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible

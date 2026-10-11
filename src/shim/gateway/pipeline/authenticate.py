@@ -121,6 +121,7 @@ class AuthenticateStage:
             agent_loop=policy.agent_loop,
             inflight_sharing=policy.inflight_sharing,
             rules=policy.rules,
+            record_sets=policy.record_sets,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),
             timing=value.timing,
