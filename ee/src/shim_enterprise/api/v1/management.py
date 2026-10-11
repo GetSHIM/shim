@@ -75,6 +75,7 @@ from shim.rules import (
     LIMITS,
     Rule,
     RuleScope,
+    RuleSet,
     RuleSetError,
     load_rule_set,
     validate_rule_set,
@@ -146,7 +147,7 @@ from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.rules.changes import classify_rule_changes
+from shim_enterprise.rules.changes import classify_rule_changes, rule_set_direction
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
@@ -182,6 +183,8 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
+    approval_required,
+    four_eyes_on,
     keep_two_approvers,
     lock_tenant,
     no_impact,
@@ -2039,6 +2042,9 @@ async def create_api_key(
     ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
     await require_model_aliases(session, tenant_id, payload.allowed_models)
+    if payload.allowed_models is None and await four_eyes_on(session, tenant_id):
+        # Create it with allowed_models; widening it later is a plan.
+        raise approval_required(["api_keys.new.allowed_models"])
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -2469,15 +2475,8 @@ async def replace_rules(
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        insert(OrganizationRuleSet)
-        .values(organization_id=tenant_id)
-        .on_conflict_do_nothing()
-    )
-    row = await session.get(
-        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
-    )
-    assert row is not None
+    await lock_tenant(session, tenant_id)
+    row = await _rule_set_row(session, tenant_id)
     if payload.revision != row.revision:
         raise HTTPException(
             status_code=409,
@@ -2487,9 +2486,60 @@ async def replace_rules(
                 "revision": row.revision,
             },
         )
+    after = await _checked_rules(session, tenant_id, row, payload.rules)
+    async with record_managed_write(
+        session,
+        user,
+        tenant_id,
+        [(RULES, "_", _rules_state(_stored_rules(row)), _rules_state(after))],
+        source="api",
+    ) as version:
+        await _write_rules(session, user, tenant_id, row, after, policy_version=version)
+    await session.commit()
+    await RULES.after_commit(request, tenant_id)
+    await session.refresh(row)
+    return _rule_set_view(row)
+
+
+async def _rule_set_row(session: AsyncSession, tenant_id: UUID) -> OrganizationRuleSet:
+    await session.execute(
+        insert(OrganizationRuleSet)
+        .values(organization_id=tenant_id)
+        .on_conflict_do_nothing()
+    )
+    row = await session.get(
+        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
+    )
+    assert row is not None
+    return row
+
+
+def _stored_rules(row: OrganizationRuleSet | None) -> RuleSet | None:
+    return (
+        load_rule_set(row.revision, row.rules)
+        if row is not None and row.rules
+        else None
+    )
+
+
+def _rules_state(rules: RuleSet | None) -> State:
+    """The rules this release runs; ones it cannot read stay as they are."""
+    return {
+        "rules": []
+        if rules is None
+        else [rule.model_dump(mode="json") for rule in rules.rules]
+    }
+
+
+async def _checked_rules(
+    session: AsyncSession,
+    tenant_id: UUID,
+    row: OrganizationRuleSet | None,
+    rules: list[Any],
+) -> RuleSet:
     try:
         after = validate_rule_set(
-            {"revision": row.revision + 1, "rules": payload.rules},
+            {"revision": (row.revision if row is not None else 0) + 1, "rules": rules},
             approval_available=False,
         )
     except RuleSetError as error:
@@ -2497,7 +2547,7 @@ async def replace_rules(
             status_code=422,
             detail={"code": error.code, "path": error.path, "message": str(error)},
         ) from None
-    before = load_rule_set(row.revision, row.rules) if row.rules else None
+    before = _stored_rules(row)
     stored = {rule.id: rule for rule in before.rules} if before is not None else {}
     # This release cannot read them, so it keeps them as they are.
     kept = before.unusable if before is not None else ()
@@ -2558,6 +2608,21 @@ async def replace_rules(
                     "message": "A new rule starts in state monitor.",
                 },
             )
+    return after
+
+
+async def _write_rules(
+    session: AsyncSession,
+    user: User,
+    tenant_id: UUID,
+    row: OrganizationRuleSet,
+    after: RuleSet,
+    *,
+    policy_version: int | None,
+) -> None:
+    before = _stored_rules(row)
+    stored = {rule.id: rule for rule in before.rules} if before is not None else {}
+    kept = before.unusable if before is not None else ()
     current = {rule.id: rule for rule in after.rules}
     await _audit(
         session,
@@ -2566,6 +2631,7 @@ async def replace_rules(
         str(tenant_id),
         details={
             "revision": after.revision,
+            **version_detail(policy_version),
             "added": [
                 _rule_audit(rule, None) for rule in after.rules if rule.id not in stored
             ],
@@ -2588,7 +2654,7 @@ async def replace_rules(
             user,
             "tenant.privacy_protection_relaxed",
             str(tenant_id),
-            details={"relaxed": relaxed},
+            details={"relaxed": relaxed, **version_detail(policy_version)},
         )
         await ComplianceForwarderService().send_privacy_protection_relaxed(
             session,
@@ -2603,14 +2669,6 @@ async def replace_rules(
     ]
     row.revision = after.revision
     row.updated_by = str(user.id)
-    await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
-    except Exception as exc:
-        logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
-    await session.refresh(row)
-    return _rule_set_view(row)
 
 
 router.add_api_route(
@@ -2698,20 +2756,18 @@ async def update_provider_key_settings(
     user: User = Depends(require("settings.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
-    tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
-    if tenant is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
-    before = {"allow_customer_provider_keys": tenant.allow_customer_provider_keys}
-    tenant.allow_customer_provider_keys = payload.allow_customer_provider_keys
-    await _audit(
-        session,
-        user,
-        "tenant.provider_key_policy_updated",
-        str(tenant.id),
-        details=change_details(before, payload.model_dump()),
-    )
+    tenant_id = _tenant_id(user)
+    await lock_tenant(session, tenant_id)
+    before = (await PROVIDER_KEYS.snapshot(session, tenant_id, None))["_"]
+    after = payload.model_dump()
+    async with record_managed_write(
+        session, user, tenant_id, [(PROVIDER_KEYS, "_", before, after)], source="api"
+    ) as version:
+        await PROVIDER_KEYS.apply(
+            session, user, tenant_id, "_", before, after, policy_version=version
+        )
     await session.commit()
-    return tenant
+    return await session.get(Organization, tenant_id)
 
 
 @router.get("/tier-info", response_model=TierView)
@@ -6246,9 +6302,153 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
     return valid
 
 
+class _RuleSetResource:
+    name = "rules"
+    permission: Permission = "rules.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        row = await session.get(OrganizationRuleSet, organization_id)
+        return {"_": _rules_state(_stored_rules(row))}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, ("rules",))
+        tenant_id = _tenant_id(actor)
+        row = await session.get(OrganizationRuleSet, tenant_id)
+        return _rules_state(
+            await _checked_rules(session, tenant_id, row, proposed.get("rules", []))
+        )
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert after is not None
+        row = await _rule_set_row(session, organization_id)
+        checked = await _checked_rules(session, organization_id, row, after["rules"])
+        await _write_rules(
+            session, actor, organization_id, row, checked, policy_version=policy_version
+        )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return rule_set_direction(before["rules"], after["rules"])
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        try:
+            cache: CacheService = request.app.state.cache
+            await CacheManager(cache).invalidate_pii_config(str(organization_id))
+        except Exception as exc:
+            logger.warning(
+                "Rule set cache invalidation failed type=%s", type(exc).__name__
+            )
+
+
+class _ProviderKeysResource:
+    name = "provider_keys"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        tenant = await session.get(Organization, organization_id)
+        return {"_": ProviderKeySettings.model_validate(tenant).model_dump()}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, ProviderKeySettings.model_fields)
+        return _validated(
+            ProviderKeySettings, {**(before or {}), **proposed}
+        ).model_dump()
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert after is not None
+        tenant = await session.get(Organization, organization_id)
+        assert tenant is not None
+        tenant.allow_customer_provider_keys = after["allow_customer_provider_keys"]
+        await _audit(
+            session,
+            actor,
+            "tenant.provider_key_policy_updated",
+            str(organization_id),
+            details={**change_details(before, after), **version_detail(policy_version)},
+        )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_fields(
+            before, after, {"allow_customer_provider_keys": toward(True)}
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+
 PRIVACY = _PrivacyResource()
 GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()
 BUDGETS = _BudgetResource()
+RULES = _RuleSetResource()
+PROVIDER_KEYS = _ProviderKeysResource()

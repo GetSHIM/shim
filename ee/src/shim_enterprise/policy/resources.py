@@ -15,8 +15,11 @@ from shim_enterprise.api.v1.management import (
     DEPLOYMENTS,
     GATEWAY_SETTINGS,
     PRIVACY,
+    PROVIDER_KEYS,
+    RULES,
     TEAMS,
 )
+from shim_enterprise.compliance.api import FORWARD_TARGETS
 from shim_enterprise.policy.plans import Impact, Risk, State
 from shim_enterprise.tenants.models import User
 from shim_enterprise.tenants.permissions import Permission
@@ -85,5 +88,8 @@ REGISTRY: Mapping[str, ManagedResource] = {
         DEPLOYMENTS,
         BUDGETS,
         OVERSIGHT_POLICIES,
+        RULES,
+        PROVIDER_KEYS,
+        FORWARD_TARGETS,
     )
 }

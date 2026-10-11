@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Collection
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -20,6 +21,8 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     require,
 )
+from shim_enterprise.api.v1.management import _only, _uuids, _validated
+from shim_enterprise.compliance.classification import SEVERITY_ORDER
 from shim_enterprise.compliance.adapters import (
     ProviderConfigError,
     UnknownProviderError,
@@ -59,7 +62,18 @@ from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import SecretStore, get_secret_store
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
+from shim_enterprise.policy.plans import (
+    Impact,
+    Risk,
+    State,
+    lock_tenant,
+    no_impact,
+    record_managed_write,
+    version_detail,
+)
+from shim_enterprise.tenants.gateway_settings import Directions, classify_fields, toward
 from shim_enterprise.tenants.models import User
+from shim_enterprise.tenants.permissions import Permission
 
 
 logger = logging.getLogger(__name__)
@@ -855,74 +869,81 @@ async def update_forward_target(
     session: AsyncSession = Depends(get_db),
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
+    await lock_tenant(session, tenant_id)
     target = await _load_target(session, tenant_id, target_id)
     before = _target_facts(target)
+    state = _target_state(target)
+    after = {**state, **payload.model_dump(include=set(state), exclude_none=True)}
     store: SecretStore | None = None
     previous_ref: str | None = None
     replacement_ref: str | None = None
-    if payload.endpoint is not None or "secret" in payload.model_fields_set:
-        store = get_secret_store()
-        previous_ref = target.secret_ref
-        current_kind, current_endpoint, current_secret = _parse_delivery_bundle(
-            await store.get_secret(
-                tenant_id,
-                SecretRef(target.secret_ref),
-                expected_purpose=_FORWARD_SECRET_PURPOSE,
-            )
-        )
-        if current_kind != target.kind:
-            raise RuntimeError("Forward-target kind does not match its secret")
-        endpoint = payload.endpoint or current_endpoint
-        signing_secret = (
-            payload.secret if "secret" in payload.model_fields_set else current_secret
-        )
-        if target.kind != "siem_webhook" and signing_secret is not None:
-            raise HTTPException(
-                status_code=422,
-                detail="Only SIEM webhooks support signing secrets",
-            )
-        endpoint = await _validate_target_destination(
-            target.kind,
-            endpoint,
-            enabled=payload.enabled if payload.enabled is not None else target.enabled,
-        )
-        replacement_ref = await store.rotate_secret(
-            tenant_id,
-            SecretRef(target.secret_ref),
-            _delivery_bundle(target.kind, endpoint, signing_secret),
-            expected_purpose=_FORWARD_SECRET_PURPOSE,
-        )
-        assign_secret_reference(target, replacement_ref)
-        target.endpoint_origin = _endpoint_origin(target.kind, endpoint)
-        target.signed = signing_secret is not None
-    if payload.min_severity is not None:
-        target.min_severity = payload.min_severity
-    if payload.enabled is not None:
-        if payload.enabled and target.kind == "email":
-            _require_email_configuration()
-        target.enabled = payload.enabled
     try:
-        if replacement_ref is not None:
-            await _rebind_forward_deliveries(
-                session,
-                tenant_id,
-                target.id,
-                str(replacement_ref),
-            )
-        await _audit(
+        async with record_managed_write(
             session,
             current_user,
-            "compliance.forward_target_updated",
-            str(target.id),
-            details={
-                **change_details(before, _target_facts(target)),
-                "destination_rotated": replacement_ref is not None,
-            },
-        )
+            tenant_id,
+            [(FORWARD_TARGETS, str(target.id), state, after)],
+            source="api",
+        ) as version:
+            if payload.endpoint is not None or "secret" in payload.model_fields_set:
+                store = get_secret_store()
+                previous_ref = target.secret_ref
+                current_kind, current_endpoint, current_secret = _parse_delivery_bundle(
+                    await store.get_secret(
+                        tenant_id,
+                        SecretRef(target.secret_ref),
+                        expected_purpose=_FORWARD_SECRET_PURPOSE,
+                    )
+                )
+                if current_kind != target.kind:
+                    raise RuntimeError("Forward-target kind does not match its secret")
+                endpoint = payload.endpoint or current_endpoint
+                signing_secret = (
+                    payload.secret
+                    if "secret" in payload.model_fields_set
+                    else current_secret
+                )
+                if target.kind != "siem_webhook" and signing_secret is not None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Only SIEM webhooks support signing secrets",
+                    )
+                endpoint = await _validate_target_destination(
+                    target.kind, endpoint, enabled=after["enabled"]
+                )
+                replacement_ref = await store.rotate_secret(
+                    tenant_id,
+                    SecretRef(target.secret_ref),
+                    _delivery_bundle(target.kind, endpoint, signing_secret),
+                    expected_purpose=_FORWARD_SECRET_PURPOSE,
+                )
+                assign_secret_reference(target, replacement_ref)
+                target.endpoint_origin = _endpoint_origin(target.kind, endpoint)
+                target.signed = signing_secret is not None
+                await _rebind_forward_deliveries(
+                    session, tenant_id, target.id, str(replacement_ref)
+                )
+            if after["enabled"] and not target.enabled and target.kind == "email":
+                _require_email_configuration()
+            target.enabled, target.min_severity = (
+                after["enabled"],
+                after["min_severity"],
+            )
+            await _audit(
+                session,
+                current_user,
+                "compliance.forward_target_updated",
+                str(target.id),
+                details={
+                    **change_details(before, _target_facts(target)),
+                    "destination_rotated": replacement_ref is not None,
+                    **version_detail(version),
+                },
+            )
         await session.commit()
     except BaseException:
-        await session.rollback()
         if store is not None and replacement_ref is not None:
+            await session.rollback()
             await _delete_secret_best_effort(
                 store,
                 tenant_id,
@@ -954,24 +975,28 @@ async def delete_forward_target(
     session: AsyncSession = Depends(get_db),
 ) -> None:
     tenant_id = _tenant_id(current_user)
+    await lock_tenant(session, tenant_id)
     target = await _load_target(session, tenant_id, target_id)
-    secret_ref = target.secret_ref
-    await _cancel_forward_deliveries(session, tenant_id, target.id)
-    await _audit(
+    state = _target_state(target)
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.forward_target_deleted",
-        str(target.id),
-        details=change_details(_target_facts(target), None),
-    )
-    await session.delete(target)
-    await session.commit()
-    await _delete_secret_best_effort(
-        get_secret_store(),
         tenant_id,
-        secret_ref,
-        _FORWARD_SECRET_PURPOSE,
-    )
+        [(FORWARD_TARGETS, str(target.id), state, None)],
+        source="api",
+    ) as version:
+        cleanup = await FORWARD_TARGETS.apply(
+            session,
+            current_user,
+            tenant_id,
+            str(target.id),
+            state,
+            None,
+            policy_version=version,
+        )
+    await session.commit()
+    assert cleanup is not None
+    await cleanup()
 
 
 async def _active_forward_deliveries(
@@ -1087,3 +1112,120 @@ def _target_facts(target: ComplianceForwardTarget) -> dict[str, Any]:
         "min_severity": target.min_severity,
         "enabled": target.enabled,
     }
+
+
+def _target_state(target: ComplianceForwardTarget) -> State:
+    return {"enabled": target.enabled, "min_severity": target.min_severity}
+
+
+_TARGET_DIRECTIONS: Directions = {
+    "enabled": toward(False),
+    # A higher floor forwards fewer findings.
+    "min_severity": lambda before, after: (
+        "relaxing" if SEVERITY_ORDER[after] > SEVERITY_ORDER[before] else "tightening"
+    ),
+}
+
+
+class _ForwardTargetResource:
+    name = "forward_targets"
+    permission: Permission = "compliance.manage"
+    # A destination is a secret: its own route creates it or moves it, never a plan.
+    creatable = False
+    deletable = True
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        statement = select(ComplianceForwardTarget).where(
+            ComplianceForwardTarget.organization_id == organization_id
+        )
+        if item_ids is not None:
+            statement = statement.where(
+                ComplianceForwardTarget.id.in_(_uuids(item_ids))
+            )
+        return {
+            str(target.id): _target_state(target)
+            for target in await session.scalars(statement)
+        }
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, _TARGET_DIRECTIONS)
+        update = _validated(ForwardTargetUpdate, proposed)
+        return {**(before or {}), **update.model_dump(exclude_none=True)}
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> Callable[[], Awaitable[None]] | None:
+        tenant_id = TenantId(organization_id)
+        target = await _load_target(session, tenant_id, UUID(item_id))
+        previous = _target_facts(target)
+        if after is None:
+            secret_ref = target.secret_ref
+            await _cancel_forward_deliveries(session, tenant_id, target.id)
+            await _audit(
+                session,
+                actor,
+                "compliance.forward_target_deleted",
+                item_id,
+                details={
+                    **change_details(previous, None),
+                    **version_detail(policy_version),
+                },
+            )
+            await session.delete(target)
+            return lambda: _delete_secret_best_effort(
+                get_secret_store(), tenant_id, secret_ref, _FORWARD_SECRET_PURPOSE
+            )
+        if after["enabled"] and not target.enabled and target.kind == "email":
+            _require_email_configuration()
+        target.enabled, target.min_severity = after["enabled"], after["min_severity"]
+        await _audit(
+            session,
+            actor,
+            "compliance.forward_target_updated",
+            item_id,
+            details={
+                **change_details(previous, _target_facts(target)),
+                **version_detail(policy_version),
+            },
+        )
+        return None
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        if after is None:
+            return "relaxing"
+        assert before is not None
+        return classify_fields(before, after, _TARGET_DIRECTIONS)[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+
+FORWARD_TARGETS = _ForwardTargetResource()

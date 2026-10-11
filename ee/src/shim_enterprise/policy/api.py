@@ -42,7 +42,7 @@ _MAX_PLAN_BYTES = 256 * 1024
 _MAX_CHANGES = 100
 _MAX_VERSION = 2_147_483_647
 # What /state and one version's states show besides audit.read.
-_STATE_READS = ("deployments.read", "settings.read", "usage.read")
+_STATE_READS = ("deployments.read", "rules.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
 

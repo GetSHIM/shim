@@ -752,6 +752,41 @@ async def test_the_approval_request_reaches_every_enabled_forward_target(
     )
 
 
+def _forward_target(tenant: UUID, *, enabled: bool = True) -> ComplianceForwardTarget:
+    return ComplianceForwardTarget(
+        id=uuid4(),
+        organization_id=tenant,
+        kind="slack",
+        endpoint_origin="https://hooks.slack.com",
+        secret_ref=f"fernet:v2:{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        enabled=enabled,
+    )
+
+
+def _rule(state: str) -> dict:
+    return {
+        "id": "falcon",
+        "name": "Project names",
+        "kind": "term",
+        "action": "block",
+        "state": state,
+        "match": {"terms": ["Project Falcon"]},
+    }
+
+
+async def _put_rules(db, user: User, rules: list[dict]) -> httpx.Response:
+    current = await _call(db, user, "GET", f"{MANAGEMENT}/rules")
+    return await _call(
+        db,
+        user,
+        "PUT",
+        f"{MANAGEMENT}/rules",
+        json={"revision": current.json()["revision"], "rules": rules},
+    )
+
+
 @pytest.mark.asyncio
 async def test_no_one_approves_a_plan_of_a_service_account_they_created_or_rotated(
     db,
@@ -986,3 +1021,165 @@ async def test_replacing_budget_alert_targets_is_versioned_and_relaxes(
     assert "secret_ref" not in target
     assert replaced.status_code == 409
     assert replaced.json()["detail"]["relaxed"] == [f"budgets.{budget}.notify_targets"]
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_loosen_protection_ask_for_a_plan(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = _forward_target(tenant)
+    db.add(target)
+    (await db.get(Organization, tenant)).allow_customer_provider_keys = False
+    await db.flush()
+    assert (await _put_rules(db, admin, [_rule("monitor")])).status_code == 200
+    assert (await _put_rules(db, admin, [_rule("enforced")])).status_code == 200
+    await _turn_on(db, owner)
+    keys = await db.scalar(select(func.count()).where(ApiKey.organization_id == tenant))
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    refused = [
+        await _put_rules(db, admin, []),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": True},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": False}),
+        await _call(db, admin, "PATCH", forward, json={"min_severity": "critical"}),
+        await _call(db, admin, "DELETE", forward),
+        await _call(db, admin, "POST", f"{MANAGEMENT}/api-keys", json={"name": "open"}),
+    ]
+
+    assert [response.status_code for response in refused] == [409] * len(refused)
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "CHANGE_REQUIRES_APPROVAL"
+    }
+    rules = await _call(db, admin, "GET", f"{MANAGEMENT}/rules")
+    assert [rule["state"] for rule in rules.json()["rules"]] == ["enforced"]
+    organization = await db.get(Organization, tenant)
+    await db.refresh(organization)
+    await db.refresh(target)
+    assert organization.allow_customer_provider_keys is False
+    assert (target.enabled, target.min_severity) == (True, "high")
+    assert (
+        await db.scalar(select(func.count()).where(ApiKey.organization_id == tenant))
+        == keys
+    )
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_tighten_pass_under_four_eyes(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = _forward_target(tenant, enabled=False)
+    db.add(target)
+    await db.flush()
+    assert (await _put_rules(db, admin, [_rule("monitor")])).status_code == 200
+    await _turn_on(db, owner)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    passed = [
+        await _put_rules(db, admin, [_rule("enforced")]),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": False},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": True}),
+        await _call(
+            db,
+            admin,
+            "POST",
+            f"{MANAGEMENT}/api-keys",
+            json={"name": "limited", "allowed_models": ["gpt-5-nano"]},
+        ),
+    ]
+
+    assert [response.status_code for response in passed] == [200] * len(passed)
+
+
+@pytest.mark.asyncio
+async def test_direct_routes_that_loosen_protection_pass_with_four_eyes_off(
+    db,
+) -> None:
+    users = await _organization(db, "admin")
+    admin = users["admin"]
+    target = _forward_target(admin.organization_id)
+    db.add(target)
+    (
+        await db.get(Organization, admin.organization_id)
+    ).allow_customer_provider_keys = False
+    await db.flush()
+    await _put_rules(db, admin, [_rule("monitor")])
+    await _put_rules(db, admin, [_rule("enforced")])
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    passed = [
+        await _put_rules(db, admin, []),
+        await _call(
+            db,
+            admin,
+            "PUT",
+            f"{MANAGEMENT}/settings/provider-keys",
+            json={"allow_customer_provider_keys": True},
+        ),
+        await _call(db, admin, "PATCH", forward, json={"enabled": False}),
+        await _call(db, admin, "POST", f"{MANAGEMENT}/api-keys", json={"name": "open"}),
+        await _call(db, admin, "DELETE", forward),
+    ]
+
+    assert [response.status_code for response in passed] == [200, 200, 200, 200, 204]
+
+
+@pytest.mark.asyncio
+async def test_rules_provider_keys_and_forward_targets_travel_as_plans(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    disabled, deleted = _forward_target(tenant), _forward_target(tenant)
+    db.add_all([disabled, deleted])
+    (await db.get(Organization, tenant)).allow_customer_provider_keys = False
+    await db.flush()
+    await _put_rules(db, admin, [_rule("monitor")])
+    await _put_rules(db, admin, [_rule("enforced")])
+    await _turn_on(db, owner)
+    plan = await _plan(
+        db,
+        admin,
+        {"resource": "rules", "item": "_", "set": {"rules": []}},
+        {
+            "resource": "provider_keys",
+            "item": "_",
+            "set": {"allow_customer_provider_keys": True},
+        },
+        {
+            "resource": "forward_targets",
+            "item": str(disabled.id),
+            "set": {"enabled": False},
+        },
+        {"resource": "forward_targets", "item": str(deleted.id), "delete": True},
+    )
+
+    submitted = await _call(db, admin, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    approved = await _call(
+        db, owner, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={}
+    )
+
+    assert plan["risk"] == "relaxing"
+    assert {change["risk"] for change in plan["changes"]} == {"relaxing"}
+    assert submitted.status_code == 202
+    assert (approved.status_code, approved.json()["status"]) == (200, "applied")
+    rules = await _call(db, admin, "GET", f"{MANAGEMENT}/rules")
+    assert (rules.json()["rules"], rules.json()["revision"]) == ([], 3)
+    organization = await db.get(Organization, tenant)
+    await db.refresh(organization)
+    await db.refresh(disabled)
+    assert organization.allow_customer_provider_keys is True
+    assert disabled.enabled is False
+    assert await db.get(ComplianceForwardTarget, deleted.id) is None

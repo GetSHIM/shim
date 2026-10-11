@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from shim.rules import ACTION_RANK, Rule, RuleSet
 
@@ -45,3 +45,16 @@ def classify_rule_changes(before: RuleSet | None, after: RuleSet) -> list[str]:
         for rule in (before.rules if before is not None else ())
         if _relaxes(rule, current.get(rule.id))
     )
+
+
+def rule_set_direction(
+    before: list[dict[str, Any]], after: list[dict[str, Any]]
+) -> Literal["relaxing", "tightening", "neutral"]:
+    """A change that would relax if undone tightens."""
+    old, new = (
+        RuleSet(revision=1, rules=tuple(Rule.model_validate(rule) for rule in rules))
+        for rules in (before, after)
+    )
+    if classify_rule_changes(old, new):
+        return "relaxing"
+    return "tightening" if classify_rule_changes(new, old) else "neutral"

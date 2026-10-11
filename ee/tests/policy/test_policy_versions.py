@@ -1275,7 +1275,8 @@ async def test_versions_are_read_only_with_the_reads_of_what_they_hold(db) -> No
     for refused in (state, version):
         assert (refused.status_code, refused.json()["detail"]) == (
             403,
-            "Permission required: deployments.read and settings.read and usage.read",
+            "Permission required: deployments.read and rules.read and settings.read "
+            "and usage.read",
         )
     assert listed.status_code == 200
 
