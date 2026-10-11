@@ -675,8 +675,9 @@ async def _finish_restore(
         .where(
             PolicyPlan.organization_id == plan.organization_id,
             PolicyPlan.status == "applied",
+            # What applied after the restore was planned stays; it was not undone.
             PolicyPlan.applied_version > version,
-            PolicyPlan.id != plan.id,
+            PolicyPlan.applied_version <= plan.base_version,
         )
         .values(status="rolled_back")
     )

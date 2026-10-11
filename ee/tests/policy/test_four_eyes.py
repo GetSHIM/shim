@@ -1183,3 +1183,46 @@ async def test_rules_provider_keys_and_forward_targets_travel_as_plans(db) -> No
     assert organization.allow_customer_provider_keys is True
     assert disabled.enabled is False
     assert await db.get(ComplianceForwardTarget, deleted.id) is None
+
+
+@pytest.mark.asyncio
+async def test_an_approved_restore_rolls_back_only_plans_it_undid(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    team = Team(id=uuid4(), organization_id=tenant, name="ops", daily_request_limit=10)
+    db.add(team)
+    await db.flush()
+    await _call(
+        db, owner, "PUT", f"{MANAGEMENT}/settings/pii", json={"block_email": False}
+    )
+    await _call(
+        db, owner, "PUT", f"{MANAGEMENT}/settings/pii", json={"block_email": True}
+    )
+    await _turn_on(db, owner)
+    restore = await _call(db, admin, "POST", f"{POLICY}/versions/1/restore", json={})
+    later = await _plan(
+        db,
+        admin,
+        {
+            "resource": "teams",
+            "item": str(team.id),
+            "set": {"name": "ops", "daily_request_limit": 5},
+        },
+    )
+    applied = await _call(db, admin, "POST", f"{POLICY}/plans/{later['id']}/apply")
+
+    approved = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/plans/{restore.json()['plan']['id']}/approve",
+        json={},
+    )
+
+    assert restore.status_code == 202
+    assert applied.json()["status"] == "applied"
+    assert approved.status_code == 200
+    row = await db.get(PolicyPlan, UUID(later["id"]))
+    await db.refresh(row)
+    assert row.status == "applied"
