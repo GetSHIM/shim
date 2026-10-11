@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import nullcontext
 import csv
 import json
 from pathlib import Path
@@ -160,8 +161,55 @@ async def test_tool_output_reaches_the_api_and_matches_in_the_index(
         )
     await management.activate_record_set_revision(set_id, revision, request, admin, db)
 
-    index = await load_index(db, test_org.id, set_id, revision)
+    index = await load_index(lambda: nullcontext(db), test_org.id, set_id, revision)
 
     assert index is not None
     assert index.match_records("MUS000012 numaralı Çağrı Öztürk aradı", 2)[0] == {12}
     assert index.match_records("MUS000012 numaralı Ayşe Yılmaz aradı", 2)[0] == set()
+
+
+def test_an_upload_checks_the_sets_fields_and_reads_the_token_from_the_environment(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def call(method: str, url: str, token: str, body: object | None = None) -> dict:
+        calls.append((method, url.rsplit("/", 1)[-1], token))
+        if method == "GET":
+            return {
+                "kind": "records",
+                "fields": [
+                    {"name": "No", "kind": "token", "primary": True},
+                    {"name": "Ad", "kind": "name", "primary": False},
+                ],
+            }
+        return {"revision": 4}
+
+    monkeypatch.setitem(_TOOL["upload"].__globals__, "_call", call)
+    monkeypatch.setenv("SHIM_ADMIN_TOKEN", "admin-token")
+    arguments = [
+        "--key-file", str(_key(tmp_path / "key.txt")),
+        "--csv", str(_csv(tmp_path / "c.csv", 3)),
+        "--upload", "https://shim.test", "--set", "set-1",
+    ]  # fmt: skip
+
+    with pytest.raises(SystemExit, match="other fields"):
+        _TOOL["main"](
+            [
+                *arguments,
+                "--field",
+                "Ad Soyad=name",
+                "--field",
+                "Müşteri No=token:primary",
+            ]
+        )
+    refused = list(calls)
+    _TOOL["main"](
+        [*arguments, "--field", "Müşteri No=token:primary", "--field", "Ad Soyad=name"]
+    )
+    with pytest.raises(SystemExit):
+        _TOOL["main"]([*arguments, "--token", "on-the-command-line"])
+
+    assert refused == [("GET", "set-1", "admin-token")], "nothing uploaded"
+    assert [method for method, _, _ in calls[1:]] == ["GET", "POST", "PUT", "POST"]
+    assert {token for _, _, token in calls} == {"admin-token"}

@@ -5,11 +5,13 @@ hashes, and prints only counts.
 
   hash_record_set.py --key-file key.txt --csv customers.csv \\
       --field "Müşteri No=token:primary" --field "Ad Soyad=name" --out chunks/
-  hash_record_set.py --key-file key.txt --documents contracts/ \\
-      --upload https://shim.example.com --token "$ADMIN_TOKEN" --set <record set id>
+  SHIM_ADMIN_TOKEN=... hash_record_set.py --key-file key.txt --documents contracts/ \\
+      --upload https://shim.example.com --set <record set id>
 
-Give the fields in the order the set declares them. A digits field takes its length range:
-"Hesap No=digits:primary:8-12".
+Give the fields in the order the set declares them; an upload checks them against the set
+first. A digits field takes its length range: "Hesap No=digits:primary:8-12". The admin
+token comes from SHIM_ADMIN_TOKEN, else the first line of standard input, never the
+command line, where other users of the machine could read it.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import base64
 import binascii
 import csv
 import json
+import os
 from pathlib import Path
 import sys
 from urllib.request import Request, urlopen
@@ -103,8 +106,34 @@ def _call(method: str, url: str, token: str, body: object | None = None) -> dict
         return json.loads(response.read() or b"{}")
 
 
-def upload(base: str, token: str, set_id: str, parts: list[dict]) -> int:
+def upload(
+    base: str,
+    token: str,
+    set_id: str,
+    parts: list[dict],
+    fields: list[RecordField] | None,
+) -> int:
+    """Uploads `parts` as a new revision once the set's kind and fields are the ones
+    hashed; `fields` is None for documents."""
     root = f"{base.rstrip('/')}/api/v1/management/record-sets/{set_id}"
+    declared = _call("GET", root, token)
+    expected = (
+        [
+            RecordField(
+                item["kind"],
+                bool(item.get("primary")),
+                tuple(item["length"]) if item.get("length") else None,
+            )
+            for item in declared["fields"]
+        ]
+        if declared["kind"] == "records"
+        else None
+    )
+    if expected != fields:
+        raise SystemExit(
+            "the set declares other fields, or another kind, than the ones hashed; "
+            "give --field in the order, kinds and options of the set"
+        )
     revision = _call("POST", f"{root}/revisions", token)["revision"]
     for index, part in enumerate(parts):
         _call("PUT", f"{root}/revisions/{revision}/chunks/{index}", token, part)
@@ -123,13 +152,13 @@ def main(argv: list[str] | None = None) -> int:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--out", type=Path)
     target.add_argument("--upload", metavar="BASE_URL")
-    parser.add_argument("--token")
     parser.add_argument("--set", dest="set_id")
     args = parser.parse_args(argv)
-    if args.upload and not (args.token and args.set_id):
-        parser.error("--upload needs --token and --set")
+    if args.upload and not args.set_id:
+        parser.error("--upload needs --set")
     key = read_key(args.key_file)
     labels: list[str] = []
+    record_fields: list[RecordField] | None = None
     if args.csv:
         fields = [parse_field(spec) for spec in args.field]
         if not 2 <= len(fields) <= 6 or not any(field.primary for _, field in fields):
@@ -142,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         if missing:
             parser.error(f"the CSV has no column {', '.join(missing)}")
         hashed = hash_records(key, rows, fields)
+        record_fields = [field for _, field in fields]
         parts = chunks(hashed, RECORDS_PER_CHUNK, "records")
         summary = f"{len(rows)} rows read, {len(hashed)} records hashed"
     else:
@@ -162,7 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         parts = chunks(documents, DOCUMENTS_PER_CHUNK, "documents")
         summary = f"{len(files)} documents, {sum(len(prints) for prints in documents)} fingerprints"
     if args.upload:
-        revision = upload(args.upload, args.token, args.set_id, parts)
+        token = os.environ.get("SHIM_ADMIN_TOKEN") or sys.stdin.readline().strip()
+        if not token:
+            parser.error("give the admin token in SHIM_ADMIN_TOKEN or on stdin")
+        revision = upload(args.upload, token, args.set_id, parts, record_fields)
         print(f"{summary}; revision {revision} active")
     else:
         args.out.mkdir(parents=True, exist_ok=True)

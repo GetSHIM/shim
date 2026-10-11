@@ -447,19 +447,25 @@ class ContentRules:
             self.errors.add(rule.id)
             return []
         started = perf_counter()
-        if index.kind == "records":
-            matched, spans, truncated = index.match_records(
-                text, rule.match["min_fields"] or 2
-            )
-        else:
-            matched, spans, truncated = (
-                index.match_documents(text, rule.match["min_shared"] or 6),
-                [],
-                False,
-            )
-        self.budget.remaining -= perf_counter() - started
-        if self.budget.remaining <= 0:
+        deadline = started + self.budget.remaining
+        try:
+            if index.kind == "records":
+                matched, spans, truncated = index.match_records(
+                    text, rule.match["min_fields"] or 2, deadline
+                )
+            else:
+                matched, spans, truncated = (
+                    index.match_documents(
+                        text, rule.match["min_shared"] or 6, deadline
+                    ),
+                    [],
+                    False,
+                )
+        except TimeoutError:
             self.errors.add(rule.id)
+            return []
+        finally:
+            self.budget.remaining -= perf_counter() - started
         if truncated:
             self.truncated.add(rule.id)
         if matched:

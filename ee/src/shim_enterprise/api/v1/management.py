@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from array import array
+
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -2627,7 +2629,7 @@ class _RuleSetPutRoute(APIRoute):
 
 
 def _check_record_set_rule(
-    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int]]
+    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int, int]]
 ) -> None:
     """The set exists here, is active, and is of the kind the match and action imply."""
 
@@ -2641,6 +2643,8 @@ def _check_record_set_rule(
         rule.match["min_shared"] is not None and kind != "fingerprints"
     ):
         problem = "min_fields is for a records set, min_shared for a fingerprints set"
+    elif (rule.match["min_fields"] or 0) > found[2]:
+        problem = "min_fields is more than the fields the set has"
     else:
         problem = None
     if problem is not None:
@@ -2730,11 +2734,14 @@ async def replace_rules(
         )
     kept_ids = {rule.id for rule in kept}
     record_sets = {
-        str(set_id): (kind, active)
-        for set_id, kind, active in await session.execute(
-            select(RecordSet.id, RecordSet.kind, RecordSet.active_revision).where(
-                RecordSet.organization_id == tenant_id
-            )
+        str(set_id): (kind, active, len(fields))
+        for set_id, kind, active, fields in await session.execute(
+            select(
+                RecordSet.id,
+                RecordSet.kind,
+                RecordSet.active_revision,
+                RecordSet.fields,
+            ).where(RecordSet.organization_id == tenant_id)
         )
     }
     for index, rule in enumerate(after.rules):
@@ -3173,14 +3180,27 @@ async def activate_record_set_revision(
 ) -> Any:
     tenant_id = _tenant_id(user)
     row = await _record_set(session, tenant_id, set_id)
-    chunks = (
-        await session.execute(
-            select(RecordSetChunk.entry_count, func.length(RecordSetChunk.data)).where(
-                RecordSetChunk.record_set_id == set_id,
-                RecordSetChunk.revision == revision,
-            )
+
+    async def chunks_of(number: int) -> list[tuple[int, bytes]]:
+        return list(
+            (
+                await session.execute(
+                    select(RecordSetChunk.entry_count, RecordSetChunk.data).where(
+                        RecordSetChunk.record_set_id == set_id,
+                        RecordSetChunk.revision == number,
+                    )
+                )
+            ).tuples()
         )
-    ).all()
+
+    def matchable(stored: list[tuple[int, bytes]]) -> int:
+        """Hashes a revision can match with: record fields that are not empty, or
+        fingerprints after each document's 4-byte count."""
+        if row.kind == "records":
+            return sum(len(data) // 8 - array("Q", data).count(0) for _, data in stored)
+        return sum(len(data) - 4 * count for count, data in stored) // 8
+
+    chunks = await chunks_of(revision)
     if revision == row.active_revision or not chunks:
         raise _record_set_error(
             409,
@@ -3189,12 +3209,10 @@ async def activate_record_set_revision(
         )
     entries = sum(count for count, _ in chunks)
     limits = _RECORD_SET_LIMITS
-    # A document's 4-byte header, then 8 bytes per fingerprint.
-    prints = (sum(size for _, size in chunks) - 4 * entries) // 8
     too_many = (
         entries > limits["records"]
         if row.kind == "records"
-        else entries > limits["documents"] or prints > limits["prints"]
+        else entries > limits["documents"] or matchable(chunks) > limits["prints"]
     )
     if too_many:
         raise _record_set_error(
@@ -3203,7 +3221,11 @@ async def activate_record_set_revision(
             "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
             "fingerprints.",
         )
-    fewer = row.active_revision > 0 and entries < row.entry_count
+    # Fewer records or documents, or fewer values to find them by, relaxes the set.
+    fewer = row.active_revision > 0 and (
+        entries < row.entry_count
+        or matchable(chunks) < matchable(await chunks_of(row.active_revision))
+    )
     row.previous_revision, row.active_revision, row.entry_count = (
         row.active_revision,
         revision,
@@ -3261,7 +3283,8 @@ async def delete_record_set(
 ) -> Response:
     tenant_id = _tenant_id(user)
     row = await _record_set(session, tenant_id, set_id)
-    rule_set = await session.get(OrganizationRuleSet, tenant_id)
+    # Locked, so a rule naming the set cannot be written while it goes.
+    rule_set = await session.get(OrganizationRuleSet, tenant_id, with_for_update=True)
     if any(
         rule.get("kind") == "record_set"
         and (rule.get("match") or {}).get("set_id") == str(set_id)

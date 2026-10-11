@@ -1,3 +1,4 @@
+from array import array
 import asyncio
 from dataclasses import replace
 import io
@@ -2659,13 +2660,17 @@ def _customer_set():
     return RecordSetIndex.records(
         key,
         fields,
-        [
-            [
-                record_hash(key, "token", normalize("token", f"MUS{number:06d}")),
-                record_hash(key, "name", normalize("name", name)),
-            ]
-            for number, name in enumerate(["Ayşe Yılmaz", "İsmail Işık"])
-        ],
+        array(
+            "Q",
+            (
+                hashed
+                for number, name in enumerate(["Ayşe Yılmaz", "İsmail Işık"])
+                for hashed in (
+                    record_hash(key, "token", normalize("token", f"MUS{number:06d}")),
+                    record_hash(key, "name", normalize("name", name)),
+                )
+            ),
+        ),
     )
 
 

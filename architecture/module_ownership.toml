@@ -37,6 +37,7 @@ forbidden_noncloud_import_roots = [
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
 "shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
+"shim.core.single_flight" = ["single_flight"]
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
 "shim.gateway.admission" = ["LoopDetectionResult", "TaskAdmission"]
 "shim.gateway.analyzers" = ["ANALYZERS", "ANALYZER_NAMES"]
@@ -164,6 +165,7 @@ public = [
   "src/shim/core/community_config.py",
   "src/shim/core/http.py",
   "src/shim/core/middleware.py",
+  "src/shim/core/single_flight.py",
   "src/shim/findings/__init__.py",
   "src/shim/findings/model.py",
   "src/shim/gateway/__init__.py",
