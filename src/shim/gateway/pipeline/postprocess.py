@@ -22,6 +22,7 @@ from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_us
 from shim.gateway.analyzers import ANALYZERS
 from shim.gateway.admission import TaskCounter
 from shim.gateway.kernel.result import (
+    EMBEDDINGS_PROTOCOLS,
     RECORD_ONLY_WARNINGS,
     PreparedInference,
     UNSPECIFIED_PROVIDER_MODEL,
@@ -273,7 +274,12 @@ class ResponsePostprocessor:
         self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
         scan = prepared.response_scan == "count"
         analyzers = _analyzers(prepared)
-        if terminal.terminal_status == "completed" and (scan or analyzers):
+        # A vector has no text to scan or analyse.
+        if (
+            terminal.terminal_status == "completed"
+            and (scan or analyzers)
+            and prepared.protocol not in EMBEDDINGS_PROTOCOLS
+        ):
             reads = any(analyzer.reads_answer for analyzer in analyzers)
             text = answer_text(response.payload) if reads else ""
             calls = answer_tool_calls(response.payload) if reads else ()
@@ -340,9 +346,11 @@ class ResponsePostprocessor:
             raise ValueError("admission state is required")
         # A shared answer made no provider call of this request's own.
         latency_ms = None if shared else response.latency_ms
+        # Vectors: no completion tokens, no answer to classify.
+        embeddings = prepared.protocol in EMBEDDINGS_PROTOCOLS
         usage = _usage(response.payload, provider=str(prepared.provider))
         prompt_actual = usage.get("prompt")
-        completion_actual = usage.get("completion")
+        completion_actual = 0 if embeddings else usage.get("completion")
         prompt_tokens = (
             prepared.admission.estimated_input_tokens
             if prompt_actual is None
@@ -366,7 +374,7 @@ class ResponsePostprocessor:
         lifecycle_status = _lifecycle_status(
             response.payload,
             provider=provider,
-            expected_candidates=candidate_count(prepared),
+            expected_candidates=0 if embeddings else candidate_count(prepared),
         )
         response_model = response.payload.get("model")
         settlement_model = (
@@ -407,12 +415,16 @@ class ResponsePostprocessor:
         completed_at = datetime.now(timezone.utc)
         finish_reasons = native_finish_reasons(response.payload, provider=provider)
         facts = answer_facts(response.payload)
-        characters = answer_characters(response.payload)
-        outcome = completion_outcome(
-            finish_reasons,
-            output_characters=characters,
-            refusal=facts.refusal,
-            tool_call=facts.tool_call,
+        characters = None if embeddings else answer_characters(response.payload)
+        outcome = (
+            None
+            if characters is None
+            else completion_outcome(
+                finish_reasons,
+                output_characters=characters,
+                refusal=facts.refusal,
+                tool_call=facts.tool_call,
+            )
         )
         terminal = StreamFinalization(
             terminal_status=lifecycle_status,
@@ -732,7 +744,8 @@ def _lifecycle_status(
         and prompt_feedback.get("blockReason")
     ):
         return "provider_error"
-    if provider == "google":
+    # An embeddings answer has no candidates.
+    if provider == "google" and expected_candidates:
         candidates = payload.get("candidates")
         if not isinstance(candidates, list):
             return "provider_error"

@@ -490,6 +490,10 @@ class OrganizationPIIConfig(Base, TimestampMixin):
     response_scan: Mapped[str] = mapped_column(
         String(16), nullable=False, default="off", server_default="off"
     )
+    # Types an embeddings request only counts where chat masks or blocks them.
+    embeddings_monitor_types: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="pii_config")
 

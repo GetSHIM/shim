@@ -2399,3 +2399,139 @@ async def test_a_retiring_model_is_recorded_and_shown_only_when_asked(
     assert response.status_code == 200 and len(calls) == 1, "still forwarded"
     assert line["warnings"] == [code]
     assert (code in response.headers.get("x-shim-warnings", "")) is in_header
+
+
+# Embeddings (S50): the same privacy stage and actions as chat.
+
+_TCKN = "10000000146"
+_EMBEDDING_REPLY = {
+    "object": "list",
+    "data": [{"object": "embedding", "index": 0, "embedding": [0.25, -0.5]}],
+    "model": "text-embedding-3-small",
+    "usage": {"prompt_tokens": 7, "total_tokens": 7},
+}
+
+
+async def _embed(
+    path: str, payload: dict, actions: dict, **settings
+) -> tuple[httpx.Response, list[dict], list[dict]]:
+    sent: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json=_EMBEDDING_REPLY)
+        if request.url.path.endswith(":embedContent"):
+            return httpx.Response(200, json={"embedding": {"values": [0.25]}})
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps(actions),
+                **settings,
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={
+                        "authorization": f"Bearer {_GATEWAY_KEY}",
+                        "x-goog-api-key": _GATEWAY_KEY,
+                        "x-provider-key": "provider-secret",
+                    },
+                    json=payload,
+                )
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, sent, [line for line in lines if line["event"] == "request"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload", "text"),
+    [
+        (
+            "/v1/embeddings",
+            {"model": "text-embedding-3-small", "input": [f"TCKN {_TCKN}", "plain"]},
+            lambda body: body["input"][0],
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            {"content": {"parts": [{"text": f"TCKN {_TCKN}"}]}},
+            lambda body: body["content"]["parts"][0]["text"],
+        ),
+    ],
+)
+async def test_embeddings_input_is_masked_like_chat(path, payload, text) -> None:
+    response, sent, [line] = await _embed(path, payload, {"TR_NATIONAL_ID": "mask"})
+
+    assert response.status_code == 200
+    assert _TCKN not in text(sent[0]) and "<TR_NATIONAL_ID_" in text(sent[0])
+    assert line["privacy_counts"] == {"TR_NATIONAL_ID": 1}
+    assert line["completion_tokens"] == 0 and line["completion_outcome"] is None
+    if path == "/v1/embeddings":
+        assert (line["protocol"], line["prompt_tokens"], line["estimated"]) == (
+            "openai_embeddings",
+            7,
+            False,
+        )
+        assert response.json() == _EMBEDDING_REPLY, "vectors come back untouched"
+    else:
+        assert (line["protocol"], line["estimated"]) == ("gemini_embed", True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("given", "actions", "refused"),
+    [
+        ([[1, 2, 3]], {"TR_NATIONAL_ID": "mask"}, True),
+        ([1, 2, 3], {"TR_NATIONAL_ID": "block"}, True),
+        ([[1, 2, 3]], {name: "monitor" for name in effective_entity_actions()}, False),
+    ],
+)
+async def test_token_ids_cannot_be_scanned_so_masking_refuses_them(
+    given, actions, refused
+) -> None:
+    response, sent, [line] = await _embed(
+        "/v1/embeddings", {"model": "text-embedding-3-small", "input": given}, actions
+    )
+
+    if refused:
+        assert response.status_code == 400 and sent == []
+        assert "Token-id embeddings input cannot be scanned." in response.text
+        assert line["outcome"] == "rejected"
+    else:
+        assert response.status_code == 200 and sent[0]["input"] == given
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_relaxation_counts_the_type_and_chat_still_masks() -> None:
+    relaxed = {"PII_EMBEDDINGS_MONITOR": "TR_NATIONAL_ID"}
+    embedded, embed_sent, [embed_line] = await _embed(
+        "/v1/embeddings",
+        {"model": "text-embedding-3-small", "input": f"TCKN {_TCKN}"},
+        {"TR_NATIONAL_ID": "mask"},
+        **relaxed,
+    )
+    chatted, chat_sent, _ = await _embed(
+        "/v1/chat/completions",
+        {
+            "model": "gpt-5-nano",
+            "messages": [{"role": "user", "content": f"TCKN {_TCKN}"}],
+        },
+        {"TR_NATIONAL_ID": "mask"},
+        **relaxed,
+    )
+
+    assert embedded.status_code == chatted.status_code == 200
+    assert embed_sent[0]["input"] == f"TCKN {_TCKN}"
+    assert embed_line["monitored_entities"] == {"TR_NATIONAL_ID": 1}
+    assert _TCKN not in json.dumps(chat_sent[0])

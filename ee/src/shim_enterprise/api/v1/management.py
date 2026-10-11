@@ -444,6 +444,12 @@ class PrivacySettings(BaseModel):
             "can stay in provider logs after the window ends."
         )
     )
+    embeddings_monitor_types: list[str] = Field(
+        description=(
+            "Entity types an embeddings request only counts and sends unchanged "
+            "where their action masks or blocks them; chat keeps the action."
+        )
+    )
 
     @computed_field(description="The action every entity type gets.")
     @property
@@ -487,14 +493,26 @@ class PrivacyPatch(BaseModel):
         le=2_147_483_647,
         description="null turns the alarm off; left unchanged when absent.",
     )
+    embeddings_monitor_types: list[str] | None = Field(
+        default=None,
+        description="Replaces the stored list whole; left unchanged when absent.",
+    )
 
-    @field_validator("placeholder_mode", "response_scan")
+    @field_validator("placeholder_mode", "response_scan", "embeddings_monitor_types")
     @classmethod
-    def reject_null(cls, value: str | None) -> str:
+    def reject_null[Value](cls, value: Value | None) -> Value:
         # None is only the absent default; the columns are NOT NULL.
         if value is None:
             raise ValueError("must not be null")
         return value
+
+    @field_validator("embeddings_monitor_types")
+    @classmethod
+    def known_monitor_types(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(effective_entity_actions()))
+        if unknown:
+            raise ValueError(f"unknown entity type: {', '.join(unknown)}")
+        return sorted(set(value))
 
     @field_validator("entity_actions")
     @classmethod
@@ -5580,6 +5598,13 @@ def _privacy_relaxed(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         relaxed.append("bulk_threshold")
     if before["response_scan"] == "count" and after["response_scan"] == "off":
         relaxed.append("response_scan")
+    relaxed += [
+        f"embeddings_monitor_types.{kind}"
+        for kind in sorted(
+            set(after["embeddings_monitor_types"])
+            - set(before["embeddings_monitor_types"])
+        )
+    ]
     return relaxed + [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
@@ -5598,6 +5623,10 @@ def _privacy_tightened(before: Mapping[str, Any], after: Mapping[str, Any]) -> b
         == ("stable", "random")
         or _lowered(before["bulk_threshold"], after["bulk_threshold"])
         or (before["response_scan"], after["response_scan"]) == ("off", "count")
+        or bool(
+            set(before["embeddings_monitor_types"])
+            - set(after["embeddings_monitor_types"])
+        )
         or any(
             actions.index(action) > actions.index(before["effective_actions"][kind])
             for kind, action in after["effective_actions"].items()

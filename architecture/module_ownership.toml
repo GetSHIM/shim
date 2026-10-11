@@ -309,6 +309,7 @@ enterprise = [
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
+  "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
   "ee/alembic/versions/d94f7f0ba8a2_add_service_accounts.py",
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
   "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",

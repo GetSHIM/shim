@@ -248,6 +248,7 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         placeholder_mode="stable",
         bulk_threshold=None,
         response_scan="count",
+        embeddings_monitor_types=["IBAN_CODE"],
     )
     session = SimpleNamespace(
         execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (row, 0)))
@@ -264,9 +265,11 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         "placeholder_mode": "stable",
         "bulk_threshold": None,
         "response_scan": "count",
+        "embeddings_monitor_types": ["IBAN_CODE"],
     }
     assert resolved.pii_config == _SWITCHES
     assert resolved.response_scan == "count"
+    assert resolved.embeddings_monitor_types == {"IBAN_CODE"}
     assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
     assert resolved.placeholder_mode == "stable"
     assert resolved.bulk_threshold is None
@@ -466,3 +469,22 @@ async def test_restore_permission_and_inflight_sharing_follow_the_key(
 
     assert resolved.restore_withheld == withheld
     assert resolved.inflight_sharing is (key_id == UUID(int=7))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "monitored"),
+    [({}, frozenset()), ({"embeddings_monitor_types": ["IBAN_CODE"]}, {"IBAN_CODE"})],
+)
+async def test_a_cached_pii_config_without_embeddings_types_relaxes_nothing(
+    cached, monitored
+) -> None:
+    service = policy_module.TenantPolicyService(
+        _PolicyCache({**_SWITCHES, "rules_revision": 0, **cached})
+    )
+
+    resolved = await service.resolve(
+        SimpleNamespace(organization_id=UUID(int=1), tier="managed"), session=None
+    )
+
+    assert resolved.embeddings_monitor_types == monitored

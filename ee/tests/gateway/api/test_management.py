@@ -2472,3 +2472,69 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
     assert bounds == [422, 422]
     assert member.status_code == 403
     assert any("l.started_at >= " in statement for statement in statements)
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
+    db, test_user_with_org, audit_events
+) -> None:
+    from sqlalchemy import text
+
+    user = test_user_with_org
+    user.role = "admin"
+    tenant_id = user.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    # The column default, as a row written before this setting existed reads it.
+    await db.execute(
+        text(
+            "INSERT INTO organization_pii_configs (id, organization_id) "
+            "VALUES (gen_random_uuid(), :tenant) ON CONFLICT DO NOTHING"
+        ),
+        {"tenant": tenant_id},
+    )
+    default = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(user, db)
+    )
+
+    async def relaxations() -> list[list[str]]:
+        return [
+            event["extra"]["relaxed"]
+            for event in await audit_events(tenant_id)
+            if event["endpoint"] == "tenant.privacy_protection_relaxed"
+        ]
+
+    added = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(
+                embeddings_monitor_types=["TR_NATIONAL_ID", "IBAN_CODE"]
+            ),
+            request,
+            user,
+            db,
+        )
+    )
+    after_adding = await relaxations()
+    removed = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(embeddings_monitor_types=["IBAN_CODE"]),
+            request,
+            user,
+            db,
+        )
+    )
+
+    assert default.embeddings_monitor_types == []
+    assert added.embeddings_monitor_types == ["IBAN_CODE", "TR_NATIONAL_ID"]
+    assert added.effective_actions["TR_NATIONAL_ID"] == "mask", "chat is unchanged"
+    assert after_adding == [
+        [
+            "embeddings_monitor_types.IBAN_CODE",
+            "embeddings_monitor_types.TR_NATIONAL_ID",
+        ]
+    ]
+    assert removed.embeddings_monitor_types == ["IBAN_CODE"]
+    assert await relaxations() == after_adding, "removing a type is no relaxation"
+    with pytest.raises(ValidationError, match="unknown entity type"):
+        management.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
+    with pytest.raises(ValidationError, match="must not be null"):
+        management.PrivacyPatch.model_validate({"embeddings_monitor_types": None})

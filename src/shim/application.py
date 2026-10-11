@@ -152,6 +152,9 @@ def create_community_app(
                     ),
                     inflight_sharing=configured.SHIM_INFLIGHT_SHARING == "on",
                     model_retiring_warning=configured.SHIM_MODEL_RETIRING_WARNING,
+                    embeddings_monitor_types=frozenset(
+                        configured.PII_EMBEDDINGS_MONITOR
+                    ),
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

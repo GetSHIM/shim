@@ -30,6 +30,8 @@ JSONL_PROTOCOLS = {
     "messages": "anthropic_messages",
     "count_tokens": "anthropic_count_tokens",
     "generate_content": "gemini",
+    "embeddings": "openai_embeddings",
+    "embed_content": "gemini_embed",
 }
 
 UsageFailureReason: TypeAlias = Literal[

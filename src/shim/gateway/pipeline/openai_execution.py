@@ -15,6 +15,7 @@ from openai import (
     APITimeoutError,
     AsyncOpenAI,
 )
+from openai.types import CreateEmbeddingResponse
 
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -129,9 +130,14 @@ class OpenAIExecution:
             create = (
                 client.responses.create
                 if prepared.protocol == "responses"
+                else client.embeddings.create
+                if prepared.protocol == "embeddings"
                 else client.chat.completions.create
             )
             kwargs = sdk_create_kwargs(create, prepared.payload)
+            # Omitted, the SDK would ask upstream for base64 and decode it itself.
+            if prepared.protocol == "embeddings" and "encoding_format" not in kwargs:
+                kwargs["encoding_format"] = "float"
             client_options = prepared.payload.get("stream_options")
             meter_usage = (
                 prepared.protocol == "chat"
@@ -169,6 +175,8 @@ class OpenAIExecution:
             raise _public_error(exc) from None
 
         if prepared.stream:
+            # Embeddings have no stream: their route never sets one.
+            assert not isinstance(result, CreateEmbeddingResponse)
             request_id = _stream_request_id(result)
             state = {"closed": False, "recorded": False}
 
@@ -200,7 +208,8 @@ class OpenAIExecution:
             )
 
         try:
-            payload = _dump_sdk(result)
+            # A client's base64 vectors stay strings where the SDK model expects floats.
+            payload = _dump_sdk(result, warnings=prepared.protocol != "embeddings")
         except BaseException:
             await circuit.release_probe()
             raise
@@ -225,10 +234,15 @@ class OpenAIExecution:
                 response_id,
                 prepared.privacy.verification_map,
             )
-        restored = restore_openai_payload(
-            payload,
-            prepared.privacy.restore_map,
-            self.pii_scrubber,
+        # Vectors carry no placeholder to restore.
+        restored = (
+            payload
+            if prepared.protocol == "embeddings"
+            else restore_openai_payload(
+                payload,
+                prepared.privacy.restore_map,
+                self.pii_scrubber,
+            )
         )
         if prepared.protocol == "responses":
             restored = _sanitize_responses_failure(restored)
@@ -401,8 +415,8 @@ class OpenAIExecution:
         await record_provider_error(circuit, exc, status_code, APIError)
 
 
-def _dump_sdk(value: Any) -> dict[str, Any]:
-    dumped = value.model_dump(mode="json")
+def _dump_sdk(value: Any, *, warnings: bool = True) -> dict[str, Any]:
+    dumped = value.model_dump(mode="json", warnings=warnings)
     if not isinstance(dumped, dict):
         raise TypeError("OpenAI SDK value did not serialize to an object")
     return dumped

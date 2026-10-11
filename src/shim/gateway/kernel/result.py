@@ -150,6 +150,7 @@ ResponseWarning = Literal[
     "MODEL_RETIRING",
     "MODEL_RETIRED",
 ]
+EMBEDDINGS_PROTOCOLS = frozenset({"embeddings", "embed_content"})
 # Written to the record; in X-Shim-Warnings only when the tenant asks for the header.
 RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
 
@@ -162,7 +163,13 @@ class PreparedInference:
     payload: dict[str, Any]
     provider: ProviderId
     protocol: Literal[
-        "chat", "responses", "messages", "count_tokens", "generate_content"
+        "chat",
+        "responses",
+        "messages",
+        "count_tokens",
+        "generate_content",
+        "embeddings",
+        "embed_content",
     ]
     model: str
     stream: bool
@@ -177,6 +184,7 @@ class PreparedInference:
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
+    embeddings_monitor_types: frozenset[str] = frozenset()
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = field(default_factory=TaskCaps)
     agent_loop: AgentLoop = field(default_factory=AgentLoop)
@@ -289,4 +297,8 @@ class PreparedInference:
             "messages": "messages",
             "count_tokens": "messages.count_tokens",
             "generate_content": "generateContent",
+            "embeddings": "embeddings",
+            "embed_content": "batchEmbedContents"
+            if "requests" in self.payload
+            else "embedContent",
         }[self.protocol]

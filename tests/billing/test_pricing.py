@@ -395,3 +395,24 @@ def test_price_metadata_carries_cache_prices_and_the_reported_split():
         metadata["cache_write_tokens"],
         metadata["cache_write_1h_tokens"],
     ) == (3, 2, 1)
+
+
+def test_embedding_models_are_their_own_kind_and_price_input_only() -> None:
+    from shim.billing.pricing import _catalog_price
+
+    price = DEFAULT_PRICE_BOOK.resolve("text-embedding-3-small", "openai")
+
+    assert (price.kind, price.output_per_million) == ("embedding", Decimal("0"))
+    assert price.max_output_tokens is None
+    assert compute_cost_usd(
+        "text-embedding-3-small", 1_000_000, 0, provider="openai"
+    ) == Decimal("0.02")
+    assert (
+        DEFAULT_PRICE_BOOK.resolve("gemini-embedding-001", "google").kind == "embedding"
+    )
+    assert "text-embedding-3-small" not in DEFAULT_PRICE_BOOK.models("openai")
+    assert DEFAULT_PRICE_BOOK.resolve("gpt-5.6-luna", "openai").kind == "chat"
+    with pytest.raises(ValueError, match="kind"):
+        _catalog_price(
+            {"input_per_million": "1", "output_per_million": "0", "kind": "image"}
+        )

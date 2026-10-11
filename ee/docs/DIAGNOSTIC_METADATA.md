@@ -179,6 +179,11 @@ not `hmac-sha256:v1:` and 64 lowercase hex characters answers 422.
 
 ## Persistence and reading
 
+`request_lifecycle.source_endpoint` names the route: `chat.completions`,
+`responses`, `messages`, `messages.count_tokens`, `generateContent`, `embeddings`,
+`embedContent` or `batchEmbedContents`. An embeddings request settles its prompt
+tokens, no completion tokens and a null `completion_outcome`.
+
 Request fields enter `request_lifecycle.metadata` during quota reservation.
 Completion facts, TTFT and shim processing time join them in the terminal
 accounting transaction, and so do `provider_latency_ms`, `answer_characters`,

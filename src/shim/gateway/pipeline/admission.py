@@ -29,6 +29,7 @@ from shim.gateway.admission import (
 )
 
 from shim.gateway.kernel.result import (
+    EMBEDDINGS_PROTOCOLS,
     AdmissionState,
     PreparedInference,
     UNSPECIFIED_PROVIDER_MODEL,
@@ -123,10 +124,19 @@ class AdmissionStage:
             and value.protocol == "responses"
             and value.model == UNSPECIFIED_PROVIDER_MODEL
         )
+        embeddings = value.protocol in EMBEDDINGS_PROTOCOLS
+        # An embeddings model answers only the embeddings routes, and only them.
         model_denied = (
             value.target is None
             and not unspecified_openai_response_model
-            and not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+            and (
+                not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+                or (
+                    DEFAULT_PRICE_BOOK.resolve(value.model, str(value.provider)).kind
+                    == "embedding"
+                )
+                != embeddings
+            )
         )
         value.record_verdict(
             "gateway.model_catalog",
@@ -182,11 +192,12 @@ class AdmissionStage:
             ),
             ("provider_default", model_output_limit),
         )
-        if value.protocol == "count_tokens":
+        if value.protocol == "count_tokens" or embeddings:
             per_candidate_output_tokens = 0
         minimum_output_tokens = (
             0
             if value.protocol == "count_tokens"
+            or embeddings
             or (
                 value.provider == "anthropic"
                 and value.protocol == "messages"
@@ -224,8 +235,11 @@ class AdmissionStage:
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
-        if value.protocol != "count_tokens" and (
-            value.target is None or value.target.context_window
+        # The provider answers an oversized embeddings input natively.
+        if (
+            value.protocol != "count_tokens"
+            and not embeddings
+            and (value.target is None or value.target.context_window)
         ):
             _check_catalog_limits(
                 value,
@@ -235,6 +249,10 @@ class AdmissionStage:
                 if output_token_field == "provider_default"
                 else per_candidate_output_tokens,
             )
+        elif embeddings and value.target is None:
+            entry = DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+            if entry is not None and entry.status == "deprecated":
+                value.warn("MODEL_DEPRECATED")
         attribution = CostAttribution.resolve(
             self.invocation.headers.get("x-shim-tag"),
             api_key_cost_center=value.policy.cost_center,

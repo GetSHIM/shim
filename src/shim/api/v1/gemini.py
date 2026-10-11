@@ -6,13 +6,14 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 from google.genai import types
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shim.api.deps import (
     dispatch_gateway_inference,
     get_gateway_service,
     get_google_authenticated_principal,
 )
+from shim.api.v1.provider_request import ProviderRequest
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.services.gateway.service import GatewayService
 
@@ -58,6 +59,78 @@ class GenerateContentRequest(BaseModel):
         if any(not content.parts for content in contents):
             raise ValueError("each content item must contain at least one part")
         return contents
+
+
+def _has_parts(item: object) -> bool:
+    content = item.get("content") if isinstance(item, dict) else None
+    parts = content.get("parts") if isinstance(content, dict) else None
+    return isinstance(parts, list) and bool(parts)
+
+
+class EmbedContentRequest(ProviderRequest):
+    """Native `:embedContent` JSON, kept as sent."""
+
+    @model_validator(mode="after")
+    def validate_content(self) -> EmbedContentRequest:
+        if not _has_parts(self.root):
+            raise ValueError("content needs at least one part")
+        return self
+
+
+class BatchEmbedContentsRequest(ProviderRequest):
+    """Native `:batchEmbedContents` JSON, kept as sent."""
+
+    @model_validator(mode="after")
+    def validate_requests(self) -> BatchEmbedContentsRequest:
+        requests = self.require("requests", list)
+        if not requests or not all(_has_parts(item) for item in requests):
+            raise ValueError("each request needs content with at least one part")
+        return self
+
+
+@router.post("/v1beta/models/{model}:embedContent")
+async def embed_content(
+    model: ModelId,
+    request: Request,
+    payload: EmbedContentRequest,
+    gateway_service: GatewayService = Depends(get_gateway_service),
+    principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
+):
+    return await _dispatch_embeddings(
+        model, request, payload, gateway_service, principal
+    )
+
+
+@router.post("/v1beta/models/{model}:batchEmbedContents")
+async def batch_embed_contents(
+    model: ModelId,
+    request: Request,
+    payload: BatchEmbedContentsRequest,
+    gateway_service: GatewayService = Depends(get_gateway_service),
+    principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
+):
+    return await _dispatch_embeddings(
+        model, request, payload, gateway_service, principal
+    )
+
+
+async def _dispatch_embeddings(
+    model: str,
+    request: Request,
+    payload: ProviderRequest,
+    gateway_service: GatewayService,
+    principal: AuthenticatedPrincipal,
+):
+    return await dispatch_gateway_inference(
+        request=request,
+        payload=payload.provider_payload(),
+        provider="google",
+        protocol="embed_content",
+        model=model,
+        stream=False,
+        gateway_service=gateway_service,
+        principal=principal,
+    )
 
 
 @router.post("/v1beta/models/{model}:generateContent")

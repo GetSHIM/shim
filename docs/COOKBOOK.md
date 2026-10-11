@@ -10,6 +10,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Use the OpenAI SDK](#use-the-openai-sdk)
 - [Use the Anthropic SDK](#use-the-anthropic-sdk)
 - [Use the Gemini SDK](#use-the-gemini-sdk)
+- [Send embeddings through shim](#send-embeddings-through-shim)
 - [Tag requests and read their cost](#tag-requests-and-read-their-cost)
 - [Scan text before you send it](#scan-text-before-you-send-it)
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
@@ -122,6 +123,32 @@ for chunk in client.models.generate_content_stream(model="gemini-3.5-flash", con
 Notes: the routes are `/v1beta/models/{model}:generateContent` and
 `/v1beta/models/{model}:streamGenerateContent?alt=sse`. Gemini calls use
 `GOOGLE_TIMEOUT_SECONDS` (60 by default), not the OpenAI and Anthropic read timeouts.
+
+## Send embeddings through shim
+
+Embed documents through the same address, with the same privacy rules as chat.
+
+1. Call `client.embeddings.create(model="text-embedding-3-small", input=[...])`
+   with the OpenAI SDK set up as above (`POST /v1/embeddings`), or
+   `client.models.embed_content(model="gemini-embedding-001", contents=[...])` with
+   the Gemini SDK (it calls `:batchEmbedContents`; `:embedContent` works too).
+2. Read the vectors as the provider returned them. Without `encoding_format`, shim
+   asks OpenAI for `"float"`; a format you send is forwarded as given.
+
+Your text is scanned and masked with your actions, and a masked value becomes a
+placeholder in the vector: with random placeholders the same document gives a
+different vector each time. Set `PII_PLACEHOLDER_MODE=stable` so it does not, or,
+when the vectors stay in your own store, list the types in
+`PII_EMBEDDINGS_MONITOR` (comma-separated, for example `TR_NATIONAL_ID,IBAN_CODE`):
+for embeddings those types are only counted and sent unchanged, while chat keeps
+masking them. Token ids (`input` of integers) cannot be scanned, so they are refused
+with 400 `PRIVACY_POLICY_BLOCKED` while any type is masked or blocked. The usage
+event's `protocol` is `openai_embeddings` or `gemini_embed`, `completion_tokens` is
+0, `completion_outcome` is null, and the cost is the input tokens at the model's
+input price (`estimated` when the provider reports no count, as Gemini usually
+does). Embeddings models answer only these routes and are not in `/v1/models`;
+`gemini-embedding-2` is not priced yet (its audio rate is above its text rate).
+Behind LiteLLM, the OpenAI `api_base` ends in `/v1` as for chat.
 
 ## Tag requests and read their cost
 

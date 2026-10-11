@@ -328,3 +328,12 @@ def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> Non
     )
     with pytest.raises(ValidationError):
         CommunitySettings(_env_file=None, SHIM_MODEL_RETIRING_WARNING="refuse")
+
+
+def test_embeddings_monitor_types_are_known_entity_types() -> None:
+    assert CommunitySettings(_env_file=None).PII_EMBEDDINGS_MONITOR == []
+    assert CommunitySettings(
+        _env_file=None, PII_EMBEDDINGS_MONITOR="TR_NATIONAL_ID, IBAN_CODE"
+    ).PII_EMBEDDINGS_MONITOR == ["IBAN_CODE", "TR_NATIONAL_ID"]
+    with pytest.raises(ValidationError, match="unknown entity type"):
+        CommunitySettings(_env_file=None, PII_EMBEDDINGS_MONITOR="NOT_A_TYPE")

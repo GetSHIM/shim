@@ -12,7 +12,7 @@ from typing import Any, NoReturn
 
 from fastapi import HTTPException, status
 
-from shim.gateway.kernel.result import PreparedInference
+from shim.gateway.kernel.result import EMBEDDINGS_PROTOCOLS, PreparedInference
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
@@ -157,6 +157,10 @@ def _is_protocol_field(key: object) -> bool:
     )
 
 
+# Actions that keep a value from the provider.
+_HIDING = frozenset({"mask", "mask_last4", "block"})
+
+
 class PrivacyStage:
     """Scrub content and carry reversible maps across Responses continuations."""
 
@@ -172,6 +176,14 @@ class PrivacyStage:
 
     async def run(self, value: PreparedInference) -> PreparedInference:
         actions = effective_entity_actions(value.pii_config, value.entity_actions)
+        if value.protocol in EMBEDDINGS_PROTOCOLS:
+            # The tenant's embeddings relaxation: listed types are only counted.
+            actions = {
+                kind: "monitor"
+                if kind in value.embeddings_monitor_types and action in _HIDING
+                else action
+                for kind, action in actions.items()
+            }
         policy = {"pii_config": value.pii_config, "entity_actions": actions}
         try:
             prepared = await self._run(value, actions)
@@ -237,6 +249,19 @@ class PrivacyStage:
     async def _run(
         self, value: PreparedInference, actions: Mapping[str, EntityAction]
     ) -> PreparedInference:
+        token_ids = (
+            value.protocol == "embeddings"
+            and not isinstance(value.payload["input"], str)
+            and not isinstance(value.payload["input"][0], str)
+        )
+        if token_ids and any(action in _HIDING for action in actions.values()):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "PRIVACY_POLICY_BLOCKED",
+                    "message": "Token-id embeddings input cannot be scanned.",
+                },
+            )
         parent_map: dict[str, str] = {}
         previous_response_id = (
             value.payload.get("previous_response_id")

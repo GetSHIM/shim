@@ -1387,6 +1387,14 @@
         "title": "AuthType",
         "type": "string"
       },
+      "BatchEmbedContentsRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Native `:batchEmbedContents` JSON, kept as sent.",
+        "title": "BatchEmbedContentsRequest",
+        "type": "object"
+      },
       "Behavior": {
         "description": "Specifies the function Behavior.\n\nIf not specified, the system keeps the current function call behavior. This\nfield is currently only supported by the BidiGenerateContent method.",
         "enum": [
@@ -3149,6 +3157,21 @@
         ],
         "title": "DynamicRetrievalConfigMode",
         "type": "string"
+      },
+      "EmbedContentRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Native `:embedContent` JSON, kept as sent.",
+        "title": "EmbedContentRequest",
+        "type": "object"
+      },
+      "EmbeddingsRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "title": "EmbeddingsRequest",
+        "type": "object"
       },
       "EnterpriseWebSearch": {
         "additionalProperties": false,
@@ -21956,6 +21979,190 @@
         "summary": "Chat Completions"
       }
     },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "embeddings_v1_embeddings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Native OpenAI embeddings JSON."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "529": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Embeddings"
+      }
+    },
     "/v1/messages": {
       "post": {
         "operationId": "messages_v1_messages_post",
@@ -23083,6 +23290,128 @@
         "tags": [
           "shared-results"
         ]
+      }
+    },
+    "/v1beta/models/{model}:batchEmbedContents": {
+      "post": {
+        "operationId": "batch_embed_contents_v1beta_models__model__batchEmbedContents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchEmbedContentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Batch Embed Contents"
+      }
+    },
+    "/v1beta/models/{model}:embedContent": {
+      "post": {
+        "operationId": "embed_content_v1beta_models__model__embedContent_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Embed Content"
       }
     },
     "/v1beta/models/{model}:generateContent": {

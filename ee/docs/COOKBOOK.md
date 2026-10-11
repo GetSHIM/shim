@@ -214,6 +214,15 @@ shim counts the personal data in it that the request did not carry, and the
 request list shows those counts as `response_entities`. The answer is never
 changed or delayed.
 
+`embeddings_monitor_types` (default `[]`) lists entity types an embeddings request
+only counts: where their action is `mask`, `mask_last4` or `block`, an
+`/v1/embeddings` or Gemini embed request sends them unchanged and counts them in
+`monitored_entities`; chat keeps the action. Use it when the vectors go to an
+internal store; otherwise prefer `placeholder_mode: stable`, so the same text gives
+the same vector. The list replaces the stored one whole; an unknown type or `null`
+is 422. Adding a type records `tenant.privacy_protection_relaxed` with
+`embeddings_monitor_types.<TYPE>`; removing one does not.
+
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
 action; `null` turns it off. The request still goes on as its actions decide.

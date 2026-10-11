@@ -1967,3 +1967,112 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
     if protocol == "responses":
         # The chain keeps every value, so a caller with permission can continue it.
         assert chain_store.save.await_args.args[2] == mapping
+
+
+_EMBEDDING_KEY = "gateway-secret-12345"
+
+
+def _embedding_reply(vector: object) -> dict:
+    return {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": vector}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 2, "total_tokens": 2},
+    }
+
+
+async def _embeddings_app(upstream_seen: list[dict]):
+    import base64
+    import struct
+
+    packed = base64.b64encode(struct.pack("<2f", 0.25, -0.5)).decode()
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        upstream_seen.append({"path": request.url.path, **body})
+        vector = packed if body.get("encoding_format") == "base64" else [0.25, -0.5]
+        return httpx.Response(200, json=_embedding_reply(vector))
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            PII_ENTITY_ACTIONS=json.dumps({name: "off" for name in DEFAULT_ACTIONS}),
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    return app, outbound, packed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding_format", [None, "float", "base64"])
+@pytest.mark.parametrize("given", ["hello", ["hello", "world"]])
+async def test_the_openai_sdk_embeds_through_the_gateway(
+    given, encoding_format
+) -> None:
+    from openai import AsyncOpenAI
+
+    seen: list[dict] = []
+    app, outbound, packed = await _embeddings_app(seen)
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            raw = await client.embeddings.with_raw_response.create(
+                model="text-embedding-3-small",
+                input=given,
+                extra_headers={"x-provider-key": "sk-upstream"},
+                **({"encoding_format": encoding_format} if encoding_format else {}),
+            )
+            parsed = raw.parse()
+
+    # The SDK asks for base64 itself when the app omits the format.
+    wire = encoding_format or "base64"
+    assert seen == [
+        {
+            "path": "/v1/embeddings",
+            "model": "text-embedding-3-small",
+            "input": given,
+            "encoding_format": wire,
+        }
+    ]
+    assert json.loads(raw.content) == _embedding_reply(
+        packed if wire == "base64" else [0.25, -0.5]
+    )
+    if encoding_format != "base64":
+        assert parsed.data[0].embedding == [0.25, -0.5]
+
+
+@pytest.mark.asyncio
+async def test_an_omitted_encoding_format_is_sent_upstream_as_float() -> None:
+    seen: list[dict] = []
+    app, outbound, _ = await _embeddings_app(seen)
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            response = await inbound.post(
+                "/v1/embeddings",
+                headers={
+                    "authorization": f"Bearer {_EMBEDDING_KEY}",
+                    "x-provider-key": "sk-upstream",
+                },
+                json={
+                    "model": "text-embedding-3-small",
+                    "input": "hello",
+                    "stream": True,
+                },
+            )
+
+    assert response.status_code == 200
+    assert seen[0]["encoding_format"] == "float"
+    assert "stream" not in seen[0], "embeddings have no stream"
+    assert response.json() == _embedding_reply([0.25, -0.5])

@@ -400,9 +400,12 @@ def test_community_routes_are_an_initial_subset_of_the_documented_profile() -> N
         ("GET", "/v1/models"),
         ("GET", "/v1/models/{model_id}"),
         ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/embeddings"),
         ("POST", "/v1/messages"),
         ("POST", "/v1/responses"),
         ("POST", "/v1/scan"),
+        ("POST", "/v1beta/models/{model}:batchEmbedContents"),
+        ("POST", "/v1beta/models/{model}:embedContent"),
         ("POST", "/v1beta/models/{model}:generateContent"),
         ("POST", "/v1beta/models/{model}:streamGenerateContent"),
     }
@@ -421,12 +424,15 @@ application = create_community_app(CommunitySettings(_env_file=None))
 assert set(application.openapi()["paths"]) == {
     "/health",
     "/v1/chat/completions",
+    "/v1/embeddings",
     "/v1/messages",
     "/v1/messages/count_tokens",
     "/v1/models",
     "/v1/models/{model_id}",
     "/v1/responses",
     "/v1/scan",
+    "/v1beta/models/{model}:batchEmbedContents",
+    "/v1beta/models/{model}:embedContent",
     "/v1beta/models/{model}:generateContent",
     "/v1beta/models/{model}:streamGenerateContent",
 }

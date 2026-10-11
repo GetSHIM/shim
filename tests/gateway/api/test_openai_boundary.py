@@ -195,7 +195,14 @@ def test_request_openapi_is_an_extensible_json_object() -> None:
 
 def test_public_catalog_contains_only_approved_openai_models() -> None:
     assert DEFAULT_PRICE_BOOK.prices
-    assert all("embedding" not in model for model in DEFAULT_PRICE_BOOK.prices)
+    # Embeddings models are priced, but they are never chat models or listed.
+    assert all(
+        "embedding" not in model for model in DEFAULT_PRICE_BOOK.models("openai")
+    )
+    assert all(
+        price.kind == ("embedding" if "embedding" in model else "chat")
+        for model, price in DEFAULT_PRICE_BOOK.prices.items()
+    )
 
 
 def _endpoint_application(service) -> FastAPI:
@@ -231,7 +238,7 @@ async def test_models_endpoint_returns_latest_openai_sdk_envelopes() -> None:
     assert codex_response.json() == {"models": []}
     page = SyncPage[Model].model_validate(list_response.json())
     model = Model.model_validate(model_response.json())
-    assert {item.id for item in page.data} == set(DEFAULT_PRICE_BOOK.prices)
+    assert {item.id for item in page.data} == set(DEFAULT_PRICE_BOOK.models("openai"))
     assert model.id == "gpt-5.6-sol"
     assert model.created > 0
 

@@ -87,6 +87,30 @@ def _eligible(model_id: str, model: object) -> bool:
     )
 
 
+def _embedding(model_id: str, model: object) -> bool:
+    """A text embeddings model with an input price the catalog can bill safely."""
+    if not isinstance(model, dict):
+        return False
+    modalities = model.get("modalities")
+    cost = model.get("cost")
+    return (
+        "embedding" in f"{model_id} {model.get('family', '')}".casefold()
+        and isinstance(modalities, dict)
+        and isinstance(modalities.get("input"), list)
+        and "text" in modalities["input"]
+        and isinstance(cost, dict)
+        and _decimal(cost.get("input")) is not None
+        and _cost_dimensions_are_safe(cost)
+    )
+
+
+def _embedding_entry(model_id: str, model: dict[str, object]) -> dict[str, Any]:
+    # A vector's dimensions are no output limit, and its output is free.
+    entry = _entry(model_id, model)
+    entry.pop("max_output_tokens", None)
+    return entry | {"kind": "embedding", "output_per_million": "0"}
+
+
 def _cost_dimensions_are_safe(cost: dict[str, object]) -> bool:
     """Accept aggregate billing only when modality rates cannot exceed it."""
 
@@ -258,8 +282,14 @@ def build_catalog(source: dict[str, Any]) -> dict[str, object]:
             raise ValueError(f"Models.dev provider is missing: {provider}")
         selected = {
             model_id: _entry(model_id, model)
+            if _eligible(model_id, model)
+            else _embedding_entry(model_id, model)
             for model_id, model in sorted(models.items())
-            if isinstance(model_id, str) and _eligible(model_id, model)
+            if isinstance(model_id, str)
+            and (
+                _eligible(model_id, model)
+                or (provider != "anthropic" and _embedding(model_id, model))
+            )
         }
         if len({model_id.casefold() for model_id in selected}) != len(selected):
             raise ValueError(f"Models.dev provider has duplicate model IDs: {provider}")

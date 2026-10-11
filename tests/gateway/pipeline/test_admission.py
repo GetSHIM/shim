@@ -10,7 +10,11 @@ from uuid import UUID
 import pytest
 from fastapi import HTTPException
 
-from shim.gateway.admission import InMemoryRateLimiter, LoopDetectionResult
+from shim.gateway.admission import (
+    InFlightRegistry,
+    InMemoryRateLimiter,
+    LoopDetectionResult,
+)
 from shim.gateway.contracts.context import (
     AuditPolicy,
     GatewayContext,
@@ -466,6 +470,7 @@ def _catalog(monkeypatch, **facts) -> None:
         SimpleNamespace(
             version=DEFAULT_PRICE_BOOK.version,
             supports=lambda *_: True,
+            resolve=lambda *_: entry,
             maximum_output_tokens=lambda *_: 1_000,
             exact=lambda *_: entry,
         ),
@@ -1453,3 +1458,70 @@ async def test_a_retiring_model_is_warned_ninety_days_ahead_and_still_admitted(
 
     assert admitted.warnings == ([warning] if warning else [])
     usage.admit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "model", "admitted"),
+    [
+        ("embeddings", "text-embedding-3-small", True),
+        ("embeddings", "gpt-5.6-luna", False),
+        ("chat", "text-embedding-3-small", False),
+    ],
+)
+async def test_an_embeddings_model_answers_only_the_embeddings_routes(
+    protocol, model, admitted
+) -> None:
+    stage = _inflight_stage(InFlightRegistry())
+    huge = "word " * 50_000  # far above an 8,191-token window, never refused here
+    prepared = replace(
+        _prepared(huge, protocol=protocol, model=model),
+        payload={"model": model, "input": huge}
+        if protocol == "embeddings"
+        else {"model": model, "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    if not admitted:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.detail["code"] == "MODEL_NOT_PRICED"
+        return
+    result = await stage.run(prepared)
+    assert result.admission is not None
+    assert result.admission.maximum_output_tokens == 0
+    assert "CONTEXT_MAY_EXCEED" not in result.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_registry_target_embeds_without_the_catalog() -> None:
+    from shim.gateway.kernel.result import ProviderTarget
+
+    prepared = replace(
+        _prepared("hello", protocol="embeddings", model="internal-embedder"),
+        payload={"model": "internal-embedder", "input": "hello"},
+        target=ProviderTarget(
+            deployment_id="dep-1",
+            base_url="https://embed.internal/v1",
+            upstream_model="bge-m3",
+            credential_reference="ref",
+            timeout_seconds=5,
+            declared_version="v1",
+        ),
+    )
+
+    result = await _inflight_stage(InFlightRegistry()).run(prepared)
+
+    assert result.admission is not None and result.admission.maximum_output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_embeddings_model_is_still_warned(monkeypatch) -> None:
+    _catalog(monkeypatch, status="deprecated", kind="embedding")
+    prepared = replace(
+        _prepared("x", protocol="embeddings", model="text-embedding-3-small"),
+        payload={"model": "text-embedding-3-small", "input": "x"},
+    )
+
+    result = await _inflight_stage(InFlightRegistry()).run(prepared)
+
+    assert result.warnings == ["MODEL_DEPRECATED"]

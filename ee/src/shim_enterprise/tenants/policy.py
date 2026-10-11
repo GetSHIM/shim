@@ -117,6 +117,7 @@ class ResolvedTenantSettings:
     placeholder_mode: str = "random"
     bulk_threshold: int | None = 50
     response_scan: Literal["off", "count"] = "off"
+    embeddings_monitor_types: frozenset[str] = frozenset()
     gateway_settings: GatewaySettings = field(default_factory=GatewaySettings)
     rules: RuleSet | None = None
 
@@ -171,6 +172,8 @@ class TenantPolicyService:
         placeholder_mode = switches.pop("placeholder_mode", "random")
         bulk_threshold = switches.pop("bulk_threshold", 50)
         response_scan = switches.pop("response_scan", "off")
+        # An entry cached by the previous release has no list: nothing is relaxed.
+        embeddings_monitor_types = switches.pop("embeddings_monitor_types", [])
         return ResolvedTenantSettings(
             tenant_id=tenant_id,
             pii_config={key: bool(value) for key, value in switches.items()} or None,
@@ -179,6 +182,7 @@ class TenantPolicyService:
             placeholder_mode=placeholder_mode,
             bulk_threshold=bulk_threshold,
             response_scan=response_scan,
+            embeddings_monitor_types=frozenset(embeddings_monitor_types),
             gateway_settings=gateway_settings,
             rules=await self._rule_set(tenant_id, rules_revision, session)
             if rules_revision
@@ -273,6 +277,7 @@ class TenantPolicyService:
                 "placeholder_mode": row.placeholder_mode,
                 "bulk_threshold": row.bulk_threshold,
                 "response_scan": row.response_scan,
+                "embeddings_monitor_types": list(row.embeddings_monitor_types),
             }
         await self.cache.set_pii_config(cache_key, value)
         return value
@@ -374,6 +379,7 @@ class TenantRequestPolicyResolver:
                 else None,
                 bulk_threshold=tenant_settings.bulk_threshold,
                 response_scan=tenant_settings.response_scan,
+                embeddings_monitor_types=tenant_settings.embeddings_monitor_types,
                 response_analysis=tuple(
                     tenant_settings.gateway_settings.response_analysis
                 ),

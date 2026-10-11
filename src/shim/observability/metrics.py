@@ -20,6 +20,9 @@ LABEL_VALUES: Final = MappingProxyType(
                 "/v1/messages/count_tokens",
                 "/v1beta/models/*:generateContent",
                 "/v1beta/models/*:streamGenerateContent",
+                "/v1/embeddings",
+                "/v1beta/models/*:embedContent",
+                "/v1beta/models/*:batchEmbedContents",
                 "/v1/scan",
                 "/v1/scan/usage",
             }
@@ -104,12 +107,23 @@ LABEL_VALUES: Final = MappingProxyType(
                 "messages",
                 "count_tokens",
                 "generate_content",
+                "embeddings",
+                "embed_content",
                 "scan",
             }
         ),
         "actor_type": frozenset({"api_key", "user_jwt", "internal"}),
         "source_endpoint": frozenset(
-            {"chat.completions", "responses", "messages", "generateContent", "scan"}
+            {
+                "chat.completions",
+                "responses",
+                "messages",
+                "generateContent",
+                "embeddings",
+                "embedContent",
+                "batchEmbedContents",
+                "scan",
+            }
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
@@ -238,7 +252,12 @@ def bounded_label(kind: str, value: object) -> str:
         if normalized.startswith("/api/v1/"):
             normalized = normalized.removeprefix("/api")
         if normalized.startswith("/v1beta/models/"):
-            for operation in ("generateContent", "streamGenerateContent"):
+            for operation in (
+                "generateContent",
+                "streamGenerateContent",
+                "embedContent",
+                "batchEmbedContents",
+            ):
                 if normalized.endswith(f":{operation}"):
                     normalized = f"/v1beta/models/*:{operation}"
                     break

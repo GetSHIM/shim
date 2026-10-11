@@ -59,6 +59,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
     model_retiring_warning: Literal["record", "header"] = "record"
+    # Types an embeddings request only counts, where chat masks or blocks them.
+    embeddings_monitor_types: frozenset[str] = frozenset()
     # Enterprise: entity types this caller's key and team may not see restored.
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = TaskCaps()
@@ -83,6 +85,7 @@ class LocalRequestPolicyResolver:
     __slots__ = (
         "_agent_loop",
         "_bulk_threshold",
+        "_embeddings_monitor_types",
         "_entity_actions",
         "_inflight_sharing",
         "_model_retiring_warning",
@@ -112,6 +115,7 @@ class LocalRequestPolicyResolver:
         agent_loop: AgentLoop = AgentLoop(),
         inflight_sharing: bool = False,
         model_retiring_warning: Literal["record", "header"] = "record",
+        embeddings_monitor_types: frozenset[str] = frozenset(),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -128,6 +132,7 @@ class LocalRequestPolicyResolver:
         self._model_retiring_warning: Literal["record", "header"] = (
             model_retiring_warning
         )
+        self._embeddings_monitor_types = embeddings_monitor_types
 
     async def resolve(
         self,
@@ -165,4 +170,5 @@ class LocalRequestPolicyResolver:
             agent_loop=self._agent_loop,
             inflight_sharing=self._inflight_sharing,
             model_retiring_warning=self._model_retiring_warning,
+            embeddings_monitor_types=self._embeddings_monitor_types,
         )

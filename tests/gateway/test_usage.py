@@ -1906,3 +1906,45 @@ async def test_a_tasks_settled_cost_is_added_after_the_response_not_before(
     assert [(c["window_seconds"], c["micro_usd"] > 0) for c in calls] == (
         [(600, True)] if added else []
     )
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_answer_settles_its_prompt_and_no_completion() -> None:
+    from shim.billing.pricing import compute_cost_usd
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared(model="text-embedding-3-small")
+    prepared.protocol = "embeddings"
+
+    await ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    ).finalize(
+        prepared,
+        ProviderNonStream(
+            payload={
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.5]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 7, "total_tokens": 7},
+            },
+            request_id=None,
+        ),
+        stream_session=None,
+    )
+    await usage.aclose()
+
+    line = json.loads(stream.getvalue())
+    assert (
+        line["protocol"],
+        line["prompt_tokens"],
+        line["completion_tokens"],
+        line["estimated"],
+        line["completion_outcome"],
+        line["answer_characters"],
+    ) == ("openai_embeddings", 7, 0, False, None, None)
+    assert line["estimated_cost_usd"] == str(
+        compute_cost_usd("text-embedding-3-small", 7, 0, provider="openai")
+    )

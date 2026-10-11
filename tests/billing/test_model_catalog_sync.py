@@ -65,7 +65,13 @@ def test_catalog_keeps_only_billable_text_generation_models() -> None:
 
     providers = catalog["providers"]
     assert isinstance(providers, dict)
-    assert set(providers["openai"]) == {"gpt-old", "gpt-valid"}
+    assert set(providers["openai"]) == {"gpt-old", "gpt-valid", "text-embedding"}
+    # Embeddings are kept as their own kind: input priced, output free, no output cap.
+    embedding = providers["openai"]["text-embedding"]
+    assert (embedding["kind"], embedding["output_per_million"]) == ("embedding", "0")
+    assert embedding["input_per_million"] == "1.25"
+    assert "max_output_tokens" not in embedding
+    assert "kind" not in providers["openai"]["gpt-valid"]
     assert providers["openai"]["gpt-old"]["status"] == "deprecated"
     assert "status" not in providers["openai"]["gpt-valid"]
     assert set(providers["anthropic"]) == {"claude-valid"}

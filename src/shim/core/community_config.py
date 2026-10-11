@@ -62,6 +62,7 @@ class CommunitySettings(BaseSettings):
     PII_BULK_THRESHOLD: int = Field(default=50, ge=0)
     PII_RESPONSE_SCAN: Literal["off", "count"] = "off"
     SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    PII_EMBEDDINGS_MONITOR: Annotated[list[str], NoDecode] = Field(default_factory=list)
     SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
     SHIM_PRICE_TIER_WARNING: Literal["off", "on"] = "off"
     SHIM_TRACE_PARENT: Literal["ignore", "honor"] = "ignore"
@@ -95,6 +96,7 @@ class CommunitySettings(BaseSettings):
         "TRUSTED_PROXIES",
         "BACKEND_CORS_ORIGINS",
         "SHIM_RESPONSE_ANALYSIS",
+        "PII_EMBEDDINGS_MONITOR",
         mode="before",
     )
     @classmethod
@@ -113,6 +115,14 @@ class CommunitySettings(BaseSettings):
         if unknown:
             raise ValueError(f"unknown analyzer: {', '.join(unknown)}")
         return [analyzer.name for analyzer in ANALYZERS if analyzer.name in value]
+
+    @field_validator("PII_EMBEDDINGS_MONITOR")
+    @classmethod
+    def known_entity_types(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(effective_entity_actions()))
+        if unknown:
+            raise ValueError(f"unknown entity type: {', '.join(unknown)}")
+        return sorted(set(value))
 
     @field_validator("PII_ENTITY_ACTIONS", mode="wrap")
     @classmethod

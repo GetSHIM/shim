@@ -184,9 +184,9 @@ anywhere else. A non-streaming request is bounded by the provider read timeout
 (`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
 default), so long generations should stream.
 
-Community exposes `/v1/chat/completions`, `/v1/messages`,
-`/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent` routes,
-`/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
+Community exposes `/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`,
+`/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent`,
+`embedContent` and `batchEmbedContents` routes, `/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
 OTLP traces, structured logs and Sentry error reports are enabled by
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` and `SENTRY_DSN`; each request's closing
 span carries its model, input and output tokens, finish reasons and cost, never

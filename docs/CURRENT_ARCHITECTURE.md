@@ -161,9 +161,20 @@ never forwarded wholesale.
 
 | Provider | Current route family | Native stream terminal |
 | --- | --- | --- |
-| OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events |
+| OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events; embeddings never stream |
 | Anthropic | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` | Messages use native named events ending in `message_stop`; token counting returns JSON |
-| Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
+| Gemini | `/v1beta/models/{model}:generateContent` and stream, `:embedContent`, `:batchEmbedContents` | Data-only Gemini SSE, without `[DONE]`; embeddings return JSON |
+
+Embeddings run the same stages as chat. Catalog entries carry a `kind`: an
+`embedding` model answers only the embeddings routes and never appears in
+`/v1/models`, and every other route refuses it with `MODEL_NOT_PRICED`. Admission
+reserves no output and skips the context and capability checks; the privacy stage
+applies the tenant's actions (and its embeddings-only `monitor` list) and refuses
+token-id input while any type is masked or blocked; OpenAI runs through the SDK
+with `encoding_format: "float"` when the client omitted it, Gemini through a native
+HTTP call (the SDK would turn `:embedContent` into a batch); nothing is restored in
+vectors; settlement takes the prompt tokens the provider reports, no completion
+tokens and no outcome.
 
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
