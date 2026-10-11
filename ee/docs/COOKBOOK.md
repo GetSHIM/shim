@@ -254,6 +254,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
 | `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. |
 | `agent_loop` | `count`, 5 | `action` (`off`, `count`, `block`) and `repeats` for the repeated-tool-call signal. |
+| `inflight_sharing_api_key_ids` | `[]` | API keys (at most 1,000 of this organization) whose identical JSON requests in flight on one replica share the first one's answer; see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). |
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
 | `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
@@ -275,11 +276,14 @@ classifies as relaxing also records `tenant.gateway_protection_relaxed`
 down from `warn` to `count` or `off`, or from `count` to `off`, is relaxing;
 `price_tier_warning` is a report, so turning it off is neutral; raising or removing
 a task cap, shortening its window, raising `agent_loop.repeats` or moving
-`agent_loop.action` down from `block` are relaxing. Gateways read the settings
+`agent_loop.action` down from `block` are relaxing; listing a key in
+`inflight_sharing_api_key_ids` is neutral, because each request still passes its
+own limits and privacy and an answer never crosses keys, and an id this
+organization lacks is 422. Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
-`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*` and `SHIM_AGENT_LOOP*`
-variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
+and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
 the task id}`); when Redis fails, calls go on with a `TASK_COUNTER_UNAVAILABLE`
 verdict.
 

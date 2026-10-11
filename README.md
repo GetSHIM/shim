@@ -84,7 +84,10 @@ request it:
   larger than the whole tokens-per-minute limit, which can never be admitted and
   answers `x-should-retry: false` so the OpenAI and Anthropic SDKs do not wait.
   Enterprise monthly quota and spend-limit refusals carry no `Retry-After`; they
-  clear when the period or the limit changes.
+  clear when the period or the limit changes. Identical requests in flight
+  together are counted; a key can opt in to let them share the first one's
+  answer, one provider call instead of several. Sharing is never a cache: nothing
+  is kept after the first request ends.
 - **Accounts usage and cost per request**, from that same catalog, attributed
   by the `X-Shim-Tag` header. Prompt-cache reads and writes the provider reports
   are priced at their own rates; input whose cache split is unknown is priced at

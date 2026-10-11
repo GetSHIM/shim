@@ -160,3 +160,48 @@ async def test_the_task_counter_caps_calls_exactly_and_cost_after_it_lands() -> 
     await admit("d")
     await admit("e")
     assert len(counter.tasks) == 2, "entries stay bounded"
+
+
+@pytest.mark.asyncio
+async def test_the_inflight_registry_has_one_owner_per_tenant_and_digest() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+
+    assert registry.enter("t1", "d", "r1", "k", True) is None
+    leader = registry.enter("t1", "d", "r2", "k", True)
+    assert leader is not None and leader.request_id == "r1"
+    assert registry.enter("t2", "d", "r3", "k", True) is None, "tenants are apart"
+    registry.leave("t1", "d", "r2")
+    registry.publish("t1", "d", "r2", "not the owner's")
+    assert registry.enter("t1", "d", "r4", "k", True) is leader
+    assert leader.outcome is not None and not leader.outcome.done()
+    registry.publish("t1", "d", "r1", "answer")
+    registry.leave("t1", "d", "r1")
+    assert leader.outcome.result() == "answer", "leaving keeps a published answer"
+    assert registry.enter("t1", "d", "r5", "k", False) is None
+    assert registry.entries[("t1", "d")].outcome is None, "only a shareable one waits"
+    registry.leave("t2", "d", "r3")
+    assert tuple(registry.entries) == (("t1", "d"),)
+
+
+@pytest.mark.asyncio
+async def test_the_inflight_registry_is_bounded_and_expires_a_lost_leader() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    now = [0.0]
+    registry = InFlightRegistry(max_entries=2, expiry_seconds=900, clock=lambda: now[0])
+    registry.enter("t", "a", "r1", "k", True)
+    oldest = registry.entries[("t", "a")]
+    now[0] = 10.0
+    registry.enter("t", "b", "r2", "k", True)
+    newer = registry.entries[("t", "b")]
+    registry.enter("t", "c", "r3", "k", True)
+
+    assert tuple(registry.entries) == (("t", "b"), ("t", "c"))
+    assert oldest.outcome is not None and oldest.outcome.result() is None
+    now[0] = 910.0
+    assert registry.enter("t", "b", "r4", "k", True) is None, "r2 expired"
+    assert newer.outcome is not None and newer.outcome.result() is None
+    registry.leave("t", "b", "r2")
+    assert registry.entries[("t", "b")].request_id == "r4"

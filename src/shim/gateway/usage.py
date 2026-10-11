@@ -89,6 +89,13 @@ class UsageLifecycle(Protocol):
         terminal: StreamFinalization,
     ) -> None: ...
 
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        terminal: StreamFinalization,
+        inflight_share: Mapping[str, Any],
+    ) -> None: ...
+
     async def fail(
         self,
         prepared: PreparedInference,
@@ -243,6 +250,29 @@ class LocalUsageLifecycle:
             usage=usage,
         )
 
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        terminal: StreamFinalization,
+        inflight_share: Mapping[str, Any],
+    ) -> None:
+        # The leader's line carries the provider call and its cost.
+        usage = terminal.usage
+        self._write(
+            prepared,
+            outcome=terminal.terminal_status,
+            prompt_tokens=0,
+            completion_tokens=0,
+            cost_usd=Decimal("0"),
+            model=usage.provider_model,
+            estimated=False,
+            provider_finish_reasons=usage.provider_finish_reasons,
+            completion_outcome=usage.completion_outcome,
+            shim_latency_ms=terminal.shim_latency_ms,
+            usage=usage,
+            inflight_share=inflight_share,
+        )
+
     async def fail(
         self,
         prepared: PreparedInference,
@@ -294,6 +324,7 @@ class LocalUsageLifecycle:
         completion_outcome: str | None = None,
         cache_split: CacheSplit | None = None,
         usage: StreamUsageSnapshot | None = None,
+        inflight_share: Mapping[str, Any] | None = None,
     ) -> None:
         admission = prepared.admission
         privacy = prepared.privacy
@@ -335,6 +366,10 @@ class LocalUsageLifecycle:
             if admission is not None
             else None,
             "task_calls": admission.task_calls if admission is not None else None,
+            "inflight_duplicate_of": admission.inflight_duplicate_of
+            if admission is not None
+            else None,
+            **({"inflight_share": dict(inflight_share)} if inflight_share else {}),
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None
             ),

@@ -121,6 +121,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "window_seconds": 3600,
             },
             "agent_loop": {"action": "count", "repeats": 5},
+            "inflight_sharing_api_key_ids": [],
         },
         "revision": 0,
         "updated_at": None,
@@ -741,3 +742,41 @@ async def test_a_stored_analyzer_this_build_does_not_have_breaks_nothing(
     assert (same.revision, changed.revision) == (0, 1)
     row = await db.get(OrganizationGatewaySettings, test_org.id)
     assert row.settings == {"response_analysis": ["language"]}
+
+
+@pytest.mark.asyncio
+async def test_inflight_sharing_names_only_this_organizations_keys(
+    db, test_api_key, audit_events
+) -> None:
+    organization_id = test_api_key.organization_id
+    admin = await _admin(db, organization_id)
+
+    with pytest.raises(HTTPException) as refused:
+        await management.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"inflight_sharing_api_key_ids": [str(uuid4())]}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    listed = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"inflight_sharing_api_key_ids": [str(test_api_key.id)]}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert refused.value.status_code == 422
+    assert "inflight_sharing_api_key_ids" in refused.value.detail
+    assert listed.settings.inflight_sharing_api_key_ids == [test_api_key.id]
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(organization_id)
+    ), "sharing within one key is neutral"
+    with pytest.raises(ValueError):
+        GatewaySettingsPatch.model_validate(
+            {"inflight_sharing_api_key_ids": [str(uuid4()) for _ in range(1001)]}
+        )

@@ -176,7 +176,11 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
         stream=False,
         protocol="chat",
         provider="openai",
-        admission=SimpleNamespace(task_id=None),
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
         policy_verdicts=[],
         payload={},
@@ -184,7 +188,9 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
     )
 
     def stage(name: str):
-        return lambda *_args, **_kwargs: SimpleNamespace(name=name, reserved=False)
+        return lambda *_args, **_kwargs: SimpleNamespace(
+            name=name, reserved=False, leader=None
+        )
 
     for class_name, name in (
         ("AuthenticateStage", "authenticate"),

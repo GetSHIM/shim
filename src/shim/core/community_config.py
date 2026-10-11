@@ -69,6 +69,7 @@ class CommunitySettings(BaseSettings):
     SHIM_TASK_WINDOW_SECONDS: int = Field(default=3600, ge=60, le=86_400)
     SHIM_AGENT_LOOP: Literal["off", "count", "block"] = "count"
     SHIM_AGENT_LOOP_REPEATS: int = Field(default=5, ge=3, le=100)
+    SHIM_INFLIGHT_SHARING: Literal["off", "on"] = "off"
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,

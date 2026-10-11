@@ -1251,3 +1251,159 @@ async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() ->
 
     verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
     assert verdicts["task.limit"] == ("error", "TASK_COUNTER_UNAVAILABLE")
+
+
+def _inflight_stage(registry, admit=None) -> AdmissionStage:
+    return AdmissionStage(
+        SimpleNamespace(headers={}),
+        SimpleNamespace(admit=admit or AsyncMock()),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+        inflight=registry,
+    )
+
+
+def _twin(
+    request_id: str,
+    *,
+    key: str = "22222222-2222-2222-2222-222222222222",
+    protocol: str = "chat",
+    model: str = "gpt-5.6-luna",
+    provider: str = "openai",
+    **values,
+) -> PreparedInference:
+    prepared = _prepared(
+        "the same question", protocol=protocol, model=model, provider=provider
+    )
+    payload = {**prepared.payload, **values.pop("payload", {})}
+    values.setdefault("inflight_sharing", True)
+    return replace(
+        prepared,
+        context=prepared.context.model_copy(
+            update={
+                "request_id": RequestId(request_id),
+                "api_key_id": ApiKeyId(UUID(key)),
+            }
+        ),
+        payload=payload,
+        **values,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_request_digest_hashes_the_bytes_as_sent_with_the_route() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    async def digest(prepared: PreparedInference) -> str | None:
+        admitted = await _inflight_stage(InFlightRegistry()).run(prepared)
+        assert admitted.admission is not None
+        return admitted.admission.request_digest
+
+    base = _twin("req_1")
+    reordered = replace(base, payload=dict(reversed(base.payload.items())))
+
+    assert await digest(base) == await digest(_twin("req_2"))
+    assert (
+        len(
+            {
+                await digest(base),
+                await digest(replace(base, model="gpt-5-nano")),
+                await digest(replace(base, stream=True)),
+                await digest(reordered),
+            }
+        )
+        == 4
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_a_request_admitted_while_its_twin_is_in_flight_names_it() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    first = await _inflight_stage(registry).run(_twin("req_1"))
+    second = await _inflight_stage(registry).run(_twin("req_2"))
+    assert first.admission is not None and second.admission is not None
+    registry.leave(str(first.tenant_id), str(first.admission.request_digest), "req_1")
+    later = await _inflight_stage(registry).run(_twin("req_3"))
+
+    assert first.admission.inflight_duplicate_of is None
+    assert second.admission.inflight_duplicate_of == "req_1"
+    assert later.admission is not None
+    assert later.admission.inflight_duplicate_of is None, "sequential, not overlapping"
+
+
+_OTHER_KEY = "33333333-3333-3333-3333-333333333333"
+_CLAUDE = {
+    "protocol": "messages",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+}
+_GEMINI = {
+    "protocol": "generate_content",
+    "provider": "google",
+    "model": "gemini-3.5-flash",
+    "payload": {"generationConfig": {"temperature": 0}},
+}
+_HOT_GEMINI = {**_GEMINI, "payload": {"generationConfig": {"temperature": 0.9}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("leader", "follower", "follows"),
+    [
+        ({}, {}, True),
+        ({"payload": {"temperature": 0}}, {"payload": {"temperature": 0}}, True),
+        (_CLAUDE, _CLAUDE, True),
+        (_GEMINI, _GEMINI, True),
+        ({}, {"key": _OTHER_KEY}, False),
+        ({}, {"inflight_sharing": False}, False),
+        ({"inflight_sharing": False}, {}, False),
+        ({"payload": {"temperature": 0.7}}, {"payload": {"temperature": 0.7}}, False),
+        ({"payload": {"n": 2}}, {"payload": {"n": 2}}, False),
+        ({"stream": True}, {"stream": True}, False),
+        ({"protocol": "responses"}, {"protocol": "responses"}, False),
+        (_HOT_GEMINI, _HOT_GEMINI, False),
+    ],
+)
+async def test_only_a_shareable_twin_of_the_same_key_follows(
+    leader, follower, follows
+) -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    await _inflight_stage(registry).run(_twin("req_1", **leader))
+    stage = _inflight_stage(registry)
+    admitted = await stage.run(_twin("req_2", **follower))
+
+    assert admitted.admission is not None
+    assert admitted.admission.inflight_duplicate_of == "req_1"
+    assert (stage.leader is not None) is follows
+
+
+@pytest.mark.asyncio
+async def test_a_token_count_and_a_refused_reservation_leave_nothing_behind() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    counted = await _inflight_stage(registry).run(
+        _twin(
+            "req_1",
+            protocol="count_tokens",
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+        )
+    )
+    with pytest.raises(RuntimeError):
+        await _inflight_stage(registry, AsyncMock(side_effect=RuntimeError)).run(
+            _twin("req_2")
+        )
+
+    assert counted.admission is not None
+    assert counted.admission.inflight_duplicate_of is None
+    assert not registry.entries

@@ -263,8 +263,79 @@ class ResponsePostprocessor:
                 headers=_gateway_headers(prepared, response.request_id),
             )
 
+        gateway_response, terminal = self._settle(prepared, response)
+        record_settled_usage(prepared, terminal.usage)
+        await self.usage.finalize(prepared, terminal)
+        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
+        scan = prepared.response_scan == "count"
+        analyzers = _analyzers(prepared)
+        if terminal.terminal_status == "completed" and (scan or analyzers):
+            reads = any(analyzer.reads_answer for analyzer in analyzers)
+            text = answer_text(response.payload) if reads else ""
+            calls = answer_tool_calls(response.payload) if reads else ()
+            answer = _Answer(
+                scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
+                if scan
+                else "",
+                text=text[:KEPT_ANSWER_CHARACTERS],
+                truncated=len(text) > KEPT_ANSWER_CHARACTERS
+                or len(calls) > KEPT_TOOL_CALLS,
+                tool_calls=calls[:KEPT_TOOL_CALLS],
+                completion_outcome=terminal.usage.completion_outcome,
+            )
+
+            async def after_send() -> None:
+                await self._start_after_answer(prepared, answer)
+
+            # Starlette runs this after the body is sent.
+            gateway_response.background = BackgroundTask(after_send)
+        return gateway_response
+
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        answer: ProviderNonStream,
+        leader_request_id: str,
+    ) -> JSONResponse | None:
+        """An identical in-flight request's answer: its body, this request's headers.
+
+        None when that answer did not complete, so this request calls the provider itself.
+        The shared answer is scanned and analyzed once, on the leader's record.
+        """
+        gateway_response, terminal = self._settle(prepared, answer, shared=True)
+        if terminal.terminal_status != "completed":
+            return None
+        usage = terminal.usage
+        prepared.record_verdict(
+            "inflight.share",
+            stage="provider_spend",
+            outcome="skip",
+            reason_code="INFLIGHT_RESPONSE_SHARED",
+        )
+        await self.usage.finalize_shared(
+            prepared,
+            terminal,
+            {
+                "leader_request_id": leader_request_id,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "avoided_cost_usd": str(usage.settlement_cost_usd),
+            },
+        )
+        return gateway_response
+
+    def _settle(
+        self,
+        prepared: PreparedInference,
+        response: ProviderNonStream,
+        *,
+        shared: bool = False,
+    ) -> tuple[JSONResponse, StreamFinalization]:
+        """The JSON response, and its usage, outcome and cost at this request's price."""
         if prepared.admission is None:
             raise ValueError("admission state is required")
+        # A shared answer made no provider call of this request's own.
+        latency_ms = None if shared else response.latency_ms
         usage = _usage(response.payload, provider=str(prepared.provider))
         prompt_actual = usage.get("prompt")
         completion_actual = usage.get("completion")
@@ -311,7 +382,7 @@ class ResponsePostprocessor:
             cache=split,
             price=prepared.deployment_price,
         )
-        if response.latency_ms is not None:
+        if latency_ms is not None:
             labels = {
                 "provider": bounded_label("provider", prepared.provider),
                 "model": bounded_label("model", prepared.model),
@@ -322,8 +393,9 @@ class ResponsePostprocessor:
                     "success" if lifecycle_status == "completed" else "provider_error"
                 ),
             ).inc()
-            PROVIDER_LATENCY_MS.labels(**labels).observe(response.latency_ms)
-        warn_after_answer(prepared, prompt_actual, split)
+            PROVIDER_LATENCY_MS.labels(**labels).observe(latency_ms)
+        if not shared:
+            warn_after_answer(prepared, prompt_actual, split)
         gateway_response = JSONResponse(
             content=response.payload,
             headers=_gateway_headers(prepared, response.request_id),
@@ -368,9 +440,7 @@ class ResponsePostprocessor:
                     else None
                 ),
                 provider_latency_ms=(
-                    round(response.latency_ms)
-                    if response.latency_ms is not None
-                    else None
+                    round(latency_ms) if latency_ms is not None else None
                 ),
                 answer_characters=characters,
                 tool_call_names=facts.tool_names,
@@ -388,36 +458,13 @@ class ResponsePostprocessor:
             shim_latency_ms=prepared.timing.shim_latency_ms,
         )
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
-        record_settled_usage(prepared, terminal.usage)
-        await self.usage.finalize(prepared, terminal)
-        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
-        scan = prepared.response_scan == "count"
-        analyzers = _analyzers(prepared)
-        if lifecycle_status == "completed" and (scan or analyzers):
-            reads = any(analyzer.reads_answer for analyzer in analyzers)
-            text = answer_text(response.payload) if reads else ""
-            calls = answer_tool_calls(response.payload) if reads else ()
-            answer = _Answer(
-                scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
-                if scan
-                else "",
-                text=text[:KEPT_ANSWER_CHARACTERS],
-                truncated=len(text) > KEPT_ANSWER_CHARACTERS
-                or len(calls) > KEPT_TOOL_CALLS,
-                tool_calls=calls[:KEPT_TOOL_CALLS],
-                completion_outcome=terminal.usage.completion_outcome,
-            )
-
-            async def after_send() -> None:
-                await self._start_after_answer(prepared, answer)
-
-            # Starlette runs this after the body is sent.
-            gateway_response.background = BackgroundTask(after_send)
-        return gateway_response
+        return gateway_response, terminal
 
     def create_stream_session(
         self,
         prepared: PreparedInference,
+        *,
+        on_terminal: Callable[[], None] | None = None,
     ) -> StreamSession:
         if prepared.admission is None:
             raise ValueError("admission state is required")
@@ -483,6 +530,8 @@ class ResponsePostprocessor:
             REQUESTS_IN_FLIGHT.labels(
                 provider=bounded_label("provider", prepared.provider)
             ).dec()
+            if on_terminal is not None:
+                on_terminal()
 
         return StreamSession(
             meter=meter,

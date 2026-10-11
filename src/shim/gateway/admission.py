@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
@@ -54,6 +55,77 @@ class TaskCounter(Protocol):
     async def add_cost(
         self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
     ) -> None: ...
+
+
+@dataclass(slots=True)
+class InFlightEntry:
+    request_id: str
+    api_key_id: str
+    shareable: bool
+    expires_at: float
+    # A shareable entry's answer, or None once it ends without one.
+    outcome: asyncio.Future[object] | None = None
+
+    def close(self, value: object = None) -> None:
+        if self.outcome is not None and not self.outcome.done():
+            self.outcome.set_result(value)
+
+
+class InFlightRegistry:
+    """Identical requests in flight in this process; nothing is kept once one ends."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 10_000,
+        expiry_seconds: float = 900,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.max_entries = max_entries
+        self.expiry_seconds = expiry_seconds
+        self.clock = clock
+        # Insertion order is expiry order: every entry lives expiry_seconds.
+        self.entries: OrderedDict[tuple[str, str], InFlightEntry] = OrderedDict()
+
+    def enter(
+        self,
+        tenant_id: str,
+        digest: str,
+        request_id: str,
+        api_key_id: str,
+        shareable: bool,
+    ) -> InFlightEntry | None:
+        """The earlier identical request still in flight, else None and this one registers."""
+        now = self.clock()
+        while self.entries and next(iter(self.entries.values())).expires_at <= now:
+            self.entries.popitem(last=False)[1].close()
+        key = (tenant_id, digest)
+        earlier = self.entries.get(key)
+        if earlier is not None:
+            return earlier
+        while len(self.entries) >= self.max_entries:
+            self.entries.popitem(last=False)[1].close()
+        self.entries[key] = InFlightEntry(
+            request_id,
+            api_key_id,
+            shareable,
+            now + self.expiry_seconds,
+            asyncio.get_running_loop().create_future() if shareable else None,
+        )
+        return None
+
+    def publish(
+        self, tenant_id: str, digest: str, request_id: str, answer: object
+    ) -> None:
+        entry = self.entries.get((tenant_id, digest))
+        if entry is not None and entry.request_id == request_id:
+            entry.close(answer)
+
+    def leave(self, tenant_id: str, digest: str, request_id: str) -> None:
+        entry = self.entries.get((tenant_id, digest))
+        if entry is not None and entry.request_id == request_id:
+            del self.entries[(tenant_id, digest)]
+            entry.close()
 
 
 class _FixedWindowCounters:

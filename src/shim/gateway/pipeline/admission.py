@@ -19,6 +19,8 @@ from shim.billing.attribution import CostAttribution
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.core.middleware import AsyncRateLimiter
 from shim.gateway.admission import (
+    InFlightEntry,
+    InFlightRegistry,
     InMemoryTaskCounter,
     LoopDetectionResult,
     LoopDetector,
@@ -92,6 +94,7 @@ class AdmissionStage:
         loop_window_seconds: int,
         cost_tag_max_length: int,
         task_counter: TaskCounter | None = None,
+        inflight: InFlightRegistry | None = None,
     ) -> None:
         if loop_repeat_limit < 2 or loop_window_seconds < 1:
             raise ValueError("loop-detection bounds are invalid")
@@ -105,6 +108,9 @@ class AdmissionStage:
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
         self.task_counter = task_counter or InMemoryTaskCounter()
+        self.inflight = inflight or InFlightRegistry()
+        # The shareable leader of this request's key whose answer it may receive.
+        self.leader: InFlightEntry | None = None
         self.loop_result = LoopDetectionResult("SAFE", 0)
         self.reserved = False
 
@@ -195,8 +201,12 @@ class AdmissionStage:
                     ),
                 },
             )
-        input_tokens = _estimate_input_tokens(payload)
-        output_tokens = per_candidate_output_tokens * candidate_count(value)
+        input_tokens, request_digest = _estimate_input_tokens(
+            payload,
+            f"{value.provider}|{value.protocol}|{value.model}|{value.stream}",
+        )
+        candidates = candidate_count(value)
+        output_tokens = per_candidate_output_tokens * candidates
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
@@ -358,6 +368,26 @@ class AdmissionStage:
                     headers={"x-should-retry": "false"},
                 )
         task_calls = await self._admit_task_call(value, task_id)
+        shareable = _shareable(value, candidates)
+        earlier = (
+            None
+            if value.protocol == "count_tokens"
+            else self.inflight.enter(
+                str(value.tenant_id),
+                request_digest,
+                str(value.request_id),
+                str(value.api_key_id),
+                shareable,
+            )
+        )
+        # An answer never crosses keys.
+        if (
+            shareable
+            and earlier is not None
+            and earlier.shareable
+            and earlier.api_key_id == str(value.api_key_id)
+        ):
+            self.leader = earlier
         admission = AdmissionState(
             estimated_input_tokens=input_tokens,
             maximum_output_tokens=output_tokens,
@@ -368,9 +398,17 @@ class AdmissionStage:
             trace_id=trace_id,
             tool_call_repeats=tool_call_repeats,
             task_calls=task_calls,
+            request_digest=request_digest,
+            inflight_duplicate_of=earlier.request_id if earlier is not None else None,
         )
         if value.protocol != "count_tokens":
-            await self.usage.admit(value, admission)
+            try:
+                await self.usage.admit(value, admission)
+            except BaseException:
+                self.inflight.leave(
+                    str(value.tenant_id), request_digest, str(value.request_id)
+                )
+                raise
             self.reserved = True
         return replace(
             value,
@@ -780,10 +818,38 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
     return sum(words(payload.get(field)) for field in _PROMPT_FIELDS)
 
 
-def _estimate_input_tokens(payload: Mapping[str, object]) -> int:
+def _estimate_input_tokens(
+    payload: Mapping[str, object], identity: str
+) -> tuple[int, str]:
+    """The byte bound and the request digest: SHA-256 over the identity and those bytes.
+
+    Keys hash in the order the client sent them, so a reordered body is another request.
+    """
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = serialized.encode("utf-8", errors="backslashreplace")
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
-    return max(1, len(serialized.encode("utf-8", errors="backslashreplace")))
+    return max(1, len(encoded)), hashlib.sha256(
+        identity.encode() + b"\n" + encoded
+    ).hexdigest()
+
+
+def _shareable(value: PreparedInference, candidates: int) -> bool:
+    """One JSON answer that another identical request of the key may receive as is."""
+    if not value.inflight_sharing or value.stream or candidates != 1:
+        return False
+    if value.protocol == "generate_content":
+        config = value.payload.get("generationConfig")
+        temperature = config.get("temperature") if isinstance(config, Mapping) else None
+    elif value.protocol in {"chat", "messages"}:
+        temperature = value.payload.get("temperature")
+    else:
+        # Responses carries provider-side conversation state; a count is no answer.
+        return False
+    return not (
+        isinstance(temperature, int | float)
+        and not isinstance(temperature, bool)
+        and temperature > 0
+    )
 
 
 def candidate_count(prepared: PreparedInference) -> int:

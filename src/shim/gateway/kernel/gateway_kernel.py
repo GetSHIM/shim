@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 import logging
@@ -10,10 +11,16 @@ from typing import Any
 from fastapi import HTTPException
 from opentelemetry import trace
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from starlette.responses import Response, JSONResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from shim.core.middleware import AsyncRateLimiter
-from shim.gateway.admission import InMemoryTaskCounter, LoopDetector, TaskCounter
+from shim.gateway.admission import (
+    InFlightEntry,
+    InFlightRegistry,
+    InMemoryTaskCounter,
+    LoopDetector,
+    TaskCounter,
+)
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.pipeline.admission import AdmissionStage
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
@@ -34,6 +41,7 @@ from shim.gateway.usage import (
     UsageLimitExceeded,
 )
 from shim.observability.metrics import (
+    INFLIGHT_DUPLICATES_TOTAL,
     REQUESTS_IN_FLIGHT,
     REQUESTS_TOTAL,
     bounded_label,
@@ -96,6 +104,8 @@ class GatewayKernel:
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
         self.task_counter = task_counter or InMemoryTaskCounter()
+        # Per process in both editions: a duplicate on another replica is not seen.
+        self.inflight = InFlightRegistry()
         self.postprocessor = ResponsePostprocessor(
             usage,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
@@ -212,6 +222,7 @@ class GatewayKernel:
             loop_window_seconds=self.loop_window_seconds,
             cost_tag_max_length=self.cost_tag_max_length,
             task_counter=self.task_counter,
+            inflight=self.inflight,
         )
         try:
             prepared = await run_stage(admission_stage, prepared)
@@ -249,6 +260,14 @@ class GatewayKernel:
         stream_session: StreamSession | None = None
         # A reference, not a copy: the approval gate digests what entered privacy.
         admitted_payload = prepared.payload
+        admission = prepared.admission
+        inflight_key = (
+            str(prepared.tenant_id),
+            str(admission.request_digest),
+            str(prepared.request_id),
+        )
+        leader = admission_stage.leader
+        shared = handed_off = False
         try:
             prepared = await run_stage(
                 PrivacyStage(
@@ -302,6 +321,15 @@ class GatewayKernel:
                     headers["request-id"] = counted.request_id
                 return JSONResponse(content=counted.payload, headers=headers)
             await self.usage.record_privacy(prepared)
+            if leader is not None and (
+                answer := await self._leader_answer(prepared, leader)
+            ):
+                response = await self.postprocessor.finalize_shared(
+                    prepared, answer, leader.request_id
+                )
+                if response is not None:
+                    shared = True
+                    return response
             prepared = await run_stage(
                 ProviderSpendStage(invocation, self.usage),
                 prepared,
@@ -309,6 +337,7 @@ class GatewayKernel:
             if prepared.stream:
                 stream_session = self.postprocessor.create_stream_session(
                     prepared,
+                    on_terminal=lambda: self.inflight.leave(*inflight_key),
                 )
             # A stream's session releases its own call at its terminal state.
             in_flight = REQUESTS_IN_FLIGHT.labels(
@@ -329,8 +358,10 @@ class GatewayKernel:
                 raise
             if not isinstance(provider_output, ProviderStream):
                 in_flight.dec()
+                # Before this request's own postprocess, so followers do not wait on it.
+                self.inflight.publish(*inflight_key, provider_output)
             try:
-                return await run_stage(
+                response = await run_stage(
                     PostprocessStage(
                         self.postprocessor,
                         prepared,
@@ -338,6 +369,9 @@ class GatewayKernel:
                     ),
                     provider_output,
                 )
+                # A stream leaves at its terminal state, through its session.
+                handed_off = isinstance(response, StreamingResponse)
+                return response
             except BaseException:
                 if isinstance(provider_output, ProviderStream):
                     in_flight.dec()
@@ -365,6 +399,26 @@ class GatewayKernel:
                     )
                 await self.usage.reject(prepared)
             raise
+        finally:
+            if not handed_off:
+                self.inflight.leave(*inflight_key)
+            if admission.inflight_duplicate_of is not None:
+                INFLIGHT_DUPLICATES_TOTAL.labels(shared=str(shared).lower()).inc()
+
+    async def _leader_answer(
+        self, prepared: PreparedInference, leader: InFlightEntry
+    ) -> ProviderNonStream | None:
+        """The leader's answer, or None once it ends without one or its entry expires."""
+        assert leader.outcome is not None
+        try:
+            # Provider time, like the call it replaces. Shielded: a follower that stops
+            # waiting must not cancel the leader's answer.
+            with prepared.timing.exclude():
+                async with asyncio.timeout(leader.expires_at - self.inflight.clock()):
+                    answer = await asyncio.shield(leader.outcome)
+        except TimeoutError:
+            return None
+        return answer if isinstance(answer, ProviderNonStream) else None
 
     async def _decide_rules(
         self,

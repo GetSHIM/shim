@@ -4785,6 +4785,16 @@
               "repeats": 5
             }
           },
+          "inflight_sharing_api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Inflight Sharing Api Key Ids",
+            "type": "array"
+          },
           "injection_markers": {
             "default": "off",
             "enum": [
@@ -4838,6 +4848,22 @@
                 "type": "null"
               }
             ]
+          },
+          "inflight_sharing_api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inflight Sharing Api Key Ids"
           },
           "injection_markers": {
             "anyOf": [

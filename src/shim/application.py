@@ -149,6 +149,7 @@ def create_community_app(
                         action=configured.SHIM_AGENT_LOOP,
                         repeats=configured.SHIM_AGENT_LOOP_REPEATS,
                     ),
+                    inflight_sharing=configured.SHIM_INFLIGHT_SHARING == "on",
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

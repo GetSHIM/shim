@@ -122,6 +122,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             trace_id=None,
             tool_call_repeats=None,
             task_calls=None,
+            request_digest="digest",
+            inflight_duplicate_of=None,
         ),
         task_caps=TaskCaps(),
         payload={"messages": []},
@@ -3507,3 +3509,99 @@ async def test_the_reservation_records_the_task_and_trace_ids(
     assert (metadata["tool_call_repeats"], metadata["task_calls"]) == (
         (2, 3) if task_id else (None, None)
     )
+    assert metadata["inflight_duplicate_of"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_shared_answer_settles_one_request_unit_without_tokens_or_spend(
+    db, test_api_key
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    follower = _prepared()
+    follower.tenant_id = test_api_key.organization_id
+    follower.api_key_id = test_api_key.id
+    leader_id = f"req_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=follower.tenant_id,
+            api_key_id=follower.api_key_id,
+            request_id=follower.request_id,
+            requested_model=follower.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            inflight_duplicate_of=leader_id,
+        ),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    response = await ResponsePostprocessor(
+        DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+    ).finalize_shared(
+        follower,
+        ProviderNonStream(
+            payload={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+            request_id="upstream-1",
+            latency_ms=12.0,
+        ),
+        leader_id,
+    )
+
+    lifecycle = await db.scalar(
+        select(RequestLifecycle).where(
+            RequestLifecycle.request_id == follower.request_id
+        )
+    )
+    ledger = (
+        await db.execute(
+            select(
+                UsageLedger.event_type,
+                UsageLedger.request_count,
+                UsageLedger.total_tokens,
+                UsageLedger.cost_usd,
+            ).where(UsageLedger.request_id == follower.request_id)
+        )
+    ).all()
+    assert response is not None and response.headers["x-request-id"] == "upstream-1"
+    assert (lifecycle.status, lifecycle.provider_model) == ("completed", "gpt-5.6-luna")
+    metadata = lifecycle.lifecycle_metadata
+    assert metadata["inflight_duplicate_of"] == leader_id
+    assert metadata["inflight_share"] == {
+        "leader_request_id": leader_id,
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "avoided_cost_usd": str(
+            compute_cost_usd("gpt-5.6-luna", 100, 20, provider="openai")
+        ),
+    }
+    assert ("inflight.share", "skip", "INFLIGHT_RESPONSE_SHARED") in {
+        (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
+        for verdict in metadata["policy_verdicts"]
+    }
+    assert sorted(ledger) == [
+        ("quota_reservation", 1, 50, Decimal("0")),
+        ("quota_settlement", 1, 0, Decimal("0")),
+    ], "one request unit, no tokens, no spend row"

@@ -132,6 +132,9 @@ class AdmissionState:
     trace_id: str | None = None
     tool_call_repeats: int | None = None
     task_calls: int | None = None
+    request_digest: str | None = None
+    # The identical request already in flight when this one was admitted.
+    inflight_duplicate_of: str | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
@@ -172,6 +175,7 @@ class PreparedInference:
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = field(default_factory=TaskCaps)
     agent_loop: AgentLoop = field(default_factory=AgentLoop)
+    inflight_sharing: bool = False
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )

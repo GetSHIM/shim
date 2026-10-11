@@ -111,6 +111,7 @@ class AuthenticateStage:
             restore_withheld=policy.restore_withheld,
             task_caps=policy.task_caps,
             agent_loop=policy.agent_loop,
+            inflight_sharing=policy.inflight_sharing,
             rules=policy.rules,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),

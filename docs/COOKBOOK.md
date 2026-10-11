@@ -164,10 +164,12 @@ Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
 `repeat_chain_length`, `cost_center`, `tags`, `task_id`, `trace_id`,
-`tool_call_repeats`, `task_calls`, `system_prompt_hash`,
+`tool_call_repeats`, `task_calls`, `inflight_duplicate_of`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
-`bulk_disclosure`, `warnings` and `policy_verdicts`, and `injection_markers` when
-[the marker scan](#count-instructions-hidden-in-tool-results) is on. The three count maps give values by
+`bulk_disclosure`, `warnings` and `policy_verdicts`, `injection_markers` when
+[the marker scan](#count-instructions-hidden-in-tool-results) is on, and
+`inflight_share` on a request that received an identical request's answer (see
+[identical requests in flight](#read-errors-and-retry)). The three count maps give values by
 entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
@@ -431,6 +433,27 @@ Notes:
   verdict reads `AGENT_LOOP_SUSPECTED`. `block` refuses above the threshold; `off`
   computes nothing. An agent loop grows its history every turn, so the exact-repeat
   limit above never catches it.
+- Identical requests in flight. A request whose body, provider, protocol, model
+  and stream flag match a request of the same tenant that is still in flight
+  carries that request's id in `inflight_duplicate_of`
+  (`shim_inflight_duplicates_total{shared}` counts them). Identical means the same
+  bytes: a client that sends the same fields in another order sends another
+  request. Nothing else changes unless you set `SHIM_INFLIGHT_SHARING=on`; then a
+  JSON chat, Anthropic messages or Gemini `generateContent` request of the same key
+  waits for the first one's answer and returns the same body bytes with its own
+  `X-Shim-Request-Id` and `X-Shim-Latency-Ms`, without a provider call of its own.
+  It still passes its own rate limits, repeat check and privacy first. Never shared:
+  streams, Responses (provider-side conversation state), token counts, `n` above 1
+  or Gemini `candidateCount` above 1, an explicit `temperature` above 0, and other
+  keys. If the first request fails or is cancelled, the second calls the provider
+  itself, once. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
+  holds `leader_request_id`, the shared answer's `prompt_tokens` and
+  `completion_tokens`, and `avoided_cost_usd` at its own price; the first request's
+  event carries the provider call and its cost, so the events add up to the
+  provider bill. The shared answer is scanned and analysed once, on the first
+  request's event. Nothing is kept after the first request ends: this is not a
+  cache. The registry lives in the process (at most 10,000 requests, 900 seconds
+  each), so a duplicate on another replica is not seen.
 - After five provider failures with no success in between, the provider's
   circuit opens for 60 seconds. A provider 429 neither opens nor closes it.
 - The per-IP limit counts the connecting address. Behind a proxy, list the

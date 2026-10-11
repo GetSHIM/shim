@@ -211,6 +211,12 @@ AGENT_LOOP_SIGNALS_TOTAL = Counter(
     "Repeated tool calls that reached the loop threshold, by action (count, block).",
     ("action",),
 )
+INFLIGHT_DUPLICATES_TOTAL = Counter(
+    "shim_inflight_duplicates_total",
+    "Requests admitted while an identical request was in flight, by whether they "
+    "received its answer (true, false).",
+    ("shared",),
+)
 TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",

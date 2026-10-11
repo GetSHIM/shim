@@ -48,6 +48,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             trace_id=None,
             tool_call_repeats=None,
             task_calls=None,
+            inflight_duplicate_of=None,
         ),
         task_caps=TaskCaps(),
         deployment_kind="unknown",
@@ -184,6 +185,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "trace_id",
         "tool_call_repeats",
         "task_calls",
+        "inflight_duplicate_of",
         "system_prompt_hash",
         "deployment_kind",
         "warnings",
@@ -223,6 +225,7 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "trace_id": None,
         "tool_call_repeats": None,
         "task_calls": None,
+        "inflight_duplicate_of": None,
         "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
@@ -1808,6 +1811,49 @@ async def test_the_jsonl_event_carries_the_task_and_trace_ids(
 
     event = json.loads(stream.getvalue())
     assert (event["task_id"], event["trace_id"]) == (task_id, trace_id)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_answer_writes_a_line_at_no_cost_with_the_share() -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.admission.inflight_duplicate_of = "req_leader"
+    share = {
+        "leader_request_id": "req_leader",
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "avoided_cost_usd": "0.0000106",
+    }
+
+    await usage.finalize_shared(prepared, _terminal(), share)
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    follower, leader = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert {
+        key: follower[key]
+        for key in (
+            "outcome",
+            "prompt_tokens",
+            "completion_tokens",
+            "estimated_cost_usd",
+            "estimated",
+            "completion_outcome",
+            "inflight_duplicate_of",
+            "inflight_share",
+        )
+    } == {
+        "outcome": "completed",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_cost_usd": "0",
+        "estimated": False,
+        "completion_outcome": "complete",
+        "inflight_duplicate_of": "req_leader",
+        "inflight_share": share,
+    }
+    assert "inflight_share" not in leader, "absent unless an answer was shared"
 
 
 @pytest.mark.asyncio

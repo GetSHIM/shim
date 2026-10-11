@@ -243,6 +243,17 @@ was seen for its task, else its key, within the loop window) and `task_calls` (t
 task's calls after this one, only while a task cap is set) are written at
 reservation, `null` when not computed.
 
+`inflight_duplicate_of` is written at reservation: the request id of an identical
+request of the tenant (the same body bytes, provider, protocol, model and stream
+flag) that was in flight on the same replica when this one was admitted, else
+`null`. `inflight_share` is written at finalization, only on a request that
+received that request's answer because its key is in
+`inflight_sharing_api_key_ids`: `leader_request_id`, the shared answer's
+`prompt_tokens` and `completion_tokens`, and `avoided_cost_usd` at this request's
+price. Such a request settles one request unit with no tokens and no spend row;
+the leader's row carries the provider call and its cost. Both are in the
+lifecycle metadata only.
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the

@@ -381,6 +381,8 @@ class TenantRequestPolicyResolver:
                 price_tier_warning=tenant_settings.gateway_settings.price_tier_warning,
                 task_caps=tenant_settings.gateway_settings.task_caps,
                 agent_loop=tenant_settings.gateway_settings.agent_loop,
+                inflight_sharing=api_key.id
+                in tenant_settings.gateway_settings.inflight_sharing_api_key_ids,
                 restore_withheld=frozenset(
                     kind
                     for kind, grant in tenant_settings.gateway_settings.restore_withheld.items()

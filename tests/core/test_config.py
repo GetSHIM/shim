@@ -294,3 +294,20 @@ def test_task_caps_are_off_and_the_loop_signal_counts_by_default() -> None:
         "count",
     )
     assert settings.SHIM_AGENT_LOOP_REPEATS == 5
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_INFLIGHT_SHARING == "off"
+    if valid:
+        assert (
+            CommunitySettings(
+                _env_file=None, SHIM_INFLIGHT_SHARING=value
+            ).SHIM_INFLIGHT_SHARING
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_INFLIGHT_SHARING=value)

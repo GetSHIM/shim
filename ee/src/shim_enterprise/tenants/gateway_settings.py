@@ -79,6 +79,7 @@ class GatewaySettings(BaseModel):
     restore_withheld: dict[str, RestoreGrant] = {}
     task_caps: TaskCaps = TaskCaps()
     agent_loop: AgentLoop = AgentLoop()
+    inflight_sharing_api_key_ids: list[UUID] = Field(default=[], max_length=1000)
 
     @field_validator("response_analysis")
     @classmethod
@@ -104,6 +105,9 @@ class GatewaySettingsPatch(BaseModel):
     # Merged into the stored values field by field; null removes a cap.
     task_caps: TaskCaps | None = None
     agent_loop: AgentLoop | None = None
+    inflight_sharing_api_key_ids: list[UUID] | None = Field(
+        default=None, max_length=1000
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -209,6 +213,9 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "restore_withheld": _restore_direction,
     "task_caps": _caps_direction,
     "agent_loop": _loop_direction,
+    # A key's identical in-flight requests share one answer after each passes its own
+    # limits and privacy; an answer never crosses keys.
+    "inflight_sharing_api_key_ids": _neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

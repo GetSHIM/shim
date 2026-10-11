@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 import io
 import json
@@ -53,7 +54,11 @@ async def test_kernel_runs_the_authoritative_stage_order(
         stream=False,
         protocol="chat",
         provider="openai",
-        admission=SimpleNamespace(task_id=None),
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=_NO_PII,
         payload={},
         rules=None,
@@ -62,7 +67,9 @@ async def test_kernel_runs_the_authoritative_stage_order(
     response = Response("ok")
 
     def stage(name: str):
-        return lambda *_args, **_kwargs: SimpleNamespace(name=name, reserved=False)
+        return lambda *_args, **_kwargs: SimpleNamespace(
+            name=name, reserved=False, leader=None
+        )
 
     for class_name, stage_name in (
         ("AuthenticateStage", "resolve_principal"),
@@ -226,7 +233,11 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
         stream=False,
         protocol="chat",
         provider="openai",
-        admission=SimpleNamespace(task_id=None),
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=_NO_PII,
         payload={},
         rules=None,
@@ -283,7 +294,11 @@ async def test_kernel_maps_post_reservation_admission_abort(
         stream=False,
         protocol="chat",
         provider="openai",
-        admission=SimpleNamespace(task_id=None),
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=_NO_PII,
         payload={},
         rules=None,
@@ -314,7 +329,11 @@ async def test_recovery_session_failure_does_not_mask_original_error(
         stream=False,
         protocol="chat",
         provider="openai",
-        admission=SimpleNamespace(task_id=None),
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=_NO_PII,
         payload={},
         rules=None,
@@ -2022,3 +2041,279 @@ async def test_the_request_span_joins_the_callers_trace_only_when_honored(
         "task-42",
         _CALLER_TRACE if valid else None,
     )
+
+
+# In-flight duplicates (S48): the upstream holds every call until the test releases it.
+
+
+class _SecondResolutionBlocked:
+    """The second request to authenticate carries an enforced block rule."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.resolved = 0
+
+    async def resolve(self, principal):
+        policy = await self.inner.resolve(principal)
+        self.resolved += 1
+        if self.resolved == 1:
+            return policy
+        return policy.model_copy(
+            update={"rules": _rule_set(("blocked", "block", "enforced"))}
+        )
+
+
+async def _overlapping(
+    requests: list[tuple[str, dict]],
+    *,
+    sharing: str = "on",
+    fail_first: bool = False,
+    resolver=None,
+) -> tuple[list[httpx.Response], list[httpx.Request], list[dict]]:
+    release = asyncio.Event()
+    calls: list[httpx.Request] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        number = len(calls)
+        await release.wait()
+        if fail_first and number == 1:
+            return httpx.Response(500, json={"error": {"message": "down"}})
+        if json.loads(request.content).get("stream"):
+            return httpx.Response(
+                200,
+                text=_MARKED_STREAMS["/v1/chat/completions"],
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            json=_RULE_REPLIES[request.url.path],
+            headers={"x-request-id": f"upstream-{number}"},
+        )
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_INFLIGHT_SHARING=sharing,
+                PII_ENTITY_ACTIONS=json.dumps(
+                    {name: "off" for name in effective_entity_actions()}
+                ),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            if resolver is not None:
+                kernel.policy_resolver = resolver(kernel.policy_resolver)
+            entered: list[tuple] = []
+            enter = kernel.inflight.enter
+
+            def counted_enter(*args):
+                entered.append(args)
+                return enter(*args)
+
+            kernel.inflight.enter = counted_enter
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                tasks = [
+                    asyncio.create_task(
+                        inbound.post(
+                            _ROUTES[route][0],
+                            headers={
+                                **_ROUTES[route][1],
+                                "x-provider-key": "provider-secret",
+                            },
+                            json=payload,
+                        )
+                    )
+                    for route, payload in requests
+                ]
+                async with asyncio.timeout(10):
+                    while len(entered) < len(requests):
+                        await asyncio.sleep(0.01)
+                release.set()
+                responses = await asyncio.gather(*tasks)
+            assert not kernel.inflight.entries, "every request left the registry"
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return responses, calls, [line for line in lines if line["event"] == "request"]
+
+
+_TWINS = {
+    "chat": ("chat", _ROUTES["chat"][2]("twin")),
+    "temperature 0": ("chat", {**_ROUTES["chat"][2]("twin"), "temperature": 0}),
+    "messages": ("messages", _ROUTES["messages"][2]("twin")),
+    "gemini": ("gemini", _ROUTES["gemini"][2]("twin")),
+    "n 2": ("chat", {**_ROUTES["chat"][2]("twin"), "n": 2}),
+    "temperature 0.7": ("chat", {**_ROUTES["chat"][2]("twin"), "temperature": 0.7}),
+    "stream": ("chat_stream", _ROUTES["chat_stream"][2]("twin")),
+    "responses": ("responses", _ROUTES["responses"][2]("twin")),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("twin", ["chat", "temperature 0", "messages", "gemini"])
+async def test_a_twin_of_one_key_receives_the_answer_without_a_second_call(
+    twin,
+) -> None:
+    responses, calls, lines = await _overlapping([_TWINS[twin]] * 2)
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert len(calls) == 1
+    assert responses[0].content == responses[1].content
+    ids = {response.headers["x-shim-request-id"] for response in responses}
+    assert len(ids) == 2
+    [follower] = [line for line in lines if "inflight_share" in line]
+    [leader] = [line for line in lines if "inflight_share" not in line]
+    assert follower["inflight_duplicate_of"] == leader["request_id"]
+    assert leader["inflight_duplicate_of"] is None
+    assert follower["inflight_share"] == {
+        "leader_request_id": leader["request_id"],
+        "prompt_tokens": leader["prompt_tokens"],
+        "completion_tokens": leader["completion_tokens"],
+        "avoided_cost_usd": leader["estimated_cost_usd"],
+    }
+    assert (
+        follower["prompt_tokens"],
+        follower["completion_tokens"],
+        follower["estimated_cost_usd"],
+        follower["estimated"],
+        follower["completion_outcome"],
+    ) == (0, 0, "0", False, leader["completion_outcome"])
+    assert {
+        (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
+        for verdict in follower["policy_verdicts"]
+    } >= {("inflight.share", "skip", "INFLIGHT_RESPONSE_SHARED")}
+    if twin == "chat":
+        upstream = {response.headers["x-request-id"] for response in responses}
+        assert upstream == {"upstream-1"}, "the leader's upstream request id"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("twin", "sharing"),
+    [
+        ("chat", "off"),
+        ("n 2", "on"),
+        ("temperature 0.7", "on"),
+        ("stream", "on"),
+        ("responses", "on"),
+    ],
+)
+async def test_an_unshareable_twin_is_counted_and_calls_the_provider(
+    twin, sharing
+) -> None:
+    responses, calls, lines = await _overlapping([_TWINS[twin]] * 2, sharing=sharing)
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert len(calls) == 2
+    assert not any("inflight_share" in line for line in lines)
+    duplicates = sorted(
+        (line["inflight_duplicate_of"] for line in lines),
+        key=lambda value: value is not None,
+    )
+    assert duplicates[0] is None
+    assert duplicates[1] == next(
+        line["request_id"] for line in lines if line["inflight_duplicate_of"] is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_when_the_leader_fails_its_twin_calls_the_provider_itself() -> None:
+    responses, calls, lines = await _overlapping([_TWINS["chat"]] * 2, fail_first=True)
+
+    assert sorted(response.status_code for response in responses)[0] == 200
+    assert sorted(response.status_code for response in responses)[1] >= 500
+    assert len(calls) == 2
+    assert not any("inflight_share" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_twin_refused_by_its_own_rule_never_shares(monkeypatch) -> None:
+    _matching_privacy(monkeypatch)
+
+    responses, calls, lines = await _overlapping(
+        [_TWINS["chat"]] * 2, resolver=_SecondResolutionBlocked
+    )
+
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    assert len(calls) == 1
+    assert not any("inflight_share" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_twin_stops_waiting_and_the_leader_answers() -> None:
+    release = asyncio.Event()
+    calls: list[httpx.Request] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        await release.wait()
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_INFLIGHT_SHARING="on"
+            ),
+            http_client=outbound,
+            event_stream=io.StringIO(),
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            waiting = asyncio.Event()
+            leader_answer = kernel._leader_answer
+
+            async def waited(*args):
+                waiting.set()
+                return await leader_answer(*args)
+
+            kernel._leader_answer = waited
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+
+                def send() -> asyncio.Task:
+                    return asyncio.create_task(
+                        inbound.post(
+                            "/v1/chat/completions",
+                            headers={
+                                **_ROUTES["chat"][1],
+                                "x-provider-key": "provider-secret",
+                            },
+                            json=_TWINS["chat"][1],
+                        )
+                    )
+
+                leader = send()
+                async with asyncio.timeout(10):
+                    while not calls:
+                        await asyncio.sleep(0.01)
+                    [entry] = kernel.inflight.entries.values()
+                    follower = send()
+                    await waiting.wait()
+                await asyncio.sleep(0.01)
+                follower.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await follower
+                assert entry.outcome is not None and not entry.outcome.cancelled()
+                release.set()
+                answered = await leader
+                assert not kernel.inflight.entries
+
+                release.clear()
+                lone = send()
+                async with asyncio.timeout(10):
+                    while len(calls) < 2:
+                        await asyncio.sleep(0.01)
+                lone.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await lone
+                assert not kernel.inflight.entries, "a cancelled leader leaves"
+
+    assert answered.status_code == 200
+    assert len(calls) == 2

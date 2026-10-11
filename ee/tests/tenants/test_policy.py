@@ -419,7 +419,7 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
         (UUID(int=9), None, frozenset({"TR_NATIONAL_ID", "IBAN_CODE"})),
     ],
 )
-async def test_restore_permission_comes_from_the_key_or_its_team(
+async def test_restore_permission_and_inflight_sharing_follow_the_key(
     monkeypatch: pytest.MonkeyPatch, key_id, team_id, withheld
 ) -> None:
     from shim_enterprise.tenants.gateway_settings import GatewaySettings, RestoreGrant
@@ -442,7 +442,8 @@ async def test_restore_permission_comes_from_the_key_or_its_team(
                 api_key_ids=[UUID(int=7)], team_ids=[UUID(int=20)]
             ),
             "IBAN_CODE": RestoreGrant(),
-        }
+        },
+        inflight_sharing_api_key_ids=[UUID(int=7)],
     )
     policy_service = SimpleNamespace(
         resolve=AsyncMock(
@@ -461,3 +462,4 @@ async def test_restore_permission_comes_from_the_key_or_its_team(
     resolved = await resolver.resolve(SimpleNamespace())
 
     assert resolved.restore_withheld == withheld
+    assert resolved.inflight_sharing is (key_id == UUID(int=7))

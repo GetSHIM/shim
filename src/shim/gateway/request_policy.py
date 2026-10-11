@@ -62,6 +62,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     restore_withheld: frozenset[str] = frozenset()
     task_caps: TaskCaps = TaskCaps()
     agent_loop: AgentLoop = AgentLoop()
+    # The request's key may share an identical in-flight answer (S48).
+    inflight_sharing: bool = False
     rules: RuleSet | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
@@ -81,6 +83,7 @@ class LocalRequestPolicyResolver:
         "_agent_loop",
         "_bulk_threshold",
         "_entity_actions",
+        "_inflight_sharing",
         "_injection_markers",
         "_placeholder_key",
         "_price_tier_warning",
@@ -105,6 +108,7 @@ class LocalRequestPolicyResolver:
         price_tier_warning: bool = False,
         task_caps: TaskCaps = TaskCaps(),
         agent_loop: AgentLoop = AgentLoop(),
+        inflight_sharing: bool = False,
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -117,6 +121,7 @@ class LocalRequestPolicyResolver:
         self._price_tier_warning = price_tier_warning
         self._task_caps = task_caps
         self._agent_loop = agent_loop
+        self._inflight_sharing = inflight_sharing
 
     async def resolve(
         self,
@@ -152,4 +157,5 @@ class LocalRequestPolicyResolver:
             price_tier_warning=self._price_tier_warning,
             task_caps=self._task_caps,
             agent_loop=self._agent_loop,
+            inflight_sharing=self._inflight_sharing,
         )

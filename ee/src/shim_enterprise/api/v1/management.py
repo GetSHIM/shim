@@ -2701,12 +2701,34 @@ async def update_gateway_settings(
             for key, value in changes.items()
         }
     )
-    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
-        ids = {
-            value
-            for grant in after.restore_withheld.values()
-            for value in getattr(grant, field)
-        }
+    for setting, field, model, ids in (
+        (
+            "restore_withheld",
+            "api_key_ids",
+            ApiKey,
+            {
+                key
+                for grant in after.restore_withheld.values()
+                for key in grant.api_key_ids
+            },
+        ),
+        (
+            "restore_withheld",
+            "team_ids",
+            Team,
+            {
+                team
+                for grant in after.restore_withheld.values()
+                for team in grant.team_ids
+            },
+        ),
+        (
+            "inflight_sharing_api_key_ids",
+            "api_key_ids",
+            ApiKey,
+            set(after.inflight_sharing_api_key_ids),
+        ),
+    ):
         known = (
             set(
                 await session.scalars(
@@ -2715,12 +2737,12 @@ async def update_gateway_settings(
                     )
                 )
             )
-            if ids and "restore_withheld" in changes
+            if ids and setting in changes
             else ids
         )
         if ids - known:
             raise HTTPException(
-                422, detail=f"restore_withheld names {field} this organization lacks"
+                422, detail=f"{setting} names {field} this organization lacks"
             )
     if after == before:
         # Nothing to write; a row inserted above came from a concurrent first write.
