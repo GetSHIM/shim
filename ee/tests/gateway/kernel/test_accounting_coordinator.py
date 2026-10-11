@@ -39,9 +39,11 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     AccountingPolicyLoader,
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
+)
+from shim_enterprise.cache.loop_detection import (
+    LoopDetectionService,
     keyed_repeat_digest,
 )
-from shim_enterprise.cache.loop_detection import LoopDetectionService
 from shim.gateway.contracts.context import (
     AuditPolicy,
     GatewayContext,

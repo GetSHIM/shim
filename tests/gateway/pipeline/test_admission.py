@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -1239,6 +1240,48 @@ def test_the_tool_signature_reads_the_latest_call_and_ignores_key_order(
 
 
 @pytest.mark.parametrize(
+    "protocol", ["chat", "responses", "messages", "generate_content"]
+)
+def test_a_plain_answer_after_a_tool_call_ends_the_signature(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    history = _history(protocol, '{"path": "a"}')
+    if protocol == "responses":
+        history["input"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+    elif protocol == "generate_content":
+        history["contents"] += [
+            {"role": "model", "parts": [{"text": "done"}]},
+            {"role": "user", "parts": [{"text": "again"}]},
+        ]
+    else:
+        history["messages"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+
+    assert _tool_signature(history, protocol) is None
+
+
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+def test_deeply_nested_arguments_are_hashed_as_text_in_linear_time(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    def best_of_three(arguments: str) -> float:
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            signature = _tool_signature(_history(protocol, arguments), protocol)
+            timings.append(time.perf_counter() - started)
+            assert signature is not None
+        return min(timings)
+
+    assert best_of_three("[" * 200_000) < 4 * best_of_three('"' + "a" * 199_998 + '"')
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"messages": [{"role": "user", "content": "no tools"}]},
@@ -1362,10 +1405,17 @@ async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() ->
     )
     prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
 
+    from prometheus_client import REGISTRY
+
+    before = REGISTRY.get_sample_value("shim_task_counter_unavailable_total") or 0
+
     await stage.run(prepared)
 
     verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
     assert verdicts["task.limit"] == ("error", "TASK_COUNTER_UNAVAILABLE")
+    assert REGISTRY.get_sample_value("shim_task_counter_unavailable_total") == (
+        before + 1
+    )
 
 
 def _inflight_stage(registry, admit=None) -> AdmissionStage:

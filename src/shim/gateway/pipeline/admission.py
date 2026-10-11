@@ -39,6 +39,7 @@ from shim.gateway.pipeline.privacy import _is_protocol_field
 from shim.observability.metrics import (
     AGENT_LOOP_SIGNALS_TOTAL,
     TASK_ID_REJECTED_TOTAL,
+    TASK_COUNTER_UNAVAILABLE_TOTAL,
     TASK_LIMIT_REFUSALS_TOTAL,
 )
 from shim.rules.evaluate import in_scope, settle_matches
@@ -466,6 +467,10 @@ class AdmissionStage:
             window_seconds=caps.window_seconds,
         )
         refused = not task.allowed
+        if task.unavailable:
+            # Caps are advisory: an outage admits the call, never silently (the
+            # counter logs why).
+            TASK_COUNTER_UNAVAILABLE_TOTAL.inc()
         value.record_verdict(
             "task.limit",
             stage="admission",
@@ -576,20 +581,23 @@ def micro_usd(amount: Decimal | None) -> int | None:
 
 
 def _arguments(value: object) -> object:
-    """Chat and Responses send arguments as a JSON string; parsed when valid."""
+    """Chat and Responses send arguments as a JSON string; parsed when valid.
+
+    Nesting too deep to parse is hashed as the text it is.
+    """
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except ValueError:
+        except (ValueError, RecursionError):
             return value
     return value
 
 
-def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
-    """The tool calls of one assistant (or model) turn, or [] for any other turn."""
-    if not isinstance(turn, Mapping):
-        return []
-    if protocol == "chat" and turn.get("role") == "assistant":
+def _turn_calls(
+    turn: Mapping[str, object], protocol: str
+) -> list[tuple[object, object]]:
+    """The tool calls of one assistant (or model) turn."""
+    if protocol == "chat":
         return [
             (
                 call["function"].get("name"),
@@ -598,42 +606,46 @@ def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
             for call in _listed(turn.get("tool_calls"))
             if isinstance(call, Mapping) and isinstance(call.get("function"), Mapping)
         ]
-    if protocol in {"messages", "count_tokens"} and turn.get("role") == "assistant":
-        return [
-            (block.get("name"), block.get("input"))
-            for block in _listed(turn.get("content"))
-            if isinstance(block, Mapping) and block.get("type") == "tool_use"
-        ]
-    if protocol == "generate_content" and turn.get("role") == "model":
+    if protocol == "generate_content":
         return [
             (part["functionCall"].get("name"), part["functionCall"].get("args"))
             for part in _listed(turn.get("parts"))
             if isinstance(part, Mapping)
             and isinstance(part.get("functionCall"), Mapping)
         ]
-    return []
+    return [
+        (block.get("name"), block.get("input"))
+        for block in _listed(turn.get("content"))
+        if isinstance(block, Mapping) and block.get("type") == "tool_use"
+    ]
 
 
 def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
     """A digest of the latest assistant turn's tool calls: names and canonical arguments.
 
-    Read from the end, so a long history costs one turn.
+    Read from the end, so a long history costs one turn; a latest turn without
+    calls has no signature.
     """
     calls: list[tuple[object, object]] = []
     if protocol == "responses":
-        # Calls of one turn sit next to each other; anything else ends the turn.
+        # Calls of one turn sit next to each other; anything else ends the turn,
+        # and an assistant message after them is a later turn.
         for item in reversed(_listed(payload.get("input"))):
             if isinstance(item, Mapping) and item.get("type") == "function_call":
                 calls.append((item.get("name"), _arguments(item.get("arguments"))))
-            elif calls:
+            elif calls or (
+                isinstance(item, Mapping) and item.get("role") == "assistant"
+            ):
                 break
         calls.reverse()
     else:
         turns = payload.get(
             "contents" if protocol == "generate_content" else "messages"
         )
+        role = "model" if protocol == "generate_content" else "assistant"
         for turn in reversed(_listed(turns)):
-            if calls := _turn_calls(turn, protocol):
+            if isinstance(turn, Mapping) and turn.get("role") == role:
+                calls = _turn_calls(turn, protocol)
                 break
     if not calls:
         return None

@@ -496,9 +496,13 @@ Notes:
   cross it, concurrent calls can each pass before any cost lands, and unpriced
   requests add nothing; `SHIM_TASK_WINDOW_SECONDS` (60 to 86,400, default 3600)
   is how long a task's counters live from its first call. A request without a task
-  id is never capped. Counters live in the process. The loop signal is on by
-  default: `SHIM_AGENT_LOOP=count` digests the latest tool call in the request's
-  history (name and canonical arguments, never the text) and counts it per task
+  id is never capped. Task caps are advisory: the caller names its task, so a
+  caller that rotates or omits its task id is not capped; use key and team limits
+  for a hard bound. Counters live in the process; when it is full, expired tasks
+  go first, then the least recently used. The loop signal is on by
+  default: `SHIM_AGENT_LOOP=count` digests the latest assistant turn's tool calls in
+  the request's history (name and canonical arguments, never the text; a latest
+  turn that only answers has none) and counts them per task
   (else per key) within `LOOP_WINDOW_SECONDS`; the usage event's
   `tool_call_repeats` shows the count, `task_calls` the task's calls after this one,
   and at `SHIM_AGENT_LOOP_REPEATS` (3 to 100, default 5) the `task.agent_loop`

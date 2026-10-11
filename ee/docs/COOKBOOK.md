@@ -296,8 +296,13 @@ from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
 `SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
 and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
-the task id}`); when Redis fails, calls go on with a `TASK_COUNTER_UNAVAILABLE`
-verdict.
+the task id}`); when Redis fails, task caps are not applied: calls go on with a
+`TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
+`shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are
+advisory, since a caller that rotates or omits its task id is not capped. The
+agent-loop counters are keyed per tenant with the installation's
+`COMPLIANCE_HASH_SALT` (else `SECRET_KEY`), so Redis never holds a bare digest of
+tool arguments.
 
 Rolling back to an older build is safe: a stored field or analyzer name that
 build does not know is left out when it reads the settings (and logged once by

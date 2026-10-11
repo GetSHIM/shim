@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from functools import cache
 import hashlib
+import hmac
 import logging
 
 from shim_enterprise.cache.redis_index import CacheService
+from shim_enterprise.core.config import settings
 from shim.gateway.admission import LoopDetectionResult
 
 
@@ -31,6 +34,19 @@ return counts
 _REPEAT_DIGEST: ContextVar[tuple[str, str] | None] = ContextVar(
     "_REPEAT_DIGEST", default=None
 )
+
+
+@cache
+def _repeat_digest_key(base_key: bytes) -> bytes:
+    return hmac.new(base_key, b"shim-repeat-digest-v1", hashlib.sha256).digest()
+
+
+def keyed_repeat_digest(base_key: bytes, tenant_id: str, digest: str) -> str:
+    return hmac.new(
+        _repeat_digest_key(base_key),
+        f"{tenant_id}:{digest}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def take_repeat_digest(organization_id: str) -> str | None:
@@ -70,7 +86,13 @@ class LoopDetectionService:
         if redis is None:
             logger.warning("Repeat window unavailable; admission continues")
             return LoopDetectionResult("SAFE", 0)
-        keys = [key, *([f"turn:{organization_id}:{turn_key}"] if turn_key else [])]
+        keys = [key]
+        if turn_key:
+            # Tool arguments can carry personal data: the key is the tenant's keyed
+            # digest, never a bare hash of them.
+            salt = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode()
+            turn = keyed_repeat_digest(salt, organization_id, turn_key)
+            keys.append(f"turn:{organization_id}:{turn}")
         try:
             counted = await redis.eval(
                 _INCREMENT_WINDOW, len(keys), *keys, window_seconds

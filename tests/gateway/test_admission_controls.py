@@ -157,9 +157,32 @@ async def test_the_task_counter_caps_calls_exactly_and_cost_after_it_lands() -> 
     assert (refused.allowed, refused.cost_micro_usd) == (False, 500)
     now[0] = 61.0
     assert (await admit()).calls == 1, "a new window starts after expiry"
-    await admit("d")
-    await admit("e")
-    assert len(counter.tasks) == 2, "entries stay bounded"
+
+
+@pytest.mark.asyncio
+async def test_throwaway_task_ids_never_reset_a_task_still_calling() -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    now = [0.0]
+    counter = InMemoryTaskCounter(max_entries=2, clock=lambda: now[0])
+
+    async def admit(key: str, window_seconds: int = 60):
+        return await counter.admit_call(
+            "org",
+            key,
+            max_calls=10,
+            max_cost_micro_usd=None,
+            window_seconds=window_seconds,
+        )
+
+    await admit("live")
+    await admit("short", window_seconds=5)
+    now[0] = 6.0
+    await admit("throwaway-1")  # the expired task goes, not the older live one
+    await admit("live")
+    await admit("throwaway-2")  # the least recently used, throwaway-1, goes
+
+    assert (await admit("live")).calls == 3
 
 
 @pytest.mark.asyncio
