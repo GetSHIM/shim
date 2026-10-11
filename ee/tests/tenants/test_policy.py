@@ -126,6 +126,7 @@ async def test_enterprise_policy_preserves_missing_tier_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     api_key = SimpleNamespace(
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
@@ -303,6 +304,7 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     api_key = SimpleNamespace(
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
@@ -378,6 +380,7 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
     monkeypatch.setattr(gateway_settings, "ANALYZERS", (SimpleNamespace(name="shape"),))
     api_key = SimpleNamespace(
         organization_id=UUID(int=1),
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
