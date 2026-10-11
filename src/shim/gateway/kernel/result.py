@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -110,16 +110,30 @@ class ProviderTarget:
     input_per_million: Decimal | None = None
     output_per_million: Decimal | None = None
     context_window: int | None = None
+    # The catalog model priced and limited by when the upstream name is none (Azure).
+    price_model: str | None = None
+    cache_read_per_million: Decimal | None = None
+    cache_write_per_million: Decimal | None = None
 
     def __post_init__(self) -> None:
         if (self.input_per_million is None) != (self.output_per_million is None):
             raise ValueError("a deployment price needs both input and output")
+        for cache in (self.cache_read_per_million, self.cache_write_per_million):
+            if cache is not None and self.input_per_million is None:
+                raise ValueError("a cache price needs the input and output prices")
+            if cache is not None and (not cache.is_finite() or cache < 0):
+                raise ValueError("a cache price is a nonnegative number")
 
     @property
     def price(self) -> ModelPrice | None:
         if self.input_per_million is None or self.output_per_million is None:
             return None
-        return ModelPrice(self.input_per_million, self.output_per_million)
+        return ModelPrice(
+            self.input_per_million,
+            self.output_per_million,
+            cache_read_per_million=self.cache_read_per_million,
+            cache_write_per_million=self.cache_write_per_million,
+        )
 
 
 @dataclass(frozen=True)
@@ -274,12 +288,23 @@ class PreparedInference:
 
     @property
     def pricing_model(self) -> str:
-        return self.target.upstream_model if self.target is not None else self.model
+        if self.target is None:
+            return self.model
+        return self.target.price_model or self.target.upstream_model
 
     @property
     def deployment_price(self) -> ModelPrice | None:
-        # The operator's stated price wins over a catalog match for the upstream model.
-        return self.target.price if self.target is not None else None
+        """The operator's stated price; it wins over a catalog entry."""
+        price = self.target.price if self.target is not None else None
+        if price is None or self.provider != "anthropic":
+            return price
+        # Anthropic's own multipliers: a one-hour write at 2x, a write at 1.25x by default.
+        return replace(
+            price,
+            one_hour_write_multiplier=Decimal("2"),
+            cache_write_per_million=price.cache_write_per_million
+            or price.input_per_million * Decimal("1.25"),
+        )
 
     @property
     def unpriced(self) -> bool:

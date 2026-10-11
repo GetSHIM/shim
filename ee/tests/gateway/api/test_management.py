@@ -79,6 +79,7 @@ async def test_provider_patch_can_clear_nullable_metadata(
         id=uuid4(),
         organization_id=tenant_id,
         provider="openai",
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         verified_at=datetime.now(timezone.utc),
@@ -117,6 +118,7 @@ async def test_provider_key_rotation_clears_verification(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         secret_ref="fernet:v2:old",
@@ -592,6 +594,7 @@ async def test_provider_verification_updates_only_conclusive_results(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
+        credential_kind="api_key",
         name=None,
         monthly_limit_usd=None,
         secret_ref="fernet:v2:provider",
@@ -1500,6 +1503,7 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
         id=uuid4(),
         organization_id=uuid4(),
         provider="openai",
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=Decimal("10"),
         secret_ref="fernet:v2:old-reference",
@@ -2538,3 +2542,233 @@ async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
         management.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
     with pytest.raises(ValidationError, match="must not be null"):
         management.PrivacyPatch.model_validate({"embeddings_monitor_types": None})
+
+
+_ENTRA = {
+    "tenant_id": "contoso.onmicrosoft.com",
+    "client_id": "00000000-0000-0000-0000-0000000000a1",
+    "client_secret": "entra-secret-value",
+}
+
+
+def _entra_row(**fields: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            "id": uuid4(),
+            "organization_id": uuid4(),
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "name": "Azure",
+            "monthly_limit_usd": None,
+            "secret_ref": "fernet:v2:entra",
+            "secret_backend": "fernet",
+            "secret_version": "v2",
+            "masked_key": "entra:000...00a1",
+            "verified_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc),
+            **fields,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    store = SimpleNamespace(put_secret=AsyncMock(return_value="fernet:v2:stored"))
+    session = SimpleNamespace(
+        add=lambda _row: None,
+        flush=AsyncMock(),
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management, "_audit", audit)
+
+    row = await management.create_provider_secret(
+        management.ProviderSecretInput(
+            provider="openai", credential_kind="azure_entra_client", azure_entra=_ENTRA
+        ),
+        SimpleNamespace(organization_id=tenant_id, is_verified=True),
+        session,
+    )
+
+    stored = json.dumps(
+        {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    store.put_secret.assert_awaited_once_with(
+        TenantId(tenant_id),
+        "provider:openai:azure-entra-client",
+        stored,
+        {"provider": "openai", "kind": "azure_entra_client"},
+    )
+    assert (row.credential_kind, row.masked_key) == (
+        "azure_entra_client",
+        "entra:000...00a1",
+    )
+    row.id, row.created_at = uuid4(), datetime.now(timezone.utc)
+    shown = management.ProviderSecretView.model_validate(row).model_dump_json()
+    details = audit.await_args.kwargs["details"]
+    assert details["credential_kind"] == "azure_entra_client"
+    for text in (shown, json.dumps(details, default=str)):
+        assert "entra-secret-value" not in text and "contoso" not in text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"provider": "openai"},
+        {"provider": "openai", "key": "provider-api-key", "azure_entra": _ENTRA},
+        {"provider": "openai", "credential_kind": "azure_entra_client"},
+        {
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": _ENTRA,
+            "key": "provider-api-key",
+        },
+        {
+            "provider": "anthropic",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": _ENTRA,
+        },
+        {
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": {**_ENTRA, "client_id": "app"},
+        },
+    ],
+)
+def test_a_provider_secret_needs_exactly_the_field_of_its_kind(fields) -> None:
+    with pytest.raises(ValidationError):
+        management.ProviderSecretInput.model_validate(fields)
+
+
+@pytest.mark.asyncio
+async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row()
+    store = SimpleNamespace(
+        rotate_secret=AsyncMock(return_value="fernet:v2:rotated"),
+        delete_secret=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    user = SimpleNamespace(organization_id=row.organization_id)
+    session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+    rotated = {**_ENTRA, "client_id": "00000000-0000-0000-0000-0000000000b2"}
+
+    await management.update_provider_secret(
+        row.id,
+        management.ProviderSecretPatch(
+            azure_entra={**rotated, "scope": "https://ai.azure.com/.default"}
+        ),
+        user,
+        session,
+    )
+
+    assert json.loads(store.rotate_secret.await_args.args[2]) == {
+        **rotated,
+        "scope": "https://ai.azure.com/.default",
+    }
+    assert store.rotate_secret.await_args.kwargs == {
+        "expected_purpose": "provider:openai:azure-entra-client"
+    }
+    assert (row.masked_key, row.verified_at) == ("entra:000...00b2", None)
+    assert audit.await_args.kwargs["details"]["key_rotated"] is True
+    for patch, kind in [
+        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra_client"),
+        (management.ProviderSecretPatch(azure_entra=_ENTRA), "api_key"),
+    ]:
+        row.credential_kind = kind
+        with pytest.raises(HTTPException) as error:
+            await management.update_provider_secret(row.id, patch, user, session)
+        assert error.value.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (
+            httpx.Response(
+                200,
+                json={"access_token": "t", "token_type": "Bearer", "expires_in": 3600},
+            ),
+            200,
+        ),
+        (httpx.Response(400, json={"error": "invalid_client"}), 400),
+        (httpx.Response(500), 503),
+    ],
+)
+async def test_an_entra_secret_is_verified_by_a_fresh_token(
+    monkeypatch: pytest.MonkeyPatch, answer: httpx.Response, outcome: int
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row(verified_at=None)
+    store = SimpleNamespace(
+        get_secret=AsyncMock(
+            return_value=json.dumps(
+                {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"}
+            )
+        )
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(
+        management.settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test"
+    )
+    seen = []
+
+    def entra(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return answer
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(entra)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+        if outcome == 200:
+            await management.verify_provider_secret(
+                row.id,
+                request,
+                SimpleNamespace(organization_id=row.organization_id),
+                session,
+            )
+        else:
+            with pytest.raises(HTTPException) as error:
+                await management.verify_provider_secret(
+                    row.id,
+                    request,
+                    SimpleNamespace(organization_id=row.organization_id),
+                    session,
+                )
+            assert error.value.status_code == outcome
+
+    assert seen == ["https://login.test/contoso.onmicrosoft.com/oauth2/v2.0/token"]
+    assert (row.verified_at is not None) is (outcome == 200)
+    actions = [call.args[2] for call in audit.await_args_list]
+    assert (
+        actions
+        == {
+            200: ["tenant.provider_secret_verified"],
+            400: ["tenant.provider_secret_rejected"],
+            503: [],
+        }[outcome]
+    )

@@ -189,10 +189,15 @@ keeps its status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`;
 it is the caller's quota, so it neither opens nor closes the provider circuit.
 A provider 400, 403, 404, 413 or 422 keeps its status with the code
 `PROVIDER_REJECTED_REQUEST`, and a provider 401 keeps its status with
-`INVALID_PROVIDER_CREDENTIAL`, so it is never mistaken for a bad shim key. A
-request the provider SDK refuses before sending it is 400 `INVALID_REQUEST` with
-a fixed message; a provider answer the SDK cannot parse stays 502
-`PROVIDER_UNAVAILABLE`.
+`INVALID_PROVIDER_CREDENTIAL`, so it is never mistaken for a bad shim key. An
+OpenAI-protocol 400 whose body code is `content_filter` (Azure's content filter) is
+`PROVIDER_CONTENT_FILTERED`, with a fixed message naming only the allowlisted
+filter categories. A request the provider SDK refuses before sending it is 400
+`INVALID_REQUEST` with a fixed message; a provider answer the SDK cannot parse
+stays 502 `PROVIDER_UNAVAILABLE`. A credential resolver may raise a
+`ProviderCallError`, which reaches the caller with its own status and code (an
+Entra ID refusal is 401 `INVALID_PROVIDER_CREDENTIAL`); any other resolver
+exception is 503 `PROVIDER_UNAVAILABLE`.
 
 Every gateway error response whose code shim knows carries it in
 `X-Shim-Error-Code`, in all three shapes, and browsers may read that header.
@@ -213,13 +218,13 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
 `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
-`PROVIDER_REJECTED_REQUEST`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and
-`INTERNAL_ERROR`; enterprise adds
+`PROVIDER_REJECTED_REQUEST`, `PROVIDER_CONTENT_FILTERED`, `PROVIDER_UNAVAILABLE`,
+`PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
 `MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
 `MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
 `PROVIDER_KEY_NOT_ALLOWED`,
-`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY` and
-`AUDIT_INTENT_FAILED`. A request
+`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY`,
+`BEDROCK_REGION_NOT_ALLOWED` and `AUDIT_INTENT_FAILED`. A request
 that fails schema validation carries the validator's error type instead.
 
 `background=true` Responses requests remain unsupported because shim has no

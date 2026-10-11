@@ -718,13 +718,15 @@ def _target(**fields) -> object:
     from shim.gateway.kernel.result import ProviderTarget
 
     return ProviderTarget(
-        deployment_id="dep",
-        base_url="https://llm.internal/v1",
-        upstream_model="gpt-4",
-        credential_reference="secret",
-        timeout_seconds=5,
-        declared_version="v1",
-        **fields,
+        **{
+            "deployment_id": "dep",
+            "base_url": "https://llm.internal/v1",
+            "upstream_model": "gpt-4",
+            "credential_reference": "secret",
+            "timeout_seconds": 5,
+            "declared_version": "v1",
+            **fields,
+        }
     )
 
 
@@ -784,6 +786,109 @@ async def test_a_target_is_checked_against_its_own_window_only(window, refused) 
     if not refused:
         admitted = await _stage(InMemoryRateLimiter()).run(prepared)
         assert "MODEL_DEPRECATED" not in admitted.warnings
+        return
+    with pytest.raises(HTTPException) as error:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+    assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"cache_read_per_million": Decimal("0.1")},
+        {
+            "input_per_million": Decimal("1"),
+            "output_per_million": Decimal("2"),
+            "cache_write_per_million": Decimal("-1"),
+        },
+        {
+            "input_per_million": Decimal("1"),
+            "output_per_million": Decimal("2"),
+            "cache_read_per_million": Decimal("NaN"),
+        },
+    ],
+)
+def test_a_target_refuses_a_cache_price_without_prices_or_below_zero(fields) -> None:
+    with pytest.raises(ValueError):
+        _target(**fields)
+
+
+def test_a_price_model_prices_a_deployment_unless_its_own_prices_are_set() -> None:
+    from dataclasses import replace
+
+    from shim.billing.pricing import compute_cost_usd
+
+    azure = replace(
+        _prepared("hi"),
+        target=_target(upstream_model="kurum-mini", price_model="gpt-5.6-luna"),
+    )
+    entered = replace(
+        azure,
+        target=replace(
+            azure.target,
+            input_per_million=Decimal("1"),
+            output_per_million=Decimal("2"),
+            cache_read_per_million=Decimal("0.1"),
+        ),
+    )
+
+    assert (azure.pricing_model, azure.unpriced, azure.deployment_price) == (
+        "gpt-5.6-luna",
+        False,
+        None,
+    )
+    # 400 uncached at 1, 600 cached at 0.1, 100 output at 2, per million.
+    assert compute_cost_usd(
+        entered.pricing_model,
+        1_000,
+        100,
+        cache=(600, 0, 0),
+        price=entered.deployment_price,
+    ) == Decimal("0.00066")
+
+
+def test_an_anthropic_deployment_price_takes_anthropic_cache_multipliers() -> None:
+    from dataclasses import replace
+
+    prepared = replace(
+        _prepared("hi", model="claude-sonnet-4-5", provider="anthropic"),
+        target=_target(
+            input_per_million=Decimal("3"), output_per_million=Decimal("15")
+        ),
+    )
+    written = replace(
+        prepared,
+        target=replace(prepared.target, cache_write_per_million=Decimal("4")),
+    )
+    openai = replace(_prepared("hi"), target=prepared.target)
+
+    assert prepared.deployment_price.rates(1) == (
+        Decimal("3"),
+        Decimal("15"),
+        Decimal("3"),
+        Decimal("3.75"),
+        Decimal("6"),
+    )
+    assert written.deployment_price.rates(1)[3] == Decimal("4")
+    assert openai.deployment_price.rates(1)[3:] == (Decimal("3"), Decimal("3"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("window", "refused"), [(None, True), (10_000, False)])
+async def test_a_price_model_lends_its_window_and_output_limit(window, refused) -> None:
+    from dataclasses import replace
+
+    # gpt-4's catalog window and output limit are both 8,192.
+    target = _target(
+        upstream_model="kurum-mini", price_model="gpt-4", context_window=window
+    )
+    short = replace(_prepared("hello", model="gpt-4"), target=target)
+    prepared = replace(_prepared(" ".join(["w"] * 9_000), model="gpt-4"), target=target)
+
+    admitted = await _stage(InMemoryRateLimiter()).run(short)
+    assert admitted.admission.maximum_output_tokens == 8_192
+    if not refused:
+        await _stage(InMemoryRateLimiter()).run(prepared)
         return
     with pytest.raises(HTTPException) as error:
         await _stage(InMemoryRateLimiter()).run(prepared)

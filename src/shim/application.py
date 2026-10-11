@@ -39,11 +39,46 @@ from shim.observability.logging import configure_error_reporting, configure_logg
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim.privacy.continuation import InMemoryPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
-from shim.secrets.credentials import EnvironmentProviderCredentialResolver
+from shim.secrets.azure import (
+    AzureCredentialResolver,
+    EntraClientCredential,
+    EntraTokenCache,
+)
+from shim.secrets.credentials import (
+    EnvironmentProviderCredentialResolver,
+    ProviderCredentialResolver,
+)
 from shim.services.gateway.service import GatewayService
 
 
 _LOCAL_STATE_CAPACITY = 10_000
+
+
+def _openai_credentials(
+    configured: CommunitySettings, client: httpx.AsyncClient
+) -> ProviderCredentialResolver:
+    """The OpenAI key, or with an Azure endpoint its key or an Entra token."""
+    if not configured.SHIM_AZURE_OPENAI_ENDPOINT:
+        return EnvironmentProviderCredentialResolver("openai")
+    if configured.SHIM_AZURE_OPENAI_API_KEY is not None:
+        return AzureCredentialResolver(
+            api_key=configured.SHIM_AZURE_OPENAI_API_KEY.get_secret_value()
+        )
+    return AzureCredentialResolver(
+        entra=(
+            EntraTokenCache(
+                client, authority_host=configured.SHIM_AZURE_AUTHORITY_HOST
+            ),
+            EntraClientCredential.model_validate(
+                {
+                    "tenant": configured.SHIM_AZURE_TENANT_ID,
+                    "client_id": configured.SHIM_AZURE_CLIENT_ID,
+                    "client_secret": configured.SHIM_AZURE_CLIENT_SECRET,
+                    "scope": configured.SHIM_AZURE_TOKEN_SCOPE,
+                }
+            ),
+        )
+    )
 
 
 def create_community_app(
@@ -115,14 +150,16 @@ def create_community_app(
                         pii_scrubber=pii_scrubber,
                     ),
                     "openai": OpenAIExecution(
-                        credential_resolver=EnvironmentProviderCredentialResolver(
-                            "openai"
-                        ),
+                        credential_resolver=_openai_credentials(configured, client),
                         circuit=InMemoryCircuitBreaker(),
                         settings=configured,
                         http_client=client,
                         chain_store=chain_store,
                         pii_scrubber=pii_scrubber,
+                        catalog_base_url=f"{configured.SHIM_AZURE_OPENAI_ENDPOINT}/openai/v1"
+                        if configured.SHIM_AZURE_OPENAI_ENDPOINT
+                        else None,
+                        catalog_deployments=configured.SHIM_AZURE_OPENAI_DEPLOYMENTS,
                     ),
                 },
                 chain_store=chain_store,

@@ -36,6 +36,7 @@ from shim_enterprise.gateway.kernel.scan_pipeline import ScanExecutionPipeline
 from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
+from shim.secrets.azure import EntraTokenCache
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     DurableAccountingCoordinator,
     DurableUsageLifecycle,
@@ -59,10 +60,24 @@ from shim_enterprise.tenants.policy import (
 
 
 logger = logging.getLogger(__name__)
+# Azure OpenAI is a registry deployment here; only the authority host and scope apply.
+_IGNORED_AZURE_SETTINGS = (
+    "SHIM_AZURE_OPENAI_ENDPOINT",
+    "SHIM_AZURE_OPENAI_API_KEY",
+    "SHIM_AZURE_TENANT_ID",
+    "SHIM_AZURE_CLIENT_ID",
+    "SHIM_AZURE_CLIENT_SECRET",
+    "SHIM_AZURE_OPENAI_DEPLOYMENTS",
+)
 
 
 def create_enterprise_app() -> FastAPI:
     configure_logging(settings.LOG_LEVEL)
+    for name in _IGNORED_AZURE_SETTINGS:
+        if getattr(settings, name):
+            logger.warning(
+                "%s is ignored; register Azure OpenAI as a model deployment", name
+            )
     if settings.ENVIRONMENT == "production":
         active_license = verify_license(settings.SHIM_LICENSE_KEY)
         logger.info(
@@ -186,7 +201,12 @@ def _create_gateway_kernel(
         {
             "openai": OpenAIExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
-                    "openai", secret_store, AsyncSessionLocal
+                    "openai",
+                    secret_store,
+                    AsyncSessionLocal,
+                    entra=EntraTokenCache(
+                        http_client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
+                    ),
                 ),
                 circuit_for=tenant_target_circuit("openai", cache),
                 settings=settings,

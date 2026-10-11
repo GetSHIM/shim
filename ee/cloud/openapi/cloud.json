@@ -1387,6 +1387,51 @@
         "title": "AuthType",
         "type": "string"
       },
+      "AzureEntraInput": {
+        "additionalProperties": false,
+        "description": "A Microsoft Entra ID app registration's client secret.",
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Client Secret",
+            "type": "string",
+            "writeOnly": true
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "pattern": "^https://\\S+/\\.default$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the operator's SHIM_AZURE_TOKEN_SCOPE.",
+            "title": "Scope"
+          },
+          "tenant_id": {
+            "pattern": "^[A-Za-z0-9.-]{1,128}$",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "client_id",
+          "client_secret"
+        ],
+        "title": "AzureEntraInput",
+        "type": "object"
+      },
       "BatchEmbedContentsRequest": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -6656,6 +6701,40 @@
             "title": "Base Url",
             "type": "string"
           },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -6728,6 +6807,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6747,6 +6839,16 @@
             "minimum": 1.0,
             "title": "Timeout Seconds",
             "type": "integer"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
+            "type": "string"
           },
           "upstream_model": {
             "maxLength": 200,
@@ -6783,6 +6885,32 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
           },
           "context_window": {
             "anyOf": [
@@ -6879,6 +7007,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6902,6 +7043,16 @@
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
+            "type": "string"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
             "type": "string"
           },
           "upstream_model": {
@@ -9752,11 +9903,37 @@
       },
       "ProviderSecretInput": {
         "properties": {
-          "key": {
-            "maxLength": 10000,
-            "minLength": 10,
-            "title": "Key",
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_kind": {
+            "default": "api_key",
+            "enum": [
+              "api_key",
+              "azure_entra_client"
+            ],
+            "title": "Credential Kind",
             "type": "string"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
           },
           "monthly_limit_usd": {
             "anyOf": [
@@ -9797,14 +9974,23 @@
           }
         },
         "required": [
-          "provider",
-          "key"
+          "provider"
         ],
         "title": "ProviderSecretInput",
         "type": "object"
       },
       "ProviderSecretPatch": {
         "properties": {
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
             "anyOf": [
               {
@@ -9855,6 +10041,10 @@
           "created_at": {
             "format": "date-time",
             "title": "Created At",
+            "type": "string"
+          },
+          "credential_kind": {
+            "title": "Credential Kind",
             "type": "string"
           },
           "id": {
@@ -9909,6 +10099,7 @@
         "required": [
           "id",
           "provider",
+          "credential_kind",
           "name",
           "masked_key",
           "created_at",

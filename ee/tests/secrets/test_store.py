@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -11,6 +12,7 @@ import shim_enterprise.secrets.store as store_module
 from shim_enterprise.api.v1 import management
 from shim_enterprise.core.config import Settings
 from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.aws_secrets_manager import AWSSecretsManagerStore
 from shim_enterprise.secrets.azure_key_vault import AzureKeyVaultStore
@@ -289,7 +291,11 @@ async def test_explicit_provider_credential_bypasses_managed_storage() -> None:
 @pytest.mark.asyncio
 async def test_managed_provider_resolution_uses_a_fresh_session_per_lookup() -> None:
     tenant_id = TenantId(uuid4())
-    row = SimpleNamespace(secret_ref="fernet:v2:encrypted-provider-key")
+    row = SimpleNamespace(
+        secret_ref="fernet:v2:encrypted-provider-key",
+        provider="openai",
+        credential_kind="api_key",
+    )
     results = [row, None]
     sessions = [
         SimpleNamespace(
@@ -454,6 +460,7 @@ async def test_provider_rotation_cleans_the_unreferenced_managed_secret(
         id=uuid4(),
         organization_id=tenant_id,
         provider="openai",
+        credential_kind="api_key",
         name="OpenAI",
         secret_ref=str(previous),
         secret_backend="gcp",
@@ -490,3 +497,102 @@ async def test_provider_rotation_cleans_the_unreferenced_managed_secret(
         assert await operation is row
         assert store.deleted == [previous]
         assert session.refreshed is True
+
+
+_ENTRA_SECRET = json.dumps(
+    {
+        "tenant_id": "contoso.onmicrosoft.com",
+        "client_id": "00000000-0000-0000-0000-0000000000a1",
+        "client_secret": "entra-secret",
+        "scope": "https://cognitiveservices.azure.com/.default",
+    }
+)
+
+
+def _secret_row(kind: str, version: str = "1", **fields: object) -> ProviderSecret:
+    return ProviderSecret(
+        **{
+            "id": uuid4(),
+            "provider": "openai",
+            "credential_kind": kind,
+            "secret_ref": f"fernet:v2:{kind}",
+            "secret_backend": "fernet",
+            "secret_version": version,
+            "masked_key": "masked",
+            **fields,
+        }
+    )
+
+
+def _kind_store() -> Mock:
+    async def get_secret(tenant_id, reference, *, expected_purpose):
+        return (
+            "sk-managed"
+            if expected_purpose == "provider:openai:api-key"
+            else _ENTRA_SECRET
+        )
+
+    return Mock(get_secret=AsyncMock(side_effect=get_secret))
+
+
+@pytest.mark.asyncio
+async def test_resolve_row_answers_a_key_or_an_entra_token_keyed_by_version() -> None:
+    tenant_id = TenantId(uuid4())
+    store = _kind_store()
+    entra = Mock(token=AsyncMock(side_effect=["token-1", "token-2"]))
+    resolver = ManagedProviderCredentialResolver("openai", store, Mock(), entra=entra)
+    key_row, entra_row = _secret_row("api_key"), _secret_row("azure_entra_client")
+    rotated = _secret_row("azure_entra_client", "2", id=entra_row.id)
+
+    assert await resolver.resolve_row(tenant_id, key_row) == "sk-managed"
+    assert await resolver.resolve_row(tenant_id, entra_row) == "token-1"
+    assert await resolver.resolve_row(tenant_id, rotated) == "token-2"
+    assert [call.args[0] for call in entra.token.await_args_list] == [
+        (tenant_id, entra_row.id, "1"),
+        (tenant_id, entra_row.id, "2"),
+    ]
+    credential = entra.token.await_args_list[0].args[1]
+    assert (credential.tenant, credential.client_secret.get_secret_value()) == (
+        "contoso.onmicrosoft.com",
+        "entra-secret",
+    )
+    assert [call.kwargs for call in store.get_secret.await_args_list] == [
+        {"expected_purpose": "provider:openai:api-key"},
+        {"expected_purpose": "provider:openai:azure-entra-client"},
+        {"expected_purpose": "provider:openai:azure-entra-client"},
+    ]
+    with pytest.raises(ProviderCallError) as error:
+        await ManagedProviderCredentialResolver("openai", store, Mock()).resolve_row(
+            tenant_id, entra_row
+        )
+    assert (error.value.status_code, error.value.error_code) == (
+        503,
+        "PROVIDER_NOT_CONFIGURED",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_route_never_resolves_an_entra_credential(db, test_org) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    key = _secret_row(
+        "api_key", organization_id=test_org.id, created_at=now - timedelta(days=1)
+    )
+    entra = _secret_row(
+        "azure_entra_client", organization_id=test_org.id, created_at=now
+    )
+    db.add_all([key, entra])
+    await db.flush()
+    resolver = ManagedProviderCredentialResolver(
+        "openai",
+        _kind_store(),
+        lambda: SessionScope(db),
+        entra=Mock(token=AsyncMock(return_value="entra-token")),
+    )
+    tenant_id = TenantId(test_org.id)
+
+    assert await resolver.resolve(tenant_id, None) == "sk-managed"
+    assert await resolver.resolve(tenant_id, None, reference=str(entra.id)) == (
+        "entra-token"
+    )

@@ -186,6 +186,11 @@ anywhere else. A non-streaming request is bounded by the provider read timeout
 (`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
 default), so long generations should stream.
 
+Azure OpenAI is supported through its v1 API: set `SHIM_AZURE_OPENAI_ENDPOINT` and
+an Azure key or a Microsoft Entra ID app registration, and map catalog model names
+to your deployment names, so applications keep standard model names
+([cookbook](docs/COOKBOOK.md#use-azure-openai)).
+
 Community exposes `/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`,
 `/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent`,
 `embedContent` and `batchEmbedContents` routes, `/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).

@@ -150,6 +150,49 @@ does). Embeddings models answer only these routes and are not in `/v1/models`;
 `gemini-embedding-2` is not priced yet (its audio rate is above its text rate).
 Behind LiteLLM, the OpenAI `api_base` ends in `/v1` as for chat.
 
+## Use Azure OpenAI
+
+Send catalog OpenAI requests to your own Azure OpenAI resource, with an Azure key or
+a Microsoft Entra ID application.
+
+1. Set `SHIM_AZURE_OPENAI_ENDPOINT` to the resource, for example
+   `https://bank.openai.azure.com`. shim calls its v1 API at `/openai/v1` (a trailing
+   `/openai/v1` in the setting is accepted), with no `api-version`. Leave
+   `OPENAI_BASE_URL` unset: the two exclude each other.
+2. Set one credential: `SHIM_AZURE_OPENAI_API_KEY`, or all three of
+   `SHIM_AZURE_TENANT_ID`, `SHIM_AZURE_CLIENT_ID` and `SHIM_AZURE_CLIENT_SECRET` for
+   an Entra application with the `Cognitive Services OpenAI User` role. shim asks
+   Entra for a token (scope `SHIM_AZURE_TOKEN_SCOPE`, by default
+   `https://cognitiveservices.azure.com/.default`; authority
+   `SHIM_AZURE_AUTHORITY_HOST`, by default `https://login.microsoftonline.com`) and
+   renews it 300 seconds before it expires. A key a caller sends in
+   `x-provider-key` still wins.
+3. Map catalog model names to your deployment names in
+   `SHIM_AZURE_OPENAI_DEPLOYMENTS`, a JSON object such as
+   `{"gpt-5.6-luna": "kurum-mini"}` (at most 200 entries). Applications keep asking
+   for `gpt-5.6-luna`; Azure receives `kurum-mini`. A model the map does not list is
+   sent under its own name. Admission, prices, warnings and the usage event keep the
+   catalog name.
+
+```bash
+SHIM_AZURE_OPENAI_ENDPOINT=https://bank.openai.azure.com
+SHIM_AZURE_OPENAI_API_KEY=...
+SHIM_AZURE_OPENAI_DEPLOYMENTS='{"gpt-5.6-luna": "kurum-mini"}'
+```
+
+Chat Completions, Responses and embeddings go to `/openai/v1/chat/completions`,
+`/openai/v1/responses` and `/openai/v1/embeddings`. A prompt Azure's content filter
+refuses answers 400 `PROVIDER_CONTENT_FILTERED`; the message names the categories
+that filtered it, such as `Categories: violence.`, and nothing else of Azure's body.
+A filtered answer keeps `finish_reason: "content_filter"`, and Azure's
+`prompt_filter_results` and `content_filter_results` fields pass through. Startup
+fails, naming the setting, when the settings do not form one route: no credential or
+two, Entra values or a map without an endpoint, a map key that is not a catalog
+OpenAI model, or an `http` endpoint that is not loopback. An empty value counts as
+unset. Prices are the catalog's OpenAI list prices; Azure's Data Zone, Regional and
+provisioned prices can differ. The enterprise gateway ignores these settings except
+the authority host and scope, and registers each Azure deployment instead.
+
 ## Tag requests and read their cost
 
 Attribute each request's tokens and cost to a feature, team or customer.
@@ -412,7 +455,9 @@ except openai.APIStatusError as error:
 | With `SHIM_AGENT_LOOP=block`, the same tool call repeated more than `SHIM_AGENT_LOOP_REPEATS` times in one task within `LOOP_WINDOW_SECONDS` | 429 `AGENT_LOOP_DETECTED` | `x-should-retry: false`: change the agent's step |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
 | Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
-| Provider refused the provider key (401) | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
+| Provider refused the provider key (401), or Entra ID refused the configured client credential | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
+| Azure's content filter refused the prompt | 400 `PROVIDER_CONTENT_FILTERED`; the message names the categories | none: change the prompt; sending it unchanged fails again |
+| A Bedrock deployment's inference profile leaves the regions the tenant allows (enterprise) | `BEDROCK_REGION_NOT_ALLOWED` | none: use a deployment inside the allowed regions |
 | The provider SDK refused the request before sending it | 400 `INVALID_REQUEST` | none: correct the request |
 | Provider answered another error | the provider's status, `PROVIDER_TIMEOUT` for a timeout status, otherwise `PROVIDER_UNAVAILABLE` | none from shim |
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |

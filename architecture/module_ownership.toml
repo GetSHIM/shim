@@ -35,7 +35,7 @@ forbidden_noncloud_import_roots = [
 "shim.billing.lifecycle" = ["load_lifecycle"]
 "shim.billing.pricing" = ["DEFAULT_PRICE_BOOK", "compute_cost_usd"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
-"shim.core.community_config" = ["CommunitySettings"]
+"shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
 "shim.gateway.admission" = ["LoopDetectionResult", "TaskAdmission"]
@@ -72,6 +72,7 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
 "shim.gateway.pipeline.openai_execution" = ["OpenAIExecution"]
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
+"shim.gateway.pipeline.provider_execution" = ["ProviderCallError"]
 "shim.gateway.request_policy" = [
   "AgentLoop",
   "RequestPolicyContext",
@@ -101,6 +102,7 @@ forbidden_noncloud_import_roots = [
 "shim.privacy.record_match" = ["FIELD_KINDS", "FINGERPRINT_VERSION", "KEY_BYTES", "RecordField", "RecordSetIndex", "fingerprints", "normalize", "record_hash"]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "load_rule_set", "match_records", "validate_rule_set"]
+"shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]
 
@@ -231,6 +233,7 @@ public = [
   "src/shim/rules/request_limit.py",
   "src/shim/rules/tr_suffixes.py",
   "src/shim/secrets/__init__.py",
+  "src/shim/secrets/azure.py",
   "src/shim/secrets/credentials.py",
   "src/shim/services/__init__.py",
   "src/shim/services/gateway/__init__.py",
@@ -289,6 +292,7 @@ public = [
   "tests/rules/test_patterns.py",
   "tests/rules/test_request_limit.py",
   "tests/rules/test_rule_model.py",
+  "tests/secrets/test_azure.py",
   "tests/secrets/test_credentials.py",
   "tests/test_jsonschema_subset.py",
 ]
@@ -314,6 +318,7 @@ enterprise = [
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
+  "ee/alembic/versions/c9ed4e82b922_add_azure_openai_deployments.py",
   "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
   "ee/alembic/versions/d94f7f0ba8a2_add_service_accounts.py",
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",

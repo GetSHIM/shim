@@ -337,3 +337,81 @@ def test_embeddings_monitor_types_are_known_entity_types() -> None:
     ).PII_EMBEDDINGS_MONITOR == ["IBAN_CODE", "TR_NATIONAL_ID"]
     with pytest.raises(ValidationError, match="unknown entity type"):
         CommunitySettings(_env_file=None, PII_EMBEDDINGS_MONITOR="NOT_A_TYPE")
+
+
+_KEY = {"SHIM_AZURE_OPENAI_API_KEY": "azure-key"}
+_ENTRA = {
+    "SHIM_AZURE_TENANT_ID": "contoso.onmicrosoft.com",
+    "SHIM_AZURE_CLIENT_ID": "00000000-0000-0000-0000-0000000000a1",
+    "SHIM_AZURE_CLIENT_SECRET": "entra-secret",
+}
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "normalised"),
+    [
+        ("https://bank.openai.azure.com", "https://bank.openai.azure.com"),
+        ("https://bank.openai.azure.com/openai/v1/", "https://bank.openai.azure.com"),
+        ("http://127.0.0.1:9101", "http://127.0.0.1:9101"),
+        ("http://localhost/openai/v1", "http://localhost"),
+        ("http://[::1]:9101", "http://[::1]:9101"),
+    ],
+)
+def test_an_azure_endpoint_is_normalised_and_http_only_on_loopback(
+    endpoint, normalised
+) -> None:
+    configured = CommunitySettings(
+        _env_file=None, SHIM_AZURE_OPENAI_ENDPOINT=endpoint, **_KEY
+    )
+
+    assert configured.SHIM_AZURE_OPENAI_ENDPOINT == normalised
+
+
+def test_azure_is_off_by_default_and_an_empty_value_is_unset(monkeypatch) -> None:
+    for name in (
+        "SHIM_AZURE_OPENAI_ENDPOINT",
+        "SHIM_AZURE_TENANT_ID",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_DEPLOYMENTS", "")
+    assert CommunitySettings(_env_file=None).SHIM_AZURE_OPENAI_ENDPOINT is None
+
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_ENDPOINT", "https://bank.openai.azure.com")
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_API_KEY", "azure-key")
+    monkeypatch.setenv(
+        "SHIM_AZURE_OPENAI_DEPLOYMENTS", '{"gpt-5.6-luna": "kurum-mini"}'
+    )
+    configured = CommunitySettings(_env_file=None)
+
+    assert configured.SHIM_AZURE_OPENAI_DEPLOYMENTS == {"gpt-5.6-luna": "kurum-mini"}
+    assert configured.SHIM_AZURE_TOKEN_SCOPE == (
+        "https://cognitiveservices.azure.com/.default"
+    )
+    assert configured.SHIM_AZURE_AUTHORITY_HOST == "https://login.microsoftonline.com"
+
+
+@pytest.mark.parametrize(
+    ("values", "named"),
+    [
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://bank.openai.azure.com", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://127.0.0.2", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://127.0.0.1@bank.example", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com"}, "SHIM_AZURE_OPENAI_API_KEY"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, **_ENTRA}, "SHIM_AZURE_OPENAI_API_KEY"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", "SHIM_AZURE_TENANT_ID": "contoso.com"}, "SHIM_AZURE_CLIENT_ID"),
+        (_ENTRA, "SHIM_AZURE_TENANT_ID"),
+        ({"SHIM_AZURE_CLIENT_SECRET": "s"}, "SHIM_AZURE_CLIENT_SECRET needs"),
+        ({"SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"gpt-5.6-luna": "kurum-mini"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", "OPENAI_BASE_URL": "https://x.test/v1", **_KEY}, "OPENAI_BASE_URL"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_CLIENT_ID": "app"}, "SHIM_AZURE_CLIENT_ID"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_TENANT_ID": "a b"}, "SHIM_AZURE_TENANT_ID"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_TOKEN_SCOPE": "https://ai.azure.com/"}, "SHIM_AZURE_TOKEN_SCOPE"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"kurum-mini": "kurum-mini"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"gpt-5.6-luna": "-kurum"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": "not json"}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+    ],
+)  # fmt: skip
+def test_an_incoherent_azure_setting_stops_the_gateway_by_name(values, named) -> None:
+    with pytest.raises(ValidationError, match=named):
+        CommunitySettings(_env_file=None, **values)

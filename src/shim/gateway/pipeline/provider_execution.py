@@ -152,6 +152,8 @@ ERROR_HINTS = {
     "PROVIDER_NOT_CONFIGURED": "Configure a provider key on the gateway or send one in x-provider-key.",
     "PROVIDER_RATE_LIMITED": "The provider's quota for your provider key is spent; wait for retry-after or raise that quota.",
     "PROVIDER_REJECTED_REQUEST": "Correct the request as the provider's message says; retrying it unchanged fails again.",
+    "PROVIDER_CONTENT_FILTERED": "The provider's content filter refused this prompt; change the prompt or ask the resource owner about the filter configuration. Sending it again unchanged fails again.",
+    "BEDROCK_REGION_NOT_ALLOWED": "Use a Bedrock deployment whose inference profile stays inside the regions your tenant allows, or ask an administrator to change the region lock.",
     "PROVIDER_UNAVAILABLE": "The provider failed or could not be reached; retry later.",
     "PROVIDER_TIMEOUT": "Retry, stream the response, or ask for fewer output tokens.",
     "INTERNAL_ERROR": "Retry later, and quote X-Shim-Request-Id if it persists.",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
 from sqlalchemy import desc, select
@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.errors import ConfigurationError
 from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim.gateway.pipeline.provider_execution import ProviderCallError
+from shim.secrets.azure import EntraClientCredential, EntraTokenCache
 from shim.secrets.credentials import EphemeralProviderCredential
+
+if TYPE_CHECKING:
+    from shim_enterprise.tenants.models import ProviderSecret
 
 FERNET_V2_PREFIX = "fernet:v2:"
 GCP_V1_PREFIX = "gcpsm:v1:"
@@ -194,6 +199,15 @@ def get_secret_store() -> SecretStore:
     return _store_singleton
 
 
+def provider_secret_purpose(provider: str, kind: str = "api_key") -> str:
+    """The store purpose a provider secret of this kind is kept under."""
+    return (
+        f"provider:{provider}:api-key"
+        if kind == "api_key"
+        else f"provider:{provider}:azure-entra-client"
+    )
+
+
 class ManagedProviderCredentialResolver:
     """Resolve one invocation credential or a tenant-managed secret."""
 
@@ -202,12 +216,39 @@ class ManagedProviderCredentialResolver:
         provider: str,
         store: SecretStore,
         session_factory: async_sessionmaker[AsyncSession],
+        entra: EntraTokenCache | None = None,
     ) -> None:
         if provider not in {"openai", "anthropic", "google"}:
             raise ValueError("unsupported provider credential")
         self.provider = provider
         self.store = store
         self.session_factory = session_factory
+        self.entra = entra
+
+    async def resolve_row(self, tenant_id: TenantId, row: ProviderSecret) -> str:
+        """An API key as stored, or an Entra token for an Entra client credential."""
+        secret = await self.store.get_secret(
+            tenant_id,
+            SecretRef(row.secret_ref),
+            expected_purpose=provider_secret_purpose(row.provider, row.credential_kind),
+        )
+        if row.credential_kind == "api_key":
+            return secret
+        if self.entra is None:
+            raise ProviderCallError(
+                503, "PROVIDER_NOT_CONFIGURED", False, provider=self.provider
+            )
+        stored = json.loads(secret)
+        credential = EntraClientCredential(
+            tenant=stored["tenant_id"],
+            client_id=stored["client_id"],
+            client_secret=stored["client_secret"],
+            scope=stored["scope"],
+        )
+        # A rotation changes the version, so a rotated secret never reuses a token.
+        return await self.entra.token(
+            (tenant_id, row.id, row.secret_version), credential
+        )
 
     async def resolve(
         self,
@@ -232,11 +273,10 @@ class ManagedProviderCredentialResolver:
                         .where(
                             ProviderSecret.organization_id == tenant_id,
                             ProviderSecret.provider == self.provider,
-                            *(
-                                [ProviderSecret.id == UUID(reference)]
-                                if reference is not None
-                                else []
-                            ),
+                            # An Entra credential serves its Azure deployments only.
+                            ProviderSecret.id == UUID(reference)
+                            if reference is not None
+                            else ProviderSecret.credential_kind == "api_key",
                         )
                         .order_by(
                             desc(ProviderSecret.created_at), desc(ProviderSecret.id)
@@ -247,11 +287,6 @@ class ManagedProviderCredentialResolver:
                 .scalars()
                 .first()
             )
-            secret_ref = SecretRef(row.secret_ref) if row is not None else None
-        if secret_ref is None:
+        if row is None:
             return None
-        return await self.store.get_secret(
-            tenant_id,
-            secret_ref,
-            expected_purpose=f"provider:{self.provider}:api-key",
-        )
+        return await self.resolve_row(tenant_id, row)

@@ -239,7 +239,11 @@ class AdmissionStage:
         if (
             value.protocol != "count_tokens"
             and not embeddings
-            and (value.target is None or value.target.context_window)
+            and (
+                value.target is None
+                or value.target.context_window
+                or value.target.price_model
+            )
         ):
             _check_catalog_limits(
                 value,
@@ -533,8 +537,16 @@ def _check_catalog_limits(
         # max_tokens above the window and stop at it.
         output = requested_output if value.provider == "openai" else 0
     else:
-        # A deployment is checked against its own window only, never the catalog.
-        window, input_limit = value.target.context_window, None
+        # A deployment's own window, else its price model's: never the upstream name's.
+        entry = (
+            DEFAULT_PRICE_BOOK.exact(value.target.price_model, str(value.provider))
+            if value.target.price_model and not value.target.context_window
+            else None
+        )
+        window = value.target.context_window or (
+            entry.context_window if entry is not None else None
+        )
+        input_limit = entry.input_limit if entry is not None else None
         output = requested_output
     if window is None:
         return

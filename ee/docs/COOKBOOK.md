@@ -777,6 +777,59 @@ Notes:
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
 
+## Register an Azure OpenAI deployment
+
+Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an
+Entra ID application, priced from the catalog model it serves.
+
+1. As the platform operator, approve the resource: its exact origin in
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`, or, on a hosted gateway,
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".openai.azure.com"]`.
+2. Store the credential: `POST /api/v1/management/providers` with
+   `provider: "openai"` and either `key` (the Azure key) or
+   `credential_kind: "azure_entra_client"` and `azure_entra` with `tenant_id`,
+   `client_id`, `client_secret` and optionally `scope`. Give the Entra application
+   the `Cognitive Services OpenAI User` role on the resource. The view shows
+   `credential_kind` and `masked_key` (`entra:` and the masked client id), never the
+   secret. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
+   `verified_at`, a refusal answers 400. `PUT /providers/{id}` with `azure_entra`
+   replaces all four values; a credential's kind never changes (422).
+3. Register the deployment with `upstream: "azure_openai"`, `provider: "openai"`,
+   `deployment_kind: "external"`, `base_url` ending in `/openai/v1`,
+   `upstream_model` set to the Azure deployment name and `price_model` set to the
+   catalog model it serves. Catalog prices are OpenAI's list prices; Azure's Data
+   Zone, Regional and provisioned prices differ, so enter
+   `input_price_per_million`, `output_price_per_million` and the cache prices when
+   they apply. An Entra credential on a `generic` deployment answers 422 "An Entra
+   credential can only serve an Azure OpenAI deployment".
+4. Check health: a 200 or 404 from `/openai/v1/models` marks it `healthy`.
+5. Call the alias as the model name.
+
+```console
+SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"provider\": \"openai\", \"name\": \"azure-bank\", \"credential_kind\": \"azure_entra_client\",
+       \"azure_entra\": {\"tenant_id\": \"$AZURE_TENANT\", \"client_id\": \"$AZURE_CLIENT\",
+                       \"client_secret\": \"$AZURE_SECRET\"}}" | jq -r .id)
+
+jq -n --arg secret "$SECRET_ID" '{
+    alias: "azure-mini", provider: "openai", upstream: "azure_openai",
+    upstream_model: "kurum-mini", price_model: "gpt-5.6-luna",
+    base_url: "https://bank.openai.azure.com/openai/v1", provider_secret_id: $secret,
+    deployment_kind: "external", declared_version: "2026-10-11", owner: "platform-team"}' |
+  curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
+    -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+Notes:
+
+- A prompt Azure's content filter refuses answers 400 `PROVIDER_CONTENT_FILTERED`
+  with the filtered categories; an Entra refusal answers 401
+  `INVALID_PROVIDER_CREDENTIAL`.
+- The gateway ignores the community `SHIM_AZURE_*` settings except
+  `SHIM_AZURE_AUTHORITY_HOST` and `SHIM_AZURE_TOKEN_SCOPE`, and logs each other one
+  that is set at startup.
+
 ## Automate management with a service account
 
 Give a CI pipeline or an agent its own management key instead of a person's token.

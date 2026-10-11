@@ -550,6 +550,10 @@ class ProviderSecret(Base, TimestampMixin):
             "organization_id",
             "provider",
         ),
+        CheckConstraint(
+            "credential_kind IN ('api_key', 'azure_entra_client')",
+            name="ck_provider_secrets_credential_kind",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -566,6 +570,9 @@ class ProviderSecret(Base, TimestampMixin):
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    credential_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="api_key", server_default="api_key"
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
 
@@ -608,6 +615,17 @@ class ModelDeployment(Base, TimestampMixin):
             "context_window IS NULL OR context_window > 0",
             name="ck_model_deployments_context_window",
         ),
+        CheckConstraint(
+            "(cache_read_price_per_million IS NULL OR (input_price_per_million "
+            "IS NOT NULL AND cache_read_price_per_million >= 0)) AND "
+            "(cache_write_price_per_million IS NULL OR (input_price_per_million "
+            "IS NOT NULL AND cache_write_price_per_million >= 0))",
+            name="ck_model_deployments_cache_prices",
+        ),
+        CheckConstraint(
+            "upstream IN ('generic', 'azure_openai')",
+            name="ck_model_deployments_upstream",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -637,6 +655,14 @@ class ModelDeployment(Base, TimestampMixin):
     input_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     output_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     context_window: Mapped[int | None] = mapped_column(Integer)
+    price_model: Mapped[str | None] = mapped_column(String(200))
+    cache_read_price_per_million: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    cache_write_price_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 8)
+    )
+    upstream: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="generic", server_default="generic"
+    )
 
 
 class RecordSet(Base, TimestampMixin):

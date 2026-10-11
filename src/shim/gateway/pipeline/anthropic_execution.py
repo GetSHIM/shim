@@ -96,6 +96,8 @@ class AnthropicExecution:
                     else {}
                 ),
             )
+        except ProviderCallError:
+            raise
         except Exception:
             raise ProviderCallError(
                 503,

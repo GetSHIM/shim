@@ -83,9 +83,18 @@ def validate_deployment_url(url: str) -> str:
         raise ValueError(
             "Deployment URL must be an absolute HTTP(S) URL without credentials, query or fragment"
         )
-    if _origin(url) not in _operator_origins(settings.MODEL_DEPLOYMENT_ALLOWED_ORIGINS):
-        raise ValueError("Deployment origin is not approved by the platform operator")
     host = parsed.hostname.casefold().rstrip(".")
+    if _origin(url) not in _operator_origins(
+        settings.MODEL_DEPLOYMENT_ALLOWED_ORIGINS
+    ) and not (
+        parsed.scheme == "https"
+        and (parsed.port or 443) == 443
+        and any(
+            host.endswith(suffix) and len(host) > len(suffix)
+            for suffix in settings.MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES
+        )
+    ):
+        raise ValueError("Deployment origin is not approved by the platform operator")
     if host in {"metadata.google.internal", "metadata", "instance-data"}:
         raise ValueError("Metadata endpoints are forbidden")
     try:
@@ -306,6 +315,9 @@ class DeploymentResolver:
                 input_per_million=deployment.input_price_per_million,
                 output_per_million=deployment.output_price_per_million,
                 context_window=deployment.context_window,
+                price_model=deployment.price_model,
+                cache_read_per_million=deployment.cache_read_price_per_million,
+                cache_write_per_million=deployment.cache_write_price_per_million,
             ),
         )
 

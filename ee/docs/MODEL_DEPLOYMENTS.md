@@ -23,6 +23,12 @@ explicit approval; use HTTPS in production. Add private certificate authorities
 with `OUTBOUND_CA_BUNDLE` (the earlier name `MODEL_DEPLOYMENT_CA_BUNDLE` is still
 read); certificate verification stays enabled.
 Enforce DNS and outbound network policy at the deployment boundary as well.
+A hosted gateway that cannot list every tenant's host sets
+`MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES`, a JSON list of host suffixes such as
+`[".openai.azure.com", ".services.ai.azure.com", ".cognitiveservices.azure.com"]`
+(each lowercase, starting with a dot, with at least two labels; startup fails
+otherwise). A URL is then also approved when it is `https` on port 443 and its host
+ends with a suffix and is longer than it; every other check above still applies.
 
 `deployment_kind` (`internal` or `external`) is what the tenant admin declares;
 shim does not derive it. [Destination rules](POLICY_DECISIONS.md#destination-rules)
@@ -43,7 +49,11 @@ For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
 There is no retry or failover. A five-second model-list health probe records
-only HTTP success/failure and never reads an unbounded response body. A
+only HTTP success/failure and never reads an unbounded response body; it uses the
+credential the gateway would use, so an Entra credential sends a fresh token. For an
+`azure_openai` deployment a 200 or a 404 from `/openai/v1/models` is healthy (the
+resource answered and accepted the credential; Microsoft documents no v1 model
+listing); anything else is unhealthy. A
 deployment marked `unhealthy` receives no traffic for 300 seconds from that
 check: requests for its alias get 503 `DEPLOYMENT_UNHEALTHY` with `Retry-After`
 set to the seconds left and `x-should-retry: false`, and it leaves `/v1/models`.
@@ -60,15 +70,41 @@ registry policy evidence. Pin the actual serving image and model revision at
 the model server; shim does not independently attest which weights it serves.
 
 A deployment may state its own price, `input_price_per_million` and
-`output_price_per_million` (both or neither), and its `context_window`. A
+`output_price_per_million` (both or neither), its cache prices
+`cache_read_price_per_million` and `cache_write_price_per_million` (each needs the
+input price; an unset cache read is priced as input), and its `context_window`. A
 stated price wins over a catalog match for the upstream model name, because the
 operator knows what the deployment costs; settlements and spend reservations use
-it with `pricing_resolution=deployment`, with no tier and no cache prices. A
-stated window is checked before the call: a request whose prompt certainly does
-not fit is refused with 400 `MODEL_CONTEXT_EXCEEDED`, which matters most where a
-server would truncate it silently. Without a window a deployment is not checked,
-even when its upstream name is in the catalog, and deployments get no capability
-check.
+it with `pricing_resolution=deployment`, with no tier. An `anthropic` deployment's
+stated price writes the cache at 1.25 times the input price unless a cache write
+price is set, and a one-hour write at twice the input price. A stated window is
+checked before the call: a request whose prompt certainly does not fit is refused
+with 400 `MODEL_CONTEXT_EXCEEDED`, which matters most where a server would truncate
+it silently. Deployments get no capability check.
+
+`price_model` names the catalog model a deployment stands for, when its upstream
+name is not one: an Azure deployment `kurum-mini` serving `gpt-5.6-luna`. It must be
+an exact catalog chat model of the deployment's provider (422 "price_model is not a
+catalog model for this provider"). Prices come first from the deployment's own
+prices, then from `price_model`'s catalog entry (with its cache prices), then from
+the upstream name's entry, else the request is unpriced. `price_model` also lends
+its context window, input limit and output limit when the deployment states no
+window. Without a window or a `price_model`, a deployment is not checked, even
+when its upstream name is in the catalog.
+
+`upstream` is `generic` (default) or `azure_openai`. An `azure_openai` deployment
+uses provider `openai`, is `external`, has a base URL whose path is exactly
+`/openai/v1` (Azure's v1 API, with no `api-version`), and its `upstream_model` is the
+Azure deployment name (letters, digits, `.`, `_` and `-`, at most 64 characters,
+starting with a letter or digit); each rule refuses with its own 422. Its credential
+is an Azure key (`credential_kind: api_key`) or a Microsoft Entra ID client
+credential (`credential_kind: azure_entra_client`, provider `openai`), which can
+back only an `azure_openai` deployment and is never used for catalog routes. shim
+asks Entra for a token at `SHIM_AZURE_AUTHORITY_HOST` with the credential's scope
+(default `SHIM_AZURE_TOKEN_SCOPE`) and keeps it until 300 seconds before it expires;
+rotating the credential starts a new token. A `PUT` that leaves out `upstream`,
+`price_model` or a cache price keeps the stored value, so a client that predates
+them never erases them; every other field still follows the body.
 
 Without a stated price, public catalog prices apply to recognized upstream model
 names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero

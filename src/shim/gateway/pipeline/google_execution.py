@@ -83,6 +83,8 @@ class GoogleExecution:
                 prepared.tenant_id,
                 invocation.provider_credential,
             )
+        except ProviderCallError:
+            raise
         except Exception:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
