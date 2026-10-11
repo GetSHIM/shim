@@ -113,6 +113,7 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
     assert {name for name, kind in view.kinds.items() if kind.available} == {
         "term",
         "pattern",
+        "destination",
     }
     assert all("require_approval" not in kind.actions for kind in view.kinds.values())
     count = select(func.count()).where(
