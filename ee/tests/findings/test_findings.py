@@ -2092,25 +2092,21 @@ async def _owner(db, organization_id: UUID, role: str = "owner") -> User:
     return user
 
 
-def test_the_ladder_covers_every_rule_and_auto_only_unused_deployments() -> None:
-    assert set(service.LADDER) == set(service.RULES)
+def test_the_ladder_puts_auto_only_on_unused_deployments() -> None:
     by_mode = {
-        mode: {
-            rule for rule, ladder in service.LADDER.items() if ladder.max_mode == mode
-        }
+        mode: {rule for rule, spec in service.RULES.items() if spec.MAX_MODE == mode}
         for mode in service.MODES
     }
     assert by_mode["auto"] == {service.UNUSED_DEPLOYMENT}
     assert by_mode["suggest"] == {service.IDLE_INTERNAL_DEPLOYMENT}
-    assert {rule for rule, ladder in service.LADDER.items() if ladder.action_kind} == {
-        service.UNUSED_DEPLOYMENT,
-        service.IDLE_INTERNAL_DEPLOYMENT,
+    assert {
+        rule: spec.ACTION_KIND
+        for rule, spec in service.RULES.items()
+        if spec.ACTION_KIND
+    } == {
+        service.UNUSED_DEPLOYMENT: "deployment.disable",
+        service.IDLE_INTERNAL_DEPLOYMENT: "deployment.disable",
     }
-    assert all(
-        ladder.action_kind == "deployment.disable"
-        for ladder in service.LADDER.values()
-        if ladder.action_kind
-    )
 
 
 @pytest.mark.parametrize(
@@ -2304,6 +2300,63 @@ async def test_a_mode_change_reaches_an_open_finding_that_did_not_fire(
         None,
     )
     assert service.finding_from_row(lowered).remediation.action is None
+
+
+@pytest.mark.asyncio
+async def test_lowering_a_mode_clears_the_stored_action_at_once(
+    db, test_api_key
+) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "suggest"})
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+    assert finding.remediation["action"] is not None
+
+    async with _client(db, await _owner(db, tenant)) as client:
+        lowered = await client.patch(
+            "/api/v1/management/gateway-settings",
+            json={"finding_modes": {service.UNUSED_DEPLOYMENT: "observe"}},
+        )
+        planned = await client.post(f"/api/v1/management/findings/{finding.id}/plan")
+
+    assert lowered.status_code == 200, lowered.text
+    await db.refresh(finding)
+    # No pass in between: the PATCH itself took the action away.
+    assert (finding.remediation["mode"], finding.remediation["action"]) == (
+        "observe",
+        None,
+    )
+    assert planned.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"kind": "deployment.delete", "params": {"deployment_id": "x"}},
+        {"kind": "deployment.disable", "params": {}},
+        {"params": {"deployment_id": "x"}},
+    ],
+)
+async def test_a_stored_action_this_build_cannot_plan_is_a_409(
+    db, test_api_key, action
+) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "suggest"})
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+    finding.remediation = {**finding.remediation, "action": action}
+    await db.flush()
+
+    async with _client(db, await _owner(db, tenant)) as client:
+        refused = await client.post(f"/api/v1/management/findings/{finding.id}/plan")
+
+    assert (refused.status_code, refused.json()["detail"]) == (
+        409,
+        "This build cannot plan the finding's action",
+    )
 
 
 @pytest.mark.asyncio

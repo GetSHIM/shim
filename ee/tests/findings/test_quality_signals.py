@@ -344,7 +344,8 @@ async def test_the_worker_raises_the_three_findings_in_observe(
         service.SOFT_REFUSALS,
     }
     for row in rows:
-        assert service.LADDER[row.rule_id] == service.RuleLadder("observe", None)
+        spec = service.RULES[row.rule_id]
+        assert (spec.MAX_MODE, spec.ACTION_KIND) == ("observe", None)
         assert (row.remediation["mode"], row.remediation["action"]) == ("observe", None)
         assert (
             check(service.finding_from_row(row).model_dump(mode="json"), SCHEMA).valid

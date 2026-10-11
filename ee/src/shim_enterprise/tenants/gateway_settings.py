@@ -92,12 +92,12 @@ class GatewaySettingsPatch(BaseModel):
         cls, value: dict[str, FindingMode] | None
     ) -> dict[str, FindingMode] | None:
         # Here, not at the top: the findings module reads these settings.
-        from shim_enterprise.findings.service import LADDER, MODES
+        from shim_enterprise.findings.service import MODES, RULES
 
         for rule_id, mode in (value or {}).items():
-            if rule_id not in LADDER:
+            if rule_id not in RULES:
                 raise ValueError(f"unknown finding rule: {rule_id}")
-            highest = LADDER[rule_id].max_mode
+            highest = RULES[rule_id].MAX_MODE
             if MODES.index(mode) > MODES.index(highest):
                 raise ValueError(f"{rule_id} goes at most to {highest}")
         return value
@@ -112,16 +112,16 @@ def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
 
     unknown = {("key", key) for key in set(value) - set(GatewaySettings.model_fields)}
     # Here, not at the top: the findings module reads these settings.
-    from shim_enterprise.findings.service import LADDER
+    from shim_enterprise.findings.service import RULES
 
     modes = value.get("finding_modes")
     if isinstance(modes, dict):
-        retired_rules = {rule for rule in modes if rule not in LADDER}
+        retired_rules = {rule for rule in modes if rule not in RULES}
         unknown |= {("finding rule", rule) for rule in retired_rules}
         value = {
             **value,
             "finding_modes": {
-                rule: mode for rule, mode in modes.items() if rule in LADDER
+                rule: mode for rule, mode in modes.items() if rule in RULES
             },
         }
     names = value.get("response_analysis")

@@ -104,8 +104,10 @@ a PATCH merges per rule, and `observe` removes the rule's entry. Moving a rule t
 `auto` is relaxing (it lets shim act without a person), so
 [four eyes](POLICY_DECISIONS.md#four-eyes) applies; any other move is neutral.
 The worker writes the mode and action on every finding it raises and, each pass,
-on every open finding of the organization, so a changed mode shows after the next
-pass, and a lowered one removes the action. Nothing already applied is undone.
+on every open finding of the organization. A change of `finding_modes` rewrites
+the open findings in the same transaction, so a lowered mode removes the action
+at once. Nothing already applied is undone. Planning a finding whose stored
+action this build does not know (another kind, no deployment id) answers 409.
 
 | Rule | `max_mode` | Action |
 | --- | --- | --- |

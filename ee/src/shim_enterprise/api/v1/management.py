@@ -127,11 +127,12 @@ from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
-    LADDER,
+    RULES as FINDING_RULES,
     RULE_VERSION,
     RULE_VERSIONS,
     STATUS_IDS,
     STATUS_RESOLVED,
+    apply_modes,
     effective_mode,
     finding_from_row,
     finding_modes,
@@ -3738,8 +3739,8 @@ async def finding_rules(
         FindingRuleView(
             rule_id=rule_id,
             rule_version=RULE_VERSIONS.get(rule_id, RULE_VERSION),
-            max_mode=ladder.max_mode,
-            action_kind=ladder.action_kind,
+            max_mode=spec.MAX_MODE,
+            action_kind=spec.ACTION_KIND,
             mode=modes.get(rule_id, "observe"),
             effective_mode=effective_mode(rule_id, modes),
             unavailable_reason="auto_executor_not_installed"
@@ -3747,7 +3748,7 @@ async def finding_rules(
             else None,
             open_findings=open_counts.get(rule_id, 0),
         )
-        for rule_id, ladder in sorted(LADDER.items())
+        for rule_id, spec in sorted(FINDING_RULES.items())
     ]
 
 
@@ -5813,6 +5814,9 @@ class _GatewaySettingsResource:
         days = current.request_archive.retention_days
         if days < previous.request_archive.retention_days:
             await shorten_retention(session, organization_id, days)
+        if "finding_modes" in changed:
+            # A lowered mode takes the suggested action away now, not at the next pass.
+            await apply_modes(session, organization_id, current.finding_modes)
         await _audit(
             session,
             actor,

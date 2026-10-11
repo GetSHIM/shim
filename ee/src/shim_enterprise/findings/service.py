@@ -6,12 +6,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from functools import reduce
 import operator
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging
 import re
-from typing import Any, Literal, NamedTuple, get_args
+from typing import Any, Literal, get_args
 from uuid import UUID
 
 from sqlalchemy import (
@@ -209,11 +209,6 @@ class RuleSpec:
     ACTION_KIND: str | None = None
     # Where the evidence comes from: shim's own records or an imported log.
     SOURCE: Literal["gateway", "litellm"] = "gateway"
-
-
-class RuleLadder(NamedTuple):
-    max_mode: Mode
-    action_kind: str | None
 
 
 def _playbook(rule_id: str) -> str:
@@ -738,18 +733,9 @@ RULES: dict[str, RuleSpec] = {
     ),
 }
 
-# Every rule's highest mode and the action it can propose; a new rule declares
-# both in its RuleSpec.
-LADDER: Mapping[str, RuleLadder] = MappingProxyType(
-    {
-        rule_id: RuleLadder(spec.MAX_MODE, spec.ACTION_KIND)
-        for rule_id, spec in RULES.items()
-    }
-)
-
 
 def effective_mode(rule_id: str, modes: Mapping[str, Mode]) -> Mode:
-    mode = min(modes.get(rule_id, "observe"), LADDER[rule_id].max_mode, key=MODES.index)
+    mode = min(modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index)
     # No executor applies anything yet (E56): auto works as suggest.
     return "suggest" if mode == "auto" else mode
 
@@ -773,6 +759,22 @@ def ladder_remediation(
         "blast_radius": spec.BLAST_RADIUS,
         "proof_after": None,
     }
+
+
+async def apply_modes(
+    session: AsyncSession, tenant_id: UUID, modes: Mapping[str, Mode]
+) -> None:
+    """Bring every open finding to the tenant's modes, fired in this pass or not."""
+    for row in await session.scalars(
+        select(Finding).where(
+            Finding.organization_id == tenant_id,
+            Finding.status_id != STATUS_RESOLVED,
+            Finding.rule_id.in_(list(RULES)),
+        )
+    ):
+        ladder = ladder_remediation(row.rule_id, row.subject, modes)
+        if any(row.remediation.get(key) != value for key, value in ladder.items()):
+            row.remediation = {**row.remediation, **ladder}
 
 
 async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
@@ -2714,17 +2716,7 @@ async def evaluate_organization(
             )
         else:
             detections += found
-    # A mode change reaches every open finding, fired in this pass or not.
-    for row in await session.scalars(
-        select(Finding).where(
-            Finding.organization_id == tenant_id,
-            Finding.status_id != STATUS_RESOLVED,
-            Finding.rule_id.in_(list(RULES)),
-        )
-    ):
-        ladder = ladder_remediation(row.rule_id, row.subject, modes)
-        if any(row.remediation.get(key) != value for key, value in ladder.items()):
-            row.remediation = {**row.remediation, **ladder}
+    await apply_modes(session, tenant_id, modes)
     await session.execute(
         update(Finding)
         .where(

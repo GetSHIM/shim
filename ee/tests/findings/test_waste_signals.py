@@ -421,7 +421,8 @@ async def test_the_worker_raises_the_three_in_observe_and_only_for_shape_rows(
         (test_api_key.organization_id, service.CACHE_ORDER_CHURN),
     }
     for row in rows:
-        assert service.LADDER[row.rule_id] == service.RuleLadder("observe", None)
+        spec = service.RULES[row.rule_id]
+        assert (spec.MAX_MODE, spec.ACTION_KIND) == ("observe", None)
         assert (
             check(service.finding_from_row(row).model_dump(mode="json"), SCHEMA).valid
             is None

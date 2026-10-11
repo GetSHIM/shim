@@ -42,13 +42,18 @@ async def plan_from_finding(
         raise HTTPException(status_code=409, detail="The finding is not open")
     if action is None:
         raise HTTPException(status_code=409, detail="The finding suggests no action")
-    # deployment.disable is the one action kind so far.
+    # deployment.disable is the one action kind so far; anything else stored (a newer
+    # build's kind, a broken row) is refused, never guessed.
+    item = action.get("params", {}).get("deployment_id")
+    if action.get("kind") != "deployment.disable" or not isinstance(item, str):
+        raise HTTPException(
+            status_code=409, detail="This build cannot plan the finding's action"
+        )
     deployments = REGISTRY["deployments"]
     if deployments.permission not in await user_permissions(session, user):
         raise HTTPException(
             status_code=403, detail=f"Permission required: {deployments.permission}"
         )
-    item = action["params"]["deployment_id"]
     before = (await deployments.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(status_code=422, detail="Item not found")
