@@ -113,6 +113,32 @@ async def count_approvers(session: AsyncSession, organization_id: UUID) -> int:
     )
 
 
+async def require_two_approvers(
+    session: AsyncSession, organization_id: UUID, *, losing: int = 0
+) -> None:
+    if await count_approvers(session, organization_id) - losing < 2:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUR_EYES_UNAVAILABLE",
+                "message": "Four eyes needs two active administrators.",
+            },
+        )
+
+
+async def keep_two_approvers(
+    session: AsyncSession, member: User, organization_id: UUID, role: str | None
+) -> None:
+    """Under four eyes, refuse to demote (`role`) or remove (None) the second approver."""
+    if (
+        member.kind == "human"
+        and member.role in _APPROVER_ROLES
+        and role not in _APPROVER_ROLES
+        and await four_eyes_on(session, organization_id)
+    ):
+        await require_two_approvers(session, organization_id, losing=1)
+
+
 def relaxed_fields(changes: Sequence[Change]) -> list[str]:
     """`resource.item.field` of each relaxing field, `resource.item` for a create or delete."""
     relaxed: list[str] = []
@@ -164,9 +190,14 @@ async def _refuse_unapproved(
             actor=str(actor.id),
             actor_email=actor.email,
             event_id=event_id,
+            kind="gateway_protection_relaxed",
         )
         return
-    raise HTTPException(
+    raise approval_required(relaxed)
+
+
+def approval_required(relaxed: list[str]) -> HTTPException:
+    return HTTPException(
         status_code=409,
         detail={
             "code": "CHANGE_REQUIRES_APPROVAL",

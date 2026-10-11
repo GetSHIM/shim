@@ -273,6 +273,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
     if target_kind == "email":
         subjects = {
             "privacy_protection_relaxed": "shim privacy protection turned off",
+            "gateway_protection_relaxed": "shim gateway protection turned off",
             "bulk_disclosure": "shim bulk disclosure in one request",
             "evidence_monthly_ready": "shim monthly evidence file ready",
             "policy_approval_requested": "shim policy change waits for approval",
@@ -348,10 +349,11 @@ def _compliance_text(body: dict) -> str:
             f"shim compliance finding: {body.get('severity', 'unknown')} "
             f"{body.get('entity_type', 'entity')}"
         )
-    if body.get("kind") == "privacy_protection_relaxed":
+    if body.get("kind") in ("privacy_protection_relaxed", "gateway_protection_relaxed"):
+        area = body["kind"].split("_")[0]
         fields = ", ".join(map(str, body.get("fields", [])))
         actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
-        return f"shim privacy protection turned off: {fields} (by {actor})"
+        return f"shim {area} protection turned off: {fields} (by {actor})"
     if body.get("kind") == "bulk_disclosure":
         counts = ", ".join(
             f"{entity_type} {count}"

@@ -178,10 +178,11 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
-    count_approvers,
+    keep_two_approvers,
     lock_tenant,
     no_impact,
     record_managed_write,
+    require_two_approvers,
     version_detail,
 )
 from shim_enterprise.tenants.permissions import (
@@ -1519,6 +1520,7 @@ async def update_team_member(
         custom_role_id = member.custom_role_id
     if member.role == "owner" and patch.role != "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), patch.role)
     roles = await _roles_by_id(session, _tenant_id(user))
     if custom_role_id is not None:
         if custom_role_id not in roles:
@@ -1570,6 +1572,7 @@ async def remove_team_member(
         raise HTTPException(status_code=403, detail="Only owners can remove admins")
     if member.role == "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), None)
     await _deactivate(session, member)
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
     await session.commit()
@@ -5443,17 +5446,6 @@ class _PrivacyResource:
             )
 
 
-async def _require_two_approvers(session: AsyncSession, organization_id: UUID) -> None:
-    if await count_approvers(session, organization_id) < 2:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "FOUR_EYES_UNAVAILABLE",
-                "message": "Four eyes needs two active administrators.",
-            },
-        )
-
-
 class _GatewaySettingsResource:
     name = "gateway_settings"
     permission: Permission = "settings.write"
@@ -5479,11 +5471,7 @@ class _GatewaySettingsResource:
         proposed: State,
     ) -> State:
         patch = _validated(GatewaySettingsPatch, proposed)
-        after = {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
-        turned_on = after.get("four_eyes") == "relaxing"
-        if turned_on and (before or {}).get("four_eyes") != "relaxing":
-            await _require_two_approvers(session, actor.organization_id)
-        return after
+        return {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
 
     async def apply(
         self,
@@ -5499,8 +5487,9 @@ class _GatewaySettingsResource:
         assert before is not None and after is not None
         previous = GatewaySettings.model_validate(before)
         current = GatewaySettings.model_validate(after)
+        # Here, not in validate: approvers are counted under the lock the write holds.
         if current.four_eyes == "relaxing" and previous.four_eyes != "relaxing":
-            await _require_two_approvers(session, organization_id)
+            await require_two_approvers(session, organization_id)
         changed = {
             field
             for field in GatewaySettings.model_fields

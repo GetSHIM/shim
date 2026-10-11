@@ -171,8 +171,11 @@ async def test_four_eyes_needs_two_active_human_approvers(db) -> None:
         "message": "Four eyes needs two active administrators.",
     }
     assert (refused.status_code, refused.json()["detail"]) == (409, unavailable)
-    assert planned.status_code == 409
-    assert planned.json()["detail"]["errors"] == unavailable
+    assert planned.status_code == 201
+    applied = await _call(
+        db, alone["owner"], "POST", f"{POLICY}/plans/{planned.json()['id']}/apply"
+    )
+    assert (applied.status_code, applied.json()["detail"]) == (409, unavailable)
     assert (inactive.status_code, inactive.json()["detail"]) == (409, unavailable)
     assert accepted.status_code == 200
     assert accepted.json()["settings"]["four_eyes"] == "relaxing"
@@ -654,8 +657,11 @@ async def test_an_owner_left_alone_may_turn_four_eyes_off_directly(db) -> None:
         }
     ]
     [delivery] = await _outbox(db, tenant, COMPLIANCE_DELIVERY)
-    assert delivery.payload["body"]["kind"] == "privacy_protection_relaxed"
+    assert delivery.payload["body"]["kind"] == "gateway_protection_relaxed"
     assert delivery.payload["body"]["fields"] == ["four_eyes"]
+    assert _compliance_text(delivery.payload["body"]).startswith(
+        "shim gateway protection turned off: four_eyes"
+    )
 
 
 @pytest.mark.asyncio
@@ -744,3 +750,82 @@ async def test_the_approval_request_reaches_every_enabled_forward_target(
         f"shim policy plan {plan_id} loosens privacy and waits for a second "
         f"administrator: /api/v1/management/policy/plans/{plan_id}"
     )
+
+
+@pytest.mark.asyncio
+async def test_no_one_approves_a_plan_of_a_service_account_they_created_or_rotated(
+    db,
+) -> None:
+    users = await _organization(db, "rotator", "admin")
+    owner, rotator, admin = users["owner"], users["rotator"], users["admin"]
+    rotator.role = "owner"
+    await db.flush()
+    await _turn_on(db, owner)
+    created = await _call(
+        db,
+        owner,
+        "POST",
+        f"{MANAGEMENT}/service-accounts",
+        json={"name": "ci", "role": "admin", "expires_in_days": 30},
+    )
+    robot = await db.get(User, UUID(created.json()["id"]))
+    rotated = await _call(
+        db, rotator, "POST", f"{MANAGEMENT}/service-accounts/{robot.id}/rotate"
+    )
+    plan = await _plan(db, robot, _block_email_off())
+
+    submitted = await _call(db, robot, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    refused = [
+        await _call(db, user, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={})
+        for user in (owner, rotator)
+    ]
+    approved = await _call(
+        db, admin, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={}
+    )
+
+    assert (created.status_code, rotated.status_code) == (201, 200)
+    assert submitted.status_code == 202
+    assert [response.status_code for response in refused] == [403, 403]
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "APPROVER_NOT_ELIGIBLE"
+    }
+    assert (approved.status_code, approved.json()["status"]) == (200, "applied")
+
+
+@pytest.mark.asyncio
+async def test_under_four_eyes_the_second_approver_is_neither_demoted_nor_removed(
+    db,
+) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    await _turn_on(db, owner)
+    member = f"{MANAGEMENT}/team/members/{admin.id}"
+
+    refused = [
+        await _call(db, owner, "PATCH", member, json={"role": "member"}),
+        await _call(db, owner, "PATCH", member, json={"role": "auditor"}),
+        await _call(db, owner, "DELETE", member),
+    ]
+    promoted = await _call(db, owner, "PATCH", member, json={"role": "owner"})
+    third = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"four-eyes-{uuid4().hex}@example.com",
+        role="admin",
+        kind="human",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(third)
+    await db.flush()
+    demoted = await _call(db, owner, "PATCH", member, json={"role": "member"})
+    last = await _call(db, owner, "DELETE", f"{MANAGEMENT}/team/members/{third.id}")
+
+    assert [response.status_code for response in refused] == [409] * 3
+    assert {response.json()["detail"]["code"] for response in refused} == {
+        "FOUR_EYES_UNAVAILABLE"
+    }
+    assert (promoted.status_code, demoted.status_code) == (200, 200)
+    assert last.json()["detail"]["code"] == "FOUR_EYES_UNAVAILABLE"
+    await db.refresh(third)
+    assert third.is_active is True
