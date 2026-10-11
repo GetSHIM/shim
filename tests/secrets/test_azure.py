@@ -62,6 +62,21 @@ async def test_a_token_is_cached_and_one_request_serves_concurrent_callers() -> 
 
 
 @pytest.mark.asyncio
+async def test_concurrent_callers_share_one_failure_and_the_next_one_retries() -> None:
+    seen: list[httpx.Request] = []
+    client, cache = _entra([httpx.Response(500), _token("token-2")], seen)
+    async with client:
+        failed = await asyncio.gather(
+            *(cache.token("k", CREDENTIAL) for _ in range(5)), return_exceptions=True
+        )
+        retried = await cache.token("k", CREDENTIAL)
+
+    assert all(isinstance(error, ProviderCallError) for error in failed)
+    assert retried == "token-2"
+    assert len(seen) == 2, "one request for the five callers, one for the retry"
+
+
+@pytest.mark.asyncio
 async def test_a_token_inside_the_refresh_margin_is_renewed() -> None:
     seen: list[httpx.Request] = []
     client, cache = _entra([_token("old", 299), _token("new")], seen)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -24,6 +25,7 @@ from shim_enterprise.secrets.store import (
     parse_secret_ref,
     validate_write,
 )
+from shim_enterprise.gateway.pipeline.quota_reservation import AccountingPolicyLoader
 from shim_enterprise.tenants.models import ProviderSecret
 
 
@@ -294,7 +296,6 @@ async def test_managed_provider_resolution_uses_a_fresh_session_per_lookup() -> 
     row = SimpleNamespace(
         secret_ref="fernet:v2:encrypted-provider-key",
         provider="openai",
-        credential_kind="api_key",
     )
     results = [row, None]
     sessions = [
@@ -460,7 +461,6 @@ async def test_provider_rotation_cleans_the_unreferenced_managed_secret(
         id=uuid4(),
         organization_id=tenant_id,
         provider="openai",
-        credential_kind="api_key",
         name="OpenAI",
         secret_ref=str(previous),
         secret_backend="gcp",
@@ -509,13 +509,12 @@ _ENTRA_SECRET = json.dumps(
 )
 
 
-def _secret_row(kind: str, version: str = "1", **fields: object) -> ProviderSecret:
+def _secret_row(provider: str, version: str = "1", **fields: object) -> ProviderSecret:
     return ProviderSecret(
         **{
             "id": uuid4(),
-            "provider": "openai",
-            "credential_kind": kind,
-            "secret_ref": f"fernet:v2:{kind}",
+            "provider": provider,
+            "secret_ref": f"fernet:v2:{provider}",
             "secret_backend": "fernet",
             "secret_version": version,
             "masked_key": "masked",
@@ -541,8 +540,8 @@ async def test_resolve_row_answers_a_key_or_an_entra_token_keyed_by_version() ->
     store = _kind_store()
     entra = Mock(token=AsyncMock(side_effect=["token-1", "token-2"]))
     resolver = ManagedProviderCredentialResolver("openai", store, Mock(), entra=entra)
-    key_row, entra_row = _secret_row("api_key"), _secret_row("azure_entra_client")
-    rotated = _secret_row("azure_entra_client", "2", id=entra_row.id)
+    key_row, entra_row = _secret_row("openai"), _secret_row("azure_entra")
+    rotated = _secret_row("azure_entra", "2", id=entra_row.id)
 
     assert await resolver.resolve_row(tenant_id, key_row) == "sk-managed"
     assert await resolver.resolve_row(tenant_id, entra_row) == "token-1"
@@ -577,11 +576,12 @@ async def test_a_catalog_route_never_resolves_an_entra_credential(db, test_org) 
 
     now = datetime.now(timezone.utc)
     key = _secret_row(
-        "api_key", organization_id=test_org.id, created_at=now - timedelta(days=1)
+        "openai",
+        organization_id=test_org.id,
+        created_at=now - timedelta(days=1),
+        monthly_limit_usd=Decimal("10"),
     )
-    entra = _secret_row(
-        "azure_entra_client", organization_id=test_org.id, created_at=now
-    )
+    entra = _secret_row("azure_entra", organization_id=test_org.id, created_at=now)
     db.add_all([key, entra])
     await db.flush()
     resolver = ManagedProviderCredentialResolver(
@@ -596,3 +596,16 @@ async def test_a_catalog_route_never_resolves_an_entra_credential(db, test_org) 
     assert await resolver.resolve(tenant_id, None, reference=str(entra.id)) == (
         "entra-token"
     )
+
+    # The spend cap is the cap of the secret the call is made with.
+    loader = AccountingPolicyLoader()
+    catalog = SimpleNamespace(tenant_id=test_org.id, provider="openai", target=None)
+    deployed = SimpleNamespace(
+        tenant_id=test_org.id,
+        provider="openai",
+        target=SimpleNamespace(credential_reference=str(entra.id)),
+    )
+    assert (await loader.spend(db, catalog, False)).monthly_limit_usd == Decimal("10")
+    deployed_policy = await loader.spend(db, deployed, False)
+    assert deployed_policy.version != "spend:openai:no-secret:v1"
+    assert deployed_policy.monthly_limit_usd is None

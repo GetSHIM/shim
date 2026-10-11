@@ -17,6 +17,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from shim.core.single_flight import single_flight
 from shim.gateway.contracts.ids import TenantId
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.secrets.credentials import EphemeralProviderCredential
@@ -60,7 +61,7 @@ class EntraTokenCache:
         self.max_entries = max_entries
         self.clock = clock
         self.tokens: OrderedDict[Hashable, tuple[str, float]] = OrderedDict()
-        self.locks: dict[Hashable, asyncio.Lock] = {}
+        self.pending: dict[Hashable, asyncio.Future[str]] = {}
 
     def _cached(self, key: Hashable) -> str | None:
         found = self.tokens.get(key)
@@ -72,18 +73,17 @@ class EntraTokenCache:
     async def token(self, key: Hashable, credential: EntraClientCredential) -> str:
         if (token := self._cached(key)) is not None:
             return token
-        try:
-            async with self.locks.setdefault(key, asyncio.Lock()):
-                if (token := self._cached(key)) is not None:
-                    return token
-                token, expires_in = await self._request(credential)
-                self.tokens[key] = (token, self.clock() + expires_in)
-                self.tokens.move_to_end(key)
-                while len(self.tokens) > self.max_entries:
-                    self.tokens.popitem(last=False)
-                return token
-        finally:
-            self.locks.pop(key, None)
+
+        async def fetch() -> str:
+            token, expires_in = await self._request(credential)
+            self.tokens[key] = (token, self.clock() + expires_in)
+            self.tokens.move_to_end(key)
+            while len(self.tokens) > self.max_entries:
+                self.tokens.popitem(last=False)
+            return token
+
+        # One request per key: callers that arrive meanwhile share its token or error.
+        return await single_flight(self.pending, key, fetch)
 
     async def _request(self, credential: EntraClientCredential) -> tuple[str, int]:
         unavailable = ProviderCallError(
@@ -107,7 +107,8 @@ class EntraTokenCache:
             body = response.json()
         except ValueError:
             body = None
-        error = body.get("error") if isinstance(body, dict) else None
+        body = body if isinstance(body, dict) else {}
+        error = body.get("error")
         if response.status_code != 200:
             # Never the secret, the token or Entra's error_description.
             logger.warning(
@@ -126,9 +127,9 @@ class EntraTokenCache:
                     message="Microsoft Entra ID refused the configured client credential.",
                 )
             raise unavailable
-        token = body.get("access_token") if isinstance(body, dict) else None
-        token_type = body.get("token_type") if isinstance(body, dict) else None
-        expires_in = body.get("expires_in") if isinstance(body, dict) else None
+        token = body.get("access_token")
+        token_type = body.get("token_type")
+        expires_in = body.get("expires_in")
         if (
             not isinstance(token, str)
             or not isinstance(token_type, str)

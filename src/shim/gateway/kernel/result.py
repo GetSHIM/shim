@@ -302,8 +302,10 @@ class PreparedInference:
         return replace(
             price,
             one_hour_write_multiplier=Decimal("2"),
+            # A stated price stays, 0 included.
             cache_write_per_million=price.cache_write_per_million
-            or price.input_per_million * Decimal("1.25"),
+            if price.cache_write_per_million is not None
+            else price.input_per_million * Decimal("1.25"),
         )
 
     @property

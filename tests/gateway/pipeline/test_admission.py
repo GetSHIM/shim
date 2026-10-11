@@ -871,6 +871,10 @@ def test_an_anthropic_deployment_price_takes_anthropic_cache_multipliers() -> No
         Decimal("6"),
     )
     assert written.deployment_price.rates(1)[3] == Decimal("4")
+    free = replace(
+        prepared, target=replace(prepared.target, cache_write_per_million=Decimal("0"))
+    )
+    assert free.deployment_price.rates(1)[3] == Decimal("0"), "a stated 0 stays 0"
     assert openai.deployment_price.rates(1)[3:] == (Decimal("3"), Decimal("3"))
 
 

@@ -99,9 +99,10 @@ uses provider `openai`, is `external`, has a base URL whose path is exactly
 `/openai/v1` (Azure's v1 API, with no `api-version`), and its `upstream_model` is the
 Azure deployment name (letters, digits, `.`, `_` and `-`, at most 64 characters,
 starting with a letter or digit); each rule refuses with its own 422. Its credential
-is an Azure key (`credential_kind: api_key`) or a Microsoft Entra ID client
-credential (`credential_kind: azure_entra_client`, provider `openai`), which can
-back only an `azure_openai` deployment and is never used for catalog routes. shim
+is an Azure key (a provider `openai` secret) or a Microsoft Entra ID client
+credential (provider `azure_entra`), which can back only an `azure_openai`
+deployment, is never used for catalog routes or their spend cap, and is never
+selected by a build that predates it. shim
 asks Entra for a token at `SHIM_AZURE_AUTHORITY_HOST` with the credential's scope
 (default `SHIM_AZURE_TOKEN_SCOPE`) and keeps it until 300 seconds before it expires;
 rotating the credential starts a new token. A `PUT` that leaves out `upstream`,

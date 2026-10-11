@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import func, select, text
 
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.errors import PersistenceError
@@ -50,6 +50,7 @@ from shim_enterprise.billing.ledger import (
 )
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.cache.loop_detection import keyed_repeat_digest, take_repeat_digest
+from shim_enterprise.secrets.store import provider_secret_query
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
@@ -63,7 +64,6 @@ from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
-    ProviderSecret,
     TierDefinition,
     Team,
     User,
@@ -274,19 +274,13 @@ class AccountingPolicyLoader:
                 monthly_limit_usd=None,
             )
 
+        # The secret the credential resolver calls with, so its cap is the one spent.
         statement = (
-            select(ProviderSecret)
-            .where(
-                ProviderSecret.organization_id == prepared.tenant_id,
-                ProviderSecret.provider == str(prepared.provider),
-                *(
-                    [ProviderSecret.id == UUID(prepared.target.credential_reference)]
-                    if prepared.target
-                    else []
-                ),
+            provider_secret_query(
+                prepared.tenant_id,
+                str(prepared.provider),
+                prepared.target.credential_reference if prepared.target else None,
             )
-            .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
-            .limit(1)
             .execution_options(populate_existing=True)
             .with_for_update(key_share=True)
         )

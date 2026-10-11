@@ -1,4 +1,4 @@
-"""Add Azure OpenAI deployments: upstream, price model, cache prices and Entra secrets.
+"""Add Azure OpenAI deployments: upstream, price model and cache prices.
 
 Revision: c9ed4e82b922
 Parent: 73669c9be04c
@@ -18,7 +18,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Server defaults keep every existing row generic and every secret an API key.
+    # The server default keeps every existing row generic. An Entra secret is a
+    # provider_secrets row with provider azure_entra: no column of its own.
     op.add_column("model_deployments", sa.Column("price_model", sa.String(length=200)))
     op.add_column(
         "model_deployments",
@@ -47,28 +48,10 @@ def upgrade() -> None:
         "model_deployments",
         "upstream IN ('generic', 'azure_openai')",
     )
-    op.add_column(
-        "provider_secrets",
-        sa.Column(
-            "credential_kind",
-            sa.String(length=32),
-            server_default="api_key",
-            nullable=False,
-        ),
-    )
-    op.create_check_constraint(
-        "ck_provider_secrets_credential_kind",
-        "provider_secrets",
-        "credential_kind IN ('api_key', 'azure_entra_client')",
-    )
 
 
 def downgrade() -> None:
-    # Downgrades are disposable-only; Azure rows and Entra secrets lose their meaning.
-    op.drop_constraint(
-        "ck_provider_secrets_credential_kind", "provider_secrets", type_="check"
-    )
-    op.drop_column("provider_secrets", "credential_kind")
+    # Downgrades are disposable-only; Azure rows lose their meaning.
     op.drop_constraint(
         "ck_model_deployments_upstream", "model_deployments", type_="check"
     )

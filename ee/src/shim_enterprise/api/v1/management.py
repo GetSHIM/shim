@@ -443,26 +443,20 @@ class AzureEntraInput(BaseModel):
 
 
 class ProviderSecretInput(BaseModel):
-    provider: Literal["openai", "anthropic", "google"]
+    provider: Literal["openai", "anthropic", "google", "azure_entra"] = Field(
+        description="azure_entra: an Entra ID client credential for Azure OpenAI "
+        "deployments."
+    )
     name: str | None = Field(default=None, max_length=100)
-    credential_kind: Literal["api_key", "azure_entra_client"] = "api_key"
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
     azure_entra: AzureEntraInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def one_credential_of_its_kind(self) -> ProviderSecretInput:
-        if self.credential_kind == "api_key" and (
-            self.key is None or self.azure_entra is not None
-        ):
-            raise ValueError("An api_key credential needs key and no azure_entra")
-        if self.credential_kind == "azure_entra_client":
-            if self.azure_entra is None or self.key is not None:
-                raise ValueError(
-                    "An azure_entra_client credential needs azure_entra and no key"
-                )
-            if self.provider != "openai":
-                raise ValueError("An Entra credential is for provider openai")
+    def one_credential_of_its_provider(self) -> ProviderSecretInput:
+        entra = self.provider == "azure_entra"
+        if (self.key is not None) == entra or (self.azure_entra is not None) != entra:
+            raise ValueError("azure_entra takes azure_entra; another provider a key")
         return self
 
 
@@ -478,7 +472,6 @@ class ProviderSecretView(BaseModel):
 
     id: UUID
     provider: str
-    credential_kind: str
     name: str | None
     masked_key: str
     created_at: datetime
@@ -2258,22 +2251,16 @@ async def create_provider_secret(
     tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
-    purpose = provider_secret_purpose(payload.provider, payload.credential_kind)
+    purpose = provider_secret_purpose(payload.provider)
     entra = payload.azure_entra
     plaintext = entra.stored() if entra is not None else payload.key
     assert plaintext is not None
     reference = await get_secret_store().put_secret(
-        TenantId(tenant_id),
-        purpose,
-        plaintext,
-        {"provider": payload.provider}
-        if entra is None
-        else {"provider": payload.provider, "kind": payload.credential_kind},
+        TenantId(tenant_id), purpose, plaintext, {"provider": payload.provider}
     )
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
-        credential_kind=payload.credential_kind,
         name=payload.name,
         masked_key=entra.masked() if entra is not None else _mask(plaintext),
         monthly_limit_usd=payload.monthly_limit_usd,
@@ -2306,20 +2293,21 @@ async def update_provider_secret(
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
-    if row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
+    entra = row.provider == "azure_entra"
+    if not entra and row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
         raise HTTPException(
             status_code=409,
             detail="Unsupported provider secrets are read-only.",
         )
-    if (patch.key is not None and row.credential_kind != "api_key") or (
-        patch.azure_entra is not None and row.credential_kind != "azure_entra_client"
+    if (patch.key is not None and entra) or (
+        patch.azure_entra is not None and not entra
     ):
         raise HTTPException(
             status_code=422,
             detail="A credential's kind never changes; create a new provider secret",
         )
     tenant_id = _tenant_id(user)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
     before = _provider_secret_details(row)
@@ -2383,13 +2371,13 @@ async def verify_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     verification_request = _PROVIDER_VERIFICATION_REQUESTS.get(row.provider)
-    if verification_request is None:
+    if verification_request is None and row.provider != "azure_entra":
         raise HTTPException(status_code=409, detail="Unsupported provider secret")
     tenant_id = _tenant_id(user)
     client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
     if client is None:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
-    if row.credential_kind == "azure_entra_client":
+    if verification_request is None:
         rejected = await _entra_rejects(row, tenant_id, client)
     else:
         rejected = await _provider_rejects(row, tenant_id, client, verification_request)
@@ -2460,16 +2448,8 @@ async def _entra_rejects(
     row: ProviderSecret, tenant_id: UUID, client: httpx.AsyncClient
 ) -> bool:
     """Whether Entra ID refuses the client credential, asked for a fresh token."""
-    resolver = ManagedProviderCredentialResolver(
-        row.provider,
-        get_secret_store(),
-        AsyncSessionLocal,
-        entra=EntraTokenCache(
-            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
-        ),
-    )
     try:
-        await resolver.resolve_row(TenantId(tenant_id), row)
+        await _fresh_resolver("openai", client).resolve_row(TenantId(tenant_id), row)
     except ProviderCallError as exc:
         if exc.status_code == 401:
             return True
@@ -2482,6 +2462,20 @@ async def _entra_rejects(
             status_code=503, detail="Provider verification unavailable"
         ) from exc
     return False
+
+
+def _fresh_resolver(
+    provider: str, client: httpx.AsyncClient
+) -> ManagedProviderCredentialResolver:
+    """A resolver with a token cache of its own, so a check always asks Entra afresh."""
+    return ManagedProviderCredentialResolver(
+        provider,
+        get_secret_store(),
+        AsyncSessionLocal,
+        entra=EntraTokenCache(
+            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
+        ),
+    )
 
 
 @router.delete(
@@ -2497,7 +2491,7 @@ async def delete_provider_secret(
     row = await _owned_provider_secret(session, user, secret_id)
     tenant_id = _tenant_id(user)
     secret_ref = SecretRef(row.secret_ref)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     details = _provider_secret_details(row)
     await session.delete(row)
     await _audit(
@@ -4720,7 +4714,6 @@ def _provider_secret_details(
 ) -> dict[str, object]:
     return {
         "provider": row.provider,
-        "credential_kind": row.credential_kind,
         "name": row.name,
         "monthly_limit_usd": (
             str(row.monthly_limit_usd) if row.monthly_limit_usd is not None else None
@@ -6086,18 +6079,12 @@ async def check_model_deployment_health(
     # Finish the read transaction before secret-store or provider I/O.
     await session.commit()
     client = request.app.state.http_client
-    resolver = ManagedProviderCredentialResolver(
-        provider,
-        get_secret_store(),
-        AsyncSessionLocal,
-        entra=EntraTokenCache(
-            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
-        ),
-    )
     healthy = False
     try:
         async with asyncio.timeout(5):
-            credential = await resolver.resolve_row(TenantId(tenant_id), secret)
+            credential = await _fresh_resolver(provider, client).resolve_row(
+                TenantId(tenant_id), secret
+            )
             headers = (
                 {"Authorization": f"Bearer {credential}"}
                 if provider == "openai"
@@ -7034,17 +7021,16 @@ class _DeploymentResource:
         secret = await _owned_provider_secret(
             session, actor, payload.provider_secret_id
         )
-        if secret.provider != payload.provider:
+        if secret.provider == "azure_entra":
+            if (payload.provider, payload.upstream) != ("openai", "azure_openai"):
+                raise HTTPException(
+                    422,
+                    detail="An Entra credential can only serve an Azure OpenAI "
+                    "deployment",
+                )
+        elif secret.provider != payload.provider:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
-            )
-        if (
-            secret.credential_kind == "azure_entra_client"
-            and payload.upstream != "azure_openai"
-        ):
-            raise HTTPException(
-                422,
-                detail="An Entra credential can only serve an Azure OpenAI deployment",
             )
         if payload.deployment_kind == "internal" and not internal_origin_approved(
             payload.base_url

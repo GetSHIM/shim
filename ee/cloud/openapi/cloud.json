@@ -9912,15 +9912,6 @@
               }
             ]
           },
-          "credential_kind": {
-            "default": "api_key",
-            "enum": [
-              "api_key",
-              "azure_entra_client"
-            ],
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "key": {
             "anyOf": [
               {
@@ -9963,10 +9954,12 @@
             "title": "Name"
           },
           "provider": {
+            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments.",
             "enum": [
               "openai",
               "anthropic",
-              "google"
+              "google",
+              "azure_entra"
             ],
             "title": "Provider",
             "type": "string"
@@ -10042,10 +10035,6 @@
             "title": "Created At",
             "type": "string"
           },
-          "credential_kind": {
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -10098,7 +10087,6 @@
         "required": [
           "id",
           "provider",
-          "credential_kind",
           "name",
           "masked_key",
           "created_at",

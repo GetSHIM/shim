@@ -86,10 +86,16 @@ class CommunitySettings(BaseSettings):
     # Azure OpenAI v1 for catalog routes: an Azure key or an Entra app (S52).
     SHIM_AZURE_OPENAI_ENDPOINT: str | None = None
     SHIM_AZURE_OPENAI_API_KEY: SecretStr | None = None
-    SHIM_AZURE_TENANT_ID: str | None = None
-    SHIM_AZURE_CLIENT_ID: str | None = None
+    # The shapes EntraClientCredential takes, checked when the settings load.
+    SHIM_AZURE_TENANT_ID: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9.-]{1,128}$"
+    )
+    SHIM_AZURE_CLIENT_ID: UUID | None = None
     SHIM_AZURE_CLIENT_SECRET: SecretStr | None = None
-    SHIM_AZURE_TOKEN_SCOPE: str = "https://cognitiveservices.azure.com/.default"
+    SHIM_AZURE_TOKEN_SCOPE: str = Field(
+        default="https://cognitiveservices.azure.com/.default",
+        pattern=r"^https://\S{1,240}/\.default$",
+    )
     SHIM_AZURE_AUTHORITY_HOST: str = "https://login.microsoftonline.com"
     SHIM_AZURE_OPENAI_DEPLOYMENTS: Annotated[dict[str, str], NoDecode] = Field(
         default_factory=dict
@@ -149,15 +155,6 @@ class CommunitySettings(BaseSettings):
     def empty_is_unset(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
 
-    @field_validator("SHIM_AZURE_TOKEN_SCOPE")
-    @classmethod
-    def entra_scope(cls, value: str) -> str:
-        if not re.fullmatch(r"https://\S{1,240}/\.default", value):
-            raise ValueError(
-                "SHIM_AZURE_TOKEN_SCOPE must be an https URL ending in /.default"
-            )
-        return value
-
     @field_validator("SHIM_AZURE_OPENAI_DEPLOYMENTS", mode="before")
     @classmethod
     def parse_deployments(cls, value: object) -> object:
@@ -206,15 +203,6 @@ class CommunitySettings(BaseSettings):
                 "SHIM_AZURE_OPENAI_ENDPOINT needs SHIM_AZURE_OPENAI_API_KEY or all three "
                 "SHIM_AZURE_TENANT_ID, SHIM_AZURE_CLIENT_ID and SHIM_AZURE_CLIENT_SECRET"
             )
-        if all(entra):
-            try:
-                UUID(str(self.SHIM_AZURE_CLIENT_ID))
-            except ValueError:
-                raise ValueError("SHIM_AZURE_CLIENT_ID must be a GUID") from None
-            if not re.fullmatch(
-                r"[A-Za-z0-9.-]{1,128}", str(self.SHIM_AZURE_TENANT_ID)
-            ):
-                raise ValueError("SHIM_AZURE_TENANT_ID must be a tenant GUID or domain")
         deployments = self.SHIM_AZURE_OPENAI_DEPLOYMENTS
         catalog = set(DEFAULT_PRICE_BOOK.models("openai"))
         if (

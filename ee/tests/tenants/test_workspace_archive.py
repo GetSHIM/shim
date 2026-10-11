@@ -214,8 +214,7 @@ async def test_an_archived_entra_secret_is_deleted_under_its_own_purpose(
     db.add(
         ProviderSecret(
             organization_id=workspace_id,
-            provider="openai",
-            credential_kind="azure_entra_client",
+            provider="azure_entra",
             secret_ref="ref-entra",
             secret_backend="local",
             secret_version="1",

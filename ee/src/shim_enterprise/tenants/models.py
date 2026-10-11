@@ -550,10 +550,6 @@ class ProviderSecret(Base, TimestampMixin):
             "organization_id",
             "provider",
         ),
-        CheckConstraint(
-            "credential_kind IN ('api_key', 'azure_entra_client')",
-            name="ck_provider_secrets_credential_kind",
-        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -562,6 +558,8 @@ class ProviderSecret(Base, TimestampMixin):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
+    # openai, anthropic, google, or azure_entra: an Entra client credential that calls
+    # OpenAI on Azure for its deployments only, which a build without it never selects.
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
     secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
@@ -570,9 +568,6 @@ class ProviderSecret(Base, TimestampMixin):
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    credential_kind: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="api_key", server_default="api_key"
-    )
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
 

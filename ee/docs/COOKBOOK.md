@@ -797,13 +797,12 @@ Entra ID application, priced from the catalog model it serves.
 1. As the platform operator, approve the resource: its exact origin in
    `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`, or, on a hosted gateway,
    `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".openai.azure.com"]`.
-2. Store the credential: `POST /api/v1/management/providers` with
-   `provider: "openai"` and either `key` (the Azure key) or
-   `credential_kind: "azure_entra_client"` and `azure_entra` with `tenant_id`,
-   `client_id`, `client_secret` and optionally `scope`. Give the Entra application
-   the `Cognitive Services OpenAI User` role on the resource. The view shows
-   `credential_kind` and `masked_key` (`entra:` and the masked client id), never the
-   secret. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
+2. Store the credential: `POST /api/v1/management/providers` with either
+   `provider: "openai"` and `key` (the Azure key), or `provider: "azure_entra"` and
+   `azure_entra` with `tenant_id`, `client_id`, `client_secret` and optionally
+   `scope`. Give the Entra application the `Cognitive Services OpenAI User` role on
+   the resource. The view shows the provider and `masked_key` (`entra:` and the
+   masked client id), never the secret; a refused body is never echoed in the 422. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
    `verified_at`, a refusal answers 400. `PUT /providers/{id}` with `azure_entra`
    replaces all four values; a credential's kind never changes (422).
 3. Register the deployment with `upstream: "azure_openai"`, `provider: "openai"`,
@@ -820,7 +819,7 @@ Entra ID application, priced from the catalog model it serves.
 ```console
 SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
   -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"provider\": \"openai\", \"name\": \"azure-bank\", \"credential_kind\": \"azure_entra_client\",
+  -d "{\"provider\": \"azure_entra\", \"name\": \"azure-bank\",
        \"azure_entra\": {\"tenant_id\": \"$AZURE_TENANT\", \"client_id\": \"$AZURE_CLIENT\",
                        \"client_secret\": \"$AZURE_SECRET\"}}" | jq -r .id)
 
