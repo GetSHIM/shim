@@ -6829,8 +6829,10 @@ class _GatewaySettingsResource:
                 **version_detail(policy_version),
             },
         )
-        direction, relaxed = classify_change(previous, current)
-        if direction == "relaxing":
+        _, relaxed = classify_change(previous, current)
+        # Restore permission protects personal data, so it is a privacy relaxation.
+        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        if relaxed:
             await _audit(
                 session,
                 actor,

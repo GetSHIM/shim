@@ -205,6 +205,17 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             "four_eyes": "relaxing",
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
+            "injection_markers": "off",
+            "price_tier_warning": False,
+            "model_retiring_warning": "record",
+            "restore_withheld": {},
+            "task_caps": {
+                "max_calls": None,
+                "max_cost_usd": None,
+                "window_seconds": 3600,
+            },
+            "agent_loop": {"action": "count", "repeats": 5},
+            "inflight_sharing_api_key_ids": [],
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -215,6 +226,17 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "four_eyes": "off",
                 "finding_modes": {},
                 "request_archive": {"enabled": False, "retention_days": 90},
+                "injection_markers": "off",
+                "price_tier_warning": False,
+                "model_retiring_warning": "record",
+                "restore_withheld": {},
+                "task_caps": {
+                    "max_calls": None,
+                    "max_cost_usd": None,
+                    "window_seconds": 3600,
+                },
+                "agent_loop": {"action": "count", "repeats": 5},
+                "inflight_sharing_api_key_ids": [],
             }
         }
     }
