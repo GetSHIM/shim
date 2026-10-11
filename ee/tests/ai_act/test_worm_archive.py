@@ -485,7 +485,7 @@ def test_the_client_gives_up_on_a_slow_endpoint(enabled, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_a_stuck_pass_does_not_hold_up_the_other_maintenance(
-    enabled, monkeypatch
+    tracked, enabled, monkeypatch
 ) -> None:
     async def stuck(*_args):
         await asyncio.sleep(3600)
@@ -503,7 +503,10 @@ async def test_a_stuck_pass_does_not_hold_up_the_other_maintenance(
     monkeypatch.setattr(settings, "OVERSIGHT_ENABLED", False)
 
     summary = await asyncio.wait_for(
-        worker_module.AuditMaintenanceWorker(interval_seconds=60).run_once(), 10
+        worker_module.AuditMaintenanceWorker(
+            session_factory=tracked.factory, interval_seconds=60
+        ).run_once(),
+        10,
     )
 
     assert (summary.worm_archived, summary.errors) == (0, 1)

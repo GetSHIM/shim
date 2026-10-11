@@ -498,7 +498,9 @@ async def test_concurrent_twins_make_one_row_and_one_notice(
 
 
 @pytest.mark.asyncio
-async def test_the_maintenance_worker_deletes_old_approvals(monkeypatch) -> None:
+async def test_the_maintenance_worker_deletes_old_approvals(
+    async_engine, monkeypatch
+) -> None:
     from shim_enterprise.workers import ai_act
 
     async def none(*_args, **_kwargs):
@@ -513,6 +515,8 @@ async def test_the_maintenance_worker_deletes_old_approvals(monkeypatch) -> None
     monkeypatch.setattr(ai_act.settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
     monkeypatch.setattr(ai_act.settings, "OVERSIGHT_ENABLED", False)
 
-    summary = await ai_act.AuditMaintenanceWorker(interval_seconds=60).run_once()
+    summary = await ai_act.AuditMaintenanceWorker(
+        session_factory=async_sessionmaker(async_engine), interval_seconds=60
+    ).run_once()
 
     assert summary.request_approvals_deleted == 7
