@@ -2813,7 +2813,6 @@
             "type": "string"
           },
           "email": {
-            "format": "email",
             "title": "Email",
             "type": "string"
           },
@@ -12220,7 +12219,6 @@
             "type": "string"
           },
           "email": {
-            "format": "email",
             "title": "Email",
             "type": "string"
           },
@@ -12290,7 +12288,6 @@
           "email": {
             "anyOf": [
               {
-                "format": "email",
                 "type": "string"
               },
               {
@@ -13377,7 +13374,6 @@
             "title": "Custom Role"
           },
           "email": {
-            "format": "email",
             "title": "Email",
             "type": "string"
           },

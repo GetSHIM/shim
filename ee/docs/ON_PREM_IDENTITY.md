@@ -72,8 +72,9 @@ internal relay which turns the JSON body into e-mail.
 ## Identity and authorization contract
 
 The issuer and subject bind an OIDC identity to its local user. First login
-requires a valid email and `email_verified=true`; it never adopts a user based
-on a matching email. Email collisions require operator resolution. A token
+requires an email and `email_verified=true`; it never adopts a user based
+on a matching email. Because the IdP vouches for the address, shim checks only
+basic syntax, so internal domains such as `ali@corp.local` are accepted. Email collisions require operator resolution. A token
 cannot select an arbitrary organization. Changing the configured tenant does
 not migrate existing identities. A locally deactivated user stays deactivated.
 

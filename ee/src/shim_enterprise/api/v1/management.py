@@ -278,7 +278,7 @@ _MAX_CUSTOM_ROLES = 20
 
 class UserView(BaseModel):
     id: UUID
-    email: EmailStr
+    email: str
     full_name: str | None
     organization_name: str
     role: Literal["owner", "admin", "member", "auditor"]
@@ -544,7 +544,7 @@ class TeamMemberView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: EmailStr | None = Field(
+    email: str | None = Field(
         description="Null for team administrators without the members.read permission."
     )
     full_name: str | None
@@ -563,7 +563,7 @@ class TeamInviteView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: EmailStr
+    email: str
     role: Literal["owner", "admin", "member", "auditor"]
     expires_at: datetime
     accepted_at: datetime | None

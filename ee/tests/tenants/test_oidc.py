@@ -108,6 +108,39 @@ async def test_identity_binding_role_removal_and_email_collision(
 
 
 @pytest.mark.asyncio
+async def test_verified_special_use_domain_emails_provision_and_malformed_ones_do_not(
+    db, test_org, test_tier, monkeypatch, oidc_config
+):
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    tag = uuid4().hex
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL, email_verified=True, groups=["/shim/members"]
+    )
+    for email in (f"Ali-{tag}@Corp.Local", f"a-{tag}@example.test"):
+        user = await oidc.synchronize_user(db, claims | {"sub": email, "email": email})
+        assert user.email == email.casefold()
+    for changed in (
+        {"email": f"unverified-{tag}@corp.local", "email_verified": False},
+        {"email": f"unverified-{tag}@corp.local", "email_verified": "true"},
+        {"email": "no-at-sign"},
+        {"email": "a@"},
+        {"email": "@corp.local"},
+        {"email": "a@b@corp.local"},
+        {"email": f"a {tag}@corp.local"},
+        {"email": f" a-{tag}@corp.local"},
+        {"email": f"a-{tag}@corp.local\n"},
+        {"email": f"a\x00{tag}@corp.local"},
+        {"email": f"{'a' * 320}@corp.local"},
+        {"email": f"{'ß' * 160}@corp.local"},  # casefolds past 320
+        {"email": None},
+        {"email": 42},
+    ):
+        with pytest.raises(HTTPException) as refused:
+            await oidc.synchronize_user(db, claims | {"sub": uuid4().hex} | changed)
+        assert refused.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_signed_api_tokens_reject_issuer_audience_expiry_signature_and_long_lifetime(
     oidc_config,
 ):

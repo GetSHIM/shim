@@ -740,3 +740,25 @@ async def test_a_custom_role_with_members_read_sees_the_member_list(
     assert {row["email"] for row in listed.json()} == {reader.email, plain.email}
     assert {row["custom_role"] for row in listed.json()} == {"directory", None}
     assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_stored_special_use_domain_emails_are_served(db) -> None:
+    organization = await _organization(db)
+    owner = User(
+        id=uuid4(),
+        organization_id=organization.id,
+        email=f"ali-{uuid4().hex}@corp.local",
+        role="owner",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(owner)
+    await db.flush()
+
+    me = await _call(db, owner, "GET", "/auth/me")
+    members = await _call(db, owner, "GET", "/team/members")
+
+    assert me.status_code == 200 and me.json()["email"] == owner.email
+    assert members.status_code == 200
+    assert [row["email"] for row in members.json()] == [owner.email]

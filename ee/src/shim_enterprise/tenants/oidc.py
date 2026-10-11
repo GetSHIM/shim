@@ -8,7 +8,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any
+from typing import Any, TypeIs
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
 
@@ -20,7 +20,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 import jwt
 from joserfc.errors import JoseError
-from pydantic import EmailStr, TypeAdapter, ValidationError
 from redis.exceptions import RedisError
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -175,6 +174,21 @@ async def _custom_role(
     return next((found[slug] for slug in slugs if slug in found), None)
 
 
+def _plausible_email(email: Any) -> TypeIs[str]:
+    """Basic syntax only: the IdP vouched for it, and on-prem domains like `.local`
+    are not globally deliverable. 320 is the `users.email` column width."""
+    if not isinstance(email, str) or len(email.casefold()) > 320:
+        return False
+    local, at, domain = email.partition("@")
+    return bool(
+        at
+        and local
+        and domain
+        and "@" not in domain
+        and all(c.isprintable() and not c.isspace() for c in email)
+    )
+
+
 async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> User:
     issuer, subject = claims.get("iss"), claims.get("sub")
     if (
@@ -219,12 +233,10 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
     if user is None:
         if claims.get("email_verified") is not True:
             raise HTTPException(403, "A verified email address is required")
-        try:
-            email = str(
-                TypeAdapter(EmailStr).validate_python(claims.get("email"))
-            ).casefold()
-        except ValidationError as exc:
-            raise HTTPException(403, "A verified email address is required") from exc
+        email = claims.get("email")
+        if not _plausible_email(email):
+            raise HTTPException(403, "A verified email address is required")
+        email = email.casefold()
         if await session.scalar(select(User.id).where(func.lower(User.email) == email)):
             raise HTTPException(
                 403, "Identity email is already assigned; contact your administrator"
