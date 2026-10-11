@@ -50,7 +50,13 @@ async def test_kernel_runs_the_authoritative_stage_order(
 ) -> None:
     order: list[str] = []
     prepared = SimpleNamespace(
-        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+        stream=False,
+        protocol="chat",
+        provider="openai",
+        admission=SimpleNamespace(task_id=None),
+        privacy=_NO_PII,
+        payload={},
+        rules=None,
     )
     provider_output = object()
     response = Response("ok")
@@ -217,7 +223,13 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
     expected_reason: str,
 ) -> None:
     prepared = SimpleNamespace(
-        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+        stream=False,
+        protocol="chat",
+        provider="openai",
+        admission=SimpleNamespace(task_id=None),
+        privacy=_NO_PII,
+        payload={},
+        rules=None,
     )
     failure = ProviderCallError(
         status_code=status_code,
@@ -268,7 +280,13 @@ async def test_kernel_maps_post_reservation_admission_abort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prepared = SimpleNamespace(
-        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+        stream=False,
+        protocol="chat",
+        provider="openai",
+        admission=SimpleNamespace(task_id=None),
+        privacy=_NO_PII,
+        payload={},
+        rules=None,
     )
     failure = RuntimeError("admission interrupted")
 
@@ -293,7 +311,13 @@ async def test_recovery_session_failure_does_not_mask_original_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prepared = SimpleNamespace(
-        stream=False, protocol="chat", privacy=_NO_PII, payload={}, rules=None
+        stream=False,
+        protocol="chat",
+        provider="openai",
+        admission=SimpleNamespace(task_id=None),
+        privacy=_NO_PII,
+        payload={},
+        rules=None,
     )
     failure = RuntimeError("admission interrupted")
 
