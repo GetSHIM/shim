@@ -1,27 +1,36 @@
-"""The gateway rules, their evaluation, and the OCSF form of a finding."""
+"""The gateway and imported-log rules, their evaluation, and the OCSF form of a finding."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import reduce
+import operator
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging
-from typing import Any, Literal
+import re
+from typing import Any, Literal, get_args
 from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
+    exists,
+    Integer,
+    Numeric,
     Text,
     and_,
     case,
     cast,
+    distinct,
     func,
+    literal_column,
     not_,
     or_,
     select,
     text,
+    true,
     type_coerce,
     update,
 )
@@ -38,8 +47,12 @@ from shim.findings import (
     FindingText,
     FindingWindow,
 )
+from shim.gateway.analyzers.refusal import MARKER_IDS
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
-from shim_enterprise.findings.models import Finding
+from shim_enterprise.core.database import bound_statements
+from shim_enterprise.findings.models import ExternalUsageRecord, Finding
+from shim_enterprise.observability.analytics_projection import RequestLog
+from shim_enterprise.observability.latency import FIRST_BYTE_SQL, SWEEP_SQL
 from shim_enterprise.observability.outcomes import OUTCOMES
 from shim_enterprise.observability.model_inventory import (
     byok_request,
@@ -47,7 +60,13 @@ from shim_enterprise.observability.model_inventory import (
     registry_traffic,
     shown_model,
 )
-from shim_enterprise.tenants.models import ModelDeployment, Organization, ProviderSecret
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
+from shim_enterprise.tenants.models import (
+    ModelDeployment,
+    Organization,
+    OrganizationGatewaySettings,
+    ProviderSecret,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -61,6 +80,18 @@ UNREGISTERED_MODEL = "gateway.unregistered_model"
 BYOK_USAGE = "gateway.byok_usage"
 TRUNCATION_RATE = "gateway.truncation_rate"
 REFUSAL_RATE = "gateway.refusal_rate"
+LANGUAGE_DRIFT = "gateway.language_drift"
+SCHEMA_ERRORS = "gateway.schema_errors"
+SOFT_REFUSALS = "gateway.soft_refusals"
+OVERSIZED_PARTS = "gateway.oversized_parts"
+DEAD_TOOLS = "gateway.dead_tools"
+CACHE_ORDER_CHURN = "gateway.cache_order_churn"
+COLD_START = "gateway.cold_start"
+QUEUEING = "gateway.queueing"
+LITELLM_UNREGISTERED_MODEL = "litellm.unregistered_model"
+LITELLM_ERROR_RATE = "litellm.error_rate"
+LITELLM_SLOW_FIRST_TOKEN = "litellm.slow_first_token"
+LITELLM_RETRY_BURST = "litellm.retry_burst"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -86,6 +117,65 @@ OUTCOME_RATE_WINDOW_HOURS = 24
 OUTCOME_RATE_MIN_SETTLED = 50
 TRUNCATION_RATE_THRESHOLD = Decimal("0.05")
 REFUSAL_RATE_THRESHOLD = Decimal("0.05")
+# Answer quality from the response analyzers the tenant turned on (S38, S39, S40).
+QUALITY_WINDOW_HOURS = 24
+LANGUAGE_DRIFT_MIN_REQUESTS = 20
+LANGUAGE_DRIFT_THRESHOLD = Decimal("0.10")
+SCHEMA_ERRORS_MIN_CHECKED = 20
+SCHEMA_ERRORS_THRESHOLD = Decimal("0.05")
+SOFT_REFUSAL_MIN_ANALYSED = 50
+SOFT_REFUSAL_THRESHOLD = Decimal("0.05")
+SCHEMA_KINDS = ("json_schema", "json_object", "tool_args")
+EVIDENCE_PROMPT_VERSIONS = 5
+# Waste from the shape analyzer's records (S37) and the answers' tool calls (S32).
+WASTE_WINDOW_HOURS = 24
+OVERSIZED_MIN_REQUESTS = 20
+OVERSIZED_TOOL_DEFINITION_CHARS = 40_000
+OVERSIZED_HISTORY_MESSAGES = 100
+OVERSIZED_HISTORY_CHARS = 200_000
+OVERSIZED_LARGEST_PART_CHARS = 100_000
+DEAD_TOOLS_WINDOW_DAYS = 30
+DEAD_TOOLS_MIN_REQUESTS = 50
+DEAD_TOOLS_MIN_OFFER_SHARE = Decimal("0.5")
+DEAD_TOOLS_EVALUATION_HOURS = 24
+CACHE_CHURN_MIN_REQUESTS = 20
+CACHE_CHURN_MAX_DOMINANT_SHARE = Decimal("0.8")
+CACHE_CHURN_MIN_PROMPT_TOKENS = 1_024
+CACHE_CHURN_MAX_CACHE_READ_SHARE = Decimal("0.5")
+EVIDENCE_DEAD_TOOLS = 20
+EVIDENCE_TOOL_SETS = 3
+EVIDENCE_ORDERS = 10
+# Latency of registry deployments, from the request timestamps.
+COLD_START_WINDOW_HOURS = 24
+COLD_START_LOOKBACK = timedelta(hours=24)
+COLD_START_MIN_IDLE_SECONDS = 600
+COLD_START_LATENCY_FACTOR = 5
+COLD_START_MIN_FIRST_BYTE_MS = 10_000
+COLD_START_MIN_EVENTS = 3
+QUEUEING_WINDOW_HOURS = 24
+QUEUEING_BASELINE_DAYS = 7
+QUEUEING_MIN_BASELINE_STREAMS = 50
+QUEUEING_MIN_HOUR_STREAMS = 10
+QUEUEING_FACTOR = 3
+QUEUEING_MIN_PEAK_CONCURRENCY = 4
+QUEUEING_MIN_HOURS = 2
+EVIDENCE_MARKERS = 5
+# Imported LiteLLM logs: windows end at the latest imported row, not at now.
+LITELLM_UNREGISTERED_WINDOW_DAYS = 7
+LITELLM_UNREGISTERED_MIN_REQUESTS = 10
+LITELLM_RATE_WINDOW_HOURS = 24
+LITELLM_ERROR_MIN_REQUESTS = 50
+LITELLM_ERROR_THRESHOLD = Decimal("0.05")
+LITELLM_SLOW_MIN_ROWS = 50
+LITELLM_SLOW_P95_MS = 10_000
+LITELLM_BURST_WINDOW = timedelta(hours=1)
+LITELLM_KEY_PREFIX = 16
+# Another gateway's ids and names: only those a Finding v1 can carry are shown.
+_EVIDENCE_ID = re.compile(r"[A-Za-z0-9_.:/-]{1,200}")
+_SUBJECT_ID_LENGTH = 200
+# Stored values that become evidence only in these shapes: a keyed prompt digest
+# and a refusal marker id of the analyzer's phrase list.
+_PROMPT_HASH = re.compile(r"hmac-sha256:v1:[0-9a-f]{64}")
 EVIDENCE_KEY_IDS = 10
 EVIDENCE_MODELS = 10
 EVIDENCE_MODELS_PER_KEY = 5
@@ -99,6 +189,9 @@ STATUS_RESOLVED = STATUS_IDS["resolved"]
 OCSF_VERSION = "1.3.0"
 
 SEVERITIES = ("informational", "low", "medium", "high", "critical")
+# How far shim may go for a finding type, lowest first.
+Mode = Literal["observe", "suggest", "auto"]
+MODES: tuple[Mode, ...] = get_args(Mode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,11 +202,16 @@ class RuleSpec:
     SEVERITY_ID: int
     SUMMARY: Mapping[str, str]
     REMEDIATION_TEXT: Mapping[str, str]
-    MAX_MODE: Literal["observe", "suggest", "auto"]
+    MAX_MODE: Mode
     REVERSIBLE: bool
     BLAST_RADIUS: Literal["key", "team", "deployment", "model", "tenant", "app"]
     RISK_CLASS: Literal["privacy", "cost", "reliability", "quality"]
     PLAYBOOK: str
+    # The typed change a person can plan from the finding; None when the fix is
+    # outside the gateway (the client, the prompt or the provider).
+    ACTION_KIND: str | None = None
+    # Where the evidence comes from: shim's own records or an imported log.
+    SOURCE: Literal["gateway", "litellm"] = "gateway"
 
 
 def _playbook(rule_id: str) -> str:
@@ -141,7 +239,7 @@ RULES: dict[str, RuleSpec] = {
             "istekler de varsa yeniden denemek yerine istemcinin zaman aşımını "
             "modelin yanıt süresinin üstüne çıkarın.",
         },
-        MAX_MODE="suggest",
+        MAX_MODE="observe",
         REVERSIBLE=True,
         BLAST_RADIUS="key",
         RISK_CLASS="cost",
@@ -164,7 +262,7 @@ RULES: dict[str, RuleSpec] = {
             "yeniden denenebilir hatalarda yeniden deneyin, istemcide "
             "tekilleştirin ya da yanıtı önbelleğe alın.",
         },
-        MAX_MODE="suggest",
+        MAX_MODE="observe",
         REVERSIBLE=True,
         BLAST_RADIUS="key",
         RISK_CLASS="cost",
@@ -188,6 +286,7 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(UNUSED_DEPLOYMENT),
+        ACTION_KIND="deployment.disable",
     ),
     ANSWER_QUALITY: RuleSpec(
         TITLE="A model often truncates, refuses or returns empty answers",
@@ -328,8 +427,371 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(IDLE_INTERNAL_DEPLOYMENT),
+        ACTION_KIND="deployment.disable",
+    ),
+    LANGUAGE_DRIFT: RuleSpec(
+        TITLE="Turkish questions to an API key are answered in English",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{drifts} of {analysed_requests} Turkish questions to this API key "
+            "in {window_hours} hours were answered in English.",
+            "tr": "Son {window_hours} saatte bu API anahtarına sorulan "
+            "{analysed_requests} Türkçe sorudan {drifts} tanesi İngilizce yanıtlandı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "If the app expects English answers, suppress this finding for the "
+            "key. Otherwise state the answer language in the system prompt, or compare "
+            "the models the evidence lists; the prompt versions it lists show which "
+            "system prompt the drifted answers had.",
+            "tr": "Uygulama İngilizce yanıt bekliyorsa bu bulguyu bu anahtar için "
+            "bastırın. Aksi halde sistem isteminde yanıt dilini belirtin ya da kanıtta "
+            "listelenen modelleri karşılaştırın; listelenen istem sürümleri kayan "
+            "yanıtların hangi sistem istemiyle geldiğini gösterir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(LANGUAGE_DRIFT),
+    ),
+    SCHEMA_ERRORS: RuleSpec(
+        TITLE="Answers to an API key often break the schema it asked for",
+        SEVERITY_ID=3,
+        SUMMARY={
+            "en": "{invalid} of {checked_requests} checked answers to this API key in "
+            "{window_hours} hours did not match the schema the app asked for.",
+            "tr": "Son {window_hours} saatte bu API anahtarına verilen ve denetlenen "
+            "{checked_requests} yanıttan {invalid} tanesi uygulamanın istediği şemaya "
+            "uymadı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Use the provider's strict structured output where it exists, keep "
+            "the schema inside the subset the gateway checks, and compare the models "
+            "the evidence lists. Each request's own record holds where its answer "
+            "failed.",
+            "tr": "Sağlayıcının katı yapılandırılmış çıktısını destekleniyorsa "
+            "kullanın, şemayı gateway'in denetlediği alt küme içinde tutun ve kanıtta "
+            "listelenen modelleri karşılaştırın. Yanıtın nerede uymadığı her isteğin "
+            "kendi kaydında yazar.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(SCHEMA_ERRORS),
+    ),
+    SOFT_REFUSALS: RuleSpec(
+        TITLE="Answers to an API key often refuse in words",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{soft_refusals} of {analysed_requests} complete answers to this API "
+            "key in {window_hours} hours refused in words.",
+            "tr": "Son {window_hours} saatte bu API anahtarına verilen "
+            "{analysed_requests} tam yanıttan {soft_refusals} tanesi sözle reddetti.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Read the requests: a polite refusal often means the system prompt "
+            "forbids the topic, or the model's own policy differs from the app's. "
+            "Refusals the provider marks itself are gateway.refusal_rate.",
+            "tr": "İstekleri okuyun: kibar bir ret çoğu zaman sistem isteminin konuyu "
+            "yasakladığını ya da modelin kendi politikasının uygulamanınkinden farklı "
+            "olduğunu gösterir. Sağlayıcının kendisinin işaretlediği retler "
+            "gateway.refusal_rate'tedir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(SOFT_REFUSALS),
+    ),
+    OVERSIZED_PARTS: RuleSpec(
+        TITLE="Requests from an API key carry oversized parts",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Over {window_hours} hours the median request from this API key "
+            "crossed the size limit in {crossed_kinds} part kinds, over "
+            "{analysed_requests} requests.",
+            "tr": "Son {window_hours} saatte bu API anahtarının {analysed_requests} "
+            "isteğinde ortanca istek {crossed_kinds} parça türünde boyut sınırını aştı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Send only the tools the task needs, or load them when needed; trim "
+            "or summarise the history in the app; send the relevant part of a "
+            "document instead of all of it.",
+            "tr": "Yalnızca görevin gerektirdiği araçları gönderin ya da gerektiğinde "
+            "yükleyin; geçmişi uygulamada kısaltın ya da özetleyin; belgenin tamamı "
+            "yerine ilgili bölümünü gönderin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(OVERSIZED_PARTS),
+    ),
+    DEAD_TOOLS: RuleSpec(
+        TITLE="An API key offers tools its answers never call",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "This API key offered {dead_tools} tools in at least half of its "
+            "{offering_requests} requests with tools over {window_days} days, and no "
+            "answer called them.",
+            "tr": "Bu API anahtarı son {window_days} günde araç sunduğu "
+            "{offering_requests} isteğin en az yarısında {dead_tools} aracı sundu ve "
+            "hiçbir yanıt onları çağırmadı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Remove the tools the app never calls, or load them only when "
+            "needed. If the app's tool calls go through a path shim does not see, "
+            "suppress the finding.",
+            "tr": "Uygulamanın hiç çağırmadığı araçları kaldırın ya da yalnızca "
+            "gerektiğinde yükleyin. Uygulamanın araç çağrıları shim'in görmediği bir "
+            "yoldan geçiyorsa bulguyu bastırın.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(DEAD_TOOLS),
+    ),
+    CACHE_ORDER_CHURN: RuleSpec(
+        TITLE="An API key sends its tools in changing order and misses the cache",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Over {window_hours} hours this API key sent the same tool set in "
+            "{orders} orders across {churned_requests} requests, and the provider's "
+            "prompt cache rarely applied.",
+            "tr": "Son {window_hours} saatte bu API anahtarı aynı araç kümesini "
+            "{churned_requests} istekte {orders} farklı sırayla gönderdi ve "
+            "sağlayıcının istem önbelleği nadiren devreye girdi.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Send the tools in a fixed order, for example sorted by name, and "
+            "keep the system prompt free of per-request values; the provider's prompt "
+            "cache then applies to the shared prefix.",
+            "tr": "Araçları sabit bir sırayla, örneğin ada göre sıralı gönderin ve "
+            "sistem istemine isteğe göre değişen değerler koymayın; sağlayıcının "
+            "istem önbelleği o zaman ortak önek için devreye girer.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(CACHE_ORDER_CHURN),
+    ),
+    COLD_START: RuleSpec(
+        TITLE="A deployment answers slowly after it was idle",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{cold_starts} requests to this deployment in {window_hours} hours "
+            "waited for a cold start after an idle gap; {timeouts} of them timed out.",
+            "tr": "Son {window_hours} saatte bu dağıtıma gelen {cold_starts} istek "
+            "boşta kalmanın ardından soğuk başlatmayı bekledi; {timeouts} tanesi zaman "
+            "aşımına uğradı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Keep the model loaded between requests with the model server's "
+            "keep-alive or idle-unload setting, or raise the deployment's timeout when "
+            "cold starts end in timeouts.",
+            "tr": "Model sunucusunun keep-alive ya da boşta bellekten çıkarma ayarıyla "
+            "modeli istekler arasında yüklü tutun; soğuk başlatmalar zaman aşımıyla "
+            "bitiyorsa dağıtımın zaman aşımını yükseltin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(COLD_START),
+    ),
+    QUEUEING: RuleSpec(
+        TITLE="Streams to a deployment wait in a queue at busy hours",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "In {congested_hours} hours of the last {window_hours}, streams to "
+            "this deployment were slow to start, up to {worst_ttft_p95_ms} ms for a "
+            "first byte against a usual {baseline_ttft_ms} ms, with up to "
+            "{peak_concurrency} in flight at once.",
+            "tr": "Son {window_hours} saatin {congested_hours} saatinde bu dağıtıma "
+            "gelen akışlar ilk bayt için {worst_ttft_p95_ms} ms'ye kadar bekledi; "
+            "olağan süre {baseline_ttft_ms} ms, aynı anda en çok {peak_concurrency} "
+            "istek vardı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Give the deployment more capacity, set a concurrency budget for "
+            "the target, or send long requests to their own lane. The latency read "
+            "grouped by deployment shows the hours.",
+            "tr": "Dağıtıma daha fazla kapasite verin, hedef için bir eşzamanlılık "
+            "bütçesi tanımlayın ya da uzun istekleri kendi şeridine gönderin. "
+            "Dağıtıma göre gruplanan gecikme okuması saatleri gösterir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(QUEUEING),
+    ),
+    LITELLM_UNREGISTERED_MODEL: RuleSpec(
+        TITLE="LiteLLM serves a model outside the registry",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{requests} LiteLLM requests in {window_days} days used this model, "
+            "which matches no registry deployment.",
+            "tr": "Son {window_days} günde {requests} LiteLLM isteği bu modeli "
+            "kullandı; model hiçbir kayıtlı dağıtımla eşleşmiyor.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Register the model as a deployment if it is meant to be used, or "
+            "remove it from the LiteLLM configuration. The finding reads LiteLLM's "
+            "own log, not shim's records.",
+            "tr": "Model kullanılacaksa onu bir dağıtım olarak kaydedin, değilse "
+            "LiteLLM yapılandırmasından çıkarın. Bulgu shim kayıtlarını değil, "
+            "LiteLLM'in kendi kaydını okur.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="privacy",
+        PLAYBOOK=_playbook(LITELLM_UNREGISTERED_MODEL),
+        SOURCE="litellm",
+    ),
+    LITELLM_ERROR_RATE: RuleSpec(
+        TITLE="A model often fails behind LiteLLM",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{failed_requests} of {requests} LiteLLM requests for this model "
+            "failed in {window_hours} hours of the imported log.",
+            "tr": "İçe aktarılan kaydın {window_hours} saatinde bu model için "
+            "{requests} LiteLLM isteğinden {failed_requests} tanesi başarısız oldu.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Read the failed requests in LiteLLM by the request ids in the "
+            "evidence: a wrong key, a retired model or a provider limit fails every "
+            "call the same way.",
+            "tr": "Başarısız istekleri kanıttaki istek kimlikleriyle LiteLLM'de "
+            "okuyun: yanlış bir anahtar, emekliye ayrılmış bir model ya da bir "
+            "sağlayıcı sınırı her çağrıyı aynı şekilde başarısız kılar.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(LITELLM_ERROR_RATE),
+        SOURCE="litellm",
+    ),
+    LITELLM_SLOW_FIRST_TOKEN: RuleSpec(
+        TITLE="A model is slow to its first token behind LiteLLM",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "In {window_hours} hours, {requests} LiteLLM streams for this "
+            "model had a ninety-fifth percentile time to first token of "
+            "{ttft_ms_p95} ms.",
+            "tr": "Son {window_hours} saatte bu model için {requests} LiteLLM "
+            "isteğinde ilk tokene kadar geçen sürenin yüzde doksan beşlik dilimi "
+            "{ttft_ms_p95} ms oldu.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Check the deployment's capacity and queue at the busy hours, or "
+            "move latency-sensitive traffic to a faster model. LiteLLM records the "
+            "first token only for streams.",
+            "tr": "Yoğun saatlerde dağıtımın kapasitesine ve kuyruğuna bakın ya da "
+            "gecikmeye duyarlı trafiği daha hızlı bir modele taşıyın. LiteLLM ilk "
+            "tokeni yalnızca akışlarda kaydeder.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(LITELLM_SLOW_FIRST_TOKEN),
+        SOURCE="litellm",
+    ),
+    LITELLM_RETRY_BURST: RuleSpec(
+        TITLE="A LiteLLM key repeats the same-sized request",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "One LiteLLM key sent {repeated_requests} requests of the same model "
+            "and prompt size within {window_minutes} minutes; the threshold is "
+            "{threshold}. LiteLLM keeps no content digest, so equal token counts "
+            "stand in for equal requests.",
+            "tr": "Bir LiteLLM anahtarı {window_minutes} dakika içinde aynı model ve "
+            "aynı istem boyutunda {repeated_requests} istek gönderdi; eşik "
+            "{threshold}. LiteLLM içerik özeti tutmadığından eşit token sayıları "
+            "aynı isteğin yerine geçer.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Find the client behind this LiteLLM key and make it back off: "
+            "honour Retry-After, add jittered exponential backoff and cap retries. "
+            "Behind shim the same pattern is measured on content as "
+            "gateway.retry_storm.",
+            "tr": "Bu LiteLLM anahtarının arkasındaki istemciyi bulun ve geri "
+            "çekilmesini sağlayın: Retry-After başlığına uyun, rastgele gecikmeli "
+            "üstel geri çekilme ekleyin ve yeniden denemeleri sınırlayın. shim "
+            "arkasında aynı örüntü içerik üzerinden gateway.retry_storm olarak "
+            "ölçülür.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(LITELLM_RETRY_BURST),
+        SOURCE="litellm",
     ),
 }
+
+
+def effective_mode(rule_id: str, modes: Mapping[str, Mode]) -> Mode:
+    mode = min(modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index)
+    # No executor applies anything yet (E56): auto works as suggest.
+    return "suggest" if mode == "auto" else mode
+
+
+def ladder_remediation(
+    rule_id: str, subject: Mapping[str, Any], modes: Mapping[str, Mode]
+) -> dict[str, Any]:
+    """The ladder fields a finding stores: built from its subject, never from content."""
+    spec, mode = RULES[rule_id], effective_mode(rule_id, modes)
+    action = None
+    if mode != "observe" and spec.ACTION_KIND == "deployment.disable":
+        action = {
+            "kind": spec.ACTION_KIND,
+            "params": {"deployment_id": str(subject["deployment_id"])},
+        }
+    return {
+        "mode": mode,
+        "max_mode": spec.MAX_MODE,
+        "action": action,
+        "reversible": spec.REVERSIBLE,
+        "blast_radius": spec.BLAST_RADIUS,
+        "proof_after": None,
+    }
+
+
+async def apply_modes(
+    session: AsyncSession, tenant_id: UUID, modes: Mapping[str, Mode]
+) -> None:
+    """Bring every open finding to the tenant's modes, fired in this pass or not."""
+    for row in await session.scalars(
+        select(Finding).where(
+            Finding.organization_id == tenant_id,
+            Finding.status_id != STATUS_RESOLVED,
+            Finding.rule_id.in_(list(RULES)),
+        )
+    ):
+        ladder = ladder_remediation(row.rule_id, row.subject, modes)
+        if any(row.remediation.get(key) != value for key, value in ladder.items()):
+            row.remediation = {**row.remediation, **ladder}
+
+
+async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySettings:
+    stored = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == tenant_id
+        )
+    )
+    return GatewaySettings() if stored is None else stored_settings(stored)
+
+
+async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
+    return (await _tenant_settings(session, tenant_id)).finding_modes
+
 
 # A retry storm's fix follows the class most of its repeats belong to.
 STORM_FIXES: dict[str, Mapping[str, str]] = {
@@ -1124,6 +1586,1115 @@ async def _outcome_rates(
     return detections
 
 
+def _quality_scope(tenant_id: UUID, now: datetime) -> tuple[Any, ...]:
+    return (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= now - timedelta(hours=QUALITY_WINDOW_HOURS),
+        RequestLifecycle.started_at <= now,
+        RequestLifecycle.api_key_id.is_not(None),
+    )
+
+
+def _per_key(rows: Any) -> dict[UUID, list[Any]]:
+    keys: dict[UUID, list[Any]] = {}
+    for row in rows:
+        keys.setdefault(row.api_key_id, []).append(row)
+    return keys
+
+
+def _by_model(
+    groups: list[Any], total: str, affected: str, shown: str | None = None
+) -> list[dict[str, Any]]:
+    """Per model, two counts summed over the query's other split, most counted first."""
+    models: dict[str, list[int]] = {}
+    for row in groups:
+        counted = models.setdefault(row.model, [0, 0])
+        counted[0] += getattr(row, total)
+        counted[1] += getattr(row, affected)
+    ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
+    return [
+        {"model": name, total: counts[0], shown or affected: counts[1]}
+        for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
+    ]
+
+
+def _quality_finding(
+    rule_id: str,
+    key_id: UUID,
+    total: tuple[str, int],
+    affected: tuple[str, int],
+    minimum: int,
+    threshold: Decimal,
+    request_ids: list[str],
+    **evidence: Any,
+) -> Detection | None:
+    """A finding for one API key once enough answers were read and enough went wrong."""
+    (total_name, total_count), (affected_name, affected_count) = total, affected
+    if total_count < minimum:
+        return None
+    rate = Decimal(affected_count) / total_count
+    if rate < threshold:
+        return None
+    return Detection(
+        rule_id=rule_id,
+        subject_key=f"api_key:{key_id}",
+        subject={"api_key_id": str(key_id)},
+        evidence={
+            "window_hours": QUALITY_WINDOW_HOURS,
+            total_name: total_count,
+            affected_name: affected_count,
+            "rate": str(round(rate, 4)),
+            "threshold_rate": str(threshold),
+            **evidence,
+            "request_ids": request_ids[:EVIDENCE_REQUEST_IDS],
+        },
+        impact={"cost_usd": None, "requests": affected_count},
+    )
+
+
+async def _language_drift(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    language = RequestLifecycle.lifecycle_metadata["response_analysis"]["language"]
+    asked, answered = language["request"].as_string(), language["answer"].as_string()
+    drift = answered == "en"
+    prompt = RequestLifecycle.lifecycle_metadata["system_prompt_hash"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            func.count().label("analysed"),
+            func.count().filter(drift).label("drifts"),
+            _request_ids(drift).label("request_ids"),
+            func.array_agg(distinct(prompt))
+            .filter(drift & prompt.is_not(None))
+            .label("prompts"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            asked == "tr",
+            answered.in_(("tr", "en")),
+        )
+        .group_by(RequestLifecycle.api_key_id, model)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        groups.sort(key=lambda row: (-row.analysed, row.model or ""))
+        prompts = {
+            value
+            for row in groups
+            for value in row.prompts or ()
+            if _PROMPT_HASH.fullmatch(value)
+        }
+        found = _quality_finding(
+            LANGUAGE_DRIFT,
+            key_id,
+            ("analysed_requests", sum(row.analysed for row in groups)),
+            ("drifts", sum(row.drifts for row in groups)),
+            LANGUAGE_DRIFT_MIN_REQUESTS,
+            LANGUAGE_DRIFT_THRESHOLD,
+            [value for row in groups for value in row.request_ids or ()],
+            models=[
+                {"model": row.model, "analysed": row.analysed, "drifts": row.drifts}
+                for row in groups[:EVIDENCE_MODELS_PER_KEY]
+            ],
+            prompt_versions=sorted(prompts)[:EVIDENCE_PROMPT_VERSIONS],
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
+async def _schema_errors(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    schema = RequestLifecycle.lifecycle_metadata["response_analysis"]["schema"]
+    expected = schema["expected"].as_string()
+    invalid = schema["valid"].as_boolean().is_(False)
+    outcome = RequestLifecycle.lifecycle_metadata["completion_outcome"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            expected.label("expected"),
+            func.count().label("checked"),
+            func.count().filter(invalid).label("invalid"),
+            _request_ids(invalid).label("request_ids"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            expected.in_(SCHEMA_KINDS),
+            schema["valid"].as_boolean().is_not(None),
+            schema["unsupported"].as_boolean().is_not(True),
+            # A truncated answer is cut JSON: gateway.truncation_rate covers it.
+            outcome == "complete",
+        )
+        .group_by(RequestLifecycle.api_key_id, model, expected)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        kinds: dict[str, int] = {}
+        for row in groups:
+            for name, value in (("checked", row.checked), ("invalid", row.invalid)):
+                field = f"{name}_{row.expected}"
+                kinds[field] = kinds.get(field, 0) + value
+        found = _quality_finding(
+            SCHEMA_ERRORS,
+            key_id,
+            ("checked_requests", sum(row.checked for row in groups)),
+            ("invalid", sum(row.invalid for row in groups)),
+            SCHEMA_ERRORS_MIN_CHECKED,
+            SCHEMA_ERRORS_THRESHOLD,
+            [
+                value
+                for row in sorted(groups, key=lambda row: -row.invalid)
+                for value in row.request_ids or ()
+            ],
+            **dict(sorted(kinds.items())),
+            models=_by_model(groups, "checked", "invalid"),
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
+async def _soft_refusals(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    refusal = RequestLifecycle.lifecycle_metadata["response_analysis"]["refusal"]
+    soft = refusal["soft_refusal"].as_boolean()
+    marker = refusal["marker"].as_string()
+    outcome = RequestLifecycle.lifecycle_metadata["completion_outcome"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            marker.label("marker"),
+            func.count().label("analysed"),
+            func.count().filter(soft.is_(True)).label("refused"),
+            _request_ids(soft.is_(True)).label("request_ids"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            soft.is_not(None),
+            outcome == "complete",
+        )
+        .group_by(RequestLifecycle.api_key_id, model, marker)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        markers: dict[str, int] = {}
+        for row in groups:
+            # Marker ids are the analyzer's fixed vocabulary; anything else is dropped.
+            if row.refused and row.marker in MARKER_IDS:
+                name = f"marker_{row.marker.replace('.', '_')}"
+                markers[name] = markers.get(name, 0) + row.refused
+        top_markers = sorted(markers.items(), key=lambda item: (-item[1], item[0]))
+        found = _quality_finding(
+            SOFT_REFUSALS,
+            key_id,
+            ("analysed_requests", sum(row.analysed for row in groups)),
+            ("soft_refusals", sum(row.refused for row in groups)),
+            SOFT_REFUSAL_MIN_ANALYSED,
+            SOFT_REFUSAL_THRESHOLD,
+            [
+                value
+                for row in sorted(groups, key=lambda row: -row.refused)
+                for value in row.request_ids or ()
+            ],
+            **dict(top_markers[:EVIDENCE_MARKERS]),
+            models=_by_model(groups, "analysed", "refused", "soft_refusals"),
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
+# Per part kind, the record fields that judge it (a median at or over its limit
+# crosses) and the characters the kind adds to a request.
+_OVERSIZED_KINDS: dict[str, tuple[tuple[tuple[str, str, int], ...], str]] = {
+    "tool_definitions": (
+        (
+            (
+                "tool_definitions",
+                "tool_definition_chars",
+                OVERSIZED_TOOL_DEFINITION_CHARS,
+            ),
+        ),
+        "tool_definition_chars",
+    ),
+    "history": (
+        (
+            ("history_messages", "message_count", OVERSIZED_HISTORY_MESSAGES),
+            ("history_chars", "history_chars", OVERSIZED_HISTORY_CHARS),
+        ),
+        "history_chars",
+    ),
+    "large_part": (
+        (("large_part", "largest_part_chars", OVERSIZED_LARGEST_PART_CHARS),),
+        "largest_part_chars",
+    ),
+}
+
+
+def _shape(field: str) -> Any:
+    shape = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"]
+    return cast(shape[field].as_string(), Integer)
+
+
+def _shape_window(tenant_id: UUID, start: datetime, now: datetime) -> tuple[Any, ...]:
+    return (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= start,
+        RequestLifecycle.started_at <= now,
+        RequestLifecycle.api_key_id.is_not(None),
+        RequestLifecycle.lifecycle_metadata["response_analysis"].has_key("shape"),
+    )
+
+
+async def _oversized_parts(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    window = _shape_window(tenant_id, now - timedelta(hours=WASTE_WINDOW_HOURS), now)
+    fields = sorted(
+        {field for checks, _ in _OVERSIZED_KINDS.values() for _, field, _ in checks}
+    )
+    keys = (
+        await session.execute(
+            select(
+                RequestLifecycle.api_key_id,
+                func.count().label("analysed"),
+                *(
+                    func.percentile_cont(share)
+                    .within_group(_shape(field))
+                    .label(f"{field}_{label}")
+                    for field in fields
+                    for share, label in ((0.5, "median"), (0.95, "p95"))
+                ),
+            )
+            .where(*window)
+            .group_by(RequestLifecycle.api_key_id)
+            .having(func.count() >= OVERSIZED_MIN_REQUESTS)
+        )
+    ).all()
+    detections = []
+    for row in keys:
+        crossed = [
+            (checks, characters)
+            for checks, characters in _OVERSIZED_KINDS.values()
+            if any(
+                getattr(row, f"{field}_median") >= limit for _, field, limit in checks
+            )
+        ]
+        if not crossed:
+            continue
+        # A request counts once it is over a crossed kind's limit, with that kind's characters.
+        over = [
+            (
+                or_(*(_shape(field) >= limit for _, field, limit in checks)),
+                _shape(characters),
+            )
+            for checks, characters in crossed
+        ]
+        any_over = or_(*(condition for condition, _ in over))
+        added = reduce(
+            operator.add,
+            (case((condition, size), else_=0) for condition, size in over),
+        )
+        requests, characters, request_ids = (
+            await session.execute(
+                select(
+                    func.count().filter(any_over),
+                    func.coalesce(func.sum(added), 0),
+                    _request_ids(any_over, started_at=added.desc()),
+                ).where(*window, RequestLifecycle.api_key_id == row.api_key_id)
+            )
+        ).one()
+        detections.append(
+            Detection(
+                rule_id=OVERSIZED_PARTS,
+                subject_key=f"api_key:{row.api_key_id}",
+                subject={"api_key_id": str(row.api_key_id)},
+                evidence={
+                    "window_hours": WASTE_WINDOW_HOURS,
+                    "analysed_requests": row.analysed,
+                    "crossed_kinds": len(crossed),
+                    **{
+                        f"{name}_{label}": round(getattr(row, f"{field}_{label}"))
+                        for checks, _ in crossed
+                        for name, field, _ in checks
+                        for label in ("median", "p95")
+                    },
+                    "tokens_estimated": True,
+                    "request_ids": list(request_ids or []),
+                },
+                # Characters over four, the meter's estimate. No money: tool
+                # definitions and early history are usually the cached prefix.
+                impact={
+                    "cost_usd": None,
+                    "requests": requests,
+                    "tokens": int(characters) // 4,
+                },
+            )
+        )
+    return detections
+
+
+# Per key with dead tools: its offering requests, the distinct tools its answers
+# called, the dead tools most offered first, and the requests that offered one.
+# Offers and calls both come from analysed rows, so the two compare.
+_DEAD_TOOLS = text(
+    """
+    WITH key_rows AS (
+        -- Anything but an array reads as none, so a malformed row cannot fail the query.
+        SELECT api_key_id,
+               CASE WHEN jsonb_typeof(metadata -> 'response_analysis' -> 'shape'
+                                      -> 'tools_offered') = 'array'
+                    THEN metadata -> 'response_analysis' -> 'shape' -> 'tools_offered'
+                    ELSE '[]'::jsonb END AS offered,
+               CASE WHEN jsonb_typeof(metadata -> 'tool_call_names') = 'array'
+                    THEN metadata -> 'tool_call_names' ELSE '[]'::jsonb END AS called
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= :start AND started_at <= :now
+          AND api_key_id IS NOT NULL
+          AND metadata -> 'response_analysis' ? 'shape'
+    ),
+    offering AS (
+        SELECT api_key_id, count(*) AS offering
+        FROM key_rows
+        WHERE jsonb_array_length(offered) > 0
+        GROUP BY api_key_id
+        HAVING count(*) >= :minimum
+    ),
+    calls AS (
+        SELECT api_key_id, array_agg(DISTINCT name) AS names
+        FROM key_rows, jsonb_array_elements_text(called) AS name
+        GROUP BY api_key_id
+    ),
+    dead AS (
+        -- A Responses built-in tool is called as <name>_call.
+        SELECT key_rows.api_key_id, tool, count(*) AS offers
+        FROM key_rows
+        JOIN offering USING (api_key_id)
+        JOIN calls USING (api_key_id),
+             jsonb_array_elements_text(key_rows.offered) AS tool
+        WHERE tool <> ALL(calls.names) AND tool || '_call' <> ALL(calls.names)
+        GROUP BY key_rows.api_key_id, tool, offering.offering
+        HAVING count(*) >= offering.offering * CAST(:share AS numeric)
+    ),
+    hits AS (
+        SELECT api_key_id, count(*) AS requests
+        FROM key_rows
+        WHERE EXISTS (SELECT 1 FROM dead
+                      WHERE dead.api_key_id = key_rows.api_key_id
+                        AND key_rows.offered ? dead.tool)
+        GROUP BY api_key_id
+    )
+    SELECT dead.api_key_id, offering.offering,
+           cardinality(calls.names) AS called, count(*) AS dead_tools,
+           (array_agg(dead.tool ORDER BY dead.offers DESC, dead.tool))
+               [1:CAST(:listed AS integer)] AS tools,
+           (array_agg(dead.offers ORDER BY dead.offers DESC, dead.tool))
+               [1:CAST(:listed AS integer)] AS offers,
+           hits.requests
+    FROM dead
+    JOIN offering USING (api_key_id)
+    JOIN calls USING (api_key_id)
+    JOIN hits USING (api_key_id)
+    GROUP BY dead.api_key_id, offering.offering, calls.names, hits.requests
+    ORDER BY dead.api_key_id
+    """
+)
+# When each organization's dead tools are next due, in this worker's memory as
+# budgets keep theirs: a restart evaluates again, which refreshes the same findings.
+_dead_tools_due: dict[UUID, datetime] = {}
+
+
+async def _dead_tools(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    if now < _dead_tools_due.get(tenant_id, now):
+        return []
+    rows = await session.execute(
+        _DEAD_TOOLS,
+        {
+            "tenant_id": tenant_id,
+            "start": now - timedelta(days=DEAD_TOOLS_WINDOW_DAYS),
+            "now": now,
+            "minimum": DEAD_TOOLS_MIN_REQUESTS,
+            "share": DEAD_TOOLS_MIN_OFFER_SHARE,
+            "listed": EVIDENCE_DEAD_TOOLS,
+        },
+    )
+    _dead_tools_due[tenant_id] = now + timedelta(hours=DEAD_TOOLS_EVALUATION_HOURS)
+    return [
+        Detection(
+            rule_id=DEAD_TOOLS,
+            subject_key=f"api_key:{row.api_key_id}",
+            subject={"api_key_id": str(row.api_key_id)},
+            evidence={
+                "window_days": DEAD_TOOLS_WINDOW_DAYS,
+                "offering_requests": row.offering,
+                "dead_tools": row.dead_tools,
+                "called_tools": row.called,
+                # Allowlisted tool names (S37) stay in the stored row only.
+                "tools": [
+                    {"name": tool[:64], "offered": offers}
+                    for tool, offers in zip(row.tools, row.offers, strict=True)
+                ],
+            },
+            impact={"cost_usd": None, "requests": row.requests},
+        )
+        for row in rows
+    ]
+
+
+async def _cache_order_churn(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    shape = RequestLifecycle.lifecycle_metadata["response_analysis"]["shape"]
+    tool_set, order = (
+        shape["tools_set_digest"].as_string(),
+        shape["tools_order_digest"].as_string(),
+    )
+    # A log row without the field counts as no cache read.
+    cached = (
+        func.coalesce(
+            cast(RequestLog.details["cached_input_tokens"].as_string(), Integer), 0
+        )
+        > 0
+    )
+    per_order = (RequestLifecycle.api_key_id, tool_set, order)
+    rows = (
+        select(
+            RequestLifecycle.api_key_id,
+            tool_set.label("tool_set"),
+            order.label("tool_order"),
+            RequestLifecycle.provider,
+            RequestLifecycle.request_id,
+            RequestLifecycle.started_at,
+            cached.label("cached"),
+            func.count().over(partition_by=per_order).label("in_order"),
+            (func.row_number().over(partition_by=per_order) == 1).label("first"),
+        )
+        .join(
+            RequestLog,
+            (RequestLog.organization_id == RequestLifecycle.organization_id)
+            & (RequestLog.request_id == RequestLifecycle.request_id),
+        )
+        .where(
+            *_shape_window(tenant_id, now - timedelta(hours=WASTE_WINDOW_HOURS), now),
+            _shape("tool_count") >= 2,
+            RequestLog.prompt_tokens >= CACHE_CHURN_MIN_PROMPT_TOKENS,
+            tool_set.is_not(None),
+            order.is_not(None),
+        )
+        .subquery()
+    )
+    # One row per key and tool set, however many orders its requests came in.
+    sets = await session.execute(
+        select(
+            rows.c.api_key_id,
+            func.count().label("requests"),
+            func.count().filter(rows.c.cached).label("cache_reads"),
+            func.count(distinct(rows.c.tool_order)).label("orders"),
+            func.max(rows.c.in_order).label("dominant"),
+            type_coerce(
+                func.array_agg(
+                    aggregate_order_by(rows.c.in_order, rows.c.in_order.desc())
+                ).filter(rows.c.first),
+                ARRAY(Integer),
+            )[1:EVIDENCE_ORDERS].label("requests_per_order"),
+            func.array_agg(distinct(rows.c.provider)).label("providers"),
+            _request_ids(true(), rows.c.request_id, rows.c.started_at).label(
+                "request_ids"
+            ),
+        )
+        .group_by(rows.c.api_key_id, rows.c.tool_set)
+        .having(func.count() >= CACHE_CHURN_MIN_REQUESTS)
+    )
+    churned: dict[UUID, list[dict[str, Any]]] = {}
+    for row in sets:
+        if (
+            row.orders >= 2
+            and Decimal(row.dominant) / row.requests < CACHE_CHURN_MAX_DOMINANT_SHARE
+            and Decimal(row.cache_reads) / row.requests
+            < CACHE_CHURN_MAX_CACHE_READ_SHARE
+        ):
+            churned.setdefault(row.api_key_id, []).append(
+                {
+                    "requests": row.requests,
+                    "orders": row.orders,
+                    "requests_per_order": list(row.requests_per_order),
+                    "cache_read_share": str(
+                        round(Decimal(row.cache_reads) / row.requests, 4)
+                    ),
+                    "providers": sorted(
+                        provider
+                        for provider in row.providers or ()
+                        if provider in PROVIDERS
+                    ),
+                    "request_ids": list(row.request_ids or ()),
+                }
+            )
+    detections = []
+    for key_id, found in sorted(churned.items()):
+        found.sort(key=lambda item: -item["requests"])
+        largest = found[0]
+        detections.append(
+            Detection(
+                rule_id=CACHE_ORDER_CHURN,
+                subject_key=f"api_key:{key_id}",
+                subject={"api_key_id": str(key_id)},
+                evidence={
+                    "window_hours": WASTE_WINDOW_HOURS,
+                    "tool_sets": len(found),
+                    "churned_requests": sum(item["requests"] for item in found),
+                    "orders": largest["orders"],
+                    "cache_read_share": largest["cache_read_share"],
+                    "sets": [
+                        {
+                            key: value
+                            for key, value in item.items()
+                            if key != "request_ids"
+                        }
+                        for item in found[:EVIDENCE_TOOL_SETS]
+                    ],
+                    "request_ids": [
+                        value for item in found for value in item["request_ids"]
+                    ][:EVIDENCE_REQUEST_IDS],
+                },
+                impact={
+                    "cost_usd": None,
+                    "requests": sum(item["requests"] for item in found),
+                },
+            )
+        )
+    return detections
+
+
+# A registry deployment's requests with their idle gap (seconds since the previous
+# request of the same deployment, stream or not; a lookback day earlier counts, and
+# no previous request is a gap of the whole lookback) and their first byte. Only a
+# stream can be a cold start, as a JSON answer's first byte includes its generation.
+# Warm streams' median TTFT makes it relative: a gap of at least the idle threshold,
+# and a timeout or a TTFT of at least max(minimum, factor x warm median).
+_DEPLOYMENT_REQUESTS = """
+    rows AS (
+        SELECT metadata ->> 'deployment_id' AS deployment_id, request_id, started_at,
+               stream, status,
+               {first_byte} AS first_byte,
+               coalesce(EXTRACT(EPOCH FROM started_at - lag(started_at) OVER (
+                   PARTITION BY metadata ->> 'deployment_id' ORDER BY started_at
+               )), :lookback_seconds) AS gap
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= CAST(:lookback AS timestamptz)
+          AND started_at <= CAST(:now AS timestamptz)
+          AND metadata ->> 'deployment_id' IS NOT NULL
+    ),
+    windowed AS (
+        SELECT * FROM rows WHERE started_at >= CAST(:start AS timestamptz)
+    ),
+    warm AS (
+        SELECT deployment_id,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS first_byte
+        FROM windowed WHERE stream AND gap < :idle_seconds AND first_byte IS NOT NULL
+        GROUP BY deployment_id
+    ),
+    classified AS (
+        SELECT windowed.*, warm.first_byte AS warm_first_byte,
+               windowed.stream AND windowed.gap >= :idle_seconds AND (
+                   windowed.status = 'timeout'
+                   OR windowed.first_byte >= greatest(
+                       :min_first_byte, :factor * coalesce(warm.first_byte, 0)
+                   )
+               ) AS cold
+        FROM windowed LEFT JOIN warm USING (deployment_id)
+    )
+"""
+_COLD_STARTS = text(
+    "WITH"
+    + _DEPLOYMENT_REQUESTS.format(first_byte=FIRST_BYTE_SQL.format(t=""))
+    + """
+    SELECT deployment_id,
+           count(*) AS cold_starts,
+           count(*) FILTER (WHERE status = 'timeout') AS timeouts,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY gap) AS gap_seconds,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS cold_first_byte,
+           max(warm_first_byte) AS warm_first_byte,
+           (array_agg(request_id ORDER BY started_at))[1:20] AS request_ids
+    FROM classified
+    WHERE cold
+    GROUP BY deployment_id
+    HAVING count(*) >= :min_events
+    """
+)
+
+
+def _deployment_window(tenant_id: UUID, start: datetime, now: datetime) -> dict:
+    return {
+        "tenant_id": tenant_id,
+        "lookback": start - COLD_START_LOOKBACK,
+        "lookback_seconds": COLD_START_LOOKBACK.total_seconds(),
+        "start": start,
+        "now": now,
+        "idle_seconds": COLD_START_MIN_IDLE_SECONDS,
+        "min_first_byte": COLD_START_MIN_FIRST_BYTE_MS,
+        "factor": COLD_START_LATENCY_FACTOR,
+    }
+
+
+async def _cold_starts(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    rows = await session.execute(
+        _COLD_STARTS,
+        {
+            **_deployment_window(
+                tenant_id, now - timedelta(hours=COLD_START_WINDOW_HOURS), now
+            ),
+            "min_events": COLD_START_MIN_EVENTS,
+        },
+    )
+    return [
+        Detection(
+            rule_id=COLD_START,
+            subject_key=f"deployment:{row.deployment_id}",
+            subject={"deployment_id": row.deployment_id},
+            evidence={
+                "window_hours": COLD_START_WINDOW_HOURS,
+                "cold_starts": row.cold_starts,
+                "timeouts": row.timeouts,
+                "median_gap_seconds": round(row.gap_seconds),
+                "cold_first_byte_ms": _ms(row.cold_first_byte),
+                "warm_first_byte_ms": _ms(row.warm_first_byte),
+                "request_ids": list(row.request_ids or []),
+            },
+            impact={"cost_usd": None, "requests": row.cold_starts},
+        )
+        for row in rows
+    ]
+
+
+def _ms(value: float | None) -> int | None:
+    return None if value is None else round(value)
+
+
+# Per deployment and hour of the window: streams, their p95 TTFT without the cold
+# starts, and the most requests (streams or not) in flight at once; and the 7-day
+# baseline before.
+_QUEUEING = text(
+    "WITH"
+    + _DEPLOYMENT_REQUESTS.format(first_byte=FIRST_BYTE_SQL.format(t=""))
+    + """,
+    baseline AS (
+        SELECT metadata ->> 'deployment_id' AS deployment_id,
+               percentile_cont(0.5) WITHIN GROUP (
+                   ORDER BY (metadata ->> 'ttft_ms')::float
+               ) AS ttft
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= CAST(:baseline_start AS timestamptz)
+          AND started_at < CAST(:start AS timestamptz)
+          AND stream AND metadata ->> 'deployment_id' IS NOT NULL
+          AND metadata ->> 'ttft_ms' IS NOT NULL
+        GROUP BY metadata ->> 'deployment_id'
+        HAVING count(*) >= :min_baseline
+    ),
+    hours AS (
+        SELECT deployment_id, date_trunc('hour', started_at AT TIME ZONE 'UTC') AS hour,
+               count(*) AS streams,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY first_byte)
+                   FILTER (WHERE NOT cold) AS ttft_p95,
+               (array_agg(request_id ORDER BY first_byte DESC NULLS LAST))[1:20]
+                   AS request_ids
+        FROM classified
+        WHERE stream AND deployment_id IN (SELECT deployment_id FROM baseline)
+        GROUP BY deployment_id, date_trunc('hour', started_at AT TIME ZONE 'UTC')
+        HAVING count(*) >= :min_hour_streams
+    ),
+    spans AS (
+        SELECT l.metadata ->> 'deployment_id' AS deployment_id,
+               l.provider_started_at AT TIME ZONE 'UTC' AS s,
+               coalesce(l.completed_at, CAST(:now AS timestamptz)) AT TIME ZONE 'UTC' AS e
+        FROM request_lifecycle l
+        WHERE l.organization_id = :tenant_id
+          AND l.started_at >= CAST(:lookback AS timestamptz)
+          AND l.started_at <= CAST(:now AS timestamptz)
+          AND l.provider_started_at IS NOT NULL
+          AND l.metadata ->> 'deployment_id' IN (SELECT deployment_id FROM hours)
+    ),
+    clipped AS (
+        SELECT hours.deployment_id AS grp, hours.hour AS bucket,
+               greatest(spans.s, hours.hour) AS s,
+               least(spans.e, hours.hour + interval '1 hour') AS e
+        FROM hours JOIN spans
+          ON spans.deployment_id = hours.deployment_id
+         AND spans.s < hours.hour + interval '1 hour' AND spans.e > hours.hour
+    ),"""
+    + SWEEP_SQL
+    + """
+    SELECT hours.deployment_id, hours.hour, hours.streams, hours.ttft_p95,
+           coalesce(peaks.peak, 0) AS peak, baseline.ttft AS baseline,
+           hours.request_ids
+    FROM hours
+    JOIN baseline USING (deployment_id)
+    LEFT JOIN peaks ON peaks.grp = hours.deployment_id AND peaks.bucket = hours.hour
+    WHERE hours.ttft_p95 >= :factor_queue * baseline.ttft
+      AND coalesce(peaks.peak, 0) >= :min_peak
+    ORDER BY hours.deployment_id, hours.hour
+    """
+)
+
+
+async def _queueing(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    start = now - timedelta(hours=QUEUEING_WINDOW_HOURS)
+    deployments: dict[str, list[Any]] = {}
+    for row in await session.execute(
+        _QUEUEING,
+        {
+            **_deployment_window(tenant_id, start, now),
+            "baseline_start": start - timedelta(days=QUEUEING_BASELINE_DAYS),
+            "min_baseline": QUEUEING_MIN_BASELINE_STREAMS,
+            "min_hour_streams": QUEUEING_MIN_HOUR_STREAMS,
+            "factor_queue": QUEUEING_FACTOR,
+            "min_peak": QUEUEING_MIN_PEAK_CONCURRENCY,
+        },
+    ):
+        deployments.setdefault(row.deployment_id, []).append(row)
+    return [
+        Detection(
+            rule_id=QUEUEING,
+            subject_key=f"deployment:{deployment_id}",
+            subject={"deployment_id": deployment_id},
+            evidence={
+                "window_hours": QUEUEING_WINDOW_HOURS,
+                "congested_hours": len(hours),
+                "baseline_ttft_ms": _ms(hours[0].baseline),
+                "worst_ttft_p95_ms": max(_ms(row.ttft_p95) or 0 for row in hours),
+                "peak_concurrency": max(row.peak for row in hours),
+                "hours": [
+                    {
+                        "hour": row.hour.replace(tzinfo=timezone.utc).isoformat(),
+                        "ttft_p95_ms": _ms(row.ttft_p95),
+                        "streams": row.streams,
+                        "peak_concurrency": row.peak,
+                    }
+                    for row in hours
+                ],
+                "request_ids": [
+                    value for row in hours for value in row.request_ids or ()
+                ][:EVIDENCE_REQUEST_IDS],
+            },
+            impact={"cost_usd": None, "requests": sum(row.streams for row in hours)},
+        )
+        for deployment_id, hours in sorted(deployments.items())
+        if len(hours) >= QUEUEING_MIN_HOURS
+    ]
+
+
+def _litellm_rows(tenant_id: UUID, end: datetime, window: timedelta) -> tuple[Any, ...]:
+    record = ExternalUsageRecord
+    return (
+        record.organization_id == tenant_id,
+        record.source == "litellm",
+        record.started_at > end - window,
+        record.started_at <= end,
+    )
+
+
+def _litellm_model() -> Any:
+    return func.coalesce(ExternalUsageRecord.model, ExternalUsageRecord.model_group)
+
+
+def _litellm_impact(condition: Any = true()) -> tuple[Any, ...]:
+    record = ExternalUsageRecord
+    return (
+        func.count().filter(condition).label("requests"),
+        func.coalesce(
+            func.sum(
+                func.coalesce(record.prompt_tokens, 0)
+                + func.coalesce(record.completion_tokens, 0)
+            ).filter(condition),
+            0,
+        ).label("tokens"),
+        func.sum(record.cost_usd).filter(condition).label("cost"),
+        _request_ids(condition, record.source_request_id, record.started_at).label(
+            "request_ids"
+        ),
+    )
+
+
+def _litellm_detection(
+    rule_id: str, subject: dict[str, str], row: Any, evidence: dict[str, Any]
+) -> Detection:
+    # The source's own cost, labelled so; never added to shim's spend.
+    return Detection(
+        rule_id=rule_id,
+        subject_key=next(iter(subject.values())),
+        subject=subject,
+        evidence={
+            **evidence,
+            "request_ids": [
+                request_id
+                for request_id in row.request_ids or []
+                if _EVIDENCE_ID.fullmatch(request_id)
+            ],
+        },
+        impact={
+            "requests": row.requests,
+            "tokens": int(row.tokens),
+            "cost_usd": None if row.cost is None else str(row.cost),
+            "cost_source": "litellm",
+        },
+    )
+
+
+async def _litellm_unregistered_models(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    deployments = (
+        await session.execute(
+            select(ModelDeployment.alias, ModelDeployment.upstream_model).where(
+                ModelDeployment.organization_id == tenant_id,
+                ModelDeployment.enabled.is_(True),
+            )
+        )
+    ).all()
+    if not deployments:
+        return []
+    names = {name for row in deployments for name in row}
+    record, model = ExternalUsageRecord, _litellm_model()
+    rows = await session.execute(
+        select(model.label("model"), *_litellm_impact())
+        .where(
+            *_litellm_rows(
+                tenant_id, end, timedelta(days=LITELLM_UNREGISTERED_WINDOW_DAYS)
+            ),
+            model.is_not(None),
+            or_(record.model.is_(None), not_(record.model.in_(names))),
+            or_(record.model_group.is_(None), not_(record.model_group.in_(names))),
+        )
+        .group_by(model)
+        .having(func.count() >= LITELLM_UNREGISTERED_MIN_REQUESTS)
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_UNREGISTERED_MODEL,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.requests,
+                "window_days": LITELLM_UNREGISTERED_WINDOW_DAYS,
+                "threshold": LITELLM_UNREGISTERED_MIN_REQUESTS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_error_rates(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record, model = ExternalUsageRecord, _litellm_model()
+    failed = and_(record.status.is_not(None), record.status != "success")
+    failures = func.count().filter(failed)
+    rows = await session.execute(
+        select(
+            model.label("model"),
+            failures.label("failed"),
+            func.count().label("all_requests"),
+            *_litellm_impact(failed),
+        )
+        .where(
+            *_litellm_rows(tenant_id, end, timedelta(hours=LITELLM_RATE_WINDOW_HOURS)),
+            model.is_not(None),
+        )
+        .group_by(model)
+        .having(
+            func.count() >= LITELLM_ERROR_MIN_REQUESTS,
+            cast(failures, Numeric) >= LITELLM_ERROR_THRESHOLD * func.count(),
+        )
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_ERROR_RATE,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.all_requests,
+                "failed_requests": row.failed,
+                "failure_share": str(round(Decimal(row.failed) / row.all_requests, 4)),
+                "threshold": str(LITELLM_ERROR_THRESHOLD),
+                "window_hours": LITELLM_RATE_WINDOW_HOURS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_slow_first_tokens(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record, model = ExternalUsageRecord, _litellm_model()
+    measured = record.ttft_ms.is_not(None)
+    p95 = func.percentile_cont(0.95).within_group(record.ttft_ms)
+    rows = await session.execute(
+        select(model.label("model"), p95.label("p95"), *_litellm_impact(measured))
+        .where(
+            *_litellm_rows(tenant_id, end, timedelta(hours=LITELLM_RATE_WINDOW_HOURS)),
+            model.is_not(None),
+            measured,
+        )
+        .group_by(model)
+        .having(func.count() >= LITELLM_SLOW_MIN_ROWS, p95 >= LITELLM_SLOW_P95_MS)
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_SLOW_FIRST_TOKEN,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.requests,
+                "ttft_ms_p95": round(row.p95),
+                "threshold_ms": LITELLM_SLOW_P95_MS,
+                "window_hours": LITELLM_RATE_WINDOW_HOURS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_retry_bursts(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record = ExternalUsageRecord
+    bucket = func.date_bin(RETRY_BUCKET, record.started_at, _EPOCH)
+    rows = await session.execute(
+        select(
+            record.source_key_hash,
+            record.model,
+            record.prompt_tokens,
+            bucket.label("bucket"),
+            *_litellm_impact(),
+        )
+        .where(
+            *_litellm_rows(tenant_id, end, LITELLM_BURST_WINDOW),
+            record.source_key_hash.is_not(None),
+            record.prompt_tokens.is_not(None),
+        )
+        .group_by(record.source_key_hash, record.model, record.prompt_tokens, bucket)
+        .having(func.count() >= RETRY_STORM_MIN_REQUESTS)
+        .order_by(record.source_key_hash, func.count().desc(), bucket.desc())
+    )
+    worst: dict[str, Any] = {}
+    for row in rows:
+        worst.setdefault(row.source_key_hash, row)
+    return [
+        _litellm_detection(
+            LITELLM_RETRY_BURST,
+            {"litellm_key": f"litellm:{key_hash[:LITELLM_KEY_PREFIX]}"},
+            row,
+            {
+                "window_start": row.bucket.isoformat(),
+                "window_minutes": RETRY_BUCKET // timedelta(minutes=1),
+                "repeated_requests": row.requests,
+                "threshold": RETRY_STORM_MIN_REQUESTS,
+                "prompt_tokens": row.prompt_tokens,
+            },
+        )
+        for key_hash, row in worst.items()
+    ]
+
+
+async def evaluate_litellm(
+    session: AsyncSession, tenant_id: UUID, *, end: datetime, import_id: UUID
+) -> list[tuple[str, bool]]:
+    """The litellm.* rules over a tenant's imported rows, the window ending at end.
+
+    Imported data is history: the worker never runs these, an import does. Each
+    rule id with whether its finding was opened (True) or updated.
+    """
+    now = datetime.now(timezone.utc)
+    modes = await finding_modes(session, tenant_id)
+    results = []
+    for rule in (
+        _litellm_unregistered_models,
+        _litellm_error_rates,
+        _litellm_slow_first_tokens,
+        _litellm_retry_bursts,
+    ):
+        for detection in await rule(session, tenant_id, end):
+            stamped = replace(
+                detection, evidence={**detection.evidence, "import_id": str(import_id)}
+            )
+            opened = await upsert_detection(
+                session, tenant_id, stamped, now=now, modes=modes
+            )
+            results.append((detection.rule_id, opened))
+    return results
+
+
+async def upsert_detection(
+    session: AsyncSession,
+    tenant_id: UUID,
+    detection: Detection,
+    *,
+    now: datetime,
+    modes: Mapping[str, Mode],
+) -> bool:
+    """One open finding per rule and subject; True when this opened it."""
+    spec = RULES[detection.rule_id]
+    statement = insert(Finding).values(
+        organization_id=tenant_id,
+        source=spec.SOURCE,
+        rule_id=detection.rule_id,
+        rule_version=RULE_VERSIONS.get(detection.rule_id, RULE_VERSION),
+        subject_key=detection.subject_key,
+        subject=detection.subject,
+        title=spec.TITLE,
+        summary=render(spec.SUMMARY["en"], measurements(detection.evidence)),
+        severity_id=spec.SEVERITY_ID,
+        first_seen_at=now,
+        last_seen_at=now,
+        evidence=detection.evidence,
+        impact=detection.impact,
+        remediation={
+            **ladder_remediation(detection.rule_id, detection.subject, modes),
+            "text": remediation_text(detection.rule_id, detection.evidence)["en"],
+            "doc": spec.PLAYBOOK,
+        },
+    )
+    return bool(
+        await session.scalar(
+            statement.on_conflict_do_update(
+                index_elements=["organization_id", "rule_id", "subject_key"],
+                index_where=Finding.status_id != STATUS_RESOLVED,
+                set_={
+                    "last_seen_at": now,
+                    "occurrences": Finding.occurrences + 1,
+                    "summary": statement.excluded.summary,
+                    "evidence": statement.excluded.evidence,
+                    "impact": statement.excluded.impact,
+                    "rule_version": statement.excluded.rule_version,
+                    "remediation": statement.excluded.remediation,
+                    "updated_at": func.now(),
+                },
+            ).returning(literal_column("xmax = 0"))
+        )
+    )
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -1138,59 +2709,37 @@ async def evaluate_organization(
         (_answer_quality, (ANSWER_QUALITY,)),
         (_outcome_rates, (TRUNCATION_RATE, REFUSAL_RATE)),
     )
+    settings = await _tenant_settings(session, tenant_id)
+    analysed = set(settings.response_analysis)
+    registry = await session.scalar(
+        select(exists().where(ModelDeployment.organization_id == tenant_id))
+    )
+    # Rules over analyzer output or registry traffic run only when there can be
+    # some, and every statement after this point is bounded.
+    bounded = (
+        (_language_drift, (LANGUAGE_DRIFT,), "language" in analysed),
+        (_schema_errors, (SCHEMA_ERRORS,), "schema" in analysed),
+        (_soft_refusals, (SOFT_REFUSALS,), "refusal" in analysed),
+        (_oversized_parts, (OVERSIZED_PARTS,), "shape" in analysed),
+        (_dead_tools, (DEAD_TOOLS,), "shape" in analysed),
+        (_cache_order_churn, (CACHE_ORDER_CHURN,), "shape" in analysed),
+        (_cold_starts, (COLD_START,), registry),
+        (_queueing, (QUEUEING,), registry),
+    )
     detections: list[Detection] = []
     failed: list[str] = []
-    for rule, rule_ids in rules:
+    modes = settings.finding_modes
+
+    async def run(rule: Any, rule_ids: tuple[str, ...]) -> None:
         try:
             async with session.begin_nested():
                 found = await rule(session, tenant_id, now)
                 for detection in found:
-                    spec = RULES[detection.rule_id]
-                    statement = insert(Finding).values(
-                        organization_id=tenant_id,
-                        rule_id=detection.rule_id,
-                        rule_version=RULE_VERSIONS.get(detection.rule_id, RULE_VERSION),
-                        subject_key=detection.subject_key,
-                        subject=detection.subject,
-                        title=spec.TITLE,
-                        summary=render(
-                            spec.SUMMARY["en"], measurements(detection.evidence)
-                        ),
-                        severity_id=spec.SEVERITY_ID,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                        evidence=detection.evidence,
-                        impact=detection.impact,
-                        remediation={
-                            "text": remediation_text(
-                                detection.rule_id, detection.evidence
-                            )["en"],
-                            "reversible": spec.REVERSIBLE,
-                            "doc": spec.PLAYBOOK,
-                        },
-                    )
-                    await session.execute(
-                        statement.on_conflict_do_update(
-                            index_elements=[
-                                "organization_id",
-                                "rule_id",
-                                "subject_key",
-                            ],
-                            index_where=Finding.status_id != STATUS_RESOLVED,
-                            set_={
-                                "last_seen_at": now,
-                                "occurrences": Finding.occurrences + 1,
-                                "summary": statement.excluded.summary,
-                                "evidence": statement.excluded.evidence,
-                                "impact": statement.excluded.impact,
-                                "rule_version": statement.excluded.rule_version,
-                                "remediation": statement.excluded.remediation,
-                                "updated_at": func.now(),
-                            },
-                        )
+                    await upsert_detection(
+                        session, tenant_id, detection, now=now, modes=modes
                     )
         except Exception as exc:
-            failed += rule_ids
+            failed.extend(rule_ids)
             logger.error(
                 "Findings rule failed organization_id=%s rules=%s type=%s",
                 tenant_id,
@@ -1198,7 +2747,15 @@ async def evaluate_organization(
                 type(exc).__name__,
             )
         else:
-            detections += found
+            detections.extend(found)
+
+    for rule, rule_ids in rules:
+        await run(rule, rule_ids)
+    await bound_statements(session)
+    for rule, rule_ids, wanted in bounded:
+        if wanted:
+            await run(rule, rule_ids)
+    await apply_modes(session, tenant_id, modes)
     await session.execute(
         update(Finding)
         .where(
@@ -1238,6 +2795,7 @@ async def evaluate_findings(
 
 _SUBJECT_KINDS = (
     ("api_key_id", "key"),
+    ("litellm_key", "key"),
     ("deployment_id", "deployment"),
     ("model", "model"),
 )
@@ -1298,6 +2856,10 @@ def finding_from_row(row: Finding) -> FindingV1:
         field, kind = next(item for item in _SUBJECT_KINDS if item[0] in row.subject)
         impact = row.impact or {}
         usd = impact.get("cost_usd")
+        # A row written before modes existed reads as observe.
+        mode = min(
+            row.remediation.get("mode", "observe"), spec.MAX_MODE, key=MODES.index
+        )
         return FindingV1(
             **common,
             title=spec.TITLE,
@@ -1313,14 +2875,14 @@ def finding_from_row(row: Finding) -> FindingV1:
             measurements=values,
             impact=FindingImpact(
                 requests=impact.get("requests"),
-                tokens=None,
+                tokens=impact.get("tokens"),
                 usd=None if usd is None else format(Decimal(str(usd)), "f"),
                 risk_class=spec.RISK_CLASS,
             ),
             remediation=FindingRemediation(
-                mode="observe",
+                mode=mode,
                 max_mode=spec.MAX_MODE,
-                action=None,
+                action=None if mode == "observe" else row.remediation.get("action"),
                 reversible=bool(row.remediation.get("reversible", spec.REVERSIBLE)),
                 blast_radius=spec.BLAST_RADIUS,
                 proof_after=None,

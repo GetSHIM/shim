@@ -41,6 +41,7 @@ forbidden_noncloud_import_roots = [
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
 "shim.gateway.admission" = ["LoopDetectionResult", "TaskAdmission"]
 "shim.gateway.analyzers" = ["ANALYZERS", "ANALYZER_NAMES"]
+"shim.gateway.analyzers.refusal" = ["MARKER_IDS"]
 "shim.gateway.api.errors" = ["gateway_exception_handler"]
 "shim.gateway.auth" = ["authentication_error", "select_gateway_credential"]
 "shim.gateway.contracts" = ["FrozenContractModel"]
@@ -103,6 +104,8 @@ forbidden_noncloud_import_roots = [
 "shim.privacy.record_match" = ["FIELD_KINDS", "FINGERPRINT_VERSION", "KEY_BYTES", "RecordField", "RecordSetIndex", "fingerprints", "normalize", "record_hash"]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "load_rule_set", "match_records", "validate_rule_set"]
+"shim.rules.approval" = ["ApprovalDecision", "ApprovalRequest"]
+"shim.rules.content" = ["turkish_fold"]
 "shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]
@@ -303,6 +306,7 @@ public = [
 # Python files owned by commercially licensed capabilities.
 enterprise = [
   "ee/alembic/env.py",
+  "ee/alembic/versions/099f6ff61feb_add_external_usage_records.py",
   "ee/alembic/versions/195c95f5e798_add_customer_provider_key_policy.py",
   "ee/alembic/versions/1ad1ca2101a5_add_team_id_budget_scope.py",
   "ee/alembic/versions/1f036bd115c8_add_custom_organization_roles.py",
@@ -311,20 +315,24 @@ enterprise = [
   "ee/alembic/versions/31774bcbf441_add_privacy_entity_actions.py",
   "ee/alembic/versions/41f1a2ff58a9_archive_personal_workspaces.py",
   "ee/alembic/versions/4d4e8c6b975a_add_organization_quota_limits.py",
+  "ee/alembic/versions/4ffdded9b264_add_worm_archive_objects.py",
   "ee/alembic/versions/5050a43c2a46_add_findings.py",
   "ee/alembic/versions/73260da93588_add_model_deployment_price_and_window.py",
   "ee/alembic/versions/73669c9be04c_add_record_sets.py",
+  "ee/alembic/versions/79a194bca40f_add_request_archive.py",
   "ee/alembic/versions/7e3fb2338f03_add_readiness_declarations.py",
   "ee/alembic/versions/a61706150d6c_add_incidents.py",
   "ee/alembic/versions/a91e5dfc25b8_add_evidence_reports.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
+  "ee/alembic/versions/b93eaf9b1386_add_request_approvals.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/c9ed4e82b922_add_azure_openai_deployments.py",
   "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
   "ee/alembic/versions/d94f7f0ba8a2_add_service_accounts.py",
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
+  "ee/alembic/versions/e76342d08c22_add_rule_previews_and_definitions.py",
   "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",
   "ee/alembic/versions/f10e4ac92d17_harden_function_search_paths.py",
   "ee/alembic/versions/fcc02bbe6443_add_tenant_model_deployment_registry.py",
@@ -334,6 +342,7 @@ enterprise = [
   "ee/scripts/activate_plan.py",
   "ee/scripts/generate_monthly_evidence.py",
   "ee/scripts/hash_record_set.py",
+  "ee/scripts/import_litellm_spend_logs.py",
   "ee/scripts/offline_bundle.py",
   "ee/scripts/redrive_audit_events.py",
   "ee/scripts/sign_license.py",
@@ -353,6 +362,7 @@ enterprise = [
   "ee/src/shim_enterprise/ai_act/retention.py",
   "ee/src/shim_enterprise/ai_act/schemas.py",
   "ee/src/shim_enterprise/ai_act/verify.py",
+  "ee/src/shim_enterprise/ai_act/worm.py",
   "ee/src/shim_enterprise/api/__init__.py",
   "ee/src/shim_enterprise/api/enterprise_deps.py",
   "ee/src/shim_enterprise/api/v1/__init__.py",
@@ -360,6 +370,13 @@ enterprise = [
   "ee/src/shim_enterprise/api/v1/router.py",
   "ee/src/shim_enterprise/api/v1/scan.py",
   "ee/src/shim_enterprise/application.py",
+  "ee/src/shim_enterprise/approvals/__init__.py",
+  "ee/src/shim_enterprise/approvals/api.py",
+  "ee/src/shim_enterprise/approvals/gate.py",
+  "ee/src/shim_enterprise/approvals/models.py",
+  "ee/src/shim_enterprise/archive/__init__.py",
+  "ee/src/shim_enterprise/archive/models.py",
+  "ee/src/shim_enterprise/archive/service.py",
   "ee/src/shim_enterprise/billing/__init__.py",
   "ee/src/shim_enterprise/billing/ledger.py",
   "ee/src/shim_enterprise/billing/models.py",
@@ -397,6 +414,7 @@ enterprise = [
   "ee/src/shim_enterprise/core/errors.py",
   "ee/src/shim_enterprise/core/license.py",
   "ee/src/shim_enterprise/findings/__init__.py",
+  "ee/src/shim_enterprise/findings/api.py",
   "ee/src/shim_enterprise/findings/models.py",
   "ee/src/shim_enterprise/findings/service.py",
   "ee/src/shim_enterprise/gateway/__init__.py",
@@ -423,6 +441,8 @@ enterprise = [
   "ee/src/shim_enterprise/observability/__init__.py",
   "ee/src/shim_enterprise/observability/analytics_projection.py",
   "ee/src/shim_enterprise/observability/enterprise_metrics.py",
+  "ee/src/shim_enterprise/observability/language_cost.py",
+  "ee/src/shim_enterprise/observability/latency.py",
   "ee/src/shim_enterprise/observability/lifecycle.py",
   "ee/src/shim_enterprise/observability/model_inventory.py",
   "ee/src/shim_enterprise/observability/outcomes.py",
@@ -440,8 +460,12 @@ enterprise = [
   "ee/src/shim_enterprise/privacy/__init__.py",
   "ee/src/shim_enterprise/privacy/chain_store.py",
   "ee/src/shim_enterprise/rules/__init__.py",
+  "ee/src/shim_enterprise/rules/aiuc.py",
+  "ee/src/shim_enterprise/rules/api.py",
   "ee/src/shim_enterprise/rules/changes.py",
   "ee/src/shim_enterprise/rules/models.py",
+  "ee/src/shim_enterprise/rules/preview.py",
+  "ee/src/shim_enterprise/rules/resource.py",
   "ee/src/shim_enterprise/secrets/__init__.py",
   "ee/src/shim_enterprise/secrets/aws_secrets_manager.py",
   "ee/src/shim_enterprise/secrets/azure_key_vault.py",
@@ -477,7 +501,12 @@ enterprise = [
   "ee/tests/ai_act/test_audit_chain.py",
   "ee/tests/ai_act/test_control_plane.py",
   "ee/tests/ai_act/test_iso42001_readiness.py",
+  "ee/tests/ai_act/test_worm_archive.py",
+  "ee/tests/approvals/test_approvals_api.py",
+  "ee/tests/approvals/test_gate.py",
+  "ee/tests/approvals/test_notification.py",
   "ee/tests/architecture/test_manual_test_dashboard.py",
+  "ee/tests/archive/test_request_archive.py",
   "ee/tests/billing/test_my_usage.py",
   "ee/tests/billing/test_quota.py",
   "ee/tests/billing/test_reconciliation.py",
@@ -496,6 +525,8 @@ enterprise = [
   "ee/tests/core/test_enterprise_config.py",
   "ee/tests/core/test_license.py",
   "ee/tests/findings/test_findings.py",
+  "ee/tests/findings/test_quality_signals.py",
+  "ee/tests/findings/test_waste_signals.py",
   "ee/tests/gateway/api/test_deps.py",
   "ee/tests/gateway/api/test_enterprise_errors.py",
   "ee/tests/gateway/api/test_management.py",
@@ -510,14 +541,21 @@ enterprise = [
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",
   "ee/tests/observability/test_enterprise_observability.py",
+  "ee/tests/observability/test_language_cost.py",
+  "ee/tests/observability/test_latency.py",
   "ee/tests/observability/test_model_inventory.py",
   "ee/tests/observability/test_outcomes.py",
   "ee/tests/outbox/test_dead_letter.py",
   "ee/tests/outbox/test_publisher.py",
   "ee/tests/outbox/test_worker.py",
+  "ee/tests/policy/test_four_eyes.py",
   "ee/tests/policy/test_policy_versions.py",
+  "ee/tests/rules/test_aiuc_import.py",
+  "ee/tests/rules/test_preview.py",
   "ee/tests/rules/test_rule_sets.py",
+  "ee/tests/rules/test_rules_resource.py",
   "ee/tests/scripts/test_hash_record_set.py",
+  "ee/tests/scripts/test_import_litellm_spend_logs.py",
   "ee/tests/scripts/test_offline_bundle.py",
   "ee/tests/scripts/test_redrive_audit_events.py",
   "ee/tests/secrets/test_ciphertext_compatibility.py",

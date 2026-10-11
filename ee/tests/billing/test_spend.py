@@ -293,7 +293,10 @@ async def test_budget_evaluator_validates_persisted_config_before_queries() -> N
 async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old_targets = [{"secret_ref": f"secret:{index}"} for index in range(11)]
+    old_targets = [
+        {"kind": "webhook", "endpoint_origin": "https://a", "secret_ref": f"s:{index}"}
+        for index in range(11)
+    ]
     row = SimpleNamespace(
         id=uuid4(),
         scope_type="org",
@@ -306,9 +309,9 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     )
     user = SimpleNamespace(organization_id=uuid4())
     # execute takes the tenant lock every managed write holds; scalar reads the
-    # current policy version.
+    # current policy version, then the four-eyes switch a deletion asks for.
     session = SimpleNamespace(
-        delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(return_value=0)
+        delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(side_effect=[0, None])
     )
     monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
 

@@ -224,6 +224,8 @@ _DIAGNOSTIC_FIELDS = (
     "restore_withheld",
     "rule_matches",
     "rule_matches_truncated",
+    "approval_id",
+    "request_archive",
 )
 
 

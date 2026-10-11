@@ -13,10 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.gateway.request_policy import AgentLoop, TaskCaps
 from shim.privacy.policies import effective_entity_actions
+from shim_enterprise.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 Direction = Literal["tightening", "relaxing", "neutral"]
+FourEyes = Literal["off", "relaxing"]
+FindingMode = Literal["observe", "suggest", "auto"]
+# Per field, the direction of a change from one value to another.
+Directions = Mapping[str, Callable[[Any, Any], Direction]]
 _logged_unknown: set[tuple[str, str]] = set()
 
 
@@ -69,6 +74,22 @@ def restore_relaxed(
     ]
 
 
+class RequestArchiveSettings(BaseModel):
+    """Keep rule-matched requests, encrypted, for at most 90 days (self-hosted only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    retention_days: int = Field(default=90, ge=1, le=90)
+
+
+class RequestArchivePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    retention_days: int | None = Field(default=None, ge=1, le=90)
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -82,6 +103,11 @@ class GatewaySettings(BaseModel):
     task_caps: TaskCaps = TaskCaps()
     agent_loop: AgentLoop = AgentLoop()
     inflight_sharing_api_key_ids: list[UUID] = Field(default=[], max_length=1000)
+    # A change that loosens protection needs a second administrator's approval.
+    four_eyes: FourEyes = "off"
+    # Per finding rule, how far shim may go; a rule left out observes.
+    finding_modes: dict[str, FindingMode] = {}
+    request_archive: RequestArchiveSettings = RequestArchiveSettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -104,6 +130,9 @@ class GatewaySettingsPatch(BaseModel):
     inflight_sharing_api_key_ids: list[UUID] | None = Field(
         default=None, max_length=1000
     )
+    four_eyes: FourEyes | None = None
+    finding_modes: dict[str, FindingMode] | None = None
+    request_archive: RequestArchivePatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -126,6 +155,22 @@ class GatewaySettingsPatch(BaseModel):
     ) -> dict[str, RestoreGrant | None] | None:
         return None if value is None else _restorable_types(value)
 
+    @field_validator("finding_modes")
+    @classmethod
+    def within_ladder(
+        cls, value: dict[str, FindingMode] | None
+    ) -> dict[str, FindingMode] | None:
+        # Here, not at the top: the findings module reads these settings.
+        from shim_enterprise.findings.service import MODES, RULES
+
+        for rule_id, mode in (value or {}).items():
+            if rule_id not in RULES:
+                raise ValueError(f"unknown finding rule: {rule_id}")
+            highest = RULES[rule_id].MAX_MODE
+            if MODES.index(mode) > MODES.index(highest):
+                raise ValueError(f"{rule_id} goes at most to {highest}")
+        return value
+
 
 def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     """Read a stored row as this build knows it; a value of the wrong shape raises.
@@ -135,6 +180,19 @@ def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     """
 
     unknown = {("key", key) for key in set(value) - set(GatewaySettings.model_fields)}
+    # Here, not at the top: the findings module reads these settings.
+    from shim_enterprise.findings.service import RULES
+
+    modes = value.get("finding_modes")
+    if isinstance(modes, dict):
+        retired_rules = {rule for rule in modes if rule not in RULES}
+        unknown |= {("finding rule", rule) for rule in retired_rules}
+        value = {
+            **value,
+            "finding_modes": {
+                rule: mode for rule, mode in modes.items() if rule in RULES
+            },
+        }
     names = value.get("response_analysis")
     if isinstance(names, list):
         retired = {
@@ -153,8 +211,38 @@ def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     return GatewaySettings.model_validate(value)
 
 
-def _neutral(_before: Any, _after: Any) -> Direction:
+def neutral(_before: Any, _after: Any) -> Direction:
     return "neutral"
+
+
+def _relaxing(_before: Any, _after: Any) -> Direction:
+    return "relaxing"
+
+
+def toward(loosening: Any) -> Callable[[Any, Any], Direction]:
+    """A switch: moving to `loosening` relaxes, any other move tightens."""
+    return lambda _before, after: "relaxing" if after == loosening else "tightening"
+
+
+def _finding_modes(
+    before: dict[str, FindingMode], after: dict[str, FindingMode]
+) -> Direction:
+    # auto lets shim act without a person; every other move only shows more.
+    raised = any(
+        mode == "auto" and before.get(rule) != "auto" for rule, mode in after.items()
+    )
+    return "relaxing" if raised else "neutral"
+
+
+def _request_archive(
+    before: RequestArchiveSettings, after: RequestArchiveSettings
+) -> Direction:
+    # More content kept is relaxing: turning it on, or keeping it longer.
+    if (after.enabled and not before.enabled) or (
+        after.retention_days > before.retention_days
+    ):
+        return "relaxing"
+    return "tightening"
 
 
 _MARKER_LEVELS = ("off", "count", "warn")
@@ -200,39 +288,71 @@ def _loop_direction(before: AgentLoop, after: AgentLoop) -> Direction:
     )
 
 
+# A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
-    "response_analysis": _neutral,
+    "response_analysis": neutral,
+    "four_eyes": toward("off"),
+    "finding_modes": _finding_modes,
+    "request_archive": _request_archive,
     "injection_markers": _marker_direction,
     # A report, not a protection.
-    "price_tier_warning": _neutral,
+    "price_tier_warning": neutral,
     # Where a retirement warning is shown; it is always recorded.
-    "model_retiring_warning": _neutral,
+    "model_retiring_warning": neutral,
     "restore_withheld": _restore_direction,
     "task_caps": _caps_direction,
     "agent_loop": _loop_direction,
     # A key's identical in-flight requests share one answer after each passes its own
     # limits and privacy; an answer never crosses keys.
-    "inflight_sharing_api_key_ids": _neutral,
+    "inflight_sharing_api_key_ids": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
-SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {}
+SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "request_archive": lambda: (
+        None
+        if settings.REQUEST_ARCHIVE_ENABLED
+        else "off, needs REQUEST_ARCHIVE_ENABLED in this installation (self-hosted only)"
+    ),
+}
+
+
+def patched(before: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
+    """A PATCH: a nested setting or a map changes only the entries named, and null
+    removes one; a `finding_modes` rule set to `observe` is removed too."""
+    after = {**before, **changes}
+    for key, value in changes.items():
+        if isinstance(value, dict):
+            after[key] = {
+                name: entry
+                for name, entry in {**before.get(key, {}), **value}.items()
+                if entry is not None and (key != "finding_modes" or entry != "observe")
+            }
+    return after
+
+
+def classify_fields(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    directions: Directions,
+) -> tuple[Direction, list[str]]:
+    """The direction of a change and its relaxing fields; an unlisted field relaxes."""
+    found = {
+        field: directions.get(field, _relaxing)(before.get(field), after.get(field))
+        for field in sorted(before.keys() | after.keys())
+        if before.get(field) != after.get(field)
+    }
+    relaxed = [field for field, direction in found.items() if direction == "relaxing"]
+    if relaxed:
+        return "relaxing", relaxed
+    if "tightening" in found.values():
+        return "tightening", []
+    return "neutral", []
 
 
 def classify_change(
     before: GatewaySettings, after: GatewaySettings
 ) -> tuple[Direction, list[str]]:
-    directions = {
-        field: SETTING_DIRECTIONS[field](getattr(before, field), getattr(after, field))
-        for field in GatewaySettings.model_fields
-        if getattr(before, field) != getattr(after, field)
-    }
-    relaxed = [
-        field for field, direction in directions.items() if direction == "relaxing"
-    ]
-    if relaxed:
-        return "relaxing", relaxed
-    if "tightening" in directions.values():
-        return "tightening", []
-    return "neutral", []
+    # Field values as they are, nested settings as models, for the direction functions.
+    return classify_fields(dict(before), dict(after), SETTING_DIRECTIONS)

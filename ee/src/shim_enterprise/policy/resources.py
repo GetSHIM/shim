@@ -15,9 +15,12 @@ from shim_enterprise.api.v1.management import (
     DEPLOYMENTS,
     GATEWAY_SETTINGS,
     PRIVACY,
+    PROVIDER_KEYS,
     TEAMS,
 )
+from shim_enterprise.compliance.api import FORWARD_TARGETS
 from shim_enterprise.policy.plans import Impact, Risk, State
+from shim_enterprise.rules.resource import RULES
 from shim_enterprise.tenants.models import User
 from shim_enterprise.tenants.permissions import Permission
 
@@ -72,7 +75,8 @@ class ManagedResource(Protocol):
     ) -> Impact: ...
 
     # Optional: `async after_commit(request, organization_id)`, run after the
-    # transaction commits (privacy invalidates its cached policy).
+    # transaction commits (privacy invalidates its cached policy), and
+    # `new_item(proposed) -> str`, the item a create names (a rule's id).
 
 
 REGISTRY: Mapping[str, ManagedResource] = {
@@ -85,5 +89,8 @@ REGISTRY: Mapping[str, ManagedResource] = {
         DEPLOYMENTS,
         BUDGETS,
         OVERSIGHT_POLICIES,
+        RULES,
+        PROVIDER_KEYS,
+        FORWARD_TARGETS,
     )
 }

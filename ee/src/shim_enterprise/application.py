@@ -20,6 +20,7 @@ from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
 from shim_enterprise.api.enterprise_deps import DatabaseGatewayAuthenticator
+from shim_enterprise.approvals.gate import EnterpriseApprovalGate
 from shim_enterprise.billing.quota import BurstRateLimiter
 from shim_enterprise.cache.circuit_breaker import RedisCircuitBreaker
 from shim_enterprise.cache.task_counters import RedisTaskCounter
@@ -243,6 +244,7 @@ def _create_gateway_kernel(
         loop_window_seconds=settings.LOOP_WINDOW_SECONDS,
         cost_tag_max_length=settings.COST_TAG_MAX_LENGTH,
         usage=usage,
+        approval_gate=EnterpriseApprovalGate(AsyncSessionLocal),
         heartbeat_interval_seconds=settings.GATEWAY_RECONCILIATION_INTERVAL_SECONDS,
         output_hash_salt=(
             settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY

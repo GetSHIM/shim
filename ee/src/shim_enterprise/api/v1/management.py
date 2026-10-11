@@ -37,6 +37,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from starlette.types import Message
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -48,10 +49,11 @@ from pydantic import (
 )
 from sqlalchemy import (
     ColumnDefault,
+    Text,
     and_,
     case,
     cast as sql_cast,
-    delete,
+    delete as sql_delete,
     distinct,
     func,
     inspect,
@@ -61,6 +63,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.dialects.postgresql import array as sql_array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -72,7 +75,15 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     get_current_user,
     get_invite_user,
+    get_org_owner,
     require,
+)
+from shim_enterprise.ai_act.models import AIActAuditLog
+from shim_enterprise.archive.models import RequestArchive
+from shim_enterprise.archive.service import (
+    ArchiveUndecryptable,
+    opened,
+    shorten_retention,
 )
 from shim.billing.attribution import normalize_attribution
 from shim.findings import Finding as FindingV1
@@ -81,10 +92,7 @@ from shim.rules import (
     KINDS,
     LIMITS,
     Rule,
-    RuleScope,
-    RuleSetError,
     load_rule_set,
-    validate_rule_set,
 )
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
@@ -127,13 +135,19 @@ from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.secrets.azure import EntraTokenCache
 from shim.privacy.record_match import FINGERPRINT_VERSION, KEY_BYTES
 from shim_enterprise.core.config import settings
-from shim_enterprise.core.database import AsyncSessionLocal, get_db
+from shim_enterprise.core.database import AsyncSessionLocal, bounded_read, get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
+    RULES as FINDING_RULES,
+    RULE_VERSION,
+    RULE_VERSIONS,
     STATUS_IDS,
     STATUS_RESOLVED,
+    apply_modes,
+    effective_mode,
     finding_from_row,
+    finding_modes,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
@@ -153,6 +167,15 @@ from shim_enterprise.observability.outcomes import (
     OutcomeGroup,
     OutcomeRatesReadModel,
 )
+from shim_enterprise.observability.language_cost import (
+    LanguageCostGroup,
+    language_cost,
+)
+from shim_enterprise.observability.latency import (
+    LatencyBucket,
+    LatencyGroup,
+    latency_by_group,
+)
 from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
@@ -163,15 +186,27 @@ from shim_enterprise.secrets.store import (
 )
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.rules.changes import classify_rule_changes
 from shim_enterprise.rules.models import OrganizationRuleSet
+from shim_enterprise.rules.preview import checked_set
+from shim_enterprise.rules.resource import (
+    RULES,
+    rule_changes,
+    rule_set_row,
+    store_rule_set,
+)
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
+    FindingMode,
     GatewaySettings,
     GatewaySettingsPatch,
+    Directions,
     classify_change,
     restore_relaxed,
+    patched,
+    classify_fields,
+    neutral,
     stored_settings,
+    toward,
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -204,9 +239,13 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
+    approval_required,
+    four_eyes_on,
+    keep_two_approvers,
     lock_tenant,
     no_impact,
     record_managed_write,
+    require_two_approvers,
     version_detail,
 )
 from shim_enterprise.tenants.permissions import (
@@ -1102,6 +1141,16 @@ class RequestActivityView(BaseModel):
         ),
     )
     rule_matches_truncated: bool | None = None
+    approval_id: UUID | None = Field(
+        default=None,
+        description="The request approval this request created, was refused under "
+        "or consumed; null when no approval gate decided it.",
+    )
+    content_archived: bool = Field(
+        default=False,
+        description="The self-hosted request archive kept this request's content; "
+        "an admin can open it, and every opening is listed.",
+    )
     response_analysis: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -1145,6 +1194,10 @@ class GatewaySettingsView(BaseModel):
     available_analyzers: list[str]
     unavailable: dict[str, str] = Field(
         description='Per field, why it is "off, needs X"; empty when everything is available.'
+    )
+    request_archive_state: Literal["on", "off"] = Field(
+        description="on only when this installation allows the archive and the "
+        "tenant turned it on."
     )
 
 
@@ -1619,6 +1672,7 @@ async def update_team_member(
         custom_role_id = member.custom_role_id
     if member.role == "owner" and patch.role != "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), patch.role)
     roles = await _roles_by_id(session, _tenant_id(user))
     if custom_role_id is not None:
         if custom_role_id not in roles:
@@ -1670,6 +1724,7 @@ async def remove_team_member(
         raise HTTPException(status_code=403, detail="Only owners can remove admins")
     if member.role == "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), None)
     await _deactivate(session, member)
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
     await session.commit()
@@ -2132,6 +2187,9 @@ async def create_api_key(
     ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
     await require_model_aliases(session, tenant_id, payload.allowed_models)
+    if payload.allowed_models is None and await four_eyes_on(session, tenant_id):
+        # Create it with allowed_models; widening it later is a plan.
+        raise approval_required(["api_keys.new.allowed_models"])
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -2554,10 +2612,7 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
         kinds={
             kind: RuleKindView(
                 available=spec.match is not None,
-                # The approval gate is not configured until request approvals exist.
-                actions=[
-                    action for action in spec.actions if action != "require_approval"
-                ],
+                actions=list(spec.actions),
                 unavailable_reason=None
                 if spec.match is not None
                 else "Not available in this release.",
@@ -2565,25 +2620,6 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
             for kind, spec in KINDS.items()
         },
     )
-
-
-def _rule_audit(rule: Rule, before: Rule | None) -> dict[str, object]:
-    # Ids, kinds and counts only: never a term, a pattern, a name or a match hash.
-    return {
-        "id": rule.id,
-        "kind": rule.kind,
-        "action": rule.action,
-        "state": rule.state,
-        "scope": [
-            field for field in RuleScope.model_fields if getattr(rule.scope, field)
-        ],
-        "match_changed": before is not None and before.match != rule.match,
-        "counts": {
-            key: len(value)
-            for key, value in rule.match.items()
-            if isinstance(value, list)
-        },
-    }
 
 
 @router.get("/rules", response_model=RuleSetView)
@@ -2594,72 +2630,35 @@ async def get_rules(
     return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))
 
 
-class _RuleSetPutRoute(APIRoute):
-    """Counts the body's bytes as they arrive, so a chunked body cannot pass the limit."""
+def bounded_body(limit: int, message: str) -> type[APIRoute]:
+    """A route that counts the body's bytes as they arrive and refuses past `limit`,
+    so neither a chunked body nor the parser sees more."""
 
-    limit = LIMITS["request_bytes"]
-    message = "A rule set is at most 1,000,000 bytes."
+    class Bounded(APIRoute):
+        def get_route_handler(
+            self,
+        ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            handler = super().get_route_handler()
 
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
+            async def bounded(request: Request) -> Response:
+                receive, size = request.receive, 0
 
-        async def bounded(request: Request) -> Response:
-            receive, size = request.receive, 0
+                async def counted() -> Message:
+                    nonlocal size
+                    message_in = await receive()
+                    size += len(message_in.get("body", b""))
+                    if size > limit:
+                        raise HTTPException(
+                            status_code=413,
+                            detail={"code": "REQUEST_TOO_LARGE", "message": message},
+                        )
+                    return message_in
 
-            async def counted() -> Message:
-                nonlocal size
-                message = await receive()
-                size += len(message.get("body", b""))
-                if size > self.limit:
-                    raise HTTPException(
-                        status_code=413,
-                        detail={"code": "REQUEST_TOO_LARGE", "message": self.message},
-                    )
-                return message
+                return await handler(Request(request.scope, counted))
 
-            return await handler(Request(request.scope, counted))
+            return bounded
 
-        return bounded
-
-
-def _check_record_set_rule(
-    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int, int]]
-) -> None:
-    """The set exists here, is active, and is of the kind the match and action imply."""
-
-    found = record_sets.get(str(rule.match["set_id"]))
-    kind = found[0] if found is not None else None
-    if found is None or found[1] < 1:
-        problem = (
-            "names a record set this organization does not have, or one not activated"
-        )
-    elif (rule.match["min_fields"] is not None and kind != "records") or (
-        rule.match["min_shared"] is not None and kind != "fingerprints"
-    ):
-        problem = "min_fields is for a records set, min_shared for a fingerprints set"
-    elif (rule.match["min_fields"] or 0) > found[2]:
-        problem = "min_fields is more than the fields the set has"
-    else:
-        problem = None
-    if problem is not None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "RULE_MATCH_INVALID",
-                "path": f"rules[{index}].match.set_id",
-                "message": problem,
-            },
-        )
-    # Masking a pasted fragment would change the request beyond what the user wrote.
-    if kind == "fingerprints" and rule.action == "mask":
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "RULE_ACTION_UNAVAILABLE",
-                "path": f"rules[{index}].action",
-                "message": "a fingerprints set cannot mask; use monitor, warn or block",
-            },
-        )
+    return Bounded
 
 
 async def replace_rules(
@@ -2669,15 +2668,8 @@ async def replace_rules(
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        insert(OrganizationRuleSet)
-        .values(organization_id=tenant_id)
-        .on_conflict_do_nothing()
-    )
-    row = await session.get(
-        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
-    )
-    assert row is not None
+    await lock_tenant(session, tenant_id)
+    row = await rule_set_row(session, tenant_id)
     if payload.revision != row.revision:
         raise HTTPException(
             status_code=409,
@@ -2687,141 +2679,16 @@ async def replace_rules(
                 "revision": row.revision,
             },
         )
-    try:
-        after = validate_rule_set(
-            {"revision": row.revision + 1, "rules": payload.rules},
-            approval_available=False,
+    after = checked_set(row.revision + 1, payload.rules)
+    changes = rule_changes(await RULES.snapshot(session, tenant_id, None), after)
+    async with record_managed_write(
+        session, user, tenant_id, changes, source="api"
+    ) as version:
+        await store_rule_set(
+            session, user, row, after, source="api", policy_version=version
         )
-    except RuleSetError as error:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": error.code, "path": error.path, "message": str(error)},
-        ) from None
-    before = load_rule_set(row.revision, row.rules) if row.rules else None
-    stored = {rule.id: rule for rule in before.rules} if before is not None else {}
-    # This release cannot read them, so it keeps them as they are.
-    kept = before.unusable if before is not None else ()
-    if len(after.rules) + len(kept) > LIMITS["rules_per_set"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "RULE_SET_INVALID",
-                "path": "rules",
-                "message": "A rule set holds at most 100 rules, with the "
-                f"{len(kept)} this release cannot run.",
-            },
-        )
-    known: dict[str, set[str]] = {}
-    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
-        ids = {value for rule in after.rules for value in getattr(rule.scope, field)}
-        known[field] = (
-            {
-                str(value)
-                for value in await session.scalars(
-                    select(model.id).where(
-                        model.organization_id == tenant_id, model.id.in_(ids)
-                    )
-                )
-            }
-            if ids
-            else set()
-        )
-    kept_ids = {rule.id for rule in kept}
-    record_sets = {
-        str(set_id): (kind, active, len(fields))
-        for set_id, kind, active, fields in await session.execute(
-            select(
-                RecordSet.id,
-                RecordSet.kind,
-                RecordSet.active_revision,
-                RecordSet.fields,
-            ).where(RecordSet.organization_id == tenant_id)
-        )
-    }
-    for index, rule in enumerate(after.rules):
-        if rule.kind == "record_set":
-            _check_record_set_rule(rule, index, record_sets)
-        if rule.id in kept_ids:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_ID_DUPLICATE",
-                    "path": f"rules[{index}].id",
-                    "message": f"rule id {rule.id} is held by a stored rule this "
-                    "release cannot run.",
-                },
-            )
-        for field, values in known.items():
-            for position, value in enumerate(getattr(rule.scope, field)):
-                if value not in values:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={
-                            "code": "RULE_SCOPE_UNKNOWN",
-                            "path": f"rules[{index}].scope.{field}[{position}]",
-                            "message": f"{field} names an id this organization does not have.",
-                        },
-                    )
-        if rule.id not in stored and rule.state != "monitor":
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_MUST_START_IN_MONITOR",
-                    "path": f"rules[{index}].state",
-                    "message": "A new rule starts in state monitor.",
-                },
-            )
-    current = {rule.id: rule for rule in after.rules}
-    await _audit(
-        session,
-        user,
-        "tenant.rules_updated",
-        str(tenant_id),
-        details={
-            "revision": after.revision,
-            "added": [
-                _rule_audit(rule, None) for rule in after.rules if rule.id not in stored
-            ],
-            "changed": [
-                _rule_audit(rule, stored[rule.id])
-                for rule in after.rules
-                if rule.id in stored and stored[rule.id] != rule
-            ],
-            "removed": [
-                _rule_audit(rule, None)
-                for rule in stored.values()
-                if rule.id not in current
-            ],
-        },
-    )
-    relaxed = classify_rule_changes(before, after)
-    if relaxed:
-        event_id = await _audit(
-            session,
-            user,
-            "tenant.privacy_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
-        await ComplianceForwarderService().send_privacy_protection_relaxed(
-            session,
-            TenantId(tenant_id),
-            fields=relaxed,
-            actor=str(user.id),
-            actor_email=user.email,
-            event_id=event_id,
-        )
-    row.rules = [rule.model_dump(mode="json") for rule in after.rules] + [
-        rule.stored for rule in kept
-    ]
-    row.revision = after.revision
-    row.updated_by = str(user.id)
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
-    except Exception as exc:
-        logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
+    await RULES.after_commit(request, tenant_id)
     await session.refresh(row)
     return _rule_set_view(row)
 
@@ -2831,7 +2698,9 @@ router.add_api_route(
     replace_rules,
     methods=["PUT"],
     response_model=RuleSetView,
-    route_class_override=_RuleSetPutRoute,
+    route_class_override=bounded_body(
+        LIMITS["request_bytes"], "A rule set is at most 1,000,000 bytes."
+    ),
 )
 
 
@@ -3149,16 +3018,13 @@ async def put_record_set_chunk(
     return {"revision": revision, "chunk_index": chunk_index, "entry_count": count}
 
 
-class _RecordSetChunkRoute(_RuleSetPutRoute):
-    limit = 4_000_000
-    message = "A record set chunk is at most 4,000,000 bytes."
-
-
 router.add_api_route(
     "/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}",
     put_record_set_chunk,
     methods=["PUT"],
-    route_class_override=_RecordSetChunkRoute,
+    route_class_override=bounded_body(
+        4_000_000, "A record set chunk is at most 4,000,000 bytes."
+    ),
 )
 
 
@@ -3227,7 +3093,7 @@ async def activate_record_set_revision(
     )
     # One revision back stays for a rollback; every other one goes.
     await session.execute(
-        delete(RecordSetChunk).where(
+        sql_delete(RecordSetChunk).where(
             RecordSetChunk.record_set_id == set_id,
             RecordSetChunk.revision.not_in(
                 {row.active_revision, row.previous_revision}
@@ -3330,6 +3196,10 @@ def _gateway_settings_view(
             for field, available in SETTING_AVAILABILITY.items()
             if (reason := available()) is not None
         },
+        request_archive_state="on"
+        if settings.request_archive.enabled
+        and SETTING_AVAILABILITY["request_archive"]() is None
+        else "off",
     )
 
 
@@ -3359,9 +3229,10 @@ async def update_gateway_settings(
     async with record_managed_write(
         session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
     ) as version:
-        await GATEWAY_SETTINGS.apply(
-            session, user, tenant_id, "_", before, after, policy_version=version
-        )
+        if version is not None:
+            await GATEWAY_SETTINGS.apply(
+                session, user, tenant_id, "_", before, after, policy_version=version
+            )
     await session.commit()
     await GATEWAY_SETTINGS.after_commit(request, tenant_id)
     return _gateway_settings_view(
@@ -3388,20 +3259,18 @@ async def update_provider_key_settings(
     user: User = Depends(require("settings.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
-    tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
-    if tenant is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
-    before = {"allow_customer_provider_keys": tenant.allow_customer_provider_keys}
-    tenant.allow_customer_provider_keys = payload.allow_customer_provider_keys
-    await _audit(
-        session,
-        user,
-        "tenant.provider_key_policy_updated",
-        str(tenant.id),
-        details=change_details(before, payload.model_dump()),
-    )
+    tenant_id = _tenant_id(user)
+    await lock_tenant(session, tenant_id)
+    before = (await PROVIDER_KEYS.snapshot(session, tenant_id, None))["_"]
+    after = payload.model_dump()
+    async with record_managed_write(
+        session, user, tenant_id, [(PROVIDER_KEYS, "_", before, after)], source="api"
+    ) as version:
+        await PROVIDER_KEYS.apply(
+            session, user, tenant_id, "_", before, after, policy_version=version
+        )
     await session.commit()
-    return tenant
+    return await session.get(Organization, tenant_id)
 
 
 @router.get("/tier-info", response_model=TierView)
@@ -3461,11 +3330,13 @@ async def create_budget(
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
     tenant_id, budget_id = _tenant_id(user), uuid4()
-    after = _budget_state(payload.model_dump())
-    await _require_budget_team(session, tenant_id, after)
+    await _require_budget_team(session, tenant_id, payload.model_dump())
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(tenant_id, payload.notify_targets)
     try:
+        after = _budget_state(
+            {**payload.model_dump(), "notify_targets": stored_targets}
+        )
         async with record_managed_write(
             session,
             user,
@@ -3520,8 +3391,8 @@ async def update_budget(
             tenant_id, patch.notify_targets
         )
         values["notify_targets"] = replacement_targets
-    before = _budget_state({field: getattr(row, field) for field in _BUDGET_FIELDS})
-    after = _budget_state({**before, **values})
+    current = {field: getattr(row, field) for field in _BUDGET_FIELDS}
+    before, after = _budget_state(current), _budget_state({**current, **values})
     try:
         async with record_managed_write(
             session,
@@ -3579,9 +3450,9 @@ async def _create_budget(
         id=budget_id,
         organization_id=organization_id,
         period="monthly",
-        notify_targets=targets,
         **{
             **state,
+            "notify_targets": targets,
             "limit_usd": None
             if state["limit_usd"] is None
             else Decimal(state["limit_usd"]),
@@ -3824,6 +3695,309 @@ class OutcomeRatesPage(BaseModel):
     totals: OutcomeRatesView
 
 
+class LatencyPercentiles(BaseModel):
+    p50: float | None
+    p95: float | None
+
+
+class OutputSpeedView(BaseModel):
+    p50: float | None
+    count: int = Field(description="Streams the median is based on.")
+
+
+class LatencyBucketView(BaseModel):
+    start: datetime
+    requests: int
+    streams: int
+    first_byte_ms: dict[Literal["stream", "json"], LatencyPercentiles]
+    shim_queue_ms: LatencyPercentiles
+    output_tokens_per_second: OutputSpeedView
+    peak_concurrency: int
+    timeouts: int
+    provider_errors: int
+
+
+class HeadOfLineSide(BaseModel):
+    ttft_ms_p50: float | None
+    streams: int
+
+
+class HeadOfLineView(BaseModel):
+    behind_long: HeadOfLineSide
+    alone: HeadOfLineSide
+
+
+class LatencyGroupView(BaseModel):
+    id: str | None
+    name: str | None
+    requests: int
+    buckets: list[LatencyBucketView]
+    head_of_line: HeadOfLineView | None
+    head_of_line_unavailable_reason: Literal["window_over_48h", "group_by"] | None
+
+
+class LatencyView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LatencyGroup
+    bucket: LatencyBucket
+    truncated: bool
+    groups: list[LatencyGroupView]
+
+
+_LATENCY_WINDOWS = {"hour": timedelta(days=7), "day": timedelta(days=31)}
+
+
+@router.get("/latency", response_model=LatencyView)
+async def latency(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 24 hours before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LatencyGroup = Query(
+        default="api_key",
+        description="An app is an API key; apps behind one key separate by tag.",
+    ),
+    bucket: LatencyBucket = Query(default="hour"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(hours=24)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    if end_at - start_at > _LATENCY_WINDOWS[bucket]:
+        raise HTTPException(
+            status_code=422,
+            detail="hour buckets cover at most 7 days, day buckets at most 31",
+        )
+    async with bounded_read(session):
+        return await latency_by_group(
+            session,
+            _tenant_id(user),
+            start=start_at,
+            end=end_at,
+            group_by=group_by,
+            bucket=bucket,
+        )
+
+
+class LanguageCostGroupView(BaseModel):
+    id: str | None
+    name: str | None
+
+
+class LanguageCostItem(BaseModel):
+    group: LanguageCostGroupView
+    language: Literal["tr", "en"]
+    requests: int
+    answer_characters: int
+    completion_tokens: int
+    tokens_per_1000_characters: float
+    ratio_p25: float
+    ratio_p75: float
+    output_usd_per_1000_characters: str | None
+    priced_requests: int
+    tr_vs_en: float | None
+    comparison_unavailable_reason: Literal["not_enough_answers"] | None
+
+
+class LanguageCostView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LanguageCostGroup
+    items: list[LanguageCostItem]
+    truncated: bool
+    excluded: dict[str, int] = Field(
+        description="Settled complete answers left out, by reason."
+    )
+    analysed_share: float | None = Field(
+        description="Eligible answers over settled complete answers."
+    )
+
+
+class ArchivedContentView(BaseModel):
+    request_id: str
+    archived_at: datetime
+    expires_at: datetime
+    protocol: str
+    model: str
+    matched: list[dict[str, Any]]
+    masked_payload: Any
+    replacements: list[dict[str, str]]
+    original_payload: Any
+
+
+@router.get("/requests/{request_id}/content", response_model=ArchivedContentView)
+async def open_request_content(
+    request_id: str,
+    response: Response,
+    user: User = Depends(require("content.read")),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivedContentView:
+    """The archived request as sent and as shim changed it; the opening is audited first."""
+    if user.kind != "human":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot open archived content"
+        )
+    tenant_id = _tenant_id(user)
+    row = await session.scalar(
+        select(RequestArchive).where(
+            RequestArchive.organization_id == tenant_id,
+            RequestArchive.request_id == request_id,
+            RequestArchive.expires_at > func.now(),
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Archived request not found")
+    await _audit(
+        session,
+        user,
+        "tenant.request_content_opened",
+        request_id,
+        details={"api_key_id": None if row.api_key_id is None else str(row.api_key_id)},
+    )
+    # The opening is recorded before any content is decrypted.
+    await session.commit()
+    try:
+        parts = await asyncio.to_thread(opened, row)
+    except ArchiveUndecryptable:
+        raise HTTPException(
+            status_code=410,
+            detail="archived content cannot be decrypted with the current ENCRYPTION_KEY",
+        ) from None
+    response.headers["Cache-Control"] = "no-store"
+    return ArchivedContentView(
+        request_id=row.request_id,
+        archived_at=row.created_at,
+        expires_at=row.expires_at,
+        protocol=row.protocol,
+        model=row.model,
+        matched=row.matched,
+        **parts,
+    )
+
+
+class ContentOpeningView(BaseModel):
+    opened_at: datetime
+    actor_user_id: str | None
+    request_id: str | None
+
+
+class ContentOpeningPage(BaseModel):
+    items: list[ContentOpeningView]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/request-archive/openings", response_model=ContentOpeningPage)
+async def list_content_openings(
+    start: AwareDatetime | None = Query(default=None),
+    end: AwareDatetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> ContentOpeningPage:
+    """Readers see every opening; anyone else the openings of their own keys' requests."""
+    tenant_id = _tenant_id(user)
+    end_at = end or datetime.now(timezone.utc)
+    start_at = start or end_at - timedelta(days=30)
+    _validate_sync_window(start_at, end_at)
+    filters = [
+        AIActAuditLog.organization_id == tenant_id,
+        AIActAuditLog.endpoint == "tenant.request_content_opened",
+        AIActAuditLog.created_at >= start_at,
+        AIActAuditLog.created_at <= end_at,
+    ]
+    if "audit.read" not in await user_permissions(session, user):
+        filters.append(
+            AIActAuditLog.extra["api_key_id"]
+            .as_string()
+            .in_(
+                select(sql_cast(ApiKey.id, Text)).where(
+                    ApiKey.organization_id == tenant_id, ApiKey.user_id == user.id
+                )
+            )
+        )
+    total = await session.scalar(select(func.count()).where(*filters))
+    rows = await session.scalars(
+        select(AIActAuditLog)
+        .where(*filters)
+        .order_by(AIActAuditLog.created_at.desc(), AIActAuditLog.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return ContentOpeningPage(
+        items=[
+            ContentOpeningView(
+                opened_at=row.created_at,
+                actor_user_id=row.actor,
+                request_id=(row.extra or {}).get("subject_id"),
+            )
+            for row in rows
+        ],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+class ArchivePurgeView(BaseModel):
+    rows_deleted: int = Field(ge=0)
+
+
+@router.delete("/request-archive", response_model=ArchivePurgeView)
+async def purge_request_archive(
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivePurgeView:
+    tenant_id = _tenant_id(user)
+    deleted = cast(
+        CursorResult[Any],
+        await session.execute(
+            sql_delete(RequestArchive).where(
+                RequestArchive.organization_id == tenant_id
+            )
+        ),
+    ).rowcount
+    await _audit(
+        session,
+        user,
+        "tenant.request_archive_purged",
+        str(tenant_id),
+        details={"rows": deleted},
+    )
+    await session.commit()
+    return ArchivePurgeView(rows_deleted=deleted)
+
+
+@router.get("/language-cost", response_model=LanguageCostView)
+async def read_language_cost(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 30 days before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LanguageCostGroup = Query(default="model"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(days=30)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    _validate_sync_window(start_at, end_at)
+    async with bounded_read(session):
+        return await language_cost(
+            session, _tenant_id(user), start=start_at, end=end_at, group_by=group_by
+        )
+
+
 @router.get("/outcomes", response_model=OutcomeRatesPage)
 async def outcome_rates(
     start: datetime | None = Query(
@@ -3894,6 +4068,10 @@ async def list_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -3931,6 +4109,7 @@ async def list_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -3967,6 +4146,7 @@ async def list_requests(
                     field: (row.details or {}).get(field)
                     for field in _DIAGNOSTIC_FIELDS
                 },
+                content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
             )
@@ -4169,6 +4349,53 @@ async def export_findings(
     return Response(body, media_type="application/x-ndjson")
 
 
+class FindingRuleView(BaseModel):
+    rule_id: str
+    rule_version: int
+    max_mode: FindingMode
+    action_kind: str | None
+    mode: FindingMode
+    effective_mode: FindingMode
+    unavailable_reason: Literal["auto_executor_not_installed"] | None
+    open_findings: int
+
+
+# Before /findings/{finding_id}, which would take rules for an id.
+@router.get("/findings/rules", response_model=list[FindingRuleView])
+async def finding_rules(
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> list[FindingRuleView]:
+    tenant_id = _tenant_id(user)
+    modes = await finding_modes(session, tenant_id)
+    open_counts = {
+        rule_id: count
+        for rule_id, count in await session.execute(
+            select(Finding.rule_id, func.count())
+            .where(
+                Finding.organization_id == tenant_id,
+                Finding.status_id != STATUS_RESOLVED,
+            )
+            .group_by(Finding.rule_id)
+        )
+    }
+    return [
+        FindingRuleView(
+            rule_id=rule_id,
+            rule_version=RULE_VERSIONS.get(rule_id, RULE_VERSION),
+            max_mode=spec.MAX_MODE,
+            action_kind=spec.ACTION_KIND,
+            mode=modes.get(rule_id, "observe"),
+            effective_mode=effective_mode(rule_id, modes),
+            unavailable_reason="auto_executor_not_installed"
+            if modes.get(rule_id) == "auto"
+            else None,
+            open_findings=open_counts.get(rule_id, 0),
+        )
+        for rule_id, spec in sorted(FINDING_RULES.items())
+    ]
+
+
 @router.get("/findings/{finding_id}", response_model=FindingV1)
 async def get_finding(
     finding_id: UUID,
@@ -4285,6 +4512,10 @@ async def export_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -4322,6 +4553,7 @@ async def export_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -4399,6 +4631,8 @@ async def export_requests(
                 "rule_matches",
                 "injection_markers",
                 "restore_withheld",
+                "approval_id",
+                "content_archived",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -4463,6 +4697,8 @@ async def export_requests(
                         else None
                         for field in ("injection_markers", "restore_withheld")
                     ),
+                    details.get("approval_id"),
+                    details.get("request_archive") == "stored",
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -4745,6 +4981,7 @@ async def _request_filters(
     system_prompt_hash: str | None = None,
     api_key_id: UUID | None = None,
     rule_id: str | None = None,
+    approval_id: UUID | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     soft_refusal: bool | None = None,
 ) -> list[Any]:
@@ -4828,6 +5065,8 @@ async def _request_filters(
         filters.append(
             RequestLog.details.contains({"rule_matches": [{"rule_id": rule_id}]})
         )
+    if approval_id is not None:
+        filters.append(RequestLog.details.contains({"approval_id": str(approval_id)}))
     if completion_outcome is not None:
         outcome = RequestLog.details["completion_outcome"].as_string()
         filters.append(
@@ -6226,6 +6465,15 @@ def _lowered(before: int | None, after: int | None) -> bool:
     return after is not None and (before is None or after < before)
 
 
+def _limit(before: Any, after: Any) -> Risk:
+    """A changed limit: removing or raising it relaxes. Dollars arrive as strings."""
+    if before is None:
+        return "tightening"
+    if after is None or Decimal(after) > Decimal(before):
+        return "relaxing"
+    return "tightening"
+
+
 def _privacy_relaxed(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
     actions = get_args(EntityAction)
     relaxed = [
@@ -6434,11 +6682,8 @@ class _GatewaySettingsResource:
         item_ids: Collection[str] | None,
     ) -> dict[str, State]:
         row = await session.get(OrganizationGatewaySettings, organization_id)
-        return {
-            "_": stored_settings(row.settings if row is not None else {}).model_dump(
-                mode="json"
-            )
-        }
+        settings = GatewaySettings() if row is None else stored_settings(row.settings)
+        return {"_": settings.model_dump(mode="json")}
 
     async def validate(
         self,
@@ -6452,21 +6697,7 @@ class _GatewaySettingsResource:
             mode="json", exclude_unset=True
         )
         state = before or GatewaySettings().model_dump(mode="json")
-        # A nested setting or a map changes only the entries named; null removes one.
-        after = _validated(
-            GatewaySettings,
-            state
-            | {
-                key: {
-                    name: entry
-                    for name, entry in (state[key] | value).items()
-                    if entry is not None
-                }
-                if isinstance(value, dict)
-                else value
-                for key, value in changes.items()
-            },
-        )
+        after = _validated(GatewaySettings, patched(state, changes))
         tenant_id = _tenant_id(actor)
         named = {
             kind
@@ -6552,47 +6783,54 @@ class _GatewaySettingsResource:
         policy_version: int | None,
     ) -> None:
         assert before is not None and after is not None
-        changed = {key for key in after if after[key] != before.get(key)}
-        if not changed:
-            return
-        row = await session.get(
-            OrganizationGatewaySettings, organization_id, with_for_update=True
-        )
-        if row is None:
-            await session.execute(
-                insert(OrganizationGatewaySettings)
-                .values(organization_id=organization_id)
-                .on_conflict_do_nothing()
-            )
-            row = await session.get(
-                OrganizationGatewaySettings,
-                organization_id,
-                with_for_update=True,
-                populate_existing=True,
-            )
-            assert row is not None
         previous = GatewaySettings.model_validate(before)
         current = GatewaySettings.model_validate(after)
-        # Only the fields that changed are written; keys another build wrote stay.
+        # Here, not in validate: approvers are counted under the lock the write holds.
+        if current.four_eyes == "relaxing" and previous.four_eyes != "relaxing":
+            await require_two_approvers(session, organization_id)
+        changed = {
+            field
+            for field in GatewaySettings.model_fields
+            if getattr(previous, field) != getattr(current, field)
+        }
+        await session.execute(
+            insert(OrganizationGatewaySettings)
+            .values(organization_id=organization_id)
+            .on_conflict_do_nothing()
+        )
+        row = await session.get(
+            OrganizationGatewaySettings,
+            organization_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        assert row is not None
+        # Only the changed fields are written; keys another build wrote stay.
         row.settings = {
             key: value for key, value in row.settings.items() if key not in changed
         } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
         row.revision += 1
         row.updated_by = actor.id
+        days = current.request_archive.retention_days
+        if days < previous.request_archive.retention_days:
+            await shorten_retention(session, organization_id, days)
+        if "finding_modes" in changed:
+            # A lowered mode takes the suggested action away now, not at the next pass.
+            await apply_modes(session, organization_id, current.finding_modes)
         await _audit(
             session,
             actor,
             "tenant.gateway_settings_updated",
             str(organization_id),
             details={
-                **change_details(before, after),
+                **change_details(
+                    previous.model_dump(mode="json"), current.model_dump(mode="json")
+                ),
                 **version_detail(policy_version),
             },
         )
-        _, relaxed = classify_change(previous, current)
-        # Restore permission protects personal data, so it is a privacy relaxation.
-        relaxed = [field for field in relaxed if field != "restore_withheld"]
-        if relaxed:
+        direction, relaxed = classify_change(previous, current)
+        if direction == "relaxing":
             await _audit(
                 session,
                 actor,
@@ -6648,7 +6886,12 @@ class _GatewaySettingsResource:
             )
 
 
-_TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_limit")
+_TEAM_DIRECTIONS: Directions = {
+    "name": neutral,
+    "daily_request_limit": _limit,
+    "monthly_request_limit": _limit,
+    "monthly_token_limit": _limit,
+}
 
 
 class _TeamResource:
@@ -6764,11 +7007,7 @@ class _TeamResource:
     def classify(self, before: State | None, after: State | None) -> Risk:
         if before is None or after is None:
             return "neutral"
-        if any(_raised(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "relaxing"
-        if any(_lowered(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _TEAM_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -6840,6 +7079,23 @@ class _TeamResource:
 _KEY_FIELDS = ("allowed_models", "team_id")
 
 
+def _models(before: list[str] | None, after: list[str] | None) -> Risk:
+    if after is None or (before is not None and not set(after) <= set(before)):
+        return "relaxing"
+    if before is not None and set(after) == set(before):
+        return "neutral"
+    return "tightening"
+
+
+_KEY_DIRECTIONS: Directions = {
+    "allowed_models": _models,
+    # Off its team, a key leaves the team's limits behind.
+    "team_id": lambda before, _after: (
+        "relaxing" if before is not None else "tightening"
+    ),
+}
+
+
 class _ApiKeyResource:
     name = "api_keys"
     # Who may change which key is the PATCH route's rule, checked in validate and apply.
@@ -6905,18 +7161,7 @@ class _ApiKeyResource:
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         assert before is not None and after is not None
-        models_before, models_after = before["allowed_models"], after["allowed_models"]
-        loosened = models_before is not None and (
-            models_after is None or bool(set(models_after) - set(models_before))
-        )
-        narrowed = models_after is not None and (
-            models_before is None or bool(set(models_before) - set(models_after))
-        )
-        if loosened or (before["team_id"] is not None and after["team_id"] is None):
-            return "relaxing"
-        if narrowed or (before["team_id"] is None and after["team_id"] is not None):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _KEY_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -6976,6 +7221,16 @@ async def _write_api_key(
             **version_detail(policy_version),
         },
     )
+
+
+_DEPLOYMENT_DIRECTIONS: Directions = {
+    "enabled": toward(True),
+    "deployment_kind": toward("internal"),
+    # Labels and the upstream wait: none lets a refused request through.
+    "declared_version": neutral,
+    "owner": neutral,
+    "timeout_seconds": neutral,
+}
 
 
 def _deployment_state(values: Mapping[str, Any]) -> State:
@@ -7121,19 +7376,7 @@ class _DeploymentResource:
         if before is None:
             return "relaxing"
         assert after is not None
-        if (
-            (not before["enabled"] and after["enabled"])
-            or before["base_url"] != after["base_url"]
-            or (before["deployment_kind"], after["deployment_kind"])
-            == ("external", "internal")
-        ):
-            return "relaxing"
-        if (before["enabled"] and not after["enabled"]) or (
-            before["deployment_kind"],
-            after["deployment_kind"],
-        ) == ("internal", "external"):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _DEPLOYMENT_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -7174,7 +7417,16 @@ _BUDGET_FIELDS = (
     "limit_tokens",
     "alert_thresholds",
     "enabled",
+    "notify_targets",
 )
+_BUDGET_DIRECTIONS: Directions = {
+    "limit_usd": _limit,
+    "limit_tokens": _limit,
+    "enabled": toward(False),
+    "alert_thresholds": lambda before, after: (
+        "relaxing" if set(before) - set(after) else "tightening"
+    ),
+}
 
 
 class _ManagedBudget(BudgetInput):
@@ -7186,7 +7438,18 @@ class _ManagedBudget(BudgetInput):
 
 
 def _budget_state(values: Mapping[str, Any]) -> State:
-    return {field: _plain(values[field]) for field in _BUDGET_FIELDS}
+    return {
+        **{field: _plain(values[field]) for field in _BUDGET_FIELDS},
+        # A digest of each secret reference shows a replacement, never the URL.
+        "notify_targets": [
+            {
+                "kind": target["kind"],
+                "endpoint_origin": target["endpoint_origin"],
+                "id": hashlib.sha256(target["secret_ref"].encode()).hexdigest()[:16],
+            }
+            for target in values["notify_targets"] or []
+        ],
+    }
 
 
 class _BudgetResource:
@@ -7283,29 +7546,7 @@ class _BudgetResource:
             return "relaxing"
         if before is None:
             return "tightening"
-        usd_before, usd_after = (
-            Decimal(value) if value is not None else None
-            for value in (before["limit_usd"], after["limit_usd"])
-        )
-
-        def raised(old: Any, new: Any) -> bool:
-            return old is not None and (new is None or new > old)
-
-        if (
-            raised(usd_before, usd_after)
-            or raised(before["limit_tokens"], after["limit_tokens"])
-            or (before["enabled"] and not after["enabled"])
-        ):
-            return "relaxing"
-        if (
-            raised(usd_after, usd_before)
-            or raised(after["limit_tokens"], before["limit_tokens"])
-            or (usd_before is None and usd_after is not None)
-            or (before["limit_tokens"] is None and after["limit_tokens"] is not None)
-            or (not before["enabled"] and after["enabled"])
-        ):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _BUDGET_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -7352,9 +7593,79 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
     return valid
 
 
+class _ProviderKeysResource:
+    name = "provider_keys"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        tenant = await session.get(Organization, organization_id)
+        return {"_": ProviderKeySettings.model_validate(tenant).model_dump()}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, ProviderKeySettings.model_fields)
+        return _validated(
+            ProviderKeySettings, {**(before or {}), **proposed}
+        ).model_dump()
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert after is not None
+        tenant = await session.get(Organization, organization_id)
+        assert tenant is not None
+        tenant.allow_customer_provider_keys = after["allow_customer_provider_keys"]
+        await _audit(
+            session,
+            actor,
+            "tenant.provider_key_policy_updated",
+            str(organization_id),
+            details={**change_details(before, after), **version_detail(policy_version)},
+        )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_fields(
+            before, after, {"allow_customer_provider_keys": toward(True)}
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+
 PRIVACY = _PrivacyResource()
 GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()
 BUDGETS = _BudgetResource()
+PROVIDER_KEYS = _ProviderKeysResource()

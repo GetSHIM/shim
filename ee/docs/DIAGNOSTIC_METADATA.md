@@ -345,6 +345,20 @@ its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 
+`approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
+the approval gate decided the request with: the one it was held under
+(`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is
+absent when the queue was full or the gate could not be reached (the error
+code says which) and on requests the gate never saw. The request list, its
+CSV and `GET /api/v1/management/requests?approval_id=<uuid>` carry it.
+
+`request_archive` says what the self-hosted
+[request archive](POLICY_DECISIONS.md#request-archive) did with the request:
+`stored` (its row committed) or `skipped_size` (the payload was over 2,000,000
+bytes); absent when the archive is off, the request was clean, the write
+failed, or it resent a held request whose content is already kept. The request list and its CSV show it as `content_archived` (true only for
+`stored`), so a member sees which of their requests an admin could open.
+
 ## Outcome filters, counts and rates
 
 `/requests` and `/requests/export` accept two optional filters:
@@ -374,6 +388,52 @@ Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
 `totals` covers every group. The rates per API key also drive the
 [`gateway.truncation_rate` and `gateway.refusal_rate`
 findings](FINDINGS.md#gatewaytruncation_rate).
+
+## Latency per group
+
+`GET /api/v1/management/latency` reads the request timestamps on demand over the
+indexed `started_at` window; there is no rollup table. Its measures:
+
+- first byte: `ttft_ms` for a stream, `provider_latency_ms` for a JSON answer;
+- shim queue: `provider_started_at - started_at`, shim's admission, privacy and
+  reservation commits before the provider call;
+- output tokens per second: a stream's settled `completion_tokens` over
+  `completed_at - stream_started_at`, which includes the terminal commit, so it
+  slightly understates the provider's speed; not for estimated usage, answers with
+  reasoning, or streams under one second;
+- peak concurrency: each request's span from `provider_started_at` to
+  `completed_at` (still running: to the window's end), clipped to every bucket it
+  overlaps, swept in time order with an end before a start at the same instant;
+  a request without `provider_started_at` never reached the provider and is not
+  counted;
+- head of line: one time-ordered pass per group over long requests' starts and
+  ends and short streams' starts counts the long requests in flight when each
+  short stream starts (a long request covers its start, not its end).
+
+The findings `gateway.cold_start` and `gateway.queueing` use the same sweep;
+`gateway.cold_start` reads only streams' first byte
+([findings](FINDINGS.md#gatewaycold_start)).
+
+## Tokens per character by language
+
+`GET /api/v1/management/language-cost` divides the quota settlement's
+`completion_tokens` by the answer's `answer_characters`, per model or API key and
+per answer language (`response_analysis.language.answer`, `tr` or `en`). No
+tokenizer is used: the provider's own count is the measure. Only the output side
+is measured, because `prompt_tokens` mixes system prompts, tool definitions,
+history and cached prefixes with the question. An answer counts when it ended
+`complete`, has at least 200 characters, called no tool, carried no reasoning
+(`reasoning_seen`; Gemini thought parts count as answer text, so a Gemini answer
+with thoughts is left out too) and its settlement is not estimated; the others
+are counted under `excluded` (`estimated_usage`, `tool_calls`, `reasoning`,
+`short`, `not_analysed`, `language_unknown`, the first that applies). Money uses
+the output price the spend settlement recorded, the large-context one once the
+prompt crossed its threshold; unpriced settlements add none. The model is the one
+the spend settlement billed, so a registry alias groups under its provider model,
+named by the price-book entry it matches (the longest entry it equals or extends
+with `-`, as the gateway matches prices) or `other`: a provider model name never
+reaches the answer or the evidence PDF as written. One statement reads the
+exclusions and the ratios together.
 
 ## Responses continuation markers
 

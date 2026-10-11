@@ -1111,6 +1111,7 @@ async def test_connector_and_forward_target_changes_runs_and_reports_are_audited
         "before": {"min_severity": "high"},
         "after": {"min_severity": "critical"},
         "destination_rotated": False,
+        "policy_version": 1,
     }
     assert extra["compliance.forward_target_deleted"]["before"]["min_severity"] == (
         "critical"

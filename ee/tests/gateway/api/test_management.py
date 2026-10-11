@@ -314,6 +314,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "completion_outcome": "refused",
             "rule_matches": [],
             "rule_matches_truncated": False,
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -417,8 +418,11 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "response_analysis",
         "rule_matches",
         "rule_matches_truncated",
+        "approval_id",
+        "content_archived",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert str(page.items[0].approval_id) == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert page.items[0].rule_matches == []
     assert page.items[0].rule_matches_truncated is False
     assert page.items[0].response_analysis == {
@@ -674,6 +678,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
                     "count": 2,
                 }
             ],
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -753,6 +758,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "count": 2,
         }
     ]
+    assert exported["approval_id"] == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
@@ -1807,6 +1813,28 @@ async def test_the_request_list_filters_on_one_rule_id() -> None:
     assert {"rule_matches": [{"rule_id": "falcon"}]} in compiled.params.values()
 
 
+@pytest.mark.asyncio
+async def test_the_request_list_filters_on_one_approval_id() -> None:
+    approval_id = uuid4()
+    filters = await management._request_filters(
+        None,  # type: ignore[arg-type]
+        SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        approval_id=approval_id,
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"approval_id": str(approval_id)} in compiled.params.values()
+
+
 _HASH_A = "hmac-sha256:v1:" + "a" * 64
 _HASH_B = "hmac-sha256:v1:" + "b" * 64
 
@@ -2820,3 +2848,327 @@ async def test_an_entra_secret_is_verified_by_a_fresh_token(
             503: [],
         }[outcome]
     )
+
+
+async def _archive_tenant(db) -> dict:
+    from shim_enterprise.tenants.models import Team, TeamMembership
+
+    organization = Organization(
+        id=uuid4(), name="Archive", slug=f"archive-{uuid4().hex}", tier="enterprise"
+    )
+    db.add(organization)
+    await db.flush()
+    users = {
+        name: User(
+            id=uuid4(),
+            organization_id=organization.id,
+            email=f"archive-{name}-{uuid4().hex}@example.com",
+            role=role,
+            kind=kind,
+            is_active=True,
+            is_verified=True,
+        )
+        for name, role, kind in (
+            ("owner", "owner", "human"),
+            ("admin", "admin", "human"),
+            ("member", "member", "human"),
+            ("other_member", "member", "human"),
+            ("auditor", "auditor", "human"),
+            ("team_admin", "member", "human"),
+            ("service", "admin", "service"),
+        )
+    }
+    team = Team(id=uuid4(), organization_id=organization.id, name="risk")
+    db.add_all([*users.values(), team])
+    await db.flush()
+    db.add(
+        TeamMembership(
+            organization_id=organization.id,
+            team_id=team.id,
+            user_id=users["team_admin"].id,
+            role="team_admin",
+        )
+    )
+    keys = {
+        name: ApiKey(
+            id=uuid4(),
+            organization_id=organization.id,
+            user_id=users[name].id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-arc",
+            name=name,
+            tier="enterprise",
+            is_active=True,
+        )
+        for name in ("member", "other_member")
+    }
+    db.add_all(keys.values())
+    await db.flush()
+    return {"organization": organization, "keys": keys, **users}
+
+
+async def _archived_request(db, tenant, key: str, monkeypatch, *, expires_in=None):
+    from cryptography.fernet import Fernet
+
+    from shim_enterprise.archive.models import RequestArchive
+    from shim_enterprise.core.config import settings
+
+    secret = Fernet.generate_key().decode()
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", secret)
+    cipher = Fernet(secret.encode())
+    masked = {
+        "messages": [{"role": "user", "content": "kimlik <TR_NATIONAL_ID_ff8d9819>"}]
+    }
+    row = RequestArchive(
+        organization_id=tenant["organization"].id,
+        request_id=f"req_arc_{uuid4().hex}",
+        api_key_id=tenant["keys"][key].id,
+        protocol="chat",
+        model="gpt-5-nano",
+        matched=[
+            {"kind": "entity", "id": "TR_NATIONAL_ID", "action": "mask", "count": 1}
+        ],
+        masked_payload=cipher.encrypt(json.dumps(masked).encode()),
+        edit_map=cipher.encrypt(
+            json.dumps({"<TR_NATIONAL_ID_ff8d9819>": "10000000146"}).encode()
+        ),
+        size_bytes=80,
+        expires_at=datetime.now(timezone.utc) + (expires_in or timedelta(days=90)),
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def _archive_call(
+    db, user, method: str, path: str, body: dict | None = None, **params
+) -> httpx.Response:
+    await db.flush()
+    app = FastAPI()
+    app.include_router(management_router, prefix="/api/v1")
+    app.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        return await client.request(
+            method, f"/api/v1/management{path}", params=params, json=body
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_admin_opens_archived_content_after_the_opening_is_recorded(
+    db, audit_events, monkeypatch
+) -> None:
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+
+    owner = await _archive_call(
+        db, tenant["owner"], "GET", f"/requests/{row.request_id}/content"
+    )
+    admin = await _archive_call(
+        db, tenant["admin"], "GET", f"/requests/{row.request_id}/content"
+    )
+
+    body = admin.json()
+    assert owner.status_code == admin.status_code == 200
+    assert admin.headers["cache-control"] == "no-store"
+    assert body["original_payload"] == {
+        "messages": [{"role": "user", "content": "kimlik 10000000146"}]
+    }
+    assert "10000000146" not in json.dumps(body["masked_payload"])
+    assert body["replacements"] == [
+        {"placeholder": "<TR_NATIONAL_ID_ff8d9819>", "original": "10000000146"}
+    ]
+    assert body["matched"][0]["id"] == "TR_NATIONAL_ID"
+    openings = [
+        (event["actor"], event["extra"])
+        for event in await audit_events(tenant["organization"].id)
+        if event["endpoint"] == "tenant.request_content_opened"
+    ]
+    assert [actor for actor, _ in openings] == [
+        str(tenant["owner"].id),
+        str(tenant["admin"].id),
+    ]
+    assert openings[0][1] == {
+        "subject_id": row.request_id,
+        "api_key_id": str(tenant["keys"]["member"].id),
+        "actor_type": "user_jwt",
+    }
+
+
+@pytest.mark.asyncio
+async def test_archived_content_is_refused_to_everyone_else(db, monkeypatch) -> None:
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+    expired = await _archived_request(
+        db, tenant, "member", monkeypatch, expires_in=-timedelta(seconds=1)
+    )
+    path = f"/requests/{row.request_id}/content"
+
+    refused = {
+        name: (await _archive_call(db, tenant[name], "GET", path)).status_code
+        for name in ("auditor", "member", "team_admin", "service")
+    }
+
+    assert refused == dict.fromkeys(refused, 403)
+    assert (await _archive_call(db, other["owner"], "GET", path)).status_code == 404
+    assert (
+        await _archive_call(
+            db, tenant["owner"], "GET", f"/requests/{expired.request_id}/content"
+        )
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_no_content_without_a_committed_opening_or_with_another_key(
+    db, monkeypatch
+) -> None:
+    from cryptography.fernet import Fernet
+
+    from shim_enterprise.core.config import settings
+
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+    path = f"/requests/{row.request_id}/content"
+    decrypted = AsyncMock()
+
+    async def failed_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "commit", failed_commit)
+        patch.setattr(management.asyncio, "to_thread", decrypted)
+        lost = await _archive_call(db, tenant["owner"], "GET", path)
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", Fernet.generate_key().decode())
+    rotated = await _archive_call(db, tenant["owner"], "GET", path)
+
+    assert lost.status_code == 500 and "10000000146" not in lost.text
+    decrypted.assert_not_awaited()
+    assert rotated.status_code == 410
+    assert "current ENCRYPTION_KEY" in rotated.json()["detail"]
+
+
+async def _opening(db, tenant, key: str, request_id: str, seq: int) -> None:
+    from shim_enterprise.ai_act.models import AIActAuditLog
+
+    db.add(
+        AIActAuditLog(
+            organization_id=tenant["organization"].id,
+            seq=seq,
+            event_type="management_action",
+            request_id=f"management:{uuid4()}",
+            actor=str(tenant["admin"].id),
+            endpoint="tenant.request_content_opened",
+            created_at=datetime.now(timezone.utc),
+            prev_hash=uuid4().hex,
+            row_hash=uuid4().hex,
+            extra={
+                "subject_id": request_id,
+                "api_key_id": str(tenant["keys"][key].id),
+                "actor_type": "user_jwt",
+            },
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_readers_see_every_opening_and_a_member_their_own_keys(db) -> None:
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    await _opening(db, tenant, "member", "req_mine", 1)
+    await _opening(db, tenant, "other_member", "req_theirs", 2)
+    await _opening(db, other, "member", "req_elsewhere", 1)
+
+    def ids(response: httpx.Response) -> set[str]:
+        return {item["request_id"] for item in response.json()["items"]}
+
+    read = {
+        name: await _archive_call(db, tenant[name], "GET", "/request-archive/openings")
+        for name in ("owner", "auditor", "member", "other_member")
+    }
+    too_long = await _archive_call(
+        db,
+        tenant["owner"],
+        "GET",
+        "/request-archive/openings",
+        start=(datetime.now(timezone.utc) - timedelta(days=40)).isoformat(),
+    )
+
+    assert ids(read["owner"]) == ids(read["auditor"]) == {"req_mine", "req_theirs"}
+    assert ids(read["member"]) == {"req_mine"}
+    assert ids(read["other_member"]) == {"req_theirs"}
+    assert read["owner"].json()["items"][0]["actor_user_id"] == str(tenant["admin"].id)
+    assert too_long.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_owner_purges_only_their_archive_and_it_is_audited(
+    db, audit_events, monkeypatch
+) -> None:
+    from shim_enterprise.archive.models import RequestArchive
+
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    for _ in range(2):
+        await _archived_request(db, tenant, "member", monkeypatch)
+    kept = await _archived_request(db, other, "member", monkeypatch)
+
+    refused = await _archive_call(db, tenant["admin"], "DELETE", "/request-archive")
+    purged = await _archive_call(db, tenant["owner"], "DELETE", "/request-archive")
+
+    assert refused.status_code == 403
+    assert purged.json() == {"rows_deleted": 2}
+    left = set(await db.scalars(select(RequestArchive.id)))
+    assert kept.id in left
+    assert [
+        event["extra"]["rows"]
+        for event in await audit_events(tenant["organization"].id)
+        if event["endpoint"] == "tenant.request_archive_purged"
+    ] == [2]
+
+
+@pytest.mark.asyncio
+async def test_archive_settings_merge_per_field_and_a_shorter_retention_moves_expiry(
+    db, monkeypatch
+) -> None:
+    from shim_enterprise.core.config import settings
+
+    monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", True)
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+
+    turned_on = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"enabled": True}},
+    )
+    shortened = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"retention_days": 30}},
+    )
+    too_long = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"retention_days": 91}},
+    )
+
+    assert turned_on.json()["request_archive_state"] == "on"
+    assert "request_archive" not in turned_on.json()["unavailable"]
+    assert shortened.json()["settings"]["request_archive"] == {
+        "enabled": True,
+        "retention_days": 30,
+    }
+    assert too_long.status_code == 422
+    await db.refresh(row)
+    assert row.expires_at == row.created_at + timedelta(days=30)

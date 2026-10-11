@@ -74,7 +74,8 @@ exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
 status. Unknown historical fields remain null. The existing chain verifier
 continues to verify this evidence.
 Decision evidence records the gateway's checks and the tenant's own rules. It is
-not a content archive, signature or independent trust anchor.
+not a content archive (unless the self-hosted [request archive](#request-archive)
+is turned on), signature or independent trust anchor.
 
 Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,
@@ -197,6 +198,105 @@ at most 32, blocks first) and `rule_matches_truncated`; see
 database row and in process memory, never in Redis, a log, a metric or an audit
 event.
 
+### Request approval
+
+An enforced `require_approval` rule holds a request before it is sent; the
+existing oversight queue (`ai_act` oversight policies) reviews requests after
+they were sent and is unchanged. The enterprise gateway decides in one short
+database transaction, never open across the provider call:
+
+- "The same request" is a keyed digest: HMAC-SHA256, under a key derived for
+  this purpose from `COMPLIANCE_HASH_SALT` (else `SECRET_KEY`), of the tenant,
+  key, protocol, model, `stream` and the canonical JSON of the request as it
+  entered the privacy stage. Unmasked, because random placeholders would make
+  every masked request unique. Only the digest is stored, and only while the row
+  can still be used: a row that becomes `used`, `expired` or `rejected` clears
+  it, because the digest is derived from a request that may carry personal data.
+  `request_approvals` holds ids, counts, sizes and times, never content, a term
+  or a pattern, and the audit maintenance worker deletes a row 30 days after it
+  was held (in batches, like the request archive).
+- One approval allows one send, within 60 minutes of the approval; it is
+  consumed before the provider call, so a failed attempt needs a new approval.
+  A pending approval lives 24 hours; at most 200 wait per tenant and 50 per key,
+  so one key cannot fill the queue. These are constants, not settings. Expiry is
+  lazy: the gateway and every read of the approvals API store `expired`.
+- A presented `X-Shim-Approval-Id` that does not fit (unknown, another tenant
+  or key, another request, used, expired, malformed) is ignored rather than
+  refused, so ids cannot be probed and a changed request gets its own approval.
+  A rejected id is refused for its key whatever is sent with it, since the
+  rejected row kept no digest.
+- The approver is always a second person: never a service account, nor the key's
+  owner, nor the recorded requester, nor whoever created or rotated the key of a
+  service account that owns the key, whatever the tenant's
+  [four eyes](#four-eyes) setting (that governs settings changes). With nobody on
+  record to exclude, nobody decides. `POST /approvals/reject` with an
+  `api_key_id` rejects every pending request of that key as one decision, under
+  the same rule (audited as `tenant.request_approvals_rejected` with the count).
+- Decisions are audited as `tenant.request_approval_approved` and
+  `tenant.request_approval_rejected` (approval id, rule ids, key id, model,
+  request id). The creation and the use are on the requests themselves, as
+  `approval_id`. `shim_request_approvals_total{outcome}` counts gate outcomes,
+  `shim_request_approval_decisions_total{decision}` decisions.
+
+## Request archive
+
+Self-hosted only, off by default, and only for requests a rule or a detector
+matched. It needs two switches: the installation's `REQUEST_ARCHIVE_ENABLED`
+(with an `ENCRYPTION_KEY`, or the gateway does not start; the hosted cloud
+refuses to start with it) and the tenant's `request_archive.enabled` in the
+gateway settings. `GET /gateway-settings` shows `request_archive_state` and, when
+the installation does not allow it, the reason under `unavailable`.
+
+- **What is kept.** A request whose privacy step masked, monitored or blocked a
+  value, or that any tenant rule matched (monitor state included: during a
+  "watch before masking" rollout this is what the admin needs). A clean request
+  and a token count are never kept, and neither is the answer. Kept: the masked
+  payload as the provider received it and the edit (placeholder to original),
+  each Fernet-encrypted with `ENCRYPTION_KEY`, plus `matched` (entity types and
+  rule ids with action and count, never a value). Nothing else is in the clear.
+- **The write never fails the request.** It runs after the privacy facts commit,
+  encrypts in a worker thread and inserts in one short transaction; any failure
+  is logged by type, counted as `shim_request_archive_writes_total{result="failed"}`
+  and the request goes on unchanged. A payload above 2,000,000 bytes is skipped
+  (`skipped_size`). The request record says `stored` only when the row committed.
+  A request sent again under a held [request approval](#request-approval) (while
+  it waits, or once approved) has the same digest, so the same content: when the
+  first held request is kept, the resend is not (`result="duplicate"`, no record
+  marker); open the held request's row instead.
+- **90 days at most.** A tenant may shorten `retention_days` (1 to 90), never
+  lengthen it; shortening moves existing rows' expiry forward in the same
+  change. The ai_act worker deletes expired rows in batches of 1,000, at most 50
+  per pass, whatever the switches say. The owner can delete the whole archive at
+  once (`DELETE /request-archive`, audited as `tenant.request_archive_purged`).
+  A deleted row stays in database backups until they rotate and in PostgreSQL's
+  storage until vacuum: keep backup retention in line with the 90 days.
+- **Only an admin opens content, and every opening is visible.** Owners and
+  admins (`content.read`, never a service account) open one request; the opening
+  is audited as `tenant.request_content_opened` and committed before anything is
+  decrypted. Auditors see every opening, a member the openings of requests made
+  with their own keys; nobody else reads the text. Content never appears in a
+  list, an export, a log or a finding.
+- Turning the archive on or keeping content longer is a loosening change for
+  [four eyes](#four-eyes); turning it off or shortening is tightening.
+
+## Imported gateway logs
+
+A tenant can [import a LiteLLM spend log](COOKBOOK.md#import-litellm-spend-logs)
+to see findings before routing traffic through shim. The import is an operator
+script, not a connector: no API caller ever names an internal address for shim
+to fetch. Its rows live in `external_usage_records` and nowhere else; they are
+the source's claim (its status, timings, tokens and `spend`) and never touch
+`request_lifecycle`, `usage_ledger`, budgets, quotas or evidence built from
+gateway records. The findings they raise carry `source: litellm`, use the
+source's cost labelled `cost_source: litellm`, and say when a signal is weaker
+than its gateway counterpart (`litellm.retry_burst` compares token counts, not
+content). Prompts and answers in an export are ignored: only their presence is
+counted. Nothing free-form is stored either: no user, team, tag or endpoint, a
+model only under a price-book or registry name (else `other`), a key only as a
+SHA-256 digest, and a cost only when it is a finite amount from 0 up. The worker
+never evaluates `litellm.*` rules; an import does, with windows ending at the
+latest imported row.
+
 ## Management change details
 
 Management actions append an `audit.chain_append_requested` event in the same
@@ -207,8 +307,10 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
 | `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, `embeddings_monitor_types.<TYPE>` for a type added to the embeddings-only list, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
-| `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`); never a term, pattern, name or match hash |
-| `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed |
+| `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`), and `policy_version`; never a term, pattern, name or match hash |
+| `tenant.rule_previewed` | `rule_id`, `kind`, `basis`, `requests`, `window_days`, `enforce_on_create` |
+| `tenant.rules_imported` | `plan_id` (null when nothing would change), `mapped` and `not_mapped` counts, `source_revision` |
+| `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed, and `policy_version` |
 | `tenant.gateway_protection_relaxed` | `relaxed`: the gateway settings fields whose change their direction classifies as relaxing; written with the update |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
@@ -262,25 +364,35 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Seven resources are managed: every write to them records a version, a plan can
+Ten resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan`, `embeddings_monitor_types` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
-| `gateway_settings` | `_` | every gateway setting | `PATCH /gateway-settings` | the change records `tenant.gateway_protection_relaxed` or `tenant.privacy_protection_relaxed` |
+| `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off, a finding rule moved to `auto`); a field without a direction always; `restore_withheld` records `tenant.privacy_protection_relaxed` |
+| `rules` | rule id | the rule without its id | `PUT /rules` | an enforced rule is removed, moved to `monitor`, given a weaker action, a narrower scope, another kind, or a match other than added terms or patterns; the opposite move (a wider scope, a stronger action, enforcing) tightens |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
-| `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
-| `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |
-| `budgets` | budget id | scope, limits, thresholds, `enabled` (never notification targets) | `POST`, `PATCH`, `DELETE /cost/budgets` | deleted; a limit raised or removed; disabled |
-| `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled |
+| `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team or moves to another |
+| `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `external` to `internal`; any change but `owner`, `declared_version`, `timeout_seconds` |
+| `budgets` | budget id | scope, limits, thresholds, `enabled`, notification targets (kind, origin and a digest of the stored reference, never the URL) | `POST`, `PATCH`, `DELETE /cost/budgets` | deleted; a limit raised or removed; disabled; a threshold removed; the targets replaced |
+| `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled; `default_on_timeout` to `allow`; any change to `mode`, `trigger`, `ttl_seconds` |
+| `provider_keys` | `_` | `allow_customer_provider_keys` | `PUT /settings/provider-keys` | turned on |
+| `forward_targets` | target id | `enabled`, `min_severity` | `PATCH`, `DELETE /compliance/forward-targets/{id}` | deleted; disabled; `min_severity` raised |
 
-A field moved the other way is `tightening`, anything else `neutral`; a change
-with both a relaxing and a tightening field is `relaxing`, and so is a plan with
-one relaxing change. Lowering cost (a lower budget, a disabled deployment) counts
-as tightening. Provider credentials, connectors, forward targets, members,
-invitations, service accounts, key issue, rotation and revocation, memberships,
-finding status and readiness declarations are not managed.
+Each resource lists, per field, the direction of a change (one shared rule,
+`classify_fields`); a field it does not list is `relaxing` whatever the change,
+so a field added later fails closed until its direction is written down. A field
+moved the other way is `tightening`, a listed label `neutral`; a change with both
+a relaxing and a tightening field is `relaxing`, and so is a plan with one
+relaxing change. Lowering cost (a lower budget, a disabled deployment) counts
+as tightening. A forward target's destination is a secret, so a plan never
+creates one or moves it; its own route does. Provider credentials, connectors,
+members, invitations, service accounts, key issue, rotation and revocation,
+memberships, finding status and readiness declarations are not managed. A
+restore never brings back a budget's notification targets (their secrets are
+deleted when replaced): they stay as they are and the budget is listed in
+`not_restored` with `notify_targets_not_restored`.
 
 Each managed write takes the organization row lock and, when its items changed,
 inserts one `policy_versions` row in the same transaction: the next `version`
@@ -294,8 +406,9 @@ they belong to; a write without a version carries none.
 A plan (`policy_plans`) is a change set with each change's before and after
 state, risk and estimated impact, created as `draft` and expiring after 7 days.
 Each change also needs what its own route asks for: `settings.write` for
-privacy, `teams.manage` for teams, `deployments.manage`, `budgets.manage`, and
-`compliance.manage` for oversight policies; a key change follows the key
+privacy and provider keys, `rules.write` for rules, `teams.manage` for teams,
+`deployments.manage`, `budgets.manage`, and `compliance.manage` for oversight
+policies and forward targets; a key change follows the key
 route's rules (`keys.manage` for a key without a team, team administration for
 a team's key). This is checked when the plan is created, again for the one who
 applies it, and for every item a restore puts back (403
@@ -313,6 +426,11 @@ models it would no longer allow, a deployment's requests, and requests above a
 lowered team limit. A budget reports its month-to-date use against the new
 limit, and an oversight policy has no estimate.
 
+A rule change is tightening when it adds an enforced rule, enforces a rule,
+raises its action or only adds terms or patterns to an enforced rule. A plan
+creates a rule with `{"resource": "rules", "item": null, "set": {"id": ...}}`;
+its impact is the [rule preview](#rule-previews).
+
 Restoring a version applies a plan with source `restore` that puts every item a
 version touched back to its state at that version. A revoked key, a team
 created after it (teams cannot be deleted) and a re-created budget's
@@ -327,12 +445,94 @@ version is no longer that one, and changes nothing. A restore, like a plan,
 holds at most 100 changes (422 beyond; restore a later version first), and a
 privacy field added after the restored version takes its default. Reading the
 current state (`/policy/state`) or one version's states needs, besides
-`audit.read`, the reads of what they show: `settings.read`, `usage.read` and
-`deployments.read` (403 naming the missing ones). Plans applied after the version become
-`rolled_back`. Audit actions: `tenant.policy_plan_created`,
+`audit.read`, the reads of what they show: `settings.read`, `usage.read`,
+`rules.read` and `deployments.read` (403 naming the missing ones). Plans applied
+after the version and before the restore was planned become `rolled_back`; a
+plan applied while a restore waited for approval keeps `applied`. Audit actions: `tenant.policy_plan_created`,
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,
 `policy_version`).
+
+### Four eyes
+
+With the gateway setting `four_eyes` at `relaxing`, a change that loosens
+protection needs a second administrator. Turning it on needs at least two
+active human users whose permissions hold `plans.approve` (409
+`FOUR_EYES_UNAVAILABLE` otherwise, also when a plan turning it on is applied).
+While it is on, demoting or removing one of them below two answers the same 409
+(`PATCH`, `DELETE /team/members/{id}`); an identity-provider role change at
+sign-in is applied, since the provider is the source of roles, and leaves the
+owner override below.
+
+- A direct write to a managed resource that classifies as relaxing is refused
+  before anything is written: 409 `{"code": "CHANGE_REQUIRES_APPROVAL",
+  "relaxed": [...]}`, each entry `resource.item.field` (or `resource.item` for a
+  created or deleted item), a field listed when changing it alone would relax.
+  `PUT /rules`, `PUT /settings/provider-keys` and `PATCH`, `DELETE
+  /compliance/forward-targets/{id}` are such writes. `POST /api-keys` without
+  `allowed_models` answers the same 409 with `api_keys.new.allowed_models`:
+  create the key with a model list and widen it through a plan.
+- Applying a relaxing plan, or a restore whose plan relaxes, does not apply it:
+  the plan becomes `pending_approval` with `submitted_by` and `submitted_at`,
+  expires 72 hours later, and the call answers 202. The same transaction queues
+  one `policy.approval_requested` intent (idempotency key
+  `policy_approval:<plan_id>`: organization, plan id, risk, resources and
+  submitter, never a value), which the outbox worker sends to every enabled
+  forward target as `kind: "policy_approval_requested"`.
+- `POST /policy/plans/{id}/approve` (`plans.approve`) applies it with the stale
+  check, `approved_by` and `approved_at`; `POST .../reject` makes it `rejected`.
+  Either needs a `pending_approval` plan (409 `PLAN_STATE_CONFLICT`) and a human
+  who neither created nor submitted it, nor created or rotated a key of the
+  service account that did (403 `APPROVER_NOT_ELIGIBLE`). An
+  optional `note` is kept on the plan as `context.decision_note`.
+- Turning `four_eyes` off is relaxing. While fewer than two users can approve,
+  an owner may still turn it off directly: the write gets a version, the audit
+  event `tenant.four_eyes_single_admin_override` and a
+  `gateway_protection_relaxed` alert naming `four_eyes`.
+
+Tightening and neutral writes and plans are unchanged, and with `four_eyes`
+`off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,
+`tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
+`risk`, `resources`).
+
+## Rule previews
+
+The gateway keeps no prompt, so it cannot replay last week's traffic against a
+new term list. A preview counts only what is honest:
+
+- `monitor_history`: a rule in the set whose kind, scope and match are unchanged
+  has one `rule_matches` entry per request it matched. The count runs from the
+  later of the window start and the moment its definition last changed
+  (`rule_definitions`, a keyed digest of kind, scope and match, never the terms;
+  a rule stored before that table existed is bounded by the set's last write).
+  Requests whose matches were cut at 32 make it a lower bound.
+- `metadata`: a kind whose condition can be checked on stored request metadata
+  registers an estimator under its kind or `<kind>:<match.on>`. None is
+  registered yet: `term` and `pattern` need content.
+- `none`: anything else, or a query over 10 seconds.
+
+So content rules start in `monitor`, and their preview becomes real after they
+have run. A new rule may be stored enforced only with an unexpired preview row of
+the same kind, action, scope and match that covered a whole window of at least 7
+days; a restore may re-create an enforced rule without one, because it brings
+back exactly what was there. A new rule has no monitor history, so only a
+`metadata` estimator can give it such a preview: until one is registered, no
+`rule_previews` row is written and every new rule starts in `monitor`. The path
+stays for the estimators later PRDs add. Every write to the rule set goes through
+one path, which also keeps the definition rows.
+
+AIUC rule files are imported one way. Rule ids become `aiuc_<slug>` (Turkish
+fold, ASCII, at most 48 characters, `_2`, `_3` for collisions, the first 8 hex
+of the id's SHA-256 when nothing is left); every imported rule starts in
+`monitor` with Turkish endings on. `email` and `secret` map to the per-type
+actions of `EMAIL_ADDRESS` and `SECRET`, raised from `off` to `monitor` only:
+AIUC rules have no scope, a separate rule kind for built-in types would duplicate
+the detector, and an import never raises a type to `mask` or `block` (the AIUC
+action is reported as a hint). The import produces a draft plan and applies
+nothing. It plans without holding the tenant lock (each planned change reads
+history), then takes the lock and answers 409 `POLICY_VERSION_CHANGED` if a
+policy write landed in between. The body is counted as it arrives: past 256 KB it
+is a 413 `REQUEST_TOO_LARGE` before anything is parsed.
 
 ## Audit evidence bundle
 
@@ -377,6 +577,39 @@ only. To check a whole chain from genesis, call without `from` (up to 10,000
 rows), or export bundles and verify them offline. A float that jsonb
 would store in another form (non-finite, or `abs(value) >= 1e16`) is written to
 the chain as its string, so every stored row re-hashes as written.
+
+### Write-once archive
+
+Optional and off: with `WORM_ARCHIVE_ENABLED` and an S3 bucket created with
+Object Lock and a default retention, the ai_act worker copies, under
+`<WORM_ARCHIVE_PREFIX>/<organization_id>/`, the audit chain in `shim.audit.bundle`
+v1 chunks of at most 10,000 rows (`audit/rows/<from>-<to>.json`, each verifiable
+on its own from its `chain_start`), each daily anchor (`audit/anchors/<date>.json`)
+and each closed monthly evidence file (`evidence/monthly/<YYYY-MM>.pdf`, never a
+partial month). Never the request archive, findings or anything with content.
+
+- **What it adds.** Copies the bucket's lock protects: in compliance mode no one,
+  root included, can delete or overwrite a locked version before its retention
+  ends. The bundle chunks verify with `shim-audit-verify` without the database.
+- **What it does not.** PostgreSQL rows stay as they are: the append-only triggers
+  keep the application from changing them, but a database superuser can still
+  drop them; the bucket copy is what survives that. shim never sets a retention
+  mode, date or legal hold: the bucket's default retention decides, and choosing
+  governance or compliance and the period is the operator's decision. shim
+  refuses to upload unless the bucket reports Object Lock with a default
+  retention (`BUCKET_NOT_LOCKED`) and records a `NOT_LOCKED` failure when an
+  uploaded object reports no lock.
+- Each upload carries its SHA-256 checksum; after a crash, an object already in
+  the bucket with the same checksum is recorded without a second upload. At most
+  50 objects a pass; a failure is recorded per object and retried with the same
+  range. Uploads run outside any database transaction. Each S3 call gives up
+  after 5 seconds to connect or 30 to read, with one retry, and a whole pass
+  after 5 minutes (a worker error), so a slow endpoint never holds up the rest of
+  the audit maintenance. `worm_archive_objects`
+  holds the references (`ai_act_audit_anchor.external_ref` stays null: the anchor
+  row cannot be updated after insert).
+- Not offered in the hosted cloud. `GET /api/v1/compliance/archive` shows the
+  state to readers, never a credential or the installation's bucket name.
 
 ## KVKK exposure report
 
@@ -460,6 +693,12 @@ and window ("Kaynak: <table>, dönem: <start> – <end>"):
      "anahtar yok" for requests without a key, "adsız anahtar" for a key without
      a name) is set in italics, so a key named "diğer" never reads as the sum.
      Columns have fixed widths and long names wrap inside them.
+8. Dile göre karakter başına token: per model with at least 30 eligible Turkish
+   answers in the month, the Turkish and English output tokens per 1,000
+   characters with their counts and their quotient, from the
+   [language cost read](COOKBOOK.md#how-much-more-do-turkish-answers-cost-on-each-model),
+   with the method in one paragraph; "Bu sürümde kaydedilmiyor: dil çözümleyicisi
+   kapalı." when the language analyzer labelled no answer of the month.
 
 The file holds counts and names only: no prompt, answer, detected value or key.
 Files generated before a change keep their content and generator version.

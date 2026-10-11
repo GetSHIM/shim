@@ -235,6 +235,13 @@ def test_every_cloud_route_asks_for_a_permission_or_is_listed() -> None:
     }
 
 
+def test_the_hosted_service_cannot_start_with_the_request_archive(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", True)
+
+    with pytest.raises(RuntimeError, match="not available in the hosted service"):
+        application_module.create_cloud_app(_config())
+
+
 @pytest.mark.asyncio
 async def test_disabled_worker_skips_polar(monkeypatch):
     for name in CloudSettings.model_fields:

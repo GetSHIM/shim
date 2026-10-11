@@ -1035,6 +1035,7 @@ async def test_only_organization_admins_change_the_customer_provider_key_policy(
                 "actor_type": "user_jwt",
                 "before": {"allow_customer_provider_keys": True},
                 "after": {"allow_customer_provider_keys": False},
+                "policy_version": 1,
             },
         )
     ]

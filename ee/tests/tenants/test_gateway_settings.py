@@ -123,12 +123,19 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             },
             "agent_loop": {"action": "count", "repeats": 5},
             "inflight_sharing_api_key_ids": [],
+            "four_eyes": "off",
+            "finding_modes": {},
+            "request_archive": {"enabled": False, "retention_days": 90},
         },
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
         "available_analyzers": ["shape", "language"],
-        "unavailable": {},
+        "unavailable": {
+            "request_archive": "off, needs REQUEST_ARCHIVE_ENABLED in this "
+            "installation (self-hosted only)"
+        },
+        "request_archive_state": "off",
     }
     assert await _rows(db, test_user_with_org.organization_id) == 0
 

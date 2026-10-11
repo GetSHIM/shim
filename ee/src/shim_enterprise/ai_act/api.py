@@ -98,6 +98,12 @@ from shim_enterprise.policy.plans import (
     version_detail,
 )
 from shim_enterprise.tenants.audit import change_details, export_details
+from shim_enterprise.tenants.gateway_settings import (
+    Directions,
+    classify_fields,
+    neutral,
+    toward,
+)
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import Organization, User
 from shim_enterprise.tenants.permissions import Permission
@@ -901,6 +907,11 @@ _POLICY_FIELDS = (
     "ttl_seconds",
     "default_on_timeout",
 )
+_POLICY_DIRECTIONS: Directions = {
+    "name": neutral,
+    "enabled": toward(False),
+    "default_on_timeout": toward("allow"),
+}
 
 
 class _OversightPolicyResource:
@@ -992,13 +1003,11 @@ class _OversightPolicyResource:
             await session.delete(policy)
 
     def classify(self, before: State | None, after: State | None) -> Risk:
-        if after is None or (
-            before is not None and before["enabled"] and not after["enabled"]
-        ):
+        if after is None:
             return "relaxing"
-        if after["enabled"] and (before is None or not before["enabled"]):
-            return "tightening"
-        return "neutral"
+        if before is None:
+            return "tightening" if after["enabled"] else "neutral"
+        return classify_fields(before, after, _POLICY_DIRECTIONS)[0]
 
     async def impact(
         self,
