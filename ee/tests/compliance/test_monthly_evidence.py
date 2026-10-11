@@ -230,9 +230,11 @@ async def test_sections_show_what_was_recorded_and_say_what_was_not(
         "5. Denetim zinciri",
         "6. Bulgular",
         "7. Kim neye erişti",
+        "8. Dile göre karakter başına token",
     ):
         assert title in old_text
-    assert old_text.count("Kaynak: ") == 7
+    assert old_text.count("Kaynak: ") == 8
+    assert evidence.LANGUAGE_COST_OFF in old_text
     assert f"Kaynak: request_lifecycle, dönem: {window.describe()}." in old_text
     assert evidence.ACCESS_NOT_RECORDED in old_text
     assert "PII_BLOCKED" not in _pdf_text(evidence.render_monthly_pdf(before))
@@ -983,3 +985,41 @@ async def test_two_workers_store_one_file_and_one_notice(async_engine) -> None:
             await cleanup.execute(
                 delete(Organization).where(Organization.id == organization.id)
             )
+
+
+@pytest.mark.parametrize("english", [30, 0])
+@pytest.mark.asyncio
+async def test_the_language_section_lists_models_with_30_turkish_answers(
+    db, english: int
+) -> None:
+    from ee.tests.observability.test_language_cost import _answer, _tenant
+
+    _, key = await _tenant(db)
+    for _ in range(30):
+        _answer(db, key, language="tr", tokens=120)
+    for _ in range(english):
+        _answer(db, key, language="en", tokens=80)
+    for _ in range(29):
+        _answer(db, key, language="tr", model="gpt-5-nano")
+    await db.flush()
+    window = evidence.monthly_window(
+        "2026-10", now=datetime(2026, 11, 2, tzinfo=timezone.utc)
+    )
+
+    rows, note = await evidence.language_costs(db, key.organization_id, window)
+    off_rows, off_note = await evidence.language_costs(
+        db, (await _tenant(db))[1].organization_id, window
+    )
+
+    assert note is None
+    assert rows == (
+        (
+            "gpt-5-mini",
+            "300.0",
+            "30",
+            "200.0" if english else "—",
+            str(english),
+            "1.50" if english else "—",
+        ),
+    )
+    assert (off_rows, off_note) == ((), evidence.LANGUAGE_COST_OFF)

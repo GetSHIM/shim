@@ -35,6 +35,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Why is my request expensive](#why-is-my-request-expensive)
 - [Read latency per team and app](#read-latency-per-team-and-app)
+- [How much more do Turkish answers cost on each model](#how-much-more-do-turkish-answers-cost-on-each-model)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Record an incident](#record-an-incident)
@@ -998,6 +999,37 @@ Notes: an app is an API key; apps sharing a key separate with `X-Shim-Tag` and
 `group_by=tag` (a request with two tags counts in both). Requests without a team,
 tag or deployment are one group with `id: null`. How speed and concurrency are
 derived is in [diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
+
+## How much more do Turkish answers cost on each model
+
+Compare how many output tokens each model bills for the same amount of Turkish and
+English answer text, on your own traffic.
+
+1. As an owner or admin, turn the `language` analyzer on:
+   `PATCH /api/v1/management/gateway-settings` with
+   `{"response_analysis": ["language"]}`.
+2. As an owner, admin or auditor, read
+   `GET /api/v1/management/language-cost?group_by=model` (or `api_key`; default the
+   last 30 days, at most 31). Each item is a model (the one the provider billed,
+   so a deployment alias shows its upstream model) and an answer language, with
+   `tokens_per_1000_characters` (the ratio of the sums), its p25 and p75 per
+   request, and `output_usd_per_1000_characters` from each settlement's own output
+   price.
+3. `tr_vs_en` divides the Turkish ratio by the English one once a model has at
+   least 30 eligible answers in each language; otherwise it is null with
+   `comparison_unavailable_reason: "not_enough_answers"`.
+
+```console
+curl 'http://localhost:8000/api/v1/management/language-cost?group_by=model' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: only the output side is measured, on complete answers of at least 200
+characters with no tool call, no reasoning and reported usage; `excluded` counts
+the rest by reason and `analysed_share` says how much traffic the numbers stand on.
+The ratio describes your tenant's answers; it is not a benchmark. The monthly
+evidence file shows the same numbers per model. The method is in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#tokens-per-character-by-language).
 
 ## Find truncated and refused answers
 

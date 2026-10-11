@@ -143,6 +143,10 @@ from shim_enterprise.observability.outcomes import (
     OutcomeGroup,
     OutcomeRatesReadModel,
 )
+from shim_enterprise.observability.language_cost import (
+    LanguageCostGroup,
+    language_cost,
+)
 from shim_enterprise.observability.latency import (
     LatencyBucket,
     LatencyGroup,
@@ -3090,6 +3094,62 @@ async def latency(
         end=end_at,
         group_by=group_by,
         bucket=bucket,
+    )
+
+
+class LanguageCostGroupView(BaseModel):
+    id: str | None
+    name: str | None
+
+
+class LanguageCostItem(BaseModel):
+    group: LanguageCostGroupView
+    language: Literal["tr", "en"]
+    requests: int
+    answer_characters: int
+    completion_tokens: int
+    tokens_per_1000_characters: float
+    ratio_p25: float
+    ratio_p75: float
+    output_usd_per_1000_characters: str | None
+    priced_requests: int
+    tr_vs_en: float | None
+    comparison_unavailable_reason: Literal["not_enough_answers"] | None
+
+
+class LanguageCostView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LanguageCostGroup
+    items: list[LanguageCostItem]
+    truncated: bool
+    excluded: dict[str, int] = Field(
+        description="Settled complete answers left out, by reason."
+    )
+    analysed_share: float | None = Field(
+        description="Eligible answers over settled complete answers."
+    )
+
+
+@router.get("/language-cost", response_model=LanguageCostView)
+async def read_language_cost(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 30 days before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LanguageCostGroup = Query(default="model"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(days=30)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    _validate_sync_window(start_at, end_at)
+    return await language_cost(
+        session, _tenant_id(user), start=start_at, end=end_at, group_by=group_by
     )
 
 

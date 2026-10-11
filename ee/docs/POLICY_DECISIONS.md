@@ -484,6 +484,12 @@ and window ("Kaynak: <table>, dönem: <start> – <end>"):
      "anahtar yok" for requests without a key, "adsız anahtar" for a key without
      a name) is set in italics, so a key named "diğer" never reads as the sum.
      Columns have fixed widths and long names wrap inside them.
+8. Dile göre karakter başına token: per model with at least 30 eligible Turkish
+   answers in the month, the Turkish and English output tokens per 1,000
+   characters with their counts and their quotient, from the
+   [language cost read](COOKBOOK.md#how-much-more-do-turkish-answers-cost-on-each-model),
+   with the method in one paragraph; "Bu sürümde kaydedilmiyor: dil çözümleyicisi
+   kapalı." when the language analyzer labelled no answer of the month.
 
 The file holds counts and names only: no prompt, answer, detected value or key.
 Files generated before a change keep their content and generator version.

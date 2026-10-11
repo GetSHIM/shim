@@ -6653,6 +6653,195 @@
         "title": "LanguageAuto",
         "type": "object"
       },
+      "LanguageCostGroupView": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "LanguageCostGroupView",
+        "type": "object"
+      },
+      "LanguageCostItem": {
+        "properties": {
+          "answer_characters": {
+            "title": "Answer Characters",
+            "type": "integer"
+          },
+          "comparison_unavailable_reason": {
+            "anyOf": [
+              {
+                "const": "not_enough_answers",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Unavailable Reason"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "group": {
+            "$ref": "#/components/schemas/LanguageCostGroupView"
+          },
+          "language": {
+            "enum": [
+              "tr",
+              "en"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "output_usd_per_1000_characters": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Usd Per 1000 Characters"
+          },
+          "priced_requests": {
+            "title": "Priced Requests",
+            "type": "integer"
+          },
+          "ratio_p25": {
+            "title": "Ratio P25",
+            "type": "number"
+          },
+          "ratio_p75": {
+            "title": "Ratio P75",
+            "type": "number"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens_per_1000_characters": {
+            "title": "Tokens Per 1000 Characters",
+            "type": "number"
+          },
+          "tr_vs_en": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tr Vs En"
+          }
+        },
+        "required": [
+          "group",
+          "language",
+          "requests",
+          "answer_characters",
+          "completion_tokens",
+          "tokens_per_1000_characters",
+          "ratio_p25",
+          "ratio_p75",
+          "output_usd_per_1000_characters",
+          "priced_requests",
+          "tr_vs_en",
+          "comparison_unavailable_reason"
+        ],
+        "title": "LanguageCostItem",
+        "type": "object"
+      },
+      "LanguageCostView": {
+        "properties": {
+          "analysed_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Eligible answers over settled complete answers.",
+            "title": "Analysed Share"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "excluded": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Settled complete answers left out, by reason.",
+            "title": "Excluded",
+            "type": "object"
+          },
+          "group_by": {
+            "enum": [
+              "model",
+              "api_key"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LanguageCostItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "items",
+          "truncated",
+          "excluded",
+          "analysed_share"
+        ],
+        "title": "LanguageCostView",
+        "type": "object"
+      },
       "LanguageHints": {
         "additionalProperties": false,
         "description": "Deprecated: Use AudioTranscriptionConfig.language_codes instead.",
@@ -19264,6 +19453,96 @@
           }
         ],
         "summary": "Update Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/language-cost": {
+      "get": {
+        "operationId": "read_language_cost_api_v1_management_language_cost_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to 30 days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to 30 days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "enum": [
+                "model",
+                "api_key"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LanguageCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Language Cost",
         "tags": [
           "management"
         ]

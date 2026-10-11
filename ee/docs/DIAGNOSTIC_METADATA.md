@@ -353,6 +353,22 @@ indexed `started_at` window; there is no rollup table. Its measures:
 The findings `gateway.cold_start` and `gateway.queueing` use the same first byte and
 sweep ([findings](FINDINGS.md#gatewaycold_start)).
 
+## Tokens per character by language
+
+`GET /api/v1/management/language-cost` divides a settlement's billed
+`completion_tokens` by the answer's `answer_characters`, per model or API key and
+per answer language (`response_analysis.language.answer`, `tr` or `en`). No
+tokenizer is used: the provider's own count is the measure. Only the output side
+is measured, because `prompt_tokens` mixes system prompts, tool definitions,
+history and cached prefixes with the question. An answer counts when it ended
+`complete`, has at least 200 characters, called no tool, carried no reasoning
+(`reasoning_seen`; Gemini thought parts count as answer text, so a Gemini answer
+with thoughts is left out too) and its settlement is not estimated; the others
+are counted under `excluded` (`estimated_usage`, `tool_calls`, `reasoning`,
+`short`, `not_analysed`, `language_unknown`, the first that applies). Money uses
+each settlement's own output price, the large-context one once the prompt crossed
+its threshold; unpriced settlements add none.
+
 ## Responses continuation markers
 
 Enterprise writes an encrypted continuation marker to Redis for every Responses
