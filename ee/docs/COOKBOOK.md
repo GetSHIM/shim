@@ -238,12 +238,12 @@ forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-
 Turn the gateway's own switches on or off for your tenant. Every switch is off by
 default; privacy switches stay under [privacy settings](#change-the-privacy-settings).
 
-1. Read them with `GET /api/v1/management/gateway-settings` (owner, admin or
-   auditor): `settings` with every field, `revision` (0 until the first change),
+1. Read them with `GET /api/v1/management/gateway-settings` (`settings.read`:
+   every built-in role): `settings` with every field, `revision` (0 until the first change),
    `updated_at`, `updated_by`, `available_analyzers`, and `unavailable`, which
    names a field that is "off, needs X" because an optional part is missing.
 2. Send only what you change in `PATCH /api/v1/management/gateway-settings`
-   (owner or admin). The answer is the same body as the GET.
+   (`settings.write`: owner or admin). The answer is the same body as the GET.
 
 | Field | Default | What it does |
 | --- | --- | --- |
@@ -278,15 +278,16 @@ customer lists. One set per tenant, replaced whole, beside the privacy
 settings. Two kinds are available: `term` (a word list) and `pattern` (code
 shapes); the others are listed as unavailable until their release.
 
-1. Read the set with `GET /api/v1/management/rules` (owner, admin or auditor):
+1. Read the set with `GET /api/v1/management/rules` (`rules.read`: owner, admin
+   or auditor):
    `revision` (0 until the first change), `rules`, `unavailable_rules`,
    `updated_by`, `updated_at`, `limits`, and `kinds`, where each kind says
    whether it is `available`, its `actions`, and why not when it is not.
    `unavailable_rules` holds stored rules this release cannot run, written by a
    later one: a `PUT` keeps them and cannot reuse their ids
    ([what they do](POLICY_DECISIONS.md#tenant-rules)).
-2. Send the whole set back with `PUT /api/v1/management/rules` (owner or
-   admin), with the `revision` you read. The answer is the same body as the GET,
+2. Send the whole set back with `PUT /api/v1/management/rules` (`rules.write`:
+   owner or admin), with the `revision` you read. The answer is the same body as the GET,
    at the next revision.
 
 ```console

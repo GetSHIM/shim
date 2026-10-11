@@ -14,7 +14,7 @@ write nor own gateway keys.
 
 | Permission | Allows | Owner | Admin | Member | Auditor |
 | --- | --- | --- | --- | --- | --- |
-| `settings.read` | Read the privacy and provider-key settings | x | x | x | x |
+| `settings.read` | Read the privacy, provider-key and gateway settings | x | x | x | x |
 | `settings.write` | Change those settings and the organization name | x | x | | |
 | `rules.read` | Read the rule set | x | x | | x |
 | `rules.write` | Change the rule set | x | x | | |

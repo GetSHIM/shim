@@ -332,6 +332,15 @@
   "service_auditor": "404",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/gateway-settings": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "200"
+ },
  "GET /api/v1/management/model-deployments": {
   "admin": "200",
   "auditor": "200",
@@ -457,6 +466,15 @@
   "service_admin": "403 Permission required: roles.manage",
   "service_auditor": "403 Permission required: roles.manage",
   "team_admin": "403 Permission required: roles.manage"
+ },
+ "GET /api/v1/management/rules": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: rules.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: rules.read"
  },
  "GET /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
@@ -608,6 +626,15 @@
   "member": "403 Organization admin required",
   "owner": "422",
   "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "PATCH /api/v1/management/gateway-settings": {
+  "admin": "200",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "200",
+  "service_admin": "200",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
@@ -952,6 +979,15 @@
   "service_admin": "403 Permission required: roles.manage",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Permission required: roles.manage"
+ },
+ "PUT /api/v1/management/rules": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
  },
  "PUT /api/v1/management/settings/pii": {
   "admin": "200",
