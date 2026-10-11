@@ -1432,14 +1432,6 @@
         "title": "AzureEntraInput",
         "type": "object"
       },
-      "BatchEmbedContentsRequest": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Native `:batchEmbedContents` JSON, kept as sent.",
-        "title": "BatchEmbedContentsRequest",
-        "type": "object"
-      },
       "Behavior": {
         "description": "Specifies the function Behavior.\n\nIf not specified, the system keeps the current function call behavior. This\nfield is currently only supported by the BidiGenerateContent method.",
         "enum": [
@@ -3207,7 +3199,7 @@
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
         },
-        "description": "Native `:embedContent` JSON, kept as sent.",
+        "description": "Native `:embedContent` or `:batchEmbedContents` JSON, kept as sent.",
         "title": "EmbedContentRequest",
         "type": "object"
       },
@@ -24173,7 +24165,7 @@
     },
     "/v1beta/models/{model}:batchEmbedContents": {
       "post": {
-        "operationId": "batch_embed_contents_v1beta_models__model__batchEmbedContents_post",
+        "operationId": "embed_content_v1beta_models__model__batchEmbedContents_post",
         "parameters": [
           {
             "in": "path",
@@ -24192,7 +24184,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BatchEmbedContentsRequest"
+                "$ref": "#/components/schemas/EmbedContentRequest"
               }
             }
           },
@@ -24229,7 +24221,7 @@
             "GoogleAPIKey": []
           }
         ],
-        "summary": "Batch Embed Contents"
+        "summary": "Embed Content"
       }
     },
     "/v1beta/models/{model}:embedContent": {

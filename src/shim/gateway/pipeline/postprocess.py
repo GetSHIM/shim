@@ -34,7 +34,7 @@ from shim.gateway.pipeline.analysis import (
     ResponseAnalyzer,
     run_analyzers,
 )
-from shim.gateway.pipeline.privacy import scan_response
+from shim.gateway.pipeline.privacy import embedded_texts, scan_response
 from shim.gateway.pipeline.provider_execution import ProviderNonStream, ProviderStream
 from shim.gateway.streaming import (
     StreamFinalization,
@@ -352,9 +352,14 @@ class ResponsePostprocessor:
         prompt_actual = usage.get("prompt")
         completion_actual = 0 if embeddings else usage.get("completion")
         prompt_tokens = (
-            prepared.admission.estimated_input_tokens
-            if prompt_actual is None
-            else prompt_actual
+            prompt_actual
+            if prompt_actual is not None
+            # Gemini reports no embeddings usage: four characters a token of the text.
+            else -(
+                -sum(map(len, embedded_texts(prepared.payload, "embed_content"))) // 4
+            )
+            if prepared.protocol == "embed_content"
+            else prepared.admission.estimated_input_tokens
         )
         completion_tokens = (
             prepared.admission.maximum_output_tokens

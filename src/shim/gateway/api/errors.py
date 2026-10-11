@@ -187,7 +187,7 @@ def _gateway_provider(
     normalized = path.rstrip("/")
     if normalized in {"/v1/messages", "/v1/messages/count_tokens"}:
         return "anthropic"
-    if normalized in {"/v1/chat/completions", "/v1/responses"}:
+    if normalized in {"/v1/chat/completions", "/v1/responses", "/v1/embeddings"}:
         return "openai"
     if normalized == "/v1/models" or normalized.startswith("/v1/models/"):
         return "anthropic" if headers.get("anthropic-version") else "openai"

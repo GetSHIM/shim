@@ -804,6 +804,33 @@ async def test_the_genai_sdk_embeds_through_the_gateway_on_the_native_path() -> 
 
 
 @pytest.mark.asyncio
+async def test_each_embed_route_takes_only_its_own_shape() -> None:
+    single = {"content": {"parts": [{"text": "hello"}]}}
+    batch = {"requests": [single]}
+
+    async def send(inbound):
+        return [
+            await inbound.post(
+                f"/v1beta/models/gemini-embedding-001:{method}",
+                headers={"x-goog-api-key": _GATEWAY_KEY, "x-provider-key": "up"},
+                json=body,
+            )
+            for method, body in (
+                ("embedContent", batch),
+                ("batchEmbedContents", single),
+                ("embedContent", {"content": {"parts": []}}),
+                ("batchEmbedContents", {"requests": [{"content": {}}]}),
+            )
+        ]
+
+    responses, seen = await _embed_through_the_gateway(send)
+
+    assert [response.status_code for response in responses] == [422] * 4
+    assert all(response.json()["error"]["status"] for response in responses)
+    assert seen == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "body", "reply"),
     [

@@ -2070,3 +2070,63 @@ def test_the_restore_map_leaves_out_withheld_types_tails_and_labels_alike() -> N
         "PROJECT": 1,
     }
     assert withheld.verification_map == mapping
+
+
+_BATCHES = [
+    # A cue word ending one text never reaches the next one's number: "invoice
+    # number" right before it would make this phone an invoice id.
+    ["invoice number", "4155552671"],
+    ["the order number is", "10000000146"],
+    ["telefon", "05321234567 ara"],
+    ["vergi no", "1234567890"],
+    # A detection that would run across texts sends each text alone.
+    ["password", "hunter2hunter2"],
+    ["ali@example", "com wrote"],
+    ["plain words only", "TCKN 10000000146 and ali@example.com", "x" * 30],
+]
+
+
+@pytest.mark.parametrize("texts", _BATCHES)
+def test_a_batch_scans_each_text_as_it_would_be_alone(texts) -> None:
+    actions = effective_entity_actions()
+    key = b"k" * 32
+    alone = [
+        scrub_payload(
+            {"input": text}, actions, PIIScrubberService(), placeholder_key=key
+        )
+        for text in texts
+    ]
+
+    batched, found = scrub_payload(
+        {"input": texts},
+        actions,
+        PIIScrubberService(),
+        placeholder_key=key,
+        batch=texts,
+    )
+
+    assert PIIScrubberService().scrub_many(texts, actions) is not None or any(
+        "password" in text or "@" in text for text in texts
+    )
+    assert batched["input"] == [payload["input"] for payload, _ in alone]
+    assert found == {k: v for _, mapping in alone for k, v in mapping.items()}
+
+
+def test_a_batch_of_a_thousand_texts_scans_faster_than_one_by_one() -> None:
+    actions = effective_entity_actions()
+    words = "delivery delay north region warehouse invoice refund shipment".split()
+    texts = [
+        f"Note {' '.join(words[(i + k) % 8] for k in range(6))} item "
+        f"{chr(65 + i % 26)}{chr(65 + i // 26 % 26)}{chr(97 + i // 676)}."
+        for i in range(1_000)
+    ]
+
+    def best_of_three(batch: list[str]) -> float:
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            scrub_payload({"input": texts}, actions, PIIScrubberService(), batch=batch)
+            timings.append(time.perf_counter() - started)
+        return min(timings)
+
+    assert best_of_three(texts) < 0.85 * best_of_three([])

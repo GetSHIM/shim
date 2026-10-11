@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -68,27 +69,20 @@ def _has_parts(item: object) -> bool:
 
 
 class EmbedContentRequest(ProviderRequest):
-    """Native `:embedContent` JSON, kept as sent."""
+    """Native `:embedContent` or `:batchEmbedContents` JSON, kept as sent."""
 
     @model_validator(mode="after")
     def validate_content(self) -> EmbedContentRequest:
-        if not _has_parts(self.root):
-            raise ValueError("content needs at least one part")
-        return self
-
-
-class BatchEmbedContentsRequest(ProviderRequest):
-    """Native `:batchEmbedContents` JSON, kept as sent."""
-
-    @model_validator(mode="after")
-    def validate_requests(self) -> BatchEmbedContentsRequest:
-        requests = self.require("requests", list)
-        if not requests or not all(_has_parts(item) for item in requests):
+        items = (
+            self.require("requests", list) if "requests" in self.root else [self.root]
+        )
+        if not items or not all(_has_parts(item) for item in items):
             raise ValueError("each request needs content with at least one part")
         return self
 
 
 @router.post("/v1beta/models/{model}:embedContent")
+@router.post("/v1beta/models/{model}:batchEmbedContents")
 async def embed_content(
     model: ModelId,
     request: Request,
@@ -96,31 +90,17 @@ async def embed_content(
     gateway_service: GatewayService = Depends(get_gateway_service),
     principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
 ):
-    return await _dispatch_embeddings(
-        model, request, payload, gateway_service, principal
-    )
-
-
-@router.post("/v1beta/models/{model}:batchEmbedContents")
-async def batch_embed_contents(
-    model: ModelId,
-    request: Request,
-    payload: BatchEmbedContentsRequest,
-    gateway_service: GatewayService = Depends(get_gateway_service),
-    principal: AuthenticatedPrincipal = Depends(get_google_authenticated_principal),
-):
-    return await _dispatch_embeddings(
-        model, request, payload, gateway_service, principal
-    )
-
-
-async def _dispatch_embeddings(
-    model: str,
-    request: Request,
-    payload: ProviderRequest,
-    gateway_service: GatewayService,
-    principal: AuthenticatedPrincipal,
-):
+    # The route names the shape: a batch sends `requests`, one call its `content`.
+    if ("requests" in payload.root) != request.url.path.endswith(":batchEmbedContents"):
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body",),
+                    "msg": "batchEmbedContents takes requests, embedContent content",
+                }
+            ]
+        )
     return await dispatch_gateway_inference(
         request=request,
         payload=payload.provider_payload(),

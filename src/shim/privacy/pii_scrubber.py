@@ -7,7 +7,8 @@ import hmac
 import re
 import secrets
 import unicodedata
-from collections.abc import Iterable, Mapping
+from bisect import bisect_left
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -28,6 +29,11 @@ _PLACEHOLDER = re.compile(
 _PERCENT_BYTE = re.compile(r"%([0-9A-Fa-f]{2})")
 _SourceSpan = tuple[int, int]
 MAX_ANALYZABLE_TEXT_LENGTH = 1_000_000
+# Between texts scanned in one pass: no detector matches it, its line breaks end every
+# line-bound pattern, and it is longer than any character look-back (24 for an
+# identifier's cue words). Presidio's context words may still reach across it, which
+# can only add a detection.
+_BATCH_SEPARATOR = "\n\n" + "." * 24 + "\n\n"
 
 
 class PIIInputTooLarge(ValueError):
@@ -208,6 +214,80 @@ class PIIScrubberService:
         if content is None and all(action == "off" for action in actions.values()):
             return text, {}
         detections, hits = self._source_detections(text, actions, content)
+        return self._redact(
+            text,
+            detections,
+            hits,
+            actions,
+            known_placeholders=known_placeholders,
+            placeholders_by_value=placeholders_by_value,
+            unmasked=unmasked,
+            placeholder_key=placeholder_key,
+            content=content,
+        )
+
+    def scrub_many(
+        self,
+        texts: Sequence[str],
+        actions: Mapping[str, EntityAction],
+        *,
+        known_placeholders: Mapping[str, str] | None = None,
+        placeholders_by_value: dict[str, str] | None = None,
+        unmasked: dict[str, str] | None = None,
+        placeholder_key: bytes | None = None,
+    ) -> tuple[list[str], dict[str, str]] | None:
+        """`scrub` for many texts in one analyzer pass, without tenant rules.
+
+        The texts are joined by a separator longer than any detector's look-back, so
+        each is read as it would be alone. None, with nothing recorded, when one pass
+        cannot stand for them: a text holds the separator, the whole is too long, or
+        a detection would run from one text into the next.
+        """
+        joined = _BATCH_SEPARATOR.join(texts)
+        if len(joined) > MAX_ANALYZABLE_TEXT_LENGTH or any(
+            _BATCH_SEPARATOR in text for text in texts
+        ):
+            return None
+        detections, _ = self._source_detections(joined, actions)
+        separators, cursor = [], 0
+        for text in texts[:-1]:
+            cursor += len(text)
+            separators.append(cursor)
+            cursor += len(_BATCH_SEPARATOR)
+        for item in detections:
+            # The last separator starting before the detection ends is the only one
+            # it can overlap.
+            index = bisect_left(separators, item.end) - 1
+            if index >= 0 and separators[index] + len(_BATCH_SEPARATOR) > item.start:
+                return None
+        kept: dict[str, str] = {}
+        scrubbed, found = self._redact(
+            joined,
+            detections,
+            [],
+            actions,
+            known_placeholders=known_placeholders,
+            placeholders_by_value=placeholders_by_value,
+            unmasked=kept,
+            placeholder_key=placeholder_key,
+        )
+        if unmasked is not None:
+            unmasked.update(kept)
+        return scrubbed.split(_BATCH_SEPARATOR), found
+
+    def _redact(
+        self,
+        text: str,
+        detections: list[RecognizerResult],
+        hits: list[ContentHit],
+        actions: Mapping[str, EntityAction],
+        *,
+        known_placeholders: Mapping[str, str] | None,
+        placeholders_by_value: dict[str, str] | None,
+        unmasked: dict[str, str] | None,
+        placeholder_key: bytes | None,
+        content: ContentRules | None = None,
+    ) -> tuple[str, dict[str, str]]:
         if not detections and not hits:
             return text, {}
         placeholders, marks = _settle(detections, hits, actions)
