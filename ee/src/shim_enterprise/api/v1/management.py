@@ -2413,7 +2413,7 @@ def _rule_audit(rule: Rule, before: Rule | None) -> dict[str, object]:
 
 @router.get("/rules", response_model=RuleSetView)
 async def get_rules(
-    user: User = Depends(require("rules.read")),
+    user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
     return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))

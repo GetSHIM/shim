@@ -16,7 +16,7 @@ from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.rules import KINDS, LIMITS, Rule, RuleSet, validate_rule_set
 from shim.rules.model import RuleMatch
 import shim_enterprise.api.enterprise_deps as enterprise_deps
-from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED
+from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, READER_REQUIRED
 from shim_enterprise.api.v1 import management
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.core.database import get_db
@@ -329,7 +329,7 @@ def test_readers_read_and_admins_write() -> None:
 
     assert guards["GET", "/rules"] == {
         "permissions": ("rules.read",),
-        "legacy_detail": None,
+        "legacy_detail": READER_REQUIRED,
     }
     assert guards["PUT", "/rules"] == {
         "permissions": ("rules.write",),
