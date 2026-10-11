@@ -7,9 +7,8 @@ flag the same text; a change to them goes to both.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import Any
-
 import re
+from typing import Any
 import unicodedata
 
 INSTRUCTION_OVERRIDE = "INSTRUCTION_OVERRIDE"

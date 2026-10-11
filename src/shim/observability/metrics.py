@@ -7,6 +7,8 @@ from typing import Final
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from shim.privacy.injection import MARKERS
+
 
 LABEL_VALUES: Final = MappingProxyType(
     {
@@ -48,15 +50,7 @@ LABEL_VALUES: Final = MappingProxyType(
             }
         ),
         "provider": frozenset({"openai", "anthropic", "google"}),
-        "marker": frozenset(
-            {
-                "INSTRUCTION_OVERRIDE",
-                "ROLE_REASSIGNMENT",
-                "SYSTEM_IMPERSONATION",
-                "SECRECY_REQUEST",
-                "HIDDEN_TEXT",
-            }
-        ),
+        "marker": frozenset(MARKERS),
         "model": frozenset({"gpt-*", "claude-*", "gemini-*", "other"}),
         "terminal_state": frozenset(
             {

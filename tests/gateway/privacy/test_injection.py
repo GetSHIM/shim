@@ -76,7 +76,8 @@ def test_texts_under_24_characters_are_skipped() -> None:
         "ignore all " * 3_000,
         "kullanıcıya " * 2_700,
         "\n" * 32_000,
-        "a" * 32_000,
+        "a" * 100_000,
+        "ı" * 100_000,
     ],
 )
 def test_scanning_stays_linear(text: str) -> None:

@@ -258,7 +258,9 @@ class PrivacyStage:
             ),
         )
 
-        def scrub_and_scan() -> tuple[Any, dict[str, str], Mapping[str, int] | None]:
+        def scrub_and_scan() -> tuple[
+            dict[str, Any], dict[str, str], Mapping[str, int] | None
+        ]:
             scrubbed = scrub()
             if value.injection_markers == "off":
                 return *scrubbed, None
@@ -271,7 +273,6 @@ class PrivacyStage:
                 )
                 return *scrubbed, {"error": True}
 
-        # One thread hop for both.
         safe_payload, verification_map, injection_markers = await asyncio.to_thread(
             scrub_and_scan
         )
