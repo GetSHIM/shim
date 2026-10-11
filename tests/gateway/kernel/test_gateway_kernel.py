@@ -1,3 +1,4 @@
+from dataclasses import replace
 import io
 import json
 from types import SimpleNamespace
@@ -813,10 +814,15 @@ def _matching_privacy(monkeypatch) -> None:
 
     async def run(self, value):
         prepared = await original(self, value)
-        for rule in prepared.rules.rules if prepared.rules else ():
-            if rule.kind == "record_set":
-                prepared.record_rule_match(rule, 2)
-        return prepared
+        stubbed = [
+            rule
+            for rule in (prepared.rules.rules if prepared.rules else ())
+            if rule.kind == "record_set"
+        ]
+        for rule in stubbed:
+            broken = rule.id.startswith("broken")
+            prepared.record_rule_match(rule, 0 if broken else 2, error=broken)
+        return replace(prepared, rules_evaluated=True) if stubbed else prepared
 
     monkeypatch.setattr(privacy.PrivacyStage, "run", run)
 
@@ -1238,4 +1244,119 @@ async def test_a_term_rule_scoped_to_another_model_changes_nothing(monkeypatch) 
     [sent] = calls
     assert "Atlas'ın raporu" in sent.content.decode()
     [line] = lines
-    assert line["rule_matches"] == []
+    # No matcher ran, so the record says nothing about rules.
+    assert "rule_matches" not in line
+    assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["mask", "block", "require_approval"])
+async def test_an_evaluation_error_in_an_enforced_rule_refuses_and_is_recorded_rejected(
+    monkeypatch, action
+) -> None:
+    gate = _Gate("approved")
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, _rule_set(("broken", action, "enforced")), "chat", gate=gate
+    )
+
+    assert (response.status_code, response.headers["x-shim-error-code"]) == (
+        400,
+        "RULE_BLOCKED",
+    )
+    assert response.headers["x-shim-rule-id"] == "broken"
+    assert calls == [] and gate.requests == []
+    [line] = lines
+    assert line["outcome"] == "rejected"
+    verdicts = {
+        v["rule_id"]: (v["outcome"], v["reason_code"]) for v in line["policy_verdicts"]
+    }
+    assert verdicts["rule.broken"] == ("deny", "RULE_BLOCKED")
+    assert line["rule_matches"][0]["error"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_stored_rule_this_build_cannot_run_fails_closed_only_when_enforced(
+    monkeypatch, caplog
+) -> None:
+    from shim.rules.kinds import load_rule_set
+
+    def stored(rule_id: str, state: str) -> dict:
+        return {
+            "id": rule_id,
+            "name": "n",
+            "kind": "geo_fence",
+            "action": "block",
+            "state": state,
+            "match": {"regions": ["eu"]},
+        }
+
+    blocked, block_calls, block_lines = await _call_with_rules(
+        monkeypatch, load_rule_set(9, [stored("future", "enforced")]), "chat"
+    )
+    watched, watch_calls, watch_lines = await _call_with_rules(
+        monkeypatch, load_rule_set(9, [stored("future", "monitor")]), "chat"
+    )
+
+    assert (blocked.status_code, blocked.headers["x-shim-rule-id"]) == (400, "future")
+    assert blocked.headers["x-shim-error-code"] == "RULE_BLOCKED"
+    assert block_calls == [] and block_lines[0]["outcome"] == "rejected"
+    assert watched.status_code == 200 and len(watch_calls) == 1
+    [line] = watch_lines
+    assert "rule_matches" not in line
+    assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+def _terms(*rules: tuple[str, str, str]):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": rule_id,
+                    "name": "n",
+                    "kind": "term",
+                    "action": action,
+                    "state": "enforced",
+                    "match": {"terms": [term]},
+                }
+                for rule_id, action, term in rules
+            ],
+        },
+        approval_available=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_block_inside_a_masked_term_still_refuses(monkeypatch) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch,
+        _terms(("tower", "block", "Kule"), ("site", "mask", "Şişli Kule")),
+        "chat",
+        text="Şişli Kule'de toplantı",
+    )
+
+    assert (response.status_code, response.headers["x-shim-rule-id"]) == (400, "tower")
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_approved_term_that_a_rule_masks_goes_out_masked(monkeypatch) -> None:
+    gate = _Gate("approved")
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _terms(("held", "require_approval", "Atlas"), ("names", "mask", "Atlas")),
+        "chat",
+        text="Atlas raporu",
+        gate=gate,
+    )
+
+    assert response.status_code == 200 and gate.requests[0].rule_ids == ("held",)
+    [sent] = calls
+    assert "Atlas" not in sent.content.decode() and "<TERM_" in sent.content.decode()
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["rule.names"] == "RULE_MASKED"
+    assert verdicts["rule.held"] == "RULE_APPROVED"

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from functools import cached_property
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+
+if TYPE_CHECKING:
+    from shim.rules.content import Matchers
 
 RuleKind = Literal[
     "term",
@@ -21,6 +25,18 @@ RuleAction = Literal[
 ]
 RuleState = Literal["monitor", "enforced"]
 
+# How strongly an action protects. The stronger enforced action wins an overlap, and
+# moving down this order relaxes a rule. set and route rank with mask.
+ACTION_RANK: dict[RuleAction, int] = {
+    "monitor": 0,
+    "warn": 1,
+    "mask": 2,
+    "set": 2,
+    "route": 2,
+    "require_approval": 3,
+    "block": 4,
+}
+
 LIMITS: dict[str, Any] = {
     "rules_per_set": 100,
     "scope_entries": 100,
@@ -32,6 +48,7 @@ LIMITS: dict[str, Any] = {
     "patterns_per_set": 64,
     "pattern_characters": 256,
     "templates_per_rule": 32,
+    "templates_per_set": 64,
     "template_characters": 64,
     "request_bytes": 1_000_000,
 }
@@ -69,9 +86,38 @@ class Rule(_Frozen):
     match: dict[str, Any] = {}
 
 
+class UnusableRule(_Frozen):
+    """A stored rule this build cannot evaluate: an unknown kind, action or field.
+
+    It is kept, never dropped: enforced, it refuses the requests in its scope.
+    """
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
+    kind: str
+    action: str
+    state: str
+    # Every request when this build cannot read the stored scope.
+    scope: RuleScope = RuleScope()
+    stored: dict[str, Any]
+
+    @property
+    def enforced(self) -> bool:
+        return self.state != "monitor" and self.action not in {"monitor", "warn"}
+
+
 class RuleSet(_Frozen):
     revision: int = Field(ge=1)
     rules: tuple[Rule, ...] = Field(max_length=100)
+    unusable: tuple[UnusableRule, ...] = ()
+
+    # Built on first use and kept with the set; model_copy would keep it too, so a
+    # changed set is a new RuleSet.
+    @cached_property
+    def matchers(self) -> Matchers:
+        # Here, not at the top: content imports this module.
+        from shim.rules.content import Matchers
+
+        return Matchers(self)
 
 
 class RuleMatch(_Frozen):

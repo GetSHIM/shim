@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
+import re
 import unicodedata
-import weakref
 
 from pydantic import (
     AfterValidator,
@@ -13,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -20,68 +22,63 @@ from pydantic_core import PydanticCustomError
 import regex
 
 from shim.observability.metrics import LABEL_VALUES
-from shim.rules.evaluate import strongest
-from shim.rules.model import Rule, RuleSet
+from shim.rules.model import ACTION_RANK, Rule, RuleSet
 from shim.rules.patterns import PatternTimeout, SearchBudget, compile_safe
-from shim.rules.tr_suffixes import TR_SUFFIXES
+from shim.rules.tr_suffixes import TR_SUFFIX
+
 
 _WORD = r"[\p{L}\p{N}_]"
 _START = rf"(?<!{_WORD})"
 _END = rf"(?!{_WORD})"
-_END_AT = regex.compile(_END)
-# U+02BC is a letter, so the boundary alone would refuse "Atlasʼa".
+# A run of letters or of digits: what a term's words are matched against. An
+# underscore, a letter next to a digit and a lower-case letter before an upper-case
+# one are word edges too: "atlas_rapor", "Atlas2024", "AtlasProje".
+_RUN = re.compile(r"[^\W\d_]+|\d+")
+_CAMEL = regex.compile(r"\p{Ll}\p{Lu}")
+_SPACES = re.compile(r"\s+")
+_DASH = "-"
+# Hyphen, non-breaking hyphen, figure, en and em dash, horizontal bar, minus sign.
+_DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"
+# Turkish letters typed without their marks, and every dash as a hyphen.
+_ASCII = (
+    ("ı", "i"),
+    ("ş", "s"),
+    ("ç", "c"),
+    ("ğ", "g"),
+    ("ö", "o"),
+    ("ü", "u"),
+) + tuple((dash, _DASH) for dash in _DASHES)
+# U+02BC is a letter, so a run can carry it: "Atlasʼa".
 _APOSTROPHE_LETTER = "ʼ"
 _TURKISH_I = "İIıi"
-_FOLD = str.maketrans({"İ": "i", "I": "i", "ı": "i"})
 _LABEL = r"^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$"
 _MIN_SUFFIXED_TERM = 4
 
 
-def turkish_fold(text: str) -> str:
-    """İ, I and ı to i, then lower case, then whitespace runs to one space."""
+def _fold(text: str) -> str:
+    """The fold terms are compared in; one character for one, so offsets hold.
 
-    return " ".join(text.translate(_FOLD).lower().split())
+    Lower case with the four Turkish I letters as one, ş ç ğ ö ü as s c g o u, and
+    every dash as a hyphen: "ŞİŞLİ", "Sisli" and "sişli" are one word.
+    """
+
+    # str.replace runs in C; a translate table walks a dict per character.
+    folded = text.replace("İ", "i").lower()
+    for letter, plain in _ASCII:
+        folded = folded.replace(letter, plain)
+    return folded
+
+
+def turkish_fold(text: str) -> str:
+    """The fold, then whitespace runs to one space."""
+
+    return " ".join(_fold(text).split())
 
 
 def _letter(character: str) -> str:
-    return f"[{_TURKISH_I}]" if character in _TURKISH_I else regex.escape(character)
-
-
-def _term_regex(term: str) -> str:
-    return "".join(
-        r"\s+" if character == " " else _letter(character) for character in term
-    )
-
-
-_AFTER_SUFFIX = f"(?={_APOSTROPHE_LETTER}|(?&suffix)?{_END})"
-_AFTER_APOSTROPHE = f"(?={_APOSTROPHE_LETTER}|{_END})"
-
-
-def _term_trie(terms: dict[str, str]) -> str:
-    """Folded terms as a prefix tree, each ending in its lookahead.
-
-    One branch per shared prefix keeps 200 terms near one comparison per character;
-    where a term ends inside a longer one, the longer is tried first.
-    """
-
-    root: dict[str, Any] = {}
-    for term, after in terms.items():
-        node = root
-        for character in term:
-            node = node.setdefault(character, {})
-        node[""] = after
-
-    def emit(node: dict[str, Any]) -> str:
-        branches = [
-            _term_regex(character) + emit(child)
-            for character, child in node.items()
-            if character
-        ]
-        if "" in node:
-            branches.append(node[""])
-        return branches[0] if len(branches) == 1 else f"(?:{'|'.join(branches)})"
-
-    return emit(root)
+    if character in _TURKISH_I:
+        return f"[{_TURKISH_I}]"
+    return f"[-{_DASHES}]" if character == _DASH else regex.escape(character)
 
 
 def _template_regex(template: str) -> str:
@@ -114,6 +111,8 @@ def _term(value: str) -> str:
     term = " ".join(unicodedata.normalize("NFKC", value).split())
     if not 3 <= len(term) <= 128:
         raise ValueError("a term is 3 to 128 characters after trimming")
+    if not _RUN.search(term):
+        raise ValueError("a term needs a letter or a digit")
     return term
 
 
@@ -122,8 +121,11 @@ def _template(value: str) -> str:
     return value
 
 
-def _safe(value: str) -> str:
-    if compile_safe(value) is None:
+def _safe(value: str, info: ValidationInfo) -> str:
+    flags = regex.IGNORECASE if info.data.get("ignore_case", True) else 0
+    # A stored set was probed when it was written; a timed probe on load could flake.
+    probe = not (info.context or {}).get("stored", False)
+    if compile_safe(value, flags, probe=probe) is None:
         raise PydanticCustomError(
             "rule_pattern_unsafe",
             "the regex does not compile, can backtrack, or is too slow",
@@ -154,6 +156,8 @@ class TermMatch(BaseModel):
 class PatternMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Before regexes: their safety check runs with the flags they run with.
+    ignore_case: bool = True
     templates: list[
         Annotated[
             str,
@@ -167,7 +171,6 @@ class PatternMatch(BaseModel):
         ]
     ] = Field(default=[], max_length=32)
     label: _Label = "PATTERN"
-    ignore_case: bool = True
 
     @model_validator(mode="after")
     def something_to_match(self) -> PatternMatch:
@@ -177,80 +180,204 @@ class PatternMatch(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
-class _Compiled:
-    terms: Any | None
-    # Turkish-folded term to the rules that list it.
-    owners: dict[str, tuple[Rule, ...]]
-    patterns: dict[str, tuple[Any, ...]]
-
-
-_COMPILED: dict[int, _Compiled] = {}
-
-
-def _compile(rule_set: RuleSet) -> _Compiled:
-    owners: dict[str, list[Rule]] = {}
-    suffixed: set[str] = set()
-    patterns: dict[str, tuple[Any, ...]] = {}
-    for rule in rule_set.rules:
-        if rule.kind == "term":
-            for term in rule.match["terms"]:
-                folded = turkish_fold(term)
-                owners.setdefault(folded, []).append(rule)
-                if rule.match.get("suffixes", "tr") == "tr":
-                    suffixed.add(folded)
-        elif rule.kind == "pattern":
-            flags = regex.IGNORECASE if rule.match.get("ignore_case", True) else 0
-            templates = rule.match.get("templates", [])
-            patterns[rule.id] = tuple(
-                regex.compile(source, flags)
-                for source in (
-                    ["|".join(_template_regex(t) for t in templates)]
-                    if templates
-                    else []
-                )
-                + list(rule.match.get("regexes", []))
-            )
-    terms = None
-    if owners:
-        suffix = "|".join(
-            _term_regex(item) for item in sorted(TR_SUFFIXES, key=len, reverse=True)
-        )
-        # A term two rules list with different suffix modes takes the wider
-        # lookahead; the search drops an owner its mode refuses.
-        trie = _term_trie(
-            {
-                term: _END
-                if term not in suffixed
-                else _AFTER_SUFFIX
-                if len(term) >= _MIN_SUFFIXED_TERM
-                else _AFTER_APOSTROPHE
-                for term in owners
-            }
-        )
-        terms = regex.compile(
-            f"(?(DEFINE)(?<suffix>{suffix})){_START}{trie}", regex.IGNORECASE
-        )
-    return _Compiled(
-        terms, {key: tuple(value) for key, value in owners.items()}, patterns
-    )
-
-
-def _compiled(rule_set: RuleSet) -> _Compiled:
-    """Compiled once per RuleSet object; the entry goes when the object does."""
-
-    key = id(rule_set)
-    found = _COMPILED.get(key)
-    if found is None:
-        found = _COMPILED[key] = _compile(rule_set)
-        weakref.finalize(rule_set, _COMPILED.pop, key, None)
-    return found
-
-
-@dataclass(frozen=True, slots=True)
 class ContentHit:
     start: int
     end: int
     rules: tuple[Rule, ...]
+
+    @property
+    def strength(self) -> int:
+        """The strongest enforced action's rank; a monitor-state rule acts on nothing."""
+
+        return max(
+            (
+                ACTION_RANK[rule.action]
+                for rule in self.rules
+                if rule.state == "enforced"
+            ),
+            default=0,
+        )
+
+    @property
+    def label(self) -> str | None:
+        """The placeholder type when any enforced rule masks, even if another holds."""
+
+        masking = [
+            rule
+            for rule in self.rules
+            if rule.state == "enforced" and rule.action == "mask"
+        ]
+        return (
+            min(masking, key=lambda rule: rule.id).match["label"] if masking else None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Term:
+    lead: str
+    trail: str
+    short: bool
+    owners: tuple[Rule, ...]
+
+
+@dataclass(slots=True)
+class _Node:
+    """Terms by their words: the next word and separator, and the words a term ends with."""
+
+    # A word, then the separator after it, to the node for the next word.
+    next: dict[str, dict[str, _Node]] = field(default_factory=dict)
+    ends: dict[str, list[_Term]] = field(default_factory=dict)
+    lengths: tuple[int, ...] = ()
+
+
+def _word_at(text: str, index: int) -> bool:
+    return 0 <= index < len(text) and text[index].isalnum()
+
+
+class Matchers:
+    """One rule set's term index and pattern regexes, built once per RuleSet.
+
+    A text is read once, word run by word run; a run whose first three characters
+    start no term costs one set lookup, so the cost follows the text, not the terms.
+    """
+
+    def __init__(self, rule_set: RuleSet) -> None:
+        owners: dict[str, list[Rule]] = {}
+        self.patterns: dict[str, tuple[Any, ...]] = {}
+        for rule in rule_set.rules:
+            if rule.kind == "term":
+                for term in rule.match["terms"]:
+                    owners.setdefault(turkish_fold(term), []).append(rule)
+            elif rule.kind == "pattern":
+                flags = regex.IGNORECASE if rule.match["ignore_case"] else 0
+                templates = rule.match["templates"]
+                self.patterns[rule.id] = tuple(
+                    regex.compile(source, flags)
+                    for source in (
+                        ["|".join(_template_regex(t) for t in templates)]
+                        if templates
+                        else []
+                    )
+                    + rule.match["regexes"]
+                )
+        self.root = _Node()
+        for term, rules in owners.items():
+            runs = list(_RUN.finditer(term))
+            node = self.root
+            for run, following in zip(runs, runs[1:]):
+                separator = _SPACES.sub(" ", term[run.end() : following.start()])
+                node = node.next.setdefault(run.group(), {}).setdefault(
+                    separator, _Node()
+                )
+            node.ends.setdefault(runs[-1].group(), []).append(
+                _Term(
+                    term[: runs[0].start()],
+                    term[runs[-1].end() :],
+                    len(term) < _MIN_SUFFIXED_TERM,
+                    tuple(rules),
+                )
+            )
+        nodes = [self.root]
+        for node in nodes:
+            node.lengths = tuple(sorted({len(word) for word in node.ends}))
+            nodes.extend(
+                child for after in node.next.values() for child in after.values()
+            )
+        self.keys = frozenset(word[:3] for word in (*self.root.ends, *self.root.next))
+
+    def terms(self, text: str, ids: set[str]) -> list[ContentHit]:
+        """Every term of the rules `ids` in `text`, overlaps included."""
+
+        folded = _fold(text)
+        found: list[ContentHit] = []
+        for run in _RUN.finditer(folded):
+            start, end = run.span()
+            if folded[start : min(start + 3, end)] in self.keys:
+                found += self._walk(text, folded, start, end, ids)
+        for edge in _CAMEL.finditer(text):
+            run = _RUN.match(folded, edge.start() + 1)
+            if run is not None and run.group()[:3] in self.keys:
+                found += self._walk(text, folded, run.start(), run.end(), ids)
+        return found
+
+    # ponytail: each word run re-walks up to the longest term's word count (64 at most),
+    # so terms of many repeated words cost that factor; Aho-Corasick over words if seen.
+    def _walk(
+        self, text: str, folded: str, start: int, end: int, ids: set[str]
+    ) -> list[ContentHit]:
+        found: list[ContentHit] = []
+        node: _Node | None = self.root
+        word_start = start
+        while node is not None:
+            word = folded[word_start:end]
+            for length in node.lengths:
+                if length > len(word):
+                    break
+                for term in node.ends.get(word[:length], ()):
+                    hit = _accept(
+                        text, folded, term, start, word_start + length, end, ids
+                    )
+                    if hit is not None:
+                        found.append(hit)
+            after = node.next.get(word)
+            following = _RUN.search(folded, end) if after else None
+            if after is None or following is None:
+                break
+            node = after.get(_SPACES.sub(" ", folded[end : following.start()]))
+            word_start, end = following.span()
+        return found
+
+
+def _accept(
+    text: str,
+    folded: str,
+    term: _Term,
+    start: int,
+    end: int,
+    run_end: int,
+    ids: set[str],
+) -> ContentHit | None:
+    """The hit of `term` from `start` to `end` when the text around it allows one."""
+
+    if term.lead:
+        start -= len(term.lead)
+        if (
+            start < 0
+            or not folded.startswith(term.lead, start)
+            or _word_at(folded, start - 1)
+        ):
+            return None
+    rest = folded[end:run_end]
+    if term.trail:
+        if rest or not folded.startswith(term.trail, end):
+            return None
+        end += len(term.trail)
+        if _word_at(folded, end):
+            return None
+    if rest and not rest[0].isalpha():
+        # Inside a number: "PRJ-2024-0012" is not "PRJ-2024-001".
+        return None
+    if camel := _CAMEL.search(text, end - 1, run_end):
+        rest = rest[: camel.start() + 1 - end]
+    ending = (
+        rest
+        and (
+            rest[0] == _APOSTROPHE_LETTER
+            or TR_SUFFIX.fullmatch(rest) is not None
+            # A short term takes an ending only written as an acronym: "BKMnin".
+            and (
+                not term.short
+                or text[start:end].isupper()
+                and text[end : end + len(rest)].islower()
+            )
+        )
+    )
+    owners = tuple(
+        rule
+        for rule in term.owners
+        if rule.id in ids and (not rest or ending and rule.match["suffixes"] == "tr")
+    )
+    return ContentHit(start, end, owners) if owners else None
 
 
 @dataclass(slots=True)
@@ -272,45 +399,16 @@ class ContentRules:
             for rule in self.rules
         )
 
-    def record(self, hit: ContentHit, value: str) -> str | None:
-        """Count the value for every rule of the hit; the label to mask it with, or None.
-
-        Only an enforced rule acts, the strongest action wins, and block or
-        require_approval keep the text for the decision point to refuse or hold.
-        """
-
+    def count(self, hit: ContentHit, value: str) -> None:
         for rule in hit.rules:
             self.values.setdefault(rule.id, set()).add(value)
-        enforced = [rule for rule in hit.rules if rule.state == "enforced"]
-        if strongest(rule.action for rule in enforced) != "mask":
-            return None
-        return min(
-            (rule for rule in enforced if rule.action == "mask"), key=lambda r: r.id
-        ).match["label"]
 
     def search(self, text: str) -> list[ContentHit]:
-        compiled = _compiled(self.rule_set)
-        ids = {rule.id for rule in self.rules}
-        hits: list[ContentHit] = []
-        terms = [rule for rule in self.rules if rule.kind == "term"]
-        if terms and compiled.terms is not None:
-            try:
-                found = self.budget.finditer(compiled.terms, text)
-            except PatternTimeout:
-                self.errors.update(rule.id for rule in terms)
-                found = []
-            for match in found:
-                end_follows = _END_AT.match(text, match.end()) is not None
-                owners = tuple(
-                    rule
-                    for rule in compiled.owners.get(turkish_fold(match.group()), ())
-                    if rule.id in ids
-                    and (end_follows or rule.match.get("suffixes", "tr") == "tr")
-                )
-                if owners:
-                    hits.append(ContentHit(match.start(), match.end(), owners))
+        matchers = self.rule_set.matchers
+        ids = {rule.id for rule in self.rules if rule.kind == "term"}
+        hits = matchers.terms(text, ids) if ids else []
         for rule in self.rules:
-            for pattern in compiled.patterns.get(rule.id, ()):
+            for pattern in matchers.patterns.get(rule.id, ()):
                 try:
                     found = self.budget.finditer(pattern, text)
                 except PatternTimeout:
@@ -321,7 +419,16 @@ class ContentRules:
                     for match in found
                     if match.end() > match.start()
                 )
-        return hits
+        # One hit per span, with every rule that found it.
+        spans: dict[tuple[int, int], dict[str, Rule]] = {}
+        for hit in hits:
+            spans.setdefault((hit.start, hit.end), {}).update(
+                (rule.id, rule) for rule in hit.rules
+            )
+        return [
+            ContentHit(start, end, tuple(rules.values()))
+            for (start, end), rules in spans.items()
+        ]
 
 
 def content_rules(rule_set: RuleSet | None, in_scope) -> ContentRules | None:
@@ -337,22 +444,21 @@ def content_rules(rule_set: RuleSet | None, in_scope) -> ContentRules | None:
     return ContentRules(rule_set, rules) if rules else None
 
 
-def resolve_overlaps(hits: list[ContentHit]) -> list[ContentHit]:
-    """Identical spans merge their rules; otherwise the longer span wins, then the earlier."""
+def first_fit(
+    items: Iterable[Any],
+    key: Callable[[Any], Any],
+    keep: Callable[[Any], bool] = lambda _item: False,
+) -> list[Any]:
+    """The spans, in `key` order, that overlap none taken before; `keep` ones always."""
 
-    merged: dict[tuple[int, int], dict[str, Rule]] = {}
-    for hit in hits:
-        merged.setdefault((hit.start, hit.end), {}).update(
-            (rule.id, rule) for rule in hit.rules
-        )
-    accepted: list[ContentHit] = []
-    # ponytail: O(n²) over one string's hits; an interval index if hit counts grow.
-    for (start, end), rules in sorted(
-        merged.items(), key=lambda item: (item[0][0] - item[0][1], item[0][0])
-    ):
-        if not any(start < kept.end and kept.start < end for kept in accepted):
-            accepted.append(ContentHit(start, end, tuple(rules.values())))
-    return sorted(accepted, key=lambda hit: hit.start)
+    taken: list[Any] = []
+    # ponytail: O(n²) over one string's detections; an interval index if counts grow.
+    for item in sorted(items, key=key):
+        if keep(item) or not any(
+            item.start < other.end and other.start < item.end for other in taken
+        ):
+            taken.append(item)
+    return taken
 
 
 def count_rule_matches(rule_set: RuleSet, text: str) -> dict[str, int]:
@@ -368,11 +474,19 @@ def count_rule_matches(rule_set: RuleSet, text: str) -> dict[str, int]:
     if found is None:
         return {}
     prepared = PIIScrubberService.preprocess(text)
-    values: dict[str, set[str]] = {rule.id: set() for rule in found.rules}
-    for hit in found.search(prepared):
-        for rule in hit.rules:
-            values[rule.id].add(prepared[hit.start : hit.end])
+    hits = found.search(prepared)
+    # A rule's own nested terms ("Atlas" in "Atlas Proje") count once, as the longer.
     return {
-        rule_id: -1 if rule_id in found.errors else len(matched)
-        for rule_id, matched in values.items()
+        rule.id: -1
+        if rule.id in found.errors
+        else len(
+            {
+                prepared[hit.start : hit.end]
+                for hit in first_fit(
+                    (hit for hit in hits if any(o.id == rule.id for o in hit.rules)),
+                    key=lambda hit: (hit.start - hit.end, hit.start),
+                )
+            }
+        )
+        for rule in found.rules
     }

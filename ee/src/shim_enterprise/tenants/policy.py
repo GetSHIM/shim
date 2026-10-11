@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hmac
 from hashlib import sha256
+import logging
 from typing import Any, Literal
 from uuid import UUID
 
@@ -28,7 +29,7 @@ from shim.gateway.request_policy import (
     ResolvedRequestPolicy,
 )
 from shim.privacy.policies import PII_CONFIG_DEFAULTS, EntityAction
-from shim.rules import RuleSet
+from shim.rules import RuleSet, RuleSetError, load_rule_set
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
@@ -102,6 +103,9 @@ def _resolve_tenant_policy(
     if not isinstance(provider_policy, Mapping):
         raise ValueError("provider policy must be an object")
     return TenantPolicy.model_validate(dict(provider_policy))
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,11 +200,16 @@ class TenantPolicyService:
             )
         ).one()
         try:
-            rules = RuleSet.model_validate(
-                {"revision": row.revision, "rules": row.rules}
-            )
-        except ValidationError as exc:
+            rules = load_rule_set(row.revision, row.rules)
+        except RuleSetError as exc:
             raise TenantPolicyConfigurationError("tenant rules are invalid") from exc
+        # Once per revision and process: the set is cached below.
+        for rule in rules.unusable:
+            logger.warning(
+                "Stored rule cannot run in this release rule_id=%s fails_closed=%s",
+                rule.id,
+                rule.enforced,
+            )
         self._rule_sets[tenant_id] = rules
         self._rule_sets.move_to_end(tenant_id)
         while len(self._rule_sets) > _RULE_SETS_PER_PROCESS:

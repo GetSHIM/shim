@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import random
+import timeit
+
 import pytest
 
 import shim.rules.content as content
@@ -7,11 +10,11 @@ from shim.rules import RuleSetError, validate_rule_set
 from shim.rules.content import (
     ContentHit,
     count_rule_matches,
-    resolve_overlaps,
+    first_fit,
     turkish_fold,
 )
 from shim.rules.patterns import PatternTimeout
-from shim.rules.tr_suffixes import TR_SUFFIXES, TR_SUFFIXES_VERSION
+from shim.rules.tr_suffixes import TR_SUFFIX, TR_SUFFIXES_VERSION
 
 
 def _rule(rule_id: str = "words", kind: str = "term", **values) -> dict:
@@ -51,6 +54,7 @@ def _found(rule: dict, text: str) -> int:
     ("match", "path"),
     [
         ({"terms": ["ab"]}, "rules[0].match.terms[0]"),
+        ({"terms": ["+++"]}, "rules[0].match.terms[0]"),
         ({"terms": ["x" * 129]}, "rules[0].match.terms[0]"),
         ({"terms": ["İzmir", "IZMIR"]}, "rules[0].match.terms"),
         ({"terms": []}, "rules[0].match.terms"),
@@ -96,7 +100,7 @@ def test_a_pattern_match_is_refused_with_its_path(match, code, path) -> None:
     assert _refused(_rule("codes", "pattern", match=match)) == (code, path)
 
 
-def test_a_set_holds_at_most_2000_terms_and_64_regexes() -> None:
+def test_a_set_holds_at_most_2000_terms_64_regexes_and_64_templates() -> None:
     terms = [
         _term(
             *(f"term{rule:02d}x{index:03d}" for index in range(200)), rule_id=f"t{rule}"
@@ -116,6 +120,17 @@ def test_a_set_holds_at_most_2000_terms_and_64_regexes() -> None:
     assert _refused(*regexes, _pattern("extra", regexes=["x"])) == (
         "RULE_SET_INVALID",
         "rules[2].match.regexes",
+    )
+    templates = [
+        _pattern(
+            f"t{rule}", templates=[f"T{rule}-{index:02d}-#" for index in range(32)]
+        )
+        for rule in range(2)
+    ]
+    _set(*templates)
+    assert _refused(*templates, _pattern("extra", templates=["X-#"])) == (
+        "RULE_SET_INVALID",
+        "rules[2].match.templates",
     )
 
 
@@ -201,9 +216,12 @@ def test_only_the_term_is_the_match_and_the_longest_term_wins() -> None:
     found = content.content_rules(rule_set, lambda _rule: True)
     assert found is not None
 
-    hits = found.search("Atlasın raporu, Atlas Projesi")
+    hits = first_fit(
+        found.search("Atlasın raporu, Atlas Projesi"),
+        key=lambda hit: (hit.start - hit.end, hit.start),
+    )
 
-    assert [(hit.start, hit.end) for hit in hits] == [(0, 5), (16, 27)]
+    assert sorted((hit.start, hit.end) for hit in hits) == [(0, 5), (16, 27)]
 
 
 def test_two_rules_listing_one_term_both_count_it() -> None:
@@ -212,7 +230,7 @@ def test_two_rules_listing_one_term_both_count_it() -> None:
     ) == {"one": 1, "two": 1}
 
 
-def test_the_suffix_tuple_is_pinned_and_follows_its_rule() -> None:
+def test_the_suffix_grammar_keeps_every_version_1_ending() -> None:
     def expand(template: str) -> set[str]:
         # A = a/e; I = ı/u (back) or i/ü (front), only ı/i after the plural; D = d/t.
         plural = "lAr" in template
@@ -263,23 +281,33 @@ def test_the_suffix_tuple_is_pinned_and_follows_its_rule() -> None:
         if len(suffix) <= 8
     }
 
-    assert TR_SUFFIXES_VERSION == 1
-    assert len(TR_SUFFIXES) == len(set(TR_SUFFIXES)) == 124
-    assert set(TR_SUFFIXES) == expected
+    # The 124 endings version 1 listed, each at most eight characters.
+    assert len(expected) == 124
+    assert TR_SUFFIXES_VERSION == 2
+    assert [
+        suffix for suffix in expected if not TR_SUFFIX.fullmatch(content._fold(suffix))
+    ] == []
+    assert not any(
+        TR_SUFFIX.fullmatch(content._fold(derived))
+        for derived in ("çılık", "cı", "lık", "sız", "siz", "li", "dibi", "ian", "x")
+    )
 
 
 def test_a_rule_set_compiles_once_per_object(monkeypatch) -> None:
-    calls = []
-    compile_set = content._compile
-    monkeypatch.setattr(
-        content, "_compile", lambda rule_set: calls.append(1) or compile_set(rule_set)
-    )
+    built = []
+
+    class Counted(content.Matchers):
+        def __init__(self, rule_set) -> None:
+            built.append(rule_set)
+            super().__init__(rule_set)
+
+    monkeypatch.setattr(content, "Matchers", Counted)
     first, second = _set(_term("Atlas")), _set(_term("Atlas"))
 
     for rule_set in (first, first, second):
         count_rule_matches(rule_set, "Atlas")
 
-    assert len(calls) == 2
+    assert built == [first, second] and built[0] is first
 
 
 def test_counting_ignores_state_scope_and_action_and_skips_other_kinds() -> None:
@@ -319,22 +347,141 @@ def test_a_search_that_times_out_counts_minus_one(monkeypatch) -> None:
     ) == {"words": 1, "codes": -1}
 
 
-def test_overlapping_hits_keep_the_longer_then_the_earlier_and_merge_equal_spans() -> (
-    None
-):
-    one, two = _set(_term("Atlas", rule_id="one"), _term("Heron", rule_id="two")).rules
+def test_a_span_found_by_several_rules_is_one_hit_with_every_rule() -> None:
+    found = content.content_rules(
+        _set(
+            _pattern("one", regexes=[r"PRJ-\d+"]),
+            _pattern("two", templates=["PRJ-####"]),
+        ),
+        lambda _rule: True,
+    )
+    assert found is not None
 
-    kept = resolve_overlaps(
-        [
-            ContentHit(0, 5, (one,)),
-            ContentHit(2, 9, (two,)),
-            ContentHit(10, 14, (one,)),
-            ContentHit(10, 14, (two,)),
-            ContentHit(12, 16, (one,)),
-        ]
+    [hit] = found.search("PRJ-1234")
+
+    assert (hit.start, hit.end, [rule.id for rule in hit.rules]) == (
+        0,
+        8,
+        ["one", "two"],
     )
 
-    assert [(hit.start, hit.end, [rule.id for rule in hit.rules]) for hit in kept] == [
-        (2, 9, ["two"]),
-        (10, 14, ["one", "two"]),
+
+def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
+    one, two = _set(_term("Atlas", rule_id="one"), _term("Heron", rule_id="two")).rules
+    hits = [
+        ContentHit(0, 5, (one,)),
+        ContentHit(2, 9, (two,)),
+        ContentHit(10, 14, (one,)),
+        ContentHit(12, 16, (one,)),
     ]
+
+    def longer_first(hit):
+        return (hit.start - hit.end, hit.start)
+
+    assert [(hit.start, hit.end) for hit in first_fit(hits, key=longer_first)] == [
+        (2, 9),
+        (10, 14),
+    ]
+    assert [
+        (hit.start, hit.end)
+        for hit in first_fit(hits, key=longer_first, keep=lambda hit: hit.start == 0)
+    ] == [(2, 9), (0, 5), (10, 14)]
+
+
+@pytest.mark.parametrize(
+    ("term", "text"),
+    [
+        # Typed without Turkish letters.
+        ("Şişli Kule", "SISLI KULE"),
+        ("Işık Holding", "Isik Holding"),
+        ("İzmir Proje", "izmir proje"),
+        ("Gülçiçek", "gulcicek'in"),
+        # The dotted i of a lower-cased İ (i and U+0307).
+        ("İzmir Proje", "i̇zmir proje"),
+        # Possessives, copula, equative, -ki, and long chains.
+        ("Atlas", "Atlasımız"),
+        ("Atlas", "Atlasımızın"),
+        ("Atlas", "Atlasınız"),
+        ("Atlas", "Atlasım"),
+        ("Kule", "Kulemiz"),
+        ("Kule", "Kulen"),
+        ("Atlas", "Atlastır"),
+        ("Atlas", "Atlaslardır"),
+        ("Atlas", "Atlasça"),
+        ("Atlas", "Atlasınki"),
+        ("Atlas", "Atlaslarındaki"),
+        ("Atlas", "Atlaslarımızdakiler"),
+        ("Atlas", "Atlastakini"),
+        ("Atlas", "Atlasındadır"),
+        # A short term in capitals takes a lower-case ending without an apostrophe.
+        ("BKM", "BKMnin"),
+        ("BKM", "BKMye"),
+        ("BKM", "BKMninRaporu"),
+        ("e-Devlet", "yeniE-Devlet"),
+        # Word edges: underscore, letter and digit, lower to upper case.
+        ("Atlas", "atlas_rapor.xlsx"),
+        ("Atlas", "Atlas2024"),
+        ("Atlas", "AtlasProje"),
+        # Other dashes are a hyphen.
+        ("e-Devlet", "e–Devlet"),
+        ("e-Devlet", "e‐Devlet'e"),
+        ("PRJ-2024-001", "PRJ−2024−001"),
+    ],
+)
+def test_a_term_is_found_in_every_form_it_is_written_in(term, text) -> None:
+    assert _found(_term(term), text) == 1
+
+
+@pytest.mark.parametrize(
+    ("term", "text"),
+    [
+        ("Atlas", "Atlasçılık"),
+        ("Atlas", "Atlasian"),
+        ("Atlas", "XAtlas"),
+        ("Kule", "Kuleli"),
+        ("Kule", "Kulesiz"),
+        ("Kule", "Kuledibi"),
+        ("PRJ-2024-001", "PRJ-2024-0012"),
+        ("Ata", "Atalar"),
+        ("Ata", "ATALAR"),
+        ("Ata", "Atada"),
+        ("BKM", "BKMNIN"),
+    ],
+)
+def test_a_longer_word_is_not_the_term(term, text) -> None:
+    assert _found(_term(term), text) == 0
+
+
+@pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234"])
+def test_a_template_hyphen_takes_any_dash(text) -> None:
+    assert _found(_pattern(templates=["PRJ-####"]), text) == 1
+
+
+def test_the_matcher_stays_fast_at_the_set_limits() -> None:
+    # 2,000 terms, a fifth of them sharing their first word, and 32 KB made only of
+    # their words with endings, so every word starts a walk through the index.
+    rng = random.Random(7)
+    syllables = "ka ra de ni şe hi ğu çe kö ip ür sel tan bey gül fır".split()
+    words = sorted(
+        {
+            "".join(rng.choice(syllables) for _ in range(3)).capitalize()
+            for _ in range(4_000)
+        }
+    )[:1_600]
+    terms = words + [f"Atlas {word}" for word in words[:400]]
+    rule_set = _set(
+        *(
+            _term(*terms[i : i + 200], rule_id=f"r{i // 200}")
+            for i in range(0, 2_000, 200)
+        )
+    )
+    text = " ".join(
+        rng.choice(["Atlas", *terms]) + rng.choice(["", "'ın", "ları", "da", "ndan"])
+        for _ in range(4_000)
+    )[:32_768]
+    found = content.content_rules(rule_set, lambda _rule: True)
+    assert found is not None and len(found.search(text)) > 2_000
+
+    elapsed = min(timeit.repeat(lambda: found.search(text), number=1, repeat=3))
+
+    assert elapsed < 0.05

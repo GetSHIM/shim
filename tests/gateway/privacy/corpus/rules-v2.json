@@ -780,6 +780,855 @@
       ],
       "known_gap": "Consonant softening (kitap to kitabı) is not matched in suffix version 1.",
       "known_actual": []
+    },
+    {
+      "id": "term-forms-00-kule",
+      "text": "Kulesi yıkıldı",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-01-kule",
+      "text": "Kuleye çıktık",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-02-kule",
+      "text": "Kulenin önü",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-03-kule",
+      "text": "Kuleyi gördük",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-04-kule",
+      "text": "Kulesinde toplantı",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-05-kule",
+      "text": "Kulemizden bakın",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-06-kule",
+      "text": "Kulelerimizin bakımı",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Kule",
+          "rule_id": "kule"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-07-kule-no",
+      "text": "Kuleli köşk",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-08-kule-no",
+      "text": "Kulesiz şehir",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-09-kule-no",
+      "text": "Kuledibi yolu",
+      "config": {
+        "rules": [
+          {
+            "id": "kule",
+            "name": "kule",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-10-atlas",
+      "text": "Atlaslarımızdaki dosyalar",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-11-atlas",
+      "text": "Atlaslarınızdan biri",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-12-atlas",
+      "text": "Bu Atlastır",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-13-atlas",
+      "text": "Atlasça bir plan",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-14-atlas",
+      "text": "Bizimki değil Atlasınki",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-15-atlas",
+      "text": "atlas_rapor.xlsx ekte",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-16-atlas",
+      "text": "Atlas2024 bütçesi",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-17-atlas",
+      "text": "AtlasProje dosyası",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Atlas",
+          "rule_id": "atlas"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-18-atlas-no",
+      "text": "Atlasian yazılımı",
+      "config": {
+        "rules": [
+          {
+            "id": "atlas",
+            "name": "atlas",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Atlas"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-19-merkez",
+      "text": "Merkezimizde toplanalım",
+      "config": {
+        "rules": [
+          {
+            "id": "merkez",
+            "name": "merkez",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Merkez"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Merkez",
+          "rule_id": "merkez"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-20-merkez",
+      "text": "Merkezlerinden gelen",
+      "config": {
+        "rules": [
+          {
+            "id": "merkez",
+            "name": "merkez",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Merkez"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Merkez",
+          "rule_id": "merkez"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-21-merkez",
+      "text": "Merkezdir orası",
+      "config": {
+        "rules": [
+          {
+            "id": "merkez",
+            "name": "merkez",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Merkez"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Merkez",
+          "rule_id": "merkez"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-22-gumus",
+      "text": "Gümüşün fiyatı",
+      "config": {
+        "rules": [
+          {
+            "id": "gumus",
+            "name": "gumus",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Gümüş"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Gümüş",
+          "rule_id": "gumus"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-23-gumus",
+      "text": "GUMUSLER satıldı",
+      "config": {
+        "rules": [
+          {
+            "id": "gumus",
+            "name": "gumus",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Gümüş"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "GUMUS",
+          "rule_id": "gumus"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-24-prj",
+      "text": "PRJ-2024-001'in durumu",
+      "config": {
+        "rules": [
+          {
+            "id": "prj",
+            "name": "prj",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "PRJ-2024-001"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "PRJ-2024-001",
+          "rule_id": "prj"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-25-prj",
+      "text": "PRJ–2024–001 açıldı",
+      "config": {
+        "rules": [
+          {
+            "id": "prj",
+            "name": "prj",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "PRJ-2024-001"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "PRJ–2024–001",
+          "rule_id": "prj"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-26-prj-no",
+      "text": "PRJ-2024-0012 başka",
+      "config": {
+        "rules": [
+          {
+            "id": "prj",
+            "name": "prj",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "PRJ-2024-001"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-27-sisli",
+      "text": "SISLI KULE'de buluşalım",
+      "config": {
+        "rules": [
+          {
+            "id": "sisli",
+            "name": "sisli",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Şişli Kule"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "SISLI KULE",
+          "rule_id": "sisli"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-28-isik",
+      "text": "Isik Holding raporu",
+      "config": {
+        "rules": [
+          {
+            "id": "isik",
+            "name": "isik",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Işık Holding"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "Isik Holding",
+          "rule_id": "isik"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-29-bkm",
+      "text": "BKMnin kararı",
+      "config": {
+        "rules": [
+          {
+            "id": "bkm",
+            "name": "bkm",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "BKM"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "BKM",
+          "rule_id": "bkm"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-30-bkm",
+      "text": "BKMye yazın",
+      "config": {
+        "rules": [
+          {
+            "id": "bkm",
+            "name": "bkm",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "BKM"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "entity": "TERM",
+          "value": "BKM",
+          "rule_id": "bkm"
+        }
+      ]
+    },
+    {
+      "id": "term-forms-31-ata-no",
+      "text": "Atalar sözü",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "id": "term-forms-32-ata-no",
+      "text": "ATALAR SÖZÜ",
+      "config": {
+        "rules": [
+          {
+            "id": "ata",
+            "name": "ata",
+            "kind": "term",
+            "action": "mask",
+            "state": "monitor",
+            "match": {
+              "terms": [
+                "Ata"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": []
     }
   ]
 }

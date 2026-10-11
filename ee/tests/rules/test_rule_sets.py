@@ -5,16 +5,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+import httpx
 import pytest
 from sqlalchemy import func, select
 
 import shim_enterprise.tenants.policy as policy_module
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
-from shim.rules import KINDS, LIMITS, Rule, RuleSet
+from shim.rules import KINDS, LIMITS, Rule, RuleSet, validate_rule_set
 from shim.rules.model import RuleMatch
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.api.v1 import management
+from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.core.database import get_db
 from shim_enterprise.gateway.pipeline.quota_reservation import (
     DurableAccountingCoordinator,
 )
@@ -277,20 +280,36 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
 
 
 @pytest.mark.asyncio
-async def test_a_body_over_the_size_limit_is_refused_before_any_read(
-    test_user_with_org,
+@pytest.mark.parametrize("chunked", [False, True])
+async def test_a_body_over_the_size_limit_is_refused_while_it_arrives(
+    test_user_with_org, chunked
 ) -> None:
     session = SimpleNamespace(execute=AsyncMock())
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[get_org_admin] = lambda: test_user_with_org
+    application.dependency_overrides[get_db] = lambda: session
+    padding = b" " * LIMITS["request_bytes"]
 
-    with pytest.raises(HTTPException) as refused:
-        await management.replace_rules(
-            management.RuleSetPut(revision=0, rules=[]),
-            _request(length=LIMITS["request_bytes"] + 1),
-            test_user_with_org,
-            session,
+    async def chunks():
+        yield b'{"revision": 0, "rules": []'
+        for start in range(0, len(padding), 65_536):
+            yield padding[start : start + 65_536]
+        yield b"}"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/api/v1/management/rules",
+            content=chunks()
+            if chunked
+            else b'{"revision": 0, "rules": []' + padding + b"}",
+            headers={"content-type": "application/json"},
         )
 
-    assert refused.value.status_code == 413
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "REQUEST_TOO_LARGE"
     session.execute.assert_not_awaited()
 
 
@@ -492,6 +511,7 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
     checked = SimpleNamespace(
         policy_verdicts=[],
         rules=RuleSet(revision=1, rules=(rule,)),
+        rules_evaluated=True,
         rule_matches=[
             RuleMatch(
                 rule_id="falcon", kind="term", action="block", state="monitor", count=2
@@ -523,3 +543,77 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
         }
     ]
     assert written["rule_matches_truncated"] is False
+
+
+_FUTURE = {
+    "id": "geo",
+    "name": "A kind of a later release",
+    "kind": "geo_fence",
+    "action": "block",
+    "state": "enforced",
+    "match": {"regions": ["eu"]},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_rule_this_release_cannot_run_is_shown_kept_and_never_unavailable(
+    db, test_org, caplog
+) -> None:
+    admin = await _admin(db, test_org.id)
+    db.add(
+        OrganizationRuleSet(
+            organization_id=test_org.id, revision=5, rules=[_rule(), _FUTURE]
+        )
+    )
+    await db.flush()
+    service = policy_module.TenantPolicyService(_PolicyCache())
+
+    view = await management.get_rules(admin, db)
+    resolved = await service.resolve(_key(test_org.id), db)
+    await service.resolve(_key(test_org.id), db)
+    updated = await _put(db, admin, 5, [_rule(state="enforced")])
+    clash = await _refused(db, admin, 6, [_rule(), _rule("geo")])
+    row = await db.get(OrganizationRuleSet, test_org.id)
+
+    assert [rule.id for rule in view.rules] == ["falcon"]
+    assert view.unavailable_rules == [_FUTURE]
+    assert [rule.id for rule in resolved.rules.rules] == ["falcon"]
+    assert [rule.id for rule in resolved.rules.unusable] == ["geo"]
+    assert caplog.text.count("rule_id=geo") == 1 and "eu" not in caplog.text
+    assert updated.unavailable_rules == [_FUTURE]
+    assert row.rules[-1] == _FUTURE and row.rules[0]["state"] == "enforced"
+    assert (clash["status"], clash["code"], clash["path"]) == (
+        422,
+        "RULE_ID_DUPLICATE",
+        "rules[1].id",
+    )
+
+
+_CODES = {
+    "id": "codes",
+    "name": "Codes",
+    "kind": "pattern",
+    "action": "block",
+    "state": "enforced",
+    "match": {"templates": ["PRJ-####"], "regexes": [r"INV\d{6}"]},
+}
+
+
+@pytest.mark.parametrize(
+    ("match", "relaxed"),
+    [
+        ({"templates": ["PRJ-####", "KOD-##"], "regexes": [r"INV\d{6}"]}, []),
+        ({"templates": ["PRJ-####"], "regexes": [r"INV\d{6}", r"FTR\d+"]}, []),
+        ({"templates": [], "regexes": [r"INV\d{6}"]}, ["rules.codes"]),
+        ({"templates": ["PRJ-####"], "regexes": [r"INV\d{5}"]}, ["rules.codes"]),
+    ],
+)
+def test_adding_templates_or_regexes_does_not_relax_and_removing_does(
+    match, relaxed
+) -> None:
+    def rule_set(values: dict) -> RuleSet:
+        return validate_rule_set(
+            {"revision": 1, "rules": [{**_CODES, "match": values}]}
+        )
+
+    assert classify_rule_changes(rule_set(_CODES["match"]), rule_set(match)) == relaxed

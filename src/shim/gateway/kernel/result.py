@@ -164,6 +164,8 @@ class PreparedInference:
         default=None, repr=False, compare=False
     )
     rules: RuleSet | None = field(default=None, repr=False, compare=False)
+    # Whether a rule matcher ran for this request; records say nothing about rules otherwise.
+    rules_evaluated: bool = False
     # Request-local, shared by stage replacements like policy_verdicts.
     rule_matches: list[RuleMatch] = field(default_factory=list)
     approval_id: str | None = None

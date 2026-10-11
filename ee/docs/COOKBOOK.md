@@ -269,9 +269,12 @@ settings. Two kinds are available: `term` (a word list) and `pattern` (code
 shapes); the others are listed as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (owner, admin or auditor):
-   `revision` (0 until the first change), `rules`, `updated_by`, `updated_at`,
-   `limits`, and `kinds`, where each kind says whether it is `available`, its
-   `actions`, and why not when it is not.
+   `revision` (0 until the first change), `rules`, `unavailable_rules`,
+   `updated_by`, `updated_at`, `limits`, and `kinds`, where each kind says
+   whether it is `available`, its `actions`, and why not when it is not.
+   `unavailable_rules` holds stored rules this release cannot run, written by a
+   later one: a `PUT` keeps them and cannot reuse their ids
+   ([what they do](POLICY_DECISIONS.md#tenant-rules)).
 2. Send the whole set back with `PUT /api/v1/management/rules` (owner or
    admin), with the `revision` you read. The answer is the same body as the GET,
    at the next revision.
@@ -297,21 +300,26 @@ Two rules, a term list and a project-code template:
 
 | Kind | `match` | What it finds |
 | --- | --- | --- |
-| `term` | `terms` (up to 200 per rule, 2,000 per set, 3 to 128 characters each), `label` (default `TERM`), `suffixes` (`tr`, the default, or `none`) | Each term between word boundaries, in any letter case. Turkish `İ`, `I`, `ı` and `i` count as one letter, so `İzmir Proje` finds `IZMIR PROJE` and `ızmir  proje`. With `suffixes: "tr"`, a term of four characters or more also finds its Turkish case forms: after an apostrophe any ending (`Atlas'ın`, `Atlas’ta`), without one the plural, possessive and case endings (`Atlasın`, `Atlasları`, `ATLASIN`). Only the term is masked; the ending stays: `Atlasın` reaches the provider as `<TERM_…>ın`. |
-| `pattern` | `templates` (up to 32, 64 characters each), `regexes` (up to 32 per rule, 64 per set, 256 characters each), `label` (default `PATTERN`), `ignore_case` (default `true`) | A template is literal text where `#` is one digit, `@` one letter and `\` makes the next character literal, between word boundaries: `PRJ-####` finds `PRJ-1234` and `prj-1234`, not `PRJ-12345` or `XPRJ-1234`. A regex runs as written; one that can backtrack (a backreference, a quantified group holding a quantifier) or runs slowly on a test input is refused with 422 `RULE_PATTERN_UNSAFE`. |
+| `term` | `terms` (up to 200 per rule, 2,000 per set, 3 to 128 characters each, with a letter or a digit), `label` (default `TERM`), `suffixes` (`tr`, the default, or `none`) | Each term between word edges: a space or punctuation, an underscore, a letter next to a digit, or a lower-case letter before a capital (`atlas_rapor.xlsx`, `Atlas2024`, `AtlasProje`). Letter case does not matter, and neither do Turkish marks: `İ`, `I`, `ı` and `i` are one letter and `ş ç ğ ö ü` match `s c g o u`, so `Şişli Kule` finds `SISLI KULE` and `İzmir Proje` finds `ızmir  proje`; every dash is a hyphen (`e–Devlet`). Two terms that differ only so are one term. With `suffixes: "tr"` a term also finds its Turkish forms: after an apostrophe any ending (`Atlas'ın`, `Atlas’ta`); without one the plural, possessive, case, equative, `-ki` and `-dIr` endings in any chain (`Atlasın`, `ATLASIN`, `Atlasımızın`, `Atlaslarındaki`, `Atlastır`, `Atlasça`, `Kulemiz`). A three-character term takes an ending without an apostrophe only as an acronym in capitals (`BKMnin`). Only the term is masked; the ending stays: `Atlasın` reaches the provider as `<TERM_…>ın`. |
+| `pattern` | `templates` (up to 32 per rule, 64 per set, 64 characters each), `regexes` (up to 32 per rule, 64 per set, 256 characters each), `label` (default `PATTERN`), `ignore_case` (default `true`) | A template is literal text where `#` is one digit, `@` one letter and `\` makes the next character literal, between word boundaries; a hyphen takes any dash: `PRJ-####` finds `PRJ-1234`, `prj-1234` and `PRJ–1234`, not `PRJ-12345` or `XPRJ-1234`. A regex takes Python `re` syntax and, like a template, ignores letter case unless `ignore_case` is `false` (the flag covers the whole pattern; `(?-i:...)` turns it off for one part). Refused with 422 `RULE_PATTERN_UNSAFE`: syntax only the `regex` module knows (`\p{L}`), a backreference or a conditional group, a repeat of varying length inside another repeat (`(a+)+`, `(\d{2,})*x`; `(\d{3}-)+` is fine), or a pattern that runs slowly on a test input, checked with the same case setting. |
 
-Not matched: consonant softening (`kitap`, `kitabı`), derivations (`Atlasçılık`),
-misspellings, a term inside a longer word (`XAtlas`), a short term with an ending
-but no apostrophe (`Ata` does not find `Atada`), and anything inside a value a
-built-in type already found (`atlas@example.com` stays an e-mail address). Tool
+Not matched: consonant softening (`kitap`, `kitabı`), derivations (`Atlasçılık`,
+`Kuleli`, `Kulesiz`), compounds (`Kuledibi`), misspellings, a term inside a longer
+word (`XAtlas`, `Atlasian`) or number (`PRJ-2024-0012` for `PRJ-2024-001`), a
+short term with an ending but no apostrophe unless written as an acronym (`Ata`
+does not find `Atalar`), and a masking term inside a
+value a built-in type masks (`atlas@example.com` stays an e-mail address; a
+`block` or `require_approval` term there still acts). Tool
 names, ids and other protocol identifiers are not searched. The `label` names
 the placeholder, `<LABEL_…>`, which the provider sees: keep it generic.
 
 An enforced `mask` replaces the value with a placeholder that the answer gets
 back; `block` refuses the request with 400 `RULE_BLOCKED` before any provider
 call; `warn` adds `RULE_WARN`; `monitor`, or any rule in `state: "monitor"`, only
-counts. While an enforced `mask` or `block` rule applies to a request, images
-and files in it are refused, since they cannot be searched.
+counts. Overlapping matches follow the
+[overlap rule](POLICY_DECISIONS.md#tenant-rules). While an enforced `mask`,
+`block` or `require_approval` rule applies to a request, images and files in it
+are refused, since they cannot be searched.
 
 Monitor first: a new rule must start in `state: "monitor"`, where a match is
 recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list

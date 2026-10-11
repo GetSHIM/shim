@@ -4,33 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from shim.rules import Rule, RuleAction, RuleSet
+from shim.rules import ACTION_RANK, Rule, RuleSet
 
-# Strength of an action; set and route rank with mask, the middle of the order.
-_RANK: dict[RuleAction, int] = {
-    "monitor": 0,
-    "warn": 1,
-    "mask": 2,
-    "set": 2,
-    "route": 2,
-    "require_approval": 3,
-    "block": 4,
-}
-_ADDITIVE_MATCH_KEYS = ("terms", "patterns")
+# Lists where another entry only finds more.
+_ADDITIVE_MATCH_KEYS = frozenset({"terms", "templates", "regexes"})
 
 
 def _match_only_grew(before: dict[str, Any], after: dict[str, Any]) -> bool:
-    if before.keys() != after.keys():
-        return False
-    for key, value in before.items():
-        if key in _ADDITIVE_MATCH_KEYS and isinstance(value, list):
-            if not isinstance(after[key], list) or any(
-                item not in after[key] for item in value
-            ):
-                return False
-        elif after[key] != value:
-            return False
-    return True
+    return before.keys() == after.keys() and all(
+        set(value) <= set(after[key])
+        if key in _ADDITIVE_MATCH_KEYS
+        else after[key] == value
+        for key, value in before.items()
+    )
 
 
 def _relaxes(before: Rule, after: Rule | None) -> bool:
@@ -38,7 +24,7 @@ def _relaxes(before: Rule, after: Rule | None) -> bool:
         return False
     if after is None or after.state == "monitor":
         return True
-    if _RANK[after.action] < _RANK[before.action]:
+    if ACTION_RANK[after.action] < ACTION_RANK[before.action]:
         return True
     for field in type(before.scope).model_fields:
         old, new = getattr(before.scope, field), getattr(after.scope, field)

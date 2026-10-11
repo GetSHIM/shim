@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import shim.rules.kinds as kinds
+import shim.rules.patterns as patterns
 from shim.rules import RuleSet, RuleSetError, validate_rule_set
 from shim.rules.content import PatternMatch, TermMatch
 
@@ -149,3 +150,61 @@ def test_a_kind_is_unavailable_until_its_prd_adds_a_match_model() -> None:
         "parameter_pin": "settings",
         "route": "resolver",
     }
+
+
+def test_a_stored_set_keeps_aside_every_rule_this_build_cannot_run() -> None:
+    stored = [
+        _rule(id="usable", state="enforced", match={"terms": ["Atlas"]}),
+        _rule(id="new_kind", kind="geo_fence", action="block", state="enforced"),
+        _rule(id="no_matcher", kind="destination", state="enforced"),
+        _rule(id="new_field", match={"terms": ["Atlas"], "fuzzy": True}),
+        _rule(id="new_action", action="redact", scope={"models": ["gpt-5"]}),
+        _rule(id="new_scope", state="enforced", scope={"regions": ["eu"]}),
+        _rule(id="held", action="require_approval"),
+    ]
+
+    loaded = kinds.load_rule_set(7, stored)
+
+    assert loaded.revision == 7
+    assert [rule.id for rule in loaded.rules] == ["usable", "held"]
+    assert loaded.rules[0].match["suffixes"] == "tr"
+    unusable = {rule.id: rule for rule in loaded.unusable}
+    assert list(unusable) == [
+        "new_kind",
+        "no_matcher",
+        "new_field",
+        "new_action",
+        "new_scope",
+    ]
+    assert unusable["new_kind"].stored == stored[1]
+    assert [rule.id for rule in loaded.unusable if rule.enforced] == [
+        "new_kind",
+        "no_matcher",
+        "new_scope",
+    ]
+    assert unusable["new_action"].scope.models == ("gpt-5",)
+    # A scope this build cannot read applies to every request.
+    assert unusable["new_scope"].scope == kinds.RuleScope()
+
+
+@pytest.mark.parametrize(
+    "stored", [{"kind": "term"}, {"id": "Bad-Id", "action": "x", "state": "y"}, []]
+)
+def test_a_stored_rule_without_a_readable_id_action_or_state_is_refused(
+    stored,
+) -> None:
+    with pytest.raises(RuleSetError) as error:
+        kinds.load_rule_set(1, [stored])
+
+    assert (error.value.code, error.value.path) == ("RULE_SET_INVALID", "rules[0]")
+
+
+def test_a_stored_pattern_is_not_probed_again(monkeypatch) -> None:
+    # Every timed probe fails: a write is refused, a stored set still loads.
+    monkeypatch.setattr(patterns, "PROBE_SECONDS", 0.0)
+    rule = _rule(kind="pattern", match={"regexes": [r"INV\d{6}"]})
+
+    assert _refused({"revision": 1, "rules": [rule]}).code == "RULE_PATTERN_UNSAFE"
+    assert [rule.id for rule in kinds.load_rule_set(1, [rule]).rules] == [
+        "project_names"
+    ]

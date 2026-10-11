@@ -48,6 +48,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         response_scan="off",
         response_analysis=(),
         rules=None,
+        rules_evaluated=False,
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -105,6 +106,7 @@ async def test_an_evaluated_rule_set_writes_its_matches_in_order_and_capped() ->
         stream = StringIO()
         prepared = _prepared()
         prepared.rules = RuleSet(revision=1, rules=(rule,))
+        prepared.rules_evaluated = True
         prepared.rule_matches = matches
         lifecycle = LocalUsageLifecycle(stream)
         await lifecycle.admit(prepared, prepared.admission)

@@ -31,7 +31,7 @@ also remains outside tenant decision evidence.
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
 | `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
-| `rules.evaluated` | The tenant's rule set was evaluated (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent for a tenant without rules. |
+| `rules.evaluated` | A rule matcher ran for the request (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent when none ran: no rules, none in scope, or only rules this release cannot run. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
 
 `allow` means that individual check passed; it does not imply that the entire
@@ -90,13 +90,24 @@ available; `GET /rules` lists the others with `available: false` and the reason.
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
-characters removed, NFKC), and only for the rules in scope for the request.
-A rule match loses every overlap with a built-in detection, so built-in masking
-is never weakened; between rule matches the longer span wins, then the earlier.
-An enforced `mask` match is replaced by a `<LABEL_…>` placeholder and counted in
-`pii_entities` under its label; `block` and `require_approval` matches keep the
-text for the decision point. Rule matches never enter `monitored_entities` or
-`blocked_entities`. Protocol identifiers are not searched.
+characters and the combining dot of a lower-cased `İ` removed, NFKC), and only
+for the rules in scope for the request.
+Every term of a rule in scope is found, a shorter one inside a longer one too;
+a rule out of scope or in state `monitor` never hides one that is enforced. Where
+matches overlap, each other and built-in detections, the strongest enforced
+action wins (`block` > `require_approval` > `mask` > `warn` > `monitor`, where a
+`monitor`-state rule counts as `monitor` and a built-in type as its own action),
+then a built-in type, then the longer span, then the earlier. Masking never
+yields: every built-in mask stays, and a rule match with any enforced `mask` rule
+is masked even when another rule on it holds or blocks, joining any mask it
+overlaps into one placeholder (typed by the built-in value, else by the longer
+match). So a `block` term inside a masked value still refuses, a held term
+inside an e-mail address is held and the address still masked, and a term
+inside a value a built-in type only monitors is masked. An enforced `mask` match
+is replaced by a `<LABEL_…>` placeholder and counted in `pii_entities` under its
+label; `block` and `require_approval` matches keep the text for the decision
+point. Rule matches never enter `monitored_entities` or `blocked_entities`.
+Protocol identifiers are not searched, and a term in one never refuses a request.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
@@ -109,14 +120,26 @@ wins when both refuse. The verdict of each matched rule:
 | enforced `mask` | `mask` | `RULE_MASKED` |
 | enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
 | enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
-| evaluation timed out | `error` | `RULE_EVALUATION_TIMEOUT` |
+| evaluation timed out, enforced `mask`, `block` or `require_approval` | `deny` | `RULE_BLOCKED` |
+| evaluation timed out, any other rule | `error` | `RULE_EVALUATION_TIMEOUT` |
+| stored rule this release cannot run, enforced, in scope | `deny` | `RULE_BLOCKED` |
 
-Fail closed: an enforced `block` or `mask` rule whose evaluation fails blocks the
-request with `RULE_BLOCKED`; an enforced `require_approval` rule without an
-approval gate is a block too, and a gate that cannot be reached answers 503
-`APPROVAL_UNAVAILABLE` with no provider call. Any other evaluation error is
-recorded and the request continues. Token counting never asks for approval: it
-answers 403 `APPROVAL_REQUIRED`.
+Fail closed: an enforced `mask`, `block` or `require_approval` rule whose
+evaluation fails blocks the request with `RULE_BLOCKED`, recorded `rejected`
+like any rule block (its `rule_matches` entry carries `error: true`); an
+enforced `require_approval` rule without an approval gate is a block too, and a
+gate that cannot be reached answers 503 `APPROVAL_UNAVAILABLE` with no provider
+call. Any other evaluation error is recorded and the request continues. Token
+counting never asks for approval: it answers 403 `APPROVAL_REQUIRED`.
+
+A release older than the one that wrote a rule set may find a rule it cannot
+run: a kind it has no matcher for, or an action, field or scope list it does not
+know. Such a rule is kept, never dropped, and never makes the tenant
+unavailable. In state `enforced` with an action other than `monitor` or `warn`
+it refuses every request in its scope with `RULE_BLOCKED` (a scope the release
+cannot read is every request); otherwise it is skipped. The gateway logs each
+one once per revision, by id. `GET /rules` lists them as stored under
+`unavailable_rules`, and a `PUT` keeps them as they are.
 
 The request record carries `rule_matches` (rule id, kind, action, state, count;
 at most 32, blocks first) and `rule_matches_truncated`; see

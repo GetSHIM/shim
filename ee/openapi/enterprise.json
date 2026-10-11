@@ -9376,6 +9376,15 @@
             "title": "Rules",
             "type": "array"
           },
+          "unavailable_rules": {
+            "description": "Stored rules this release cannot run, as stored. A PUT keeps them; an enforced one refuses the requests in its scope with RULE_BLOCKED.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Unavailable Rules",
+            "type": "array"
+          },
           "updated_at": {
             "anyOf": [
               {
@@ -9403,6 +9412,7 @@
         "required": [
           "revision",
           "rules",
+          "unavailable_rules",
           "updated_by",
           "updated_at",
           "limits",

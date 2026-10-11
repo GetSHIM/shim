@@ -92,6 +92,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         response_scan="off",
         response_analysis=(),
         rules=None,
+        rules_evaluated=False,
         unpriced=False,
         deployment_price=None,
         stream=False,
@@ -761,6 +762,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
     checked = SimpleNamespace(
         policy_verdicts=[],
         rules=None,
+        rules_evaluated=False,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(
