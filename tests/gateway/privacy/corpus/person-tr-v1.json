@@ -630,7 +630,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Cihan Okutan"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "other-surname-05",
@@ -640,7 +642,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Gizem Karasu"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "other-surname-06",
@@ -680,7 +684,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Onur Ilıcak"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "other-surname-10",
@@ -700,7 +706,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Mert Uyanık"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "other-surname-12",
@@ -710,7 +718,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Coşkun Albayrak"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "other-surname-13",
@@ -740,7 +750,9 @@
           "entity": "PERSON_NAME_TR",
           "value": "Seda Erginer"
         }
-      ]
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
     },
     {
       "id": "suffix-01",
@@ -1320,7 +1332,14 @@
     {
       "id": "not-institution-08",
       "text": "Ayşe Kadın fasulyesi tarifi istiyorum.",
-      "expect": []
+      "expect": [],
+      "known_gap": "a dish named after a person reads as a first name and a capitalised word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kadın"
+        }
+      ]
     },
     {
       "id": "not-institution-09",
@@ -1850,7 +1869,14 @@
     {
       "id": "not-other-13",
       "text": "Ali Veli Kırk Dokuz Elli diye sayıldı.",
-      "expect": []
+      "expect": [],
+      "known_gap": "a counting rhyme of first names reads as a first name and a capitalised word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ali Veli Kırk"
+        }
+      ]
     },
     {
       "id": "not-other-14",

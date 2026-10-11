@@ -508,7 +508,10 @@ _TITLE_WORD = re.compile(rf"[{_UPPER}][{_LOWER}]+")
 _CAPITAL_WORD = re.compile(rf"[{_UPPER}]{{2,}}")
 _NAME_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’-]+")
 _STOPWORD_ENTRY = re.compile(rf"[{_UPPER}{_LOWER}'’.-]+")
-_LEADING_CUES = frozenset({"sayin", "sn", "bay", "bayan", "hn"})
+# Address forms and titles; folded, so "Doç" is "doc".
+_LEADING_CUES = frozenset(
+    {"sayin", "sn", "bay", "bayan", "hn", "dr", "doc", "prof", "av", "op", "uzm"}
+)
 _TRAILING_CUES = frozenset({"bey", "hanim", "hanimefendi"})
 # A shorter stopword must match a whole word: "Muş" is not the start of "Musa".
 _MIN_STOPWORD_PREFIX = 5
@@ -532,6 +535,7 @@ def person_names() -> PersonNames:
     )
     for key, shape in (
         ("first_names", _NAME_ENTRY),
+        ("team_first_names", _NAME_ENTRY),
         ("ambiguous_first_names", _NAME_ENTRY),
         ("surnames", _NAME_ENTRY),
         ("following_stopwords", _STOPWORD_ENTRY),
@@ -544,7 +548,9 @@ def person_names() -> PersonNames:
             raise ValueError(f"tr_person_names.json: invalid {key}")
     stopwords = {turkish_fold(entry) for entry in data["following_stopwords"]}
     return PersonNames(
-        first=frozenset(map(turkish_fold, data["first_names"])),
+        first=frozenset(
+            map(turkish_fold, data["first_names"] + data["team_first_names"])
+        ),
         ambiguous=frozenset(map(turkish_fold, data["ambiguous_first_names"])),
         surnames=frozenset(map(turkish_fold, data["surnames"])),
         stop_words=frozenset(
@@ -622,6 +628,23 @@ def _turkish_person_names(
     def cue_after(index: int) -> bool:
         return next_to(index) and fold(index + 1) in _TRAILING_CUES
 
+    def listed(index: int) -> bool:
+        return fold(index) in names.first or fold(index) in names.surnames
+
+    def surname_after(index: int) -> int | None:
+        """The end of "[first name] listed surname" right after `index`."""
+        if not (next_to(index, after_dot=True) and token(index + 1)):
+            return None
+        given = index + 1
+        if (
+            fold(given) in names.first
+            and next_to(given)
+            and token(given + 1)
+            and fold(given + 1) in names.surnames
+        ):
+            return given + 1
+        return given if fold(given) in names.surnames else None
+
     def name_at(index: int) -> tuple[int, int, float] | None:
         word = fold(index)
         if word in _LEADING_CUES and not suffix(index):
@@ -632,7 +655,18 @@ def _turkish_person_names(
                 and token(last + 1)
             ):
                 last += 1
-            return (index + 1, last, 0.85) if last > index else None
+            # "Sayın Yetkili" holds no name; "SAYIN AYŞE YILMAZ ADINA" ends at the surname.
+            known = [part for part in range(index + 1, last + 1) if listed(part)]
+            if not known:
+                return None
+            end = known[-1]
+            if end < last and fold(end) not in names.surnames:
+                end += 1
+            return index + 1, end, 0.85
+        start, end = words[index]
+        if end - start == 1 and text[start].isupper() and text[end : end + 1] == ".":
+            surname = surname_after(index)
+            return None if surname is None else (index, surname, 0.85)
         if not token(index):
             return None
         if cue_after(index) and (word in names.first or word in names.surnames):
@@ -656,8 +690,30 @@ def _turkish_person_names(
                 and fold(surname) not in names.first
                 and len({form(part) for part in range(index, surname + 1)}) == 1
             ):
+                # "Ahmet Necdet Sezer": with no middle first name, a third title-case word that is none.
+                third = surname + 1
+                if (
+                    given == index
+                    and form(index) == "title"
+                    and next_to(surname)
+                    and token(third)
+                    and fold(third) not in names.first
+                    and form(third) == "title"
+                ):
+                    return index, third, 0.6
                 return index, surname, 0.6
         return None
+
+    def inside_a_place(last: int) -> bool:
+        """A stopword within two words: "Ahmet Yılmaz Caddesi", "Ahmet Necdet Sezer Parkı"."""
+        for after in (last + 1, last + 2):
+            if not next_to(after - 1):
+                return False
+            if stop(after):
+                return True
+            if not token(after):
+                return False
+        return False
 
     found: list[tuple[int, int, float]] = []
     index = 0
@@ -667,8 +723,7 @@ def _turkish_person_names(
             index += 1
             continue
         first, last, score = name
-        # "Ahmet Yılmaz Caddesi" is a street, "Mehmet Akif Ersoy Üniversitesi" a university.
-        if not (next_to(last) and stop(last + 1)):
+        if not inside_a_place(last):
             if any(form(part) == "capitals" for part in range(first, last + 1)):
                 score = 0.6
             found.append((words[first][0], words[last][1], score))

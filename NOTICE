@@ -5,8 +5,11 @@ The Apache License 2.0 in LICENSE applies to this repository except for files
 under ee/. Files under ee/ are licensed under the Elastic License 2.0 in
 ee/LICENSE.
 
-src/shim/privacy/data/tr_person_names.json carries the Turkish first names of
-Faker (https://github.com/joke2k/faker, faker/providers/person/tr_TR), copyright
-Daniele Faraglia, under the MIT licence in src/shim/privacy/data/LICENSE.faker.
-Its surnames, ambiguous first names and stopwords were compiled by the shim team
-from no third-party dataset.
+src/shim/privacy/data/tr_person_names.json carries, under "first_names", the
+Turkish first names of Faker (https://github.com/joke2k/faker,
+faker/providers/person/tr_TR), copyright Daniele Faraglia, under the MIT licence
+in src/shim/privacy/data/LICENSE.faker, less entries that are ordinary words.
+Its other lists ("team_first_names", the common first names Faker lacks;
+"ambiguous_first_names"; "surnames"; "following_stopwords") were compiled by the
+shim team from general knowledge, from no third-party dataset. They are lists of
+facts, and no third-party licence applies to them.

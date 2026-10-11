@@ -2064,11 +2064,26 @@ def _names(scrubber: PIIScrubberService, text: str, actions=_NAMES_ONLY) -> list
 @pytest.mark.parametrize(
     ("text", "names"),
     [
-        # Leading cue: any capitalised words, the suffix outside.
-        ("Sayın Gökberk Tunçsiper'in dosyası", ["Gökberk Tunçsiper"]),
-        ("Sn. Aykut Arıkan geldi", ["Aykut Arıkan"]),
+        # Leading cue: up to the last listed name and the surname after it, the suffix outside.
+        ("Sayın Aykut Tunçsiper'in dosyası", ["Aykut Tunçsiper"]),
+        ("Sn. Aykut Okutan geldi", ["Aykut Okutan"]),
         ("sayın Ayten Kaya, Hn. Cihan Okutan", ["Ayten Kaya", "Cihan Okutan"]),
+        ("SAYIN AYKUT OKUTAN İÇİN", ["AYKUT OKUTAN"]),
+        ("SN. AYTEN KAYA ADINA", ["AYTEN KAYA"]),
+        # A cue before words that hold no listed name is not a name.
         ("Sayın Yetkili, Sayın Müdürüm", []),
+        ("Sayın Proje Ekibi", []),
+        ("Sayın Tolunay Tunçsiper", []),
+        # Titles are cues too.
+        ("Dr. Tolunay Çelik aradı", ["Tolunay Çelik"]),
+        ("Doç. Dr. Ayten Okutan", ["Ayten Okutan"]),
+        ("Prof. Canan Kaya'nın dersi", ["Canan Kaya"]),
+        ("Av. Cihan Okutan", ["Cihan Okutan"]),
+        # An initial before a listed surname.
+        ("Evrak C. Yılmaz tarafından imzalandı", ["C. Yılmaz"]),
+        ("K. Aykut Kaya'ya ilettim", ["K. Aykut Kaya"]),
+        ("C. Okutan", []),
+        ("T.C. Kimlik No", []),
         # Trailing cue.
         ("Ayten Hanım geldi", ["Ayten"]),
         ("Cihan Okutan Bey'e ilettim", ["Cihan Okutan"]),
@@ -2076,25 +2091,33 @@ def _names(scrubber: PIIScrubberService, text: str, actions=_NAMES_ONLY) -> list
         # A listed first name, an optional second one, a listed surname.
         ("Canan Ayten Kaya’ya", ["Canan Ayten Kaya"]),
         ("Aykut Yılmaz Kaya aradı", ["Aykut Yılmaz Kaya"]),
-        # A non-ambiguous first name and another capitalised word.
-        ("Aykut Arıkan aradı", ["Aykut Arıkan"]),
+        # A non-ambiguous first name and one or two other capitalised words.
+        ("Aykut Okutan aradı", ["Aykut Okutan"]),
+        ("Aykut Tolunay Okutan aradı", ["Aykut Tolunay Okutan"]),
+        ("Aykut Ayten Okutan Tolunay aradı", ["Aykut Ayten Okutan"]),
+        # Typed without Turkish letters.
+        ("Ayse Celik aradi", ["Ayse Celik"]),
+        ("Sayin Aykut Ozturk", ["Aykut Ozturk"]),
         # Capitals, alone or as a surname after a listed first name.
         ("AYKUT YILMAZ", ["AYKUT YILMAZ"]),
         ("Aykut YILMAZ", ["Aykut YILMAZ"]),
-        ("Aykut ARIKAN", []),
+        ("Aykut OKUTAN", []),
         # Never a first name alone, and an ambiguous one only with a cue or a surname.
         ("Aykut aradı", []),
-        ("Deniz Arıkan", []),
+        ("Deniz Okutan", []),
         ("Deniz Kaya", ["Deniz Kaya"]),
         ("Deniz Hanım", ["Deniz"]),
         # Institutions and places.
         ("Deniz Kuvvetleri", []),
-        ("Aykut Arıkan Caddesi", []),
+        ("Aykut Okutan Caddesi", []),
         ("Ayten Ankara'ya gitti", []),
-        ("Aykut Arıkan A.Ş. yetkilisi", []),
+        ("Aykut Okutan A.Ş. yetkilisi", []),
+        ("Aykut Tolunay Okutan Parkı", []),
+        ("Aykut Okutan Ayten Parkı'nda", []),
+        ("Aykut Okutan Universitesi", []),
         # One line, words apart only by spaces.
-        ("Aykut\nArıkan", []),
-        ("Aykut-Arıkan", []),
+        ("Aykut\nOkutan", []),
+        ("Aykut-Okutan", []),
     ],
 )
 def test_person_names_follow_the_rules(
@@ -2170,11 +2193,16 @@ def test_person_name_data_is_reviewed_and_consistent() -> None:
 
     assert set(data["source"]) == {
         "first_names",
+        "team_first_names",
         "ambiguous_first_names",
         "surnames",
         "following_stopwords",
     }
     assert names.ambiguous <= names.first
+    # Faker's tr_TR lists ordinary words as names; they are removed, not merely ambiguous.
+    assert not {"kayit", "ozel", "ulke", "yargi", "sayin"} & names.first
+    # The team list carries the common names Faker lacks, the PRD's own examples among them.
+    assert {"ahmet", "mehmet", "ayse", "fatma", "zeynep", "selin"} <= names.first
     assert len(data["surnames"]) >= 200
     # A stopword that starts a listed name would hide that name.
     for name in names.first | names.surnames:
