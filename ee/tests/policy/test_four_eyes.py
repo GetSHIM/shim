@@ -829,3 +829,160 @@ async def test_under_four_eyes_the_second_approver_is_neither_demoted_nor_remove
     assert last.json()["detail"]["code"] == "FOUR_EYES_UNAVAILABLE"
     await db.refresh(third)
     assert third.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_moving_a_key_to_another_team_relaxes(db) -> None:
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    limited = Team(id=uuid4(), organization_id=tenant, name="limited")
+    other = Team(id=uuid4(), organization_id=tenant, name="other")
+    key = ApiKey(
+        id=uuid4(),
+        organization_id=tenant,
+        user_id=admin.id,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-mv",
+        tier="enterprise",
+        is_active=True,
+        team_id=limited.id,
+    )
+    db.add_all([limited, other])
+    await db.flush()
+    db.add(key)
+    await db.flush()
+    await _turn_on(db, owner)
+
+    moved = await _call(
+        db,
+        admin,
+        "PATCH",
+        f"{MANAGEMENT}/api-keys/{key.id}",
+        json={"team_id": str(other.id)},
+    )
+
+    assert moved.status_code == 409
+    assert moved.json()["detail"]["relaxed"] == [f"api_keys.{key.id}.team_id"]
+    await db.refresh(key)
+    assert key.team_id == limited.id
+
+
+_DEPLOYMENT = {
+    "alias": "a",
+    "provider": "openai",
+    "upstream_model": "m",
+    "base_url": "https://a.internal/v1",
+    "provider_secret_id": str(uuid4()),
+    "timeout_seconds": 60,
+    "deployment_kind": "internal",
+    "declared_version": "v1",
+    "owner": "Platform",
+    "enabled": True,
+    "input_price_per_million": None,
+    "output_price_per_million": None,
+    "context_window": None,
+}
+_OVERSIGHT = {
+    "name": "review",
+    "enabled": True,
+    "mode": "async_review",
+    "trigger": {"pii_detected": True, "models": ["a"]},
+    "ttl_seconds": 600,
+    "default_on_timeout": "deny",
+}
+_TEAM = {
+    "name": "a",
+    "daily_request_limit": 1,
+    "monthly_request_limit": None,
+    "monthly_token_limit": None,
+}
+_BUDGET = {
+    "scope_type": "org",
+    "scope_value": None,
+    "limit_usd": "10",
+    "limit_tokens": None,
+    "alert_thresholds": [0.8, 1.0],
+    "enabled": True,
+    "notify_targets": [{"kind": "slack", "endpoint_origin": "https://h", "id": "a"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("resource", "before", "change", "risk"),
+    [
+        ("deployments", _DEPLOYMENT, {"alias": "b"}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"upstream_model": "n"}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"provider_secret_id": str(uuid4())}, "relaxing"),
+        ("deployments", _DEPLOYMENT, {"owner": "Security"}, "neutral"),
+        ("deployments", _DEPLOYMENT, {"enabled": False}, "tightening"),
+        (
+            "oversight_policies",
+            _OVERSIGHT,
+            {"trigger": {"pii_detected": True}},
+            "relaxing",
+        ),
+        ("oversight_policies", _OVERSIGHT, {"default_on_timeout": "allow"}, "relaxing"),
+        ("oversight_policies", _OVERSIGHT, {"name": "renamed"}, "neutral"),
+        ("budgets", _BUDGET, {"alert_thresholds": [1.0]}, "relaxing"),
+        ("budgets", _BUDGET, {"alert_thresholds": [0.5, 0.8, 1.0]}, "tightening"),
+        ("budgets", _BUDGET, {"notify_targets": []}, "relaxing"),
+        ("teams", _TEAM, {"name": "b"}, "neutral"),
+        ("teams", _TEAM, {"daily_request_limit": 2}, "relaxing"),
+        ("teams", _TEAM, {"monthly_request_limit": 5}, "tightening"),
+        ("teams", {**_TEAM, "added_later": 1}, {"added_later": 2}, "relaxing"),
+    ],
+)
+def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
+    resource: str, before: dict, change: dict, risk: str
+) -> None:
+    assert REGISTRY[resource].classify(before, {**before, **change}) == risk
+
+
+@pytest.mark.asyncio
+async def test_replacing_budget_alert_targets_is_versioned_and_relaxes(
+    db, monkeypatch
+) -> None:
+    async def safe(_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.assert_safe_forward_url", safe
+    )
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    created = await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/cost/budgets",
+        json={
+            "scope_type": "org",
+            "limit_usd": "10",
+            "notify_targets": [
+                {"kind": "slack", "endpoint": "https://hooks.slack.com/services/a"}
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    budget = created.json()["id"]
+    state = await _call(db, admin, "GET", f"{POLICY}/state")
+    await _turn_on(db, owner)
+
+    replaced = await _call(
+        db,
+        admin,
+        "PATCH",
+        f"{MANAGEMENT}/cost/budgets/{budget}",
+        json={
+            "notify_targets": [
+                {"kind": "slack", "endpoint": "https://hooks.slack.com/services/b"}
+            ]
+        },
+    )
+
+    [target] = state.json()["resources"]["budgets"][budget]["notify_targets"]
+    assert target["endpoint_origin"] == "https://hooks.slack.com"
+    assert "secret_ref" not in target
+    assert replaced.status_code == 409
+    assert replaced.json()["detail"]["relaxed"] == [f"budgets.{budget}.notify_targets"]

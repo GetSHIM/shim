@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 Direction = Literal["tightening", "relaxing", "neutral"]
 FourEyes = Literal["off", "relaxing"]
+# Per field, the direction of a change from one value to another.
+Directions = Mapping[str, Callable[[Any, Any], Direction]]
 _logged_unknown: set[tuple[str, str]] = set()
 
 
@@ -88,7 +90,7 @@ def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
     return GatewaySettings.model_validate(value)
 
 
-def _neutral(_before: Any, _after: Any) -> Direction:
+def neutral(_before: Any, _after: Any) -> Direction:
     return "neutral"
 
 
@@ -96,36 +98,42 @@ def _relaxing(_before: Any, _after: Any) -> Direction:
     return "relaxing"
 
 
-def _four_eyes(_before: FourEyes, after: FourEyes) -> Direction:
-    return "relaxing" if after == "off" else "tightening"
+def toward(loosening: Any) -> Callable[[Any, Any], Direction]:
+    """A switch: moving to `loosening` relaxes, any other move tightens."""
+    return lambda _before, after: "relaxing" if after == loosening else "tightening"
 
 
 # A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
-    "response_analysis": _neutral,
-    "four_eyes": _four_eyes,
+    "response_analysis": neutral,
+    "four_eyes": toward("off"),
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {}
 
 
+def classify_fields(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    directions: Directions,
+) -> tuple[Direction, list[str]]:
+    """The direction of a change and its relaxing fields; an unlisted field relaxes."""
+    found = {
+        field: directions.get(field, _relaxing)(before.get(field), after.get(field))
+        for field in sorted(before.keys() | after.keys())
+        if before.get(field) != after.get(field)
+    }
+    relaxed = [field for field, direction in found.items() if direction == "relaxing"]
+    if relaxed:
+        return "relaxing", relaxed
+    if "tightening" in found.values():
+        return "tightening", []
+    return "neutral", []
+
+
 def classify_change(
     before: GatewaySettings, after: GatewaySettings
 ) -> tuple[Direction, list[str]]:
-    directions = {
-        field: SETTING_DIRECTIONS.get(field, _relaxing)(
-            getattr(before, field), getattr(after, field)
-        )
-        for field in GatewaySettings.model_fields
-        if getattr(before, field) != getattr(after, field)
-    }
-    relaxed = [
-        field for field, direction in directions.items() if direction == "relaxing"
-    ]
-    if relaxed:
-        return "relaxing", relaxed
-    if "tightening" in directions.values():
-        return "tightening", []
-    return "neutral", []
+    return classify_fields(before.model_dump(), after.model_dump(), SETTING_DIRECTIONS)

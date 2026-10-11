@@ -152,8 +152,12 @@ from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
     GatewaySettings,
     GatewaySettingsPatch,
+    Directions,
     classify_change,
+    classify_fields,
+    neutral,
     stored_settings,
+    toward,
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -2767,11 +2771,13 @@ async def create_budget(
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
     tenant_id, budget_id = _tenant_id(user), uuid4()
-    after = _budget_state(payload.model_dump())
-    await _require_budget_team(session, tenant_id, after)
+    await _require_budget_team(session, tenant_id, payload.model_dump())
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(tenant_id, payload.notify_targets)
     try:
+        after = _budget_state(
+            {**payload.model_dump(), "notify_targets": stored_targets}
+        )
         async with record_managed_write(
             session,
             user,
@@ -2826,8 +2832,8 @@ async def update_budget(
             tenant_id, patch.notify_targets
         )
         values["notify_targets"] = replacement_targets
-    before = _budget_state({field: getattr(row, field) for field in _BUDGET_FIELDS})
-    after = _budget_state({**before, **values})
+    current = {field: getattr(row, field) for field in _BUDGET_FIELDS}
+    before, after = _budget_state(current), _budget_state({**current, **values})
     try:
         async with record_managed_write(
             session,
@@ -2885,9 +2891,9 @@ async def _create_budget(
         id=budget_id,
         organization_id=organization_id,
         period="monthly",
-        notify_targets=targets,
         **{
             **state,
+            "notify_targets": targets,
             "limit_usd": None
             if state["limit_usd"] is None
             else Decimal(state["limit_usd"]),
@@ -5262,6 +5268,15 @@ def _lowered(before: int | None, after: int | None) -> bool:
     return after is not None and (before is None or after < before)
 
 
+def _limit(before: Any, after: Any) -> Risk:
+    """A changed limit: removing or raising it relaxes. Dollars arrive as strings."""
+    if before is None:
+        return "tightening"
+    if after is None or Decimal(after) > Decimal(before):
+        return "relaxing"
+    return "tightening"
+
+
 def _privacy_relaxed(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
     actions = get_args(EntityAction)
     relaxed = [
@@ -5563,7 +5578,12 @@ class _GatewaySettingsResource:
             )
 
 
-_TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_limit")
+_TEAM_DIRECTIONS: Directions = {
+    "name": neutral,
+    "daily_request_limit": _limit,
+    "monthly_request_limit": _limit,
+    "monthly_token_limit": _limit,
+}
 
 
 class _TeamResource:
@@ -5679,11 +5699,7 @@ class _TeamResource:
     def classify(self, before: State | None, after: State | None) -> Risk:
         if before is None or after is None:
             return "neutral"
-        if any(_raised(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "relaxing"
-        if any(_lowered(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _TEAM_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -5755,6 +5771,23 @@ class _TeamResource:
 _KEY_FIELDS = ("allowed_models", "team_id")
 
 
+def _models(before: list[str] | None, after: list[str] | None) -> Risk:
+    if after is None or (before is not None and not set(after) <= set(before)):
+        return "relaxing"
+    if before is not None and set(after) == set(before):
+        return "neutral"
+    return "tightening"
+
+
+_KEY_DIRECTIONS: Directions = {
+    "allowed_models": _models,
+    # Off its team, a key leaves the team's limits behind.
+    "team_id": lambda before, _after: (
+        "relaxing" if before is not None else "tightening"
+    ),
+}
+
+
 class _ApiKeyResource:
     name = "api_keys"
     # Who may change which key is the PATCH route's rule, checked in validate and apply.
@@ -5820,18 +5853,7 @@ class _ApiKeyResource:
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         assert before is not None and after is not None
-        models_before, models_after = before["allowed_models"], after["allowed_models"]
-        loosened = models_before is not None and (
-            models_after is None or bool(set(models_after) - set(models_before))
-        )
-        narrowed = models_after is not None and (
-            models_before is None or bool(set(models_before) - set(models_after))
-        )
-        if loosened or (before["team_id"] is not None and after["team_id"] is None):
-            return "relaxing"
-        if narrowed or (before["team_id"] is None and after["team_id"] is not None):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _KEY_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -5891,6 +5913,16 @@ async def _write_api_key(
             **version_detail(policy_version),
         },
     )
+
+
+_DEPLOYMENT_DIRECTIONS: Directions = {
+    "enabled": toward(True),
+    "deployment_kind": toward("internal"),
+    # Labels and the upstream wait: none lets a refused request through.
+    "declared_version": neutral,
+    "owner": neutral,
+    "timeout_seconds": neutral,
+}
 
 
 def _deployment_state(values: Mapping[str, Any]) -> State:
@@ -5997,19 +6029,7 @@ class _DeploymentResource:
         if before is None:
             return "relaxing"
         assert after is not None
-        if (
-            (not before["enabled"] and after["enabled"])
-            or before["base_url"] != after["base_url"]
-            or (before["deployment_kind"], after["deployment_kind"])
-            == ("external", "internal")
-        ):
-            return "relaxing"
-        if (before["enabled"] and not after["enabled"]) or (
-            before["deployment_kind"],
-            after["deployment_kind"],
-        ) == ("internal", "external"):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _DEPLOYMENT_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -6050,7 +6070,16 @@ _BUDGET_FIELDS = (
     "limit_tokens",
     "alert_thresholds",
     "enabled",
+    "notify_targets",
 )
+_BUDGET_DIRECTIONS: Directions = {
+    "limit_usd": _limit,
+    "limit_tokens": _limit,
+    "enabled": toward(False),
+    "alert_thresholds": lambda before, after: (
+        "relaxing" if set(before) - set(after) else "tightening"
+    ),
+}
 
 
 class _ManagedBudget(BudgetInput):
@@ -6062,7 +6091,18 @@ class _ManagedBudget(BudgetInput):
 
 
 def _budget_state(values: Mapping[str, Any]) -> State:
-    return {field: _plain(values[field]) for field in _BUDGET_FIELDS}
+    return {
+        **{field: _plain(values[field]) for field in _BUDGET_FIELDS},
+        # A digest of each secret reference shows a replacement, never the URL.
+        "notify_targets": [
+            {
+                "kind": target["kind"],
+                "endpoint_origin": target["endpoint_origin"],
+                "id": hashlib.sha256(target["secret_ref"].encode()).hexdigest()[:16],
+            }
+            for target in values["notify_targets"] or []
+        ],
+    }
 
 
 class _BudgetResource:
@@ -6159,29 +6199,7 @@ class _BudgetResource:
             return "relaxing"
         if before is None:
             return "tightening"
-        usd_before, usd_after = (
-            Decimal(value) if value is not None else None
-            for value in (before["limit_usd"], after["limit_usd"])
-        )
-
-        def raised(old: Any, new: Any) -> bool:
-            return old is not None and (new is None or new > old)
-
-        if (
-            raised(usd_before, usd_after)
-            or raised(before["limit_tokens"], after["limit_tokens"])
-            or (before["enabled"] and not after["enabled"])
-        ):
-            return "relaxing"
-        if (
-            raised(usd_after, usd_before)
-            or raised(after["limit_tokens"], before["limit_tokens"])
-            or (usd_before is None and usd_after is not None)
-            or (before["limit_tokens"] is None and after["limit_tokens"] is not None)
-            or (not before["enabled"] and after["enabled"])
-        ):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _BUDGET_DIRECTIONS)[0]
 
     async def impact(
         self,

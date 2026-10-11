@@ -742,6 +742,18 @@ async def restore_version(
         current = await resource.snapshot(session, organization_id, list(items))
         for item, target in items.items():
             now = current.get(item)
+            if name == "budgets" and target is not None:
+                # Alert destinations are secrets a restore cannot bring back.
+                kept = [] if now is None else now["notify_targets"]
+                if target.get("notify_targets") != kept:
+                    not_restored.append(
+                        Unrestored(
+                            resource=name,
+                            item=item,
+                            reason="notify_targets_not_restored",
+                        )
+                    )
+                    target = {**target, "notify_targets": kept}
             if target == now:
                 continue
             if now is None and not resource.creatable:
@@ -787,12 +799,6 @@ async def restore_version(
                 reason = exc.detail if isinstance(exc.detail, str) else "invalid"
                 not_restored.append(Unrestored(resource=name, item=item, reason=reason))
                 continue
-            if now is None and name == "budgets":
-                not_restored.append(
-                    Unrestored(
-                        resource=name, item=item, reason="notify_targets_not_restored"
-                    )
-                )
             changes.append(
                 await _change(session, organization_id, name, item, now, target, 7)
             )

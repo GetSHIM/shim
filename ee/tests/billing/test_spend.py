@@ -293,7 +293,10 @@ async def test_budget_evaluator_validates_persisted_config_before_queries() -> N
 async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old_targets = [{"secret_ref": f"secret:{index}"} for index in range(11)]
+    old_targets = [
+        {"kind": "webhook", "endpoint_origin": "https://a", "secret_ref": f"s:{index}"}
+        for index in range(11)
+    ]
     row = SimpleNamespace(
         id=uuid4(),
         scope_type="org",
