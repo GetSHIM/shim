@@ -42,6 +42,8 @@ class ResolvedRequestPolicy(FrozenContractModel):
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
+    # Enterprise: entity types this caller's key and team may not see restored.
+    restore_withheld: frozenset[str] = frozenset()
     rules: RuleSet | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None

@@ -1809,3 +1809,86 @@ async def test_an_enforced_tool_cap_refuses_through_the_app_before_the_provider(
     assert line["outcome"] == "rejected"
     verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
     assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"
+
+
+class _WithholdingResolver:
+    def __init__(self, inner, withheld) -> None:
+        self.inner = inner
+        self.withheld = withheld
+
+    async def resolve(self, principal):
+        policy = await self.inner.resolve(principal)
+        return policy.model_copy(update={"restore_withheld": self.withheld})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("withheld", "text", "verdict"),
+    [
+        (frozenset(), f"TCKN {_TCKN}", None),
+        (frozenset({"TR_NATIONAL_ID"}), f"TCKN {_TCKN}", ("mask", "RESTORE_WITHHELD")),
+        (
+            frozenset({"TR_NATIONAL_ID"}),
+            "no personal data",
+            ("allow", "RESTORE_NOT_NEEDED"),
+        ),
+    ],
+)
+async def test_the_restore_verdict_says_whether_this_caller_got_placeholders(
+    withheld, text, verdict
+) -> None:
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        body = json.loads(request.content)
+        echo = body["messages"][-1]["content"]
+        return httpx.Response(
+            200,
+            json={
+                **_CHAT_REPLY,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": echo},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.policy_resolver = _WithholdingResolver(
+                kernel.policy_resolver, withheld
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {_GATEWAY_KEY}",
+                        "x-provider-key": "provider-secret",
+                    },
+                    json={
+                        "model": "gpt-5-nano",
+                        "messages": [{"role": "user", "content": text}],
+                    },
+                )
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    verdicts = {
+        v["rule_id"]: (v["outcome"], v["reason_code"]) for v in line["policy_verdicts"]
+    }
+    answer = response.json()["choices"][0]["message"]["content"]
+
+    assert response.status_code == 200 and _TCKN not in calls[0].content.decode()
+    assert verdicts.get("privacy.restore") == verdict
+    assert (_TCKN in answer) is (text != "no personal data" and not withheld)

@@ -18,6 +18,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
 - [Keep a data type inside](#keep-a-data-type-inside)
+- [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
@@ -251,6 +252,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+| `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
 | `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 
@@ -392,6 +394,38 @@ Notes: a rule can only tighten; a base `mask` cannot be loosened to `monitor` fo
 internal targets. Changing a deployment from `external` to `internal` is recorded as
 a relaxation, and the operator can restrict `internal` to listed origins with
 `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` ([model deployments](MODEL_DEPLOYMENTS.md)).
+
+## Show masked values only to some teams
+
+Let a risk team read national ids in answers while a call centre sees only the
+placeholder. The provider gets the placeholder in both cases.
+
+1. Create the teams and give each workload a gateway key in its team
+   ([teams](team-access.md)).
+2. List the type and who may see it in the gateway settings:
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": ["<risk team id>"]}}}'
+```
+
+3. Keys in the risk team, and keys listed in `api_key_ids`, get the number back as
+   before. Every other key gets `<TR_NATIONAL_ID_…>` in the answer text, tool-call
+   arguments and streams (with `mask_last4`, `<CREDIT_CARD_…~1111>`). An empty grant,
+   `{}`, means nobody gets the type back; a type not listed is restored for everyone.
+
+Notes: the gateway knows the key and the key's team, not the person behind it.
+`restore_withheld` is replaced whole by each PATCH; `{}` removes every grant. A key
+is an entity type or a rule label, at most 64; each grant lists at most 200 team and
+200 key ids of this organization (an unknown id is 422). Removing a type or adding an
+id to a grant is a privacy relaxation (`tenant.privacy_protection_relaxed` with
+`restore_withheld.<TYPE>`, forwarded to your targets); listing a type or removing an
+id tightens. A Responses continuation follows the permission of the caller of each
+request: the chain keeps every value, and a key with permission continuing it gets
+them back. An application that reads the value from the answer, such as a tool that
+looks a customer up by national id, gets the placeholder instead. The request list
+shows `restore_withheld` counts and the `privacy.restore` verdict.
 
 ## Cap tools, documents and history
 

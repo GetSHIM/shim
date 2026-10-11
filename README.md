@@ -70,7 +70,10 @@ request it:
   enterprise per tenant, which can also add its own words and code shapes
   (project names, `PRJ-####`), found in every Turkish case form. The answer can
   also be scanned after it is delivered, counting personal data the request did
-  not carry; it is never changed. shim can also count instructions hidden in
+  not carry; it is never changed. Enterprise can keep chosen types as
+  placeholders in the answer for every gateway key and team without a grant, so a
+  call centre sees `<TR_NATIONAL_ID_…>` where a risk analyst sees the number.
+  shim can also count instructions hidden in
   tool results and documents ("ignore all previous instructions", "önceki tüm
   talimatları yok say") and warn about them; it never blocks or changes them.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a

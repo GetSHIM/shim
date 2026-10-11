@@ -226,6 +226,13 @@ It is written with the privacy counts, in the same transaction, and is in the
 analytics row, the request list and the last column of its CSV (as JSON) and the
 community JSONL event. Only marker ids and counts are kept, never the text.
 
+`restore_withheld` counts, per type, the placeholders a caller got back unrestored
+because its key and team are outside the tenant's restore grant for that type
+(`{}` when none was in the request), written with the privacy counts in the same
+transaction, and absent for callers no grant concerns. It is in the analytics row,
+the request list and the CSV's last column (as JSON). Counts only, never a value or
+a placeholder.
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the

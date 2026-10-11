@@ -134,7 +134,7 @@ class GoogleExecution:
                     first_chunk = await anext(stream)
                 state = {"closed": False, "recorded": False}
                 restorer = GoogleStreamRestorer(
-                    prepared.privacy.verification_map,
+                    prepared.privacy.restore_map,
                     self.pii_scrubber,
                 )
                 expected_candidates = _expected_candidates(prepared.payload)
@@ -188,7 +188,7 @@ class GoogleExecution:
             received_at = perf_counter()
             payload = restore_google_payload(
                 _dump_sdk(result),
-                prepared.privacy.verification_map,
+                prepared.privacy.restore_map,
                 self.pii_scrubber,
             )
             if not _has_block_reason(payload) and len(

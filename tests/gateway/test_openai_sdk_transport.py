@@ -1812,3 +1812,158 @@ async def test_provider_latency_is_the_provider_call_not_the_work_around_it(
     # Credential resolution, the provider-start commit and the chain save (0.4 s each)
     # sit outside the provider call, however loaded the machine is.
     assert 50 <= result.latency_ms <= (total - 1.2) * 1_000
+
+
+def _chunk(delta: dict, finish: str | None = None) -> dict:
+    return {
+        "id": "chatcmpl_withheld",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {"index": 0, "delta": delta, "finish_reason": finish, "logprobs": None}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+)
+async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, stream: bool
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    text, mapping = PIIScrubberService().scrub(
+        "Kimlik 10000000146 e-posta alice@example.com", DEFAULT_ACTIONS
+    )
+    tckn = next(key for key in mapping if key.startswith("<TR_NATIONAL_ID_"))
+    arguments = json.dumps({"id": tckn})
+    split = text.index(tckn) + len(tckn) // 2
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if protocol == "responses":
+            response = _response("resp_withheld")
+            response["output"] = [
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": text,
+                            "annotations": [],
+                            "logprobs": [],
+                        }
+                    ],
+                },
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "c1",
+                    "name": "lookup",
+                    "arguments": arguments,
+                },
+            ]
+            return httpx.Response(200, json=response)
+        tool_call = {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": arguments},
+        }
+        if stream:
+            chunks = [
+                _chunk({"role": "assistant", "content": text[:split]}),
+                _chunk({"content": text[split:]}),
+                _chunk({"tool_calls": [tool_call]}),
+                {
+                    **_chunk({}, "tool_calls"),
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                },
+            ]
+            return httpx.Response(
+                200,
+                content="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                + "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        del tool_call["index"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_withheld",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": [tool_call],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    body = (
+        {"model": "gpt-5.6-luna", "input": text}
+        if protocol == "responses"
+        else {
+            "model": "gpt-5.6-luna",
+            "stream": stream,
+            "messages": [{"role": "user", "content": text}],
+        }
+    )
+    prepared = _prepared(
+        body,
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol=protocol,
+        mapping=mapping,
+    )
+    prepared.privacy = replace(
+        prepared.privacy, restore_withheld=frozenset({"TR_NATIONAL_ID"})
+    )
+    chain_store = SimpleNamespace(save=AsyncMock())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http, chain_store).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        wire = (
+            b"".join(
+                [chunk async for chunk in result.events if isinstance(chunk, bytes)]
+            ).decode()
+            if stream
+            else json.dumps(result.payload)
+        )
+
+    assert "alice@example.com" in wire and "<EMAIL_ADDRESS_" not in wire
+    assert "10000000146" not in wire
+    # Streamed, the text half is split over two chunks; the tool arguments hold it whole.
+    assert wire.count(tckn) == (1 if stream else 2)
+    if protocol == "responses":
+        # The chain keeps every value, so a caller with permission can continue it.
+        assert chain_store.save.await_args.args[2] == mapping

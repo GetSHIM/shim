@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import httpx
 from pydantic import ValidationError
 import pytest
@@ -114,6 +114,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "response_analysis": [],
             "injection_markers": "off",
             "price_tier_warning": False,
+            "restore_withheld": {},
         },
         "revision": 0,
         "updated_at": None,
@@ -324,6 +325,103 @@ async def test_the_price_tier_warning_round_trips_and_is_never_a_relaxation(
     assert not any(
         event["endpoint"] == "tenant.gateway_protection_relaxed"
         for event in await audit_events(test_org.id)
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"NOT_A_TYPE_AT_ALL_LONGER": {}},
+        {"lowercase": {}},
+        {f"LABEL{i}": {} for i in range(65)},
+        {"TR_NATIONAL_ID": {"team_ids": ["not-a-uuid"]}},
+        {"TR_NATIONAL_ID": {"api_key_ids": [str(uuid4()) for _ in range(201)]}},
+        {"TR_NATIONAL_ID": {"people": []}},
+        None,
+    ],
+)
+def test_restore_grants_refuse_unknown_types_and_oversized_lists(value) -> None:
+    with pytest.raises(ValidationError):
+        GatewaySettingsPatch.model_validate({"restore_withheld": value})
+
+
+def test_restore_grants_take_built_in_types_and_rule_labels() -> None:
+    patch = GatewaySettingsPatch.model_validate(
+        {"restore_withheld": {"TR_NATIONAL_ID": {}, "PROJECT": {"team_ids": []}}}
+    )
+
+    assert set(patch.restore_withheld or {}) == {"TR_NATIONAL_ID", "PROJECT"}
+
+
+def _grants(**types) -> GatewaySettings:
+    return GatewaySettings.model_validate({"restore_withheld": types})
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ({}, {"IBAN_CODE": {}}, ("tightening", [])),
+        ({"IBAN_CODE": {}}, {}, ("relaxing", ["restore_withheld"])),
+        (
+            {"IBAN_CODE": {}},
+            {"IBAN_CODE": {"team_ids": [str(UUID(int=1))]}},
+            ("relaxing", ["restore_withheld"]),
+        ),
+        (
+            {"IBAN_CODE": {"api_key_ids": [str(UUID(int=1))]}},
+            {"IBAN_CODE": {}},
+            ("tightening", []),
+        ),
+    ],
+)
+def test_restore_grants_relax_when_a_type_goes_or_an_id_is_added(
+    before, after, classified
+) -> None:
+    assert classify_change(_grants(**before), _grants(**after)) == classified
+
+
+@pytest.mark.asyncio
+async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_privacy(
+    db, test_org, audit_events
+) -> None:
+    from shim_enterprise.tenants.models import Team
+
+    admin = await _admin(db, test_org.id)
+    team = Team(id=uuid4(), organization_id=test_org.id, name="Risk")
+    db.add(team)
+    await db.flush()
+
+    with pytest.raises(HTTPException) as refused:
+        await management.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(uuid4())]}}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    granted = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(team.id)]}}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(restore_withheld={}), _request(), admin, db
+    )
+
+    assert refused.value.status_code == 422
+    assert granted.settings.restore_withheld["TR_NATIONAL_ID"].team_ids == [team.id]
+    events = await audit_events(test_org.id)
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["restore_withheld.TR_NATIONAL_ID"]]
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
     )
 
 

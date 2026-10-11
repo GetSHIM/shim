@@ -227,7 +227,7 @@ class OpenAIExecution:
             )
         restored = restore_openai_payload(
             payload,
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         if prepared.protocol == "responses":
@@ -248,7 +248,7 @@ class OpenAIExecution:
     ) -> AsyncIterator[bytes]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         next_sequence_number = 0
@@ -348,7 +348,7 @@ class OpenAIExecution:
     ) -> AsyncIterator[bytes | MeterOnly]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         expected_choices = _expected_chat_choices(prepared.payload)

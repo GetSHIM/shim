@@ -379,6 +379,12 @@ class TenantRequestPolicyResolver:
                 ),
                 injection_markers=tenant_settings.gateway_settings.injection_markers,
                 price_tier_warning=tenant_settings.gateway_settings.price_tier_warning,
+                restore_withheld=frozenset(
+                    kind
+                    for kind, grant in tenant_settings.gateway_settings.restore_withheld.items()
+                    if api_key.id not in grant.api_key_ids
+                    and api_key.team_id not in grant.team_ids
+                ),
                 tenant_gateway_settings=tenant_settings.gateway_settings,
                 rules=tenant_settings.rules,
             )

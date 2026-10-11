@@ -407,3 +407,57 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
     assert resolved.tenant_gateway_settings is settings[0].gateway_settings
     assert resolved.response_analysis == ("shape",)
     assert cache.gets == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key_id", "team_id", "withheld"),
+    [
+        (UUID(int=7), None, frozenset({"IBAN_CODE"})),
+        (UUID(int=8), UUID(int=20), frozenset({"IBAN_CODE"})),
+        (UUID(int=9), UUID(int=21), frozenset({"TR_NATIONAL_ID", "IBAN_CODE"})),
+        (UUID(int=9), None, frozenset({"TR_NATIONAL_ID", "IBAN_CODE"})),
+    ],
+)
+async def test_restore_permission_comes_from_the_key_or_its_team(
+    monkeypatch: pytest.MonkeyPatch, key_id, team_id, withheld
+) -> None:
+    from shim_enterprise.tenants.gateway_settings import GatewaySettings, RestoreGrant
+
+    api_key = SimpleNamespace(
+        id=key_id,
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+        team_id=team_id,
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+    gateway = GatewaySettings(
+        restore_withheld={
+            # Key 7 by id, every key of team 20; nobody gets IBAN_CODE back.
+            "TR_NATIONAL_ID": RestoreGrant(
+                api_key_ids=[UUID(int=7)], team_ids=[UUID(int=20)]
+            ),
+            "IBAN_CODE": RestoreGrant(),
+        }
+    )
+    policy_service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=ResolvedTenantSettings(
+                tenant_id=UUID(int=1),
+                pii_config=None,
+                tier_definition=None,
+                gateway_settings=gateway,
+            )
+        )
+    )
+    resolver = TenantRequestPolicyResolver(
+        policy_service, Mock(return_value=SessionContext(object()))
+    )
+
+    resolved = await resolver.resolve(SimpleNamespace())
+
+    assert resolved.restore_withheld == withheld

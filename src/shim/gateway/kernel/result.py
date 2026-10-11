@@ -164,6 +164,7 @@ class PreparedInference:
     response_analysis: tuple[str, ...] = ()
     injection_markers: Literal["off", "count", "warn"] = "off"
     price_tier_warning: bool = False
+    restore_withheld: frozenset[str] = frozenset()
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )

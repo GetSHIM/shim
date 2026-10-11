@@ -656,3 +656,76 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    text, mapping = PIIScrubberService().scrub(
+        "Kimlik 10000000146 e-posta alice@example.com", DEFAULT_ACTIONS
+    )
+    tckn = next(key for key in mapping if key.startswith("<TR_NATIONAL_ID_"))
+    split = text.index(tckn) + len(tckn) // 2
+
+    def chunk(parts: list[dict], finish: str | None = None) -> dict:
+        candidate: dict = {"content": {"role": "model", "parts": parts}, "index": 0}
+        if finish:
+            candidate["finishReason"] = finish
+        return {
+            "candidates": [candidate],
+            "usageMetadata": {
+                "promptTokenCount": 1,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 2,
+            },
+        }
+
+    call = {"functionCall": {"name": "lookup", "args": {"id": tckn}}}
+    chunks = (
+        [
+            chunk([{"text": text[:split]}]),
+            chunk([{"text": text[split:]}]),
+            chunk([call], "STOP"),
+        ]
+        if stream
+        else [chunk([{"text": text}, call], "STOP")]
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if stream:
+            return httpx.Response(
+                200,
+                content="".join(f"data: {json.dumps(item)}\n\n" for item in chunks),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=chunks[0])
+
+    prepared = _prepared(
+        {"contents": [{"role": "user", "parts": [{"text": text}]}]},
+        stream=stream,
+        mapping=mapping,
+    )
+    prepared.privacy = replace(
+        prepared.privacy, restore_withheld=frozenset({"TR_NATIONAL_ID"})
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        wire = (
+            b"".join([event async for event in result.events]).decode()
+            if stream
+            else json.dumps(result.payload)
+        )
+
+    assert "alice@example.com" in wire and "<EMAIL_ADDRESS_" not in wire
+    assert "10000000146" not in wire
+    # Streamed, the text half is split over two chunks; the call arguments hold it whole.
+    assert wire.count(tckn) == (1 if stream else 2)

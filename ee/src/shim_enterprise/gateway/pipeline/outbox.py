@@ -221,6 +221,7 @@ _DIAGNOSTIC_FIELDS = (
     "blocked_entities",
     "bulk_disclosure",
     "injection_markers",
+    "restore_withheld",
     "rule_matches",
     "rule_matches_truncated",
 )

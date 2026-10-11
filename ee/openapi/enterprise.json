@@ -4775,6 +4775,14 @@
             },
             "title": "Response Analysis",
             "type": "array"
+          },
+          "restore_withheld": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RestoreGrant"
+            },
+            "default": {},
+            "title": "Restore Withheld",
+            "type": "object"
           }
         },
         "title": "GatewaySettings",
@@ -4823,6 +4831,20 @@
               }
             ],
             "title": "Response Analysis"
+          },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/RestoreGrant"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Withheld"
           }
         },
         "title": "GatewaySettingsPatch",
@@ -10397,6 +10419,21 @@
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
           },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
+            "title": "Restore Withheld"
+          },
           "rule_matches": {
             "anyOf": [
               {
@@ -10644,6 +10681,34 @@
           "$ref": "#/components/schemas/JsonValue"
         },
         "title": "ResponsesRequest",
+        "type": "object"
+      },
+      "RestoreGrant": {
+        "additionalProperties": false,
+        "description": "Who gets a withheld type back: keys, and every key of the listed teams.",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "team_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Team Ids",
+            "type": "array"
+          }
+        },
+        "title": "RestoreGrant",
         "type": "object"
       },
       "RestoreInput": {

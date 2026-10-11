@@ -6,6 +6,10 @@ role is `owner`, `admin`, `member`, or `auditor`, or a member's
 [custom role](#custom-roles); a team administrator is an organization member
 with a delegated membership, not another global role.
 
+Restore permission, which [shows a masked type only to some teams](COOKBOOK.md#show-masked-values-only-to-some-teams),
+is granted to teams and gateway keys, not to people: the gateway sees the key and
+its team, never the user behind an application.
+
 ## Permissions
 
 Every management route asks for one permission. A built-in role holds a fixed

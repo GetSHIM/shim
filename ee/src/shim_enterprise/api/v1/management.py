@@ -153,6 +153,7 @@ from shim_enterprise.tenants.gateway_settings import (
     GatewaySettings,
     GatewaySettingsPatch,
     classify_change,
+    restore_relaxed,
     stored_settings,
 )
 from shim_enterprise.tenants.models import (
@@ -992,6 +993,13 @@ class RequestActivityView(BaseModel):
         description=(
             "Tool results and documents carrying each hidden-instruction marker; "
             '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
+        ),
+    )
+    restore_withheld: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Placeholders left in the answer, by type, because the caller's key and "
+            "team may not see the value; null when nothing was withheld for this caller."
         ),
     )
     response_entities: dict[str, int] | None = Field(
@@ -2683,6 +2691,27 @@ async def update_gateway_settings(
         assert row is not None
     before = stored_settings(row.settings)
     after = GatewaySettings.model_validate({**before.model_dump(), **changes})
+    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
+        ids = {
+            value
+            for grant in after.restore_withheld.values()
+            for value in getattr(grant, field)
+        }
+        known = (
+            set(
+                await session.scalars(
+                    select(model.id).where(
+                        model.organization_id == tenant_id, model.id.in_(ids)
+                    )
+                )
+            )
+            if ids and "restore_withheld" in changes
+            else ids
+        )
+        if ids - known:
+            raise HTTPException(
+                422, detail=f"restore_withheld names {field} this organization lacks"
+            )
     if after == before:
         # Nothing to write; a row inserted above came from a concurrent first write.
         return _gateway_settings_view(row)
@@ -2702,13 +2731,32 @@ async def update_gateway_settings(
         ),
     )
     direction, relaxed = classify_change(before, after)
-    if direction == "relaxing":
+    # Restore permission protects personal data, so it is a privacy relaxation.
+    relaxed = [field for field in relaxed if field != "restore_withheld"]
+    if relaxed:
         await _audit(
             session,
             user,
             "tenant.gateway_protection_relaxed",
             str(tenant_id),
             details={"relaxed": relaxed},
+        )
+    privacy_relaxed = restore_relaxed(before.restore_withheld, after.restore_withheld)
+    if privacy_relaxed:
+        event_id = await _audit(
+            session,
+            user,
+            "tenant.privacy_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": privacy_relaxed},
+        )
+        await ComplianceForwarderService().send_privacy_protection_relaxed(
+            session,
+            TenantId(tenant_id),
+            fields=privacy_relaxed,
+            actor=str(user.id),
+            actor_email=user.email,
+            event_id=event_id,
         )
     await session.commit()
     try:
@@ -3749,6 +3797,7 @@ async def export_requests(
                 "response_analysis",
                 "rule_matches",
                 "injection_markers",
+                "restore_withheld",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -3807,9 +3856,12 @@ async def export_requests(
                     json.dumps(details["rule_matches"], sort_keys=True)
                     if details.get("rule_matches") is not None
                     else None,
-                    json.dumps(details["injection_markers"], sort_keys=True)
-                    if details.get("injection_markers") is not None
-                    else None,
+                    *(
+                        json.dumps(details[field], sort_keys=True)
+                        if details.get(field) is not None
+                        else None
+                        for field in ("injection_markers", "restore_withheld")
+                    ),
                 )
             )
             yield output.getvalue().encode("utf-8")

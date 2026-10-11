@@ -597,6 +597,11 @@ class DurableAccountingCoordinator:
                                     )
                                 }
                             ),
+                            **(
+                                {"restore_withheld": prepared.privacy.withheld_counts}
+                                if prepared.privacy.restore_withheld
+                                else {}
+                            ),
                             **match_records(prepared),
                             # A keyed hash of raw prompt text is still a
                             # pseudonym of the personal data in it.

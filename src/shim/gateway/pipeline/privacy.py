@@ -35,6 +35,7 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     block_code,
     effective_entity_actions,
+    placeholder_type,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.privacy.injection import scan_payload
@@ -222,6 +223,15 @@ class PrivacyStage:
             reason_code=reason_code,
             policy=policy,
         )
+        if value.restore_withheld:
+            withheld = privacy.withheld_counts
+            prepared.record_verdict(
+                "privacy.restore",
+                stage="privacy",
+                outcome="mask" if withheld else "allow",
+                reason_code="RESTORE_WITHHELD" if withheld else "RESTORE_NOT_NEEDED",
+                policy=sorted(value.restore_withheld),
+            )
         return prepared
 
     async def _run(
@@ -319,10 +329,7 @@ class PrivacyStage:
             pii_detected=pii_detected,
             verification_map=verification_map,
             # <TYPE_hex> or <TYPE_hex~tail>
-            pii_entities=Counter(
-                placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
-                for placeholder in new_placeholders
-            ),
+            pii_entities=Counter(map(placeholder_type, new_placeholders)),
             monitored_entities=Counter(monitored.values()),
             blocked_entities=blocked,
             bulk_disclosure={"distinct_values": distinct_values, "threshold": threshold}
@@ -330,6 +337,7 @@ class PrivacyStage:
             else None,
             monitored_values=frozenset(monitored),
             injection_markers=injection_markers,
+            restore_withheld=value.restore_withheld,
         )
         if injection_markers and "error" not in injection_markers:
             for marker, count in injection_markers.items():
