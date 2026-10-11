@@ -128,6 +128,7 @@ forbidden_noncloud_import_roots = [
 [modules]
 # Python files owned by the community target and free of enterprise imports.
 public = [
+  "scripts/bench_middleware.py",
   "scripts/sync_models_dev.py",
   "src/shim/__init__.py",
   "src/shim/api/__init__.py",
