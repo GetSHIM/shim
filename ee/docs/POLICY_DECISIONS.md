@@ -89,7 +89,9 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
+`match`. A `models` entry is compared with the model the request reaches, never
+the registry alias the caller named, case-insensitively, and covers that model's
+dated snapshots (`gpt-5-mini` covers `gpt-5-mini-2025-08-07`, not `gpt-5`). A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
 `destination` and `request_limit` kinds are available; `GET /rules` lists the others with
 `available: false` and the reason.
 
@@ -121,7 +123,9 @@ Protocol identifiers are not searched, and a term in one never refuses a request
 
 A `destination` rule names 1 to 32 built-in entity types (`match.entity_types`) and
 needs at least one scope list (422 `RULE_SCOPE_REQUIRED` without one), typically
-`deployment_kinds: ["external"]`. A target is `internal` or `external` as its
+`deployment_kinds: ["external"]`. A `block` rule also needs a list the server
+decides (keys, teams, models or deployment kinds): tags and the endpoint are the
+caller's choice, so a block scoped by them alone is refused with the same code. A target is `internal` or `external` as its
 [deployment](MODEL_DEPLOYMENTS.md) says; a catalog route and every Gemini request
 are `unknown`, which a scope listing `external` matches. For a request in the rule's
 scope, the privacy stage looks for every type the rule names, also when the base
@@ -145,7 +149,8 @@ A `request_limit` rule caps what a request may carry: `max_tools`, `max_document
 `below_price_tier`. It is evaluated in admission, after the output bounds and the
 context checks and before the rate limits, so a refused request consumes no
 requests-per-minute or tokens-per-minute window, repeat count or quota; an enforced
-`block` refuses there with `RULE_BLOCKED` and its `rule.<id>` verdict. Token
+`block` refuses there with `RULE_BLOCKED`, its `rule.<id>` verdict, `rules.evaluated`
+and the match in `rule_matches`. Token
 counting is exempt: no request-limit rule is evaluated or recorded for it, since it
 reaches no model and is how a client decides what to trim. `below_price_tier`
 applies only to catalog models with a large-context price tier: when the request's
@@ -257,12 +262,13 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Six resources are managed: every write to them records a version, a plan can
+Seven resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan`, `embeddings_monitor_types` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
+| `gateway_settings` | `_` | every gateway setting | `PATCH /gateway-settings` | the change records `tenant.gateway_protection_relaxed` or `tenant.privacy_protection_relaxed` |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
 | `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |

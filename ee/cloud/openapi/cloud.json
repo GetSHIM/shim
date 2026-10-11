@@ -1432,14 +1432,6 @@
         "title": "AzureEntraInput",
         "type": "object"
       },
-      "BatchEmbedContentsRequest": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Native `:batchEmbedContents` JSON, kept as sent.",
-        "title": "BatchEmbedContentsRequest",
-        "type": "object"
-      },
       "Behavior": {
         "description": "Specifies the function Behavior.\n\nIf not specified, the system keeps the current function call behavior. This\nfield is currently only supported by the BidiGenerateContent method.",
         "enum": [
@@ -3359,7 +3351,7 @@
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
         },
-        "description": "Native `:embedContent` JSON, kept as sent.",
+        "description": "Native `:embedContent` or `:batchEmbedContents` JSON, kept as sent.",
         "title": "EmbedContentRequest",
         "type": "object"
       },
@@ -5154,7 +5146,14 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "$ref": "#/components/schemas/RestoreGrant"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RestoreGrant"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
@@ -9913,15 +9912,6 @@
               }
             ]
           },
-          "credential_kind": {
-            "default": "api_key",
-            "enum": [
-              "api_key",
-              "azure_entra_client"
-            ],
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "key": {
             "anyOf": [
               {
@@ -9964,10 +9954,12 @@
             "title": "Name"
           },
           "provider": {
+            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments.",
             "enum": [
               "openai",
               "anthropic",
-              "google"
+              "google",
+              "azure_entra"
             ],
             "title": "Provider",
             "type": "string"
@@ -10043,10 +10035,6 @@
             "title": "Created At",
             "type": "string"
           },
-          "credential_kind": {
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -10099,7 +10087,6 @@
         "required": [
           "id",
           "provider",
-          "credential_kind",
           "name",
           "masked_key",
           "created_at",
@@ -24539,7 +24526,7 @@
     },
     "/v1beta/models/{model}:batchEmbedContents": {
       "post": {
-        "operationId": "batch_embed_contents_v1beta_models__model__batchEmbedContents_post",
+        "operationId": "embed_content_v1beta_models__model__batchEmbedContents_post",
         "parameters": [
           {
             "in": "path",
@@ -24558,7 +24545,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/BatchEmbedContentsRequest"
+                "$ref": "#/components/schemas/EmbedContentRequest"
               }
             }
           },
@@ -24595,7 +24582,7 @@
             "GoogleAPIKey": []
           }
         ],
-        "summary": "Batch Embed Contents"
+        "summary": "Embed Content"
       }
     },
     "/v1beta/models/{model}:embedContent": {

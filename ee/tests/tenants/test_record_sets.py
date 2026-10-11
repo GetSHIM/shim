@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from array import array
+import asyncio
 import base64
+from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -241,6 +244,61 @@ async def test_activation_keeps_one_revision_back_and_rolls_back(
 
 
 @pytest.mark.asyncio
+async def test_a_revision_with_fewer_values_to_match_is_a_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    created = await management.create_record_set(_customers(), _request(), admin, db)
+    set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
+    await _activate(db, admin, set_id, key, 3)
+    revision = (await management.open_record_set_revision(set_id, admin, db))[
+        "revision"
+    ]
+    # As many records, but the names are gone: none can match two fields any more.
+    await management.put_record_set_chunk(
+        set_id,
+        revision,
+        0,
+        management.RecordSetChunkPut(
+            records=[[_row(key, number, "Ad")[0], "0" * 16] for number in range(3)]
+        ),
+        admin,
+        db,
+    )
+    await management.activate_record_set_revision(
+        set_id, revision, _request(), admin, db
+    )
+
+    assert [
+        event["extra"]["relaxed"]
+        for event in await audit_events(test_org.id)
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [[f"record_sets.{set_id}"]]
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_set_locks_the_rule_set_it_is_checked_against(
+    db, test_org
+) -> None:
+    from sqlalchemy import event
+
+    admin = await _admin(db, test_org.id)
+    created = await management.create_record_set(_customers(), _request(), admin, db)
+    statements: list[str] = []
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
+    try:
+        await management.delete_record_set(created["id"], _request(), admin, db)
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", listener)
+
+    assert any(
+        "organization_rule_sets" in statement and "FOR UPDATE" in statement
+        for statement in statements
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_set_in_use_cannot_be_deleted(db, test_org, audit_events) -> None:
     admin = await _admin(db, test_org.id)
     created = await management.create_record_set(_customers(), _request(), admin, db)
@@ -317,6 +375,9 @@ async def test_a_record_set_rule_needs_an_active_set_of_its_kind(db, test_org) -
         return 200
 
     assert await put({"set_id": str(records["id"]), "min_fields": 2}) == 200
+    assert await put({"set_id": str(records["id"]), "min_fields": 3}) == 422, (
+        "two fields can never give three"
+    )
     assert await put({"set_id": str(uuid4())}) == 422
     assert await put({"set_id": str(prints["id"])}) == 422, "not activated"
     assert await put({"set_id": str(records["id"]), "min_shared": 6}) == 422
@@ -351,22 +412,55 @@ async def test_a_loaded_set_matches_and_the_cache_evicts_the_oldest(
     set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
     revision = await _activate(db, admin, set_id, key, 4)
 
-    index = await load_index(db, test_org.id, set_id, revision)
+    sessions = lambda: nullcontext(db)  # noqa: E731
+    index = await load_index(sessions, test_org.id, set_id, revision)
 
     assert index is not None
     assert index.match_records("MUS000002 numaralı ÇAĞRI ÖZTÜRK", 2)[0] == {2}
     assert index.match_records("MUS000002 numaralı Şule Ünal", 2)[0] == set()
-    assert await load_index(db, test_org.id, set_id, revision + 5) is None, "no chunks"
-    assert await load_index(db, uuid4(), set_id, revision) is None, "another tenant"
+    assert await load_index(sessions, test_org.id, set_id, revision + 5) is None
+    assert await load_index(sessions, uuid4(), set_id, revision) is None
 
-    small = RecordSetIndex.records(key, (RecordField("token", True),), [[1], [2]])
+    small = RecordSetIndex.records(
+        key, (RecordField("token", True),), array("Q", [1, 2])
+    )
 
-    async def fake_load(_session, organization, loaded_set, loaded_revision):
+    async def fake_load(_sessions, organization, loaded_set, loaded_revision):
         return small
 
     monkeypatch.setattr(record_sets_module, "load_index", fake_load)
-    cache = RecordSetCache(max_hashes=4)
+    cache = RecordSetCache(max_bytes=2 * small.size)
     for number in range(3):
-        await cache.get(db, test_org.id, uuid4(), number + 1)
+        await cache.get(sessions, test_org.id, uuid4(), number + 1)
 
-    assert len(cache.entries) == 2, "two sets of two hashes fit in four"
+    assert len(cache.entries) == 2, "the cap counts the bytes every index holds"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_share_one_load_and_one_failure(monkeypatch) -> None:
+    calls: list[int] = []
+    release = asyncio.Event()
+
+    async def slow_load(_sessions, organization, loaded_set, revision):
+        calls.append(revision)
+        await release.wait()
+        if len(calls) == 1:
+            raise ConnectionError
+        return RecordSetIndex.records(
+            b"k" * 32, (RecordField("token", True),), array("Q", [1])
+        )
+
+    monkeypatch.setattr(record_sets_module, "load_index", slow_load)
+    cache = RecordSetCache()
+    org, set_id = uuid4(), uuid4()
+    waiting = [
+        asyncio.create_task(cache.get(nullcontext, org, set_id, 1)) for _ in range(5)
+    ]
+    await asyncio.sleep(0)
+    release.set()
+    failures = await asyncio.gather(*waiting, return_exceptions=True)
+    retried = await cache.get(nullcontext, org, set_id, 1)
+
+    assert calls == [1, 1], "one load for five waiters, then one retry"
+    assert all(isinstance(failure, ConnectionError) for failure in failures)
+    assert retried is not None and not cache.pending

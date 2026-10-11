@@ -1,3 +1,4 @@
+from array import array
 import asyncio
 from dataclasses import replace
 import io
@@ -1858,6 +1859,16 @@ async def test_an_enforced_tool_cap_refuses_through_the_app_before_the_provider(
     assert line["outcome"] == "rejected"
     verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
     assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"
+    assert verdicts["rules.evaluated"] == "RULES_EVALUATED"
+    assert line["rule_matches"] == [
+        {
+            "rule_id": "tool_cap",
+            "kind": "request_limit",
+            "action": "block",
+            "state": "enforced",
+            "count": 1,
+        }
+    ]
 
 
 class _WithholdingResolver:
@@ -2419,7 +2430,7 @@ _EMBEDDING_REPLY = {
 
 
 async def _embed(
-    path: str, payload: dict, actions: dict, **settings
+    path: str, payload: dict, actions: dict, rules=None, **settings
 ) -> tuple[httpx.Response, list[dict], list[dict]]:
     sent: list[dict] = []
 
@@ -2444,6 +2455,9 @@ async def _embed(
             event_stream=events,
         )
         async with app.router.lifespan_context(app):
+            if rules is not None:
+                kernel = app.state.gateway_service.kernel
+                kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app), base_url="http://shim.test"
             ) as inbound:
@@ -2492,6 +2506,34 @@ async def test_embeddings_input_is_masked_like_chat(path, payload, text) -> None
         assert response.json() == _EMBEDDING_REPLY, "vectors come back untouched"
     else:
         assert (line["protocol"], line["estimated"]) == ("gemini_embed", True)
+        # Gemini reports no usage: four characters a token of the text sent, never
+        # the JSON around it.
+        assert line["prompt_tokens"] == -(-len(text(sent[0])) // 4)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/embeddings", {"model": "text-embedding-3-small", "input": "hello"}),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            {"content": {"parts": [{"text": "hello"}]}},
+        ),
+    ],
+)
+async def test_an_embeddings_span_names_its_operation(
+    recorded_spans, path, payload
+) -> None:
+    response, _, _ = await _embed(path, payload, {})
+
+    [request] = [
+        span
+        for span in recorded_spans.get_finished_spans()
+        if span.name == "gateway.request"
+    ]
+    assert response.status_code == 200
+    assert (request.attributes or {})["gen_ai.operation.name"] == "embeddings"
 
 
 @pytest.mark.asyncio
@@ -2512,10 +2554,67 @@ async def test_token_ids_cannot_be_scanned_so_masking_refuses_them(
 
     if refused:
         assert response.status_code == 400 and sent == []
-        assert "Token-id embeddings input cannot be scanned." in response.text
+        # OpenAI's own error shape, as the SDK reads it.
+        assert response.json()["error"]["message"] == (
+            "Token-id embeddings input cannot be scanned."
+        )
         assert line["outcome"] == "rejected"
     else:
         assert response.status_code == 200 and sent[0]["input"] == given
+
+
+def _one_rule(kind: str, action: str, state: str, match: dict, scope=None):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "r1",
+                    "name": "r1",
+                    "kind": kind,
+                    "action": action,
+                    "state": state,
+                    "scope": scope or {},
+                    "match": match,
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rules", "refused"),
+    [
+        (
+            _one_rule(
+                "destination",
+                "block",
+                "enforced",
+                {"entity_types": ["TR_NATIONAL_ID"]},
+                {"deployment_kinds": ["external"]},
+            ),
+            True,
+        ),
+        (_one_rule("term", "mask", "enforced", {"terms": ["Apollo"]}), True),
+        (_one_rule("term", "block", "monitor", {"terms": ["Apollo"]}), False),
+    ],
+)
+async def test_token_ids_are_refused_when_an_enforced_rule_needs_the_text(
+    rules, refused
+) -> None:
+    actions = {name: "monitor" for name in effective_entity_actions()}
+
+    response, sent, _ = await _embed(
+        "/v1/embeddings",
+        {"model": "text-embedding-3-small", "input": [[1, 2, 3]]},
+        actions,
+        rules=rules,
+    )
+
+    assert (response.status_code, len(sent)) == ((400, 0) if refused else (200, 1))
 
 
 @pytest.mark.asyncio
@@ -2561,13 +2660,17 @@ def _customer_set():
     return RecordSetIndex.records(
         key,
         fields,
-        [
-            [
-                record_hash(key, "token", normalize("token", f"MUS{number:06d}")),
-                record_hash(key, "name", normalize("name", name)),
-            ]
-            for number, name in enumerate(["Ayşe Yılmaz", "İsmail Işık"])
-        ],
+        array(
+            "Q",
+            (
+                hashed
+                for number, name in enumerate(["Ayşe Yılmaz", "İsmail Işık"])
+                for hashed in (
+                    record_hash(key, "token", normalize("token", f"MUS{number:06d}")),
+                    record_hash(key, "name", normalize("name", name)),
+                )
+            ),
+        ),
     )
 
 

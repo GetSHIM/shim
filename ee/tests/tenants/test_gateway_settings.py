@@ -361,6 +361,104 @@ def test_restore_grants_take_built_in_types_and_rule_labels() -> None:
     assert set(patch.restore_withheld or {}) == {"TR_NATIONAL_ID", "PROJECT"}
 
 
+def test_a_stored_restore_type_this_build_does_not_know_still_loads() -> None:
+    # Written by a newer build (S41's type), read by this one after a rollback.
+    settings = stored_settings({"restore_withheld": {"PERSON_NAME_TR": {}}})
+
+    assert set(settings.restore_withheld) == {"PERSON_NAME_TR"}
+
+
+async def _restore_patch(db, admin, value):
+    return await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"restore_withheld": value}),
+        _request(),
+        admin,
+        db,
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_grants_merge_by_type_and_are_versioned(db, test_org) -> None:
+    from shim_enterprise.policy.models import PolicyVersion
+
+    admin = await _admin(db, test_org.id)
+
+    await _restore_patch(db, admin, {"TR_NATIONAL_ID": {}})
+    merged = await _restore_patch(db, admin, {"IBAN_CODE": {}})
+    removed = await _restore_patch(db, admin, {"TR_NATIONAL_ID": None})
+
+    assert set(merged.settings.restore_withheld) == {"TR_NATIONAL_ID", "IBAN_CODE"}
+    assert set(removed.settings.restore_withheld) == {"IBAN_CODE"}
+    versions = (
+        await db.scalars(
+            select(PolicyVersion)
+            .where(PolicyVersion.organization_id == test_org.id)
+            .order_by(PolicyVersion.version)
+        )
+    ).all()
+    assert [
+        (
+            sorted(version.snapshot["gateway_settings"]["_"]["restore_withheld"]),
+            version.risk,
+        )
+        for version in versions
+    ] == [
+        (["TR_NATIONAL_ID"], "tightening"),
+        (["IBAN_CODE", "TR_NATIONAL_ID"], "tightening"),
+        (["IBAN_CODE"], "relaxing"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_restore_type_is_built_in_or_a_label_the_tenant_uses(
+    db, test_org
+) -> None:
+    from shim_enterprise.rules.models import OrganizationRuleSet
+    from shim_enterprise.tenants.models import RecordSet
+
+    db.add(
+        OrganizationRuleSet(
+            organization_id=test_org.id,
+            revision=1,
+            rules=[
+                {
+                    "id": "projects",
+                    "name": "Projects",
+                    "kind": "term",
+                    "action": "mask",
+                    "state": "enforced",
+                    "match": {"terms": ["Apollo"], "label": "PROJECT"},
+                }
+            ],
+        )
+    )
+    db.add(
+        RecordSet(
+            organization_id=test_org.id,
+            kind="records",
+            name="customers",
+            label="CUSTOMER",
+            key_ref="record-set-key",
+        )
+    )
+    await db.flush()
+    admin = await _admin(db, test_org.id)
+
+    accepted = await _restore_patch(
+        db, admin, {"PROJECT": {}, "CUSTOMER": {}, "IBAN_CODE": {}}
+    )
+    with pytest.raises(HTTPException) as refused:
+        await _restore_patch(db, admin, {"PHONE_NUMBR": {}})
+
+    assert set(accepted.settings.restore_withheld) == {
+        "PROJECT",
+        "CUSTOMER",
+        "IBAN_CODE",
+    }
+    assert refused.value.status_code == 422
+    assert "PHONE_NUMBR" in str(refused.value.detail)
+
+
 def _grants(**types) -> GatewaySettings:
     return GatewaySettings.model_validate({"restore_withheld": types})
 
@@ -416,9 +514,7 @@ async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_priv
         admin,
         db,
     )
-    await management.update_gateway_settings(
-        GatewaySettingsPatch(restore_withheld={}), _request(), admin, db
-    )
+    await _restore_patch(db, admin, {"TR_NATIONAL_ID": None})
 
     assert refused.value.status_code == 422
     assert granted.settings.restore_withheld["TR_NATIONAL_ID"].team_ids == [team.id]

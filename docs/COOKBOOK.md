@@ -142,11 +142,14 @@ when the vectors stay in your own store, list the types in
 `PII_EMBEDDINGS_MONITOR` (comma-separated, for example `TR_NATIONAL_ID,IBAN_CODE`):
 for embeddings those types are only counted and sent unchanged, while chat keeps
 masking them. Token ids (`input` of integers) cannot be scanned, so they are refused
-with 400 `PRIVACY_POLICY_BLOCKED` while any type is masked or blocked. The usage
+with 400 `PRIVACY_POLICY_BLOCKED` while any type is masked or blocked, or an enforced
+tenant rule in scope masks, blocks or holds text. The texts of one request are
+scanned in one pass, unless a tenant rule is in scope (a record match must not join
+two texts). Errors on `/v1/embeddings` come in OpenAI's own error shape. The usage
 event's `protocol` is `openai_embeddings` or `gemini_embed`, `completion_tokens` is
 0, `completion_outcome` is null, and the cost is the input tokens at the model's
-input price (`estimated` when the provider reports no count, as Gemini usually
-does). Embeddings models answer only these routes and are not in `/v1/models`;
+input price; Gemini reports no count, so its tokens are estimated as four
+characters a token of the text sent (`estimated` is `true`). Embeddings models answer only these routes and are not in `/v1/models`;
 `gemini-embedding-2` is not priced yet (its audio rate is above its text rate).
 Behind LiteLLM, the OpenAI `api_base` ends in `/v1` as for chat.
 
@@ -510,9 +513,13 @@ Notes:
   cross it, concurrent calls can each pass before any cost lands, and unpriced
   requests add nothing; `SHIM_TASK_WINDOW_SECONDS` (60 to 86,400, default 3600)
   is how long a task's counters live from its first call. A request without a task
-  id is never capped. Counters live in the process. The loop signal is on by
-  default: `SHIM_AGENT_LOOP=count` digests the latest tool call in the request's
-  history (name and canonical arguments, never the text) and counts it per task
+  id is never capped, and a call the quota refuses is given back to its task. Task caps are advisory: the caller names its task, so a
+  caller that rotates or omits its task id is not capped; use key and team limits
+  for a hard bound. Counters live in the process; when it is full, expired tasks
+  go first, then the least recently used. The loop signal is on by
+  default: `SHIM_AGENT_LOOP=count` digests the latest assistant turn's tool calls in
+  the request's history (name and canonical arguments, never the text; a latest
+  turn that only answers has none) and counts them per task
   (else per key) within `LOOP_WINDOW_SECONDS`; the usage event's
   `tool_call_repeats` shows the count, `task_calls` the task's calls after this one,
   and at `SHIM_AGENT_LOOP_REPEATS` (3 to 100, default 5) the `task.agent_loop`
@@ -532,7 +539,8 @@ Notes:
   streams, Responses (provider-side conversation state), token counts, `n` above 1
   or Gemini `candidateCount` above 1, an explicit `temperature` above 0, and other
   keys. If the first request fails or is cancelled, the second calls the provider
-  itself, once. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
+  itself, once; so does one that arrives after the first one's answer is in, while
+  it is still finishing. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
   holds `leader_request_id`, the shared answer's `prompt_tokens` and
   `completion_tokens`, and `avoided_cost_usd` at its own price; the first request's
   event carries the provider call and its cost, so the events add up to the
@@ -582,8 +590,10 @@ from the providers' deprecation pages (OpenAI, Anthropic, Google publish no API 
 this) and reviewed like the price catalog; each entry names its `source` and when it
 was `checked_on`. An entry covers its own name and longer dated names, but never a
 name the catalog prices as a model of its own: a retiring `gpt-4` does not warn
-`gpt-4.1`, and a retiring dated snapshot does not warn the alias that points at it
-unless the provider lists the alias too. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
+`gpt-4.1`. An undated alias retires with its dated snapshots when every snapshot
+the catalog lists for it retires, on the last of their dates: `claude-sonnet-4-5`
+warns with `claude-sonnet-4-5-20250929`, while `gpt-4o` does not warn for
+`gpt-4o-2024-05-13` alone, since it may point at a later snapshot. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
 of the same format to add or override dates; there a provider key may also be
 `registry`, with deployment aliases as model names. A malformed file stops the
 gateway at startup with the setting named. shim never refuses, reroutes or
@@ -623,16 +633,19 @@ The markers are those shim-cli flags, in English and Turkish, typed with or
 without Turkish letters: `INSTRUCTION_OVERRIDE` ("ignore all previous
 instructions", "önceki tüm talimatları yok say"; only an order, so "kuralları yok
 saydık" is not one), `ROLE_REASSIGNMENT` ("you are now", "bundan sonra sen
-yöneticisin"), `SYSTEM_IMPERSONATION` (a `System:` or `[sistem]` line,
-`<important_instructions>`), `SECRECY_REQUEST` ("do not tell the user",
-"kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width characters, bidi controls
-and Unicode tag characters, read before anything is removed). Text under 24
-characters is skipped, and each tool result or document is read up to its first
-1,000,000 characters.
+yöneticisin"), `SYSTEM_IMPERSONATION` (a `[sistem]` line, or a `System:` line
+that goes on as a sentence, so YAML `system: production` and a `## System:
+overview` heading are not one; `<important_instructions>`), `SECRECY_REQUEST`
+("do not tell the user", "kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width
+characters, bidi controls and Unicode tag characters, read before anything is
+removed). A phrase may run across a line break; only a full stop ends it. Text
+under 24 characters is skipped, and each tool result or document is read up to
+its first 1,000,000 characters.
 
 What is read: Chat `tool` and `function` messages; Responses
 `function_call_output`, `custom_tool_call_output` and `mcp_call` outputs; Anthropic
-`tool_result`, `search_result` and text `document` blocks; Gemini
+`tool_result` (with any `document` inside it), `search_result` and text
+`document` blocks; Gemini
 `functionResponse.response`. What you type, system prompts, answers and images are
 never read: they are your own instructions. Nothing is ever blocked, rewritten or
 said to the model; a scan that fails records `{"error": true}` and the request
@@ -793,8 +806,10 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    | `SYSTEM_PROMPT_HASH_KEY` | A secret of at least 32 characters. The usage event's `system_prompt_hash` becomes an HMAC of the system and developer instructions, so a changed prompt shows as a changed hash. Unset means `null`. Another installation's key gives other hashes for the same prompt. |
 
 2. Name the agent task a request belongs to with `X-Shim-Task-Id`: up to 128 of
-   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value is ignored and
-   counted in `shim_task_id_rejected_total`, never refused. Without it, the trace id
+   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value, and ten or more
+   digits alone (the shape of a national id or a phone number), is ignored and
+   counted in `shim_task_id_rejected_total`, never refused. The task id is recorded
+   and exported, so it must never carry personal data. Without it, the trace id
    of a valid incoming `traceparent` is the task id. The usage event records
    `task_id` and `trace_id` (the incoming trace id, also with `ignore`), `null` when
    absent. Neither header is sent to the provider.
@@ -804,7 +819,8 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    `gen_ai.response.finish_reasons`, `shim.cost_usd` and `shim.usage_estimated`.
    Span attributes come from a fixed allow-list. The request span (`gateway.request`)
    also carries `gen_ai.operation.name` (`chat` for Chat, Responses and Messages,
-   `generate_content` for Gemini), `gen_ai.provider.name` (`openai`, `anthropic`,
+   `generate_content` for Gemini, `embeddings` for OpenAI and Gemini embeddings),
+   `gen_ai.provider.name` (`openai`, `anthropic`,
    `gcp.gemini`) and `shim.task_id`, named as the OpenTelemetry GenAI conventions
    at schema `https://opentelemetry.io/schemas/1.44.0`, which the tracer declares.
 4. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the

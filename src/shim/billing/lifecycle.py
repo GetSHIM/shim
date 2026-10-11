@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import date
-from functools import cache, lru_cache
+from functools import cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
 
 # Between Anthropic's 60-day and OpenAI's six-month minimum notice.
 RETIREMENT_WARNING_DAYS = 90
@@ -78,8 +78,6 @@ class ModelLifecycle:
 
     def __init__(self, models: Mapping[str, Mapping[str, Retirement]]) -> None:
         self.models = models
-        # Model names repeat; the lookup is a dictionary access after the first.
-        self.match = lru_cache(maxsize=4096)(self._match)
 
     def retirement(
         self, model: str, provider: str, alias: str | None = None
@@ -87,7 +85,7 @@ class ModelLifecycle:
         found = self.match(model, provider, alias)
         return None if found is None else found[2]
 
-    def _match(
+    def match(
         self, model: str, provider: str, alias: str | None = None
     ) -> tuple[str, str, Retirement] | None:
         """The provider and entry name that matched, and the date: a registry alias
@@ -95,7 +93,8 @@ class ModelLifecycle:
 
         An entry matches its own name or a dashed suffix of it, unless the catalog
         prices that longer name as a model of its own (``gpt-5`` never covers
-        ``gpt-5-mini``).
+        ``gpt-5-mini``). An undated alias retires with its dated snapshots when
+        every one the catalog lists retires, on the last of their dates.
         """
         if alias is not None:
             name = alias.strip().casefold()
@@ -105,7 +104,15 @@ class ModelLifecycle:
         name = model.strip().casefold()
         key = name if name in entries else _longest_prefix(name, entries)
         if key is None:
-            return None
+            snapshots = [
+                snapshot
+                for snapshot in DEFAULT_PRICE_BOOK.models(provider)
+                if DATE_SUFFIX.sub("", snapshot) == name and snapshot != name
+            ]
+            if not snapshots or any(item not in entries for item in snapshots):
+                return None
+            key = max(snapshots, key=lambda item: entries[item].retires_on)
+            return provider, key, entries[key]
         catalog = _longest_prefix(name, DEFAULT_PRICE_BOOK.models(provider))
         if key != name and catalog is not None and len(key) < len(catalog):
             return None

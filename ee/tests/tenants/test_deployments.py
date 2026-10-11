@@ -1411,6 +1411,53 @@ async def test_relabelling_internal_relaxes_and_follows_the_operator_list(
     )
 
 
+@pytest.mark.asyncio
+async def test_moving_an_internal_deployment_relaxes_without_an_operator_list(
+    db, test_api_key, test_user_with_org, origins
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    rows = await _deployments(db, test_api_key)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    payload = {
+        "alias": "moved",
+        "provider": "openai",
+        "upstream_model": "custom-v1",
+        "base_url": "https://a.internal/v1",
+        "provider_secret_id": str(rows[0].provider_secret_id),
+        "deployment_kind": "internal",
+        "declared_version": "sha256:v1",
+        "owner": "Platform",
+    }
+    moved = {**payload, "base_url": "https://b.internal/v1"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        created = await client.post("/model-deployments", json=payload)
+        url = f"/model-deployments/{created.json()['id']}"
+        assert (await client.put(url, json=moved)).status_code == 200
+        external = {**payload, "deployment_kind": "external"}
+        assert (await client.put(url, json=external)).status_code == 200
+    relaxed = [
+        event.payload["extra"]["relaxed"]
+        for event in await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+        if event.payload.get("endpoint") == "tenant.privacy_protection_relaxed"
+    ]
+    # An internal target moved elsewhere sees what only an internal one may.
+    assert relaxed == [[f"base_url.{created.json()['id']}"]]
+
+
 _AZURE_BASE = "https://bank.openai.azure.com/openai/v1"
 
 
@@ -1497,12 +1544,11 @@ def test_a_view_survives_a_price_model_the_catalog_dropped(azure_suffix):
     assert view.price_model == "retired-model"
 
 
-async def _azure_row(db, key, *, kind="api_key", **fields):
+async def _azure_row(db, key, *, provider="openai", **fields):
     secret = ProviderSecret(
         id=uuid4(),
         organization_id=key.organization_id,
-        provider="openai",
-        credential_kind=kind,
+        provider=provider,
         secret_ref="reference-z",
         secret_backend="fernet",
         secret_version="v2",
@@ -1544,7 +1590,6 @@ async def test_existing_rows_default_to_generic_api_keys_and_the_database_checks
         None,
         None,
     )
-    assert secret.credential_kind == "api_key"
     for field, value in [
         ("cache_read_price_per_million", Decimal("0.1")),
         ("upstream", "bedrock"),
@@ -1569,8 +1614,7 @@ async def test_a_put_without_the_new_fields_keeps_them(
     entra = ProviderSecret(
         id=uuid4(),
         organization_id=test_api_key.organization_id,
-        provider="openai",
-        credential_kind="azure_entra_client",
+        provider="azure_entra",
         secret_ref="reference-e",
         secret_backend="fernet",
         secret_version="v2",
@@ -1759,7 +1803,7 @@ async def test_an_entra_backed_health_check_sends_the_entra_token(
     db, test_api_key, test_user_with_org, azure_suffix, monkeypatch
 ):
     row, _ = await _azure_row(
-        db, test_api_key, kind="azure_entra_client", upstream="azure_openai"
+        db, test_api_key, provider="azure_entra", upstream="azure_openai"
     )
     stored = json.dumps(
         {

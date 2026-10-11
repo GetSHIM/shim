@@ -30,7 +30,7 @@ _INVISIBLE = re.compile("[\u200b\u2060-\u2064\u202a-\u202e\U000e0000-\U000e007f]
 # Text and patterns are folded alike (see `fold`), so Turkish typed without its
 # letters, in capitals or with the accents apart is the same sentence, and every
 # pattern below is written in folded form. A gap between the words of a phrase
-# may be a few spaces or a line break.
+# may hold line breaks; only a full stop ends the phrase.
 _S = r"\s{1,4}"
 _TR_QUALIFIER = r"\b(?:onceki|yukaridaki|tum|butun|eski|mevcut)\b"
 _TR_RULE = r"\b(?:talimat|komut|kural|yonerge|direktif|yonlendirme)\w*"
@@ -40,10 +40,12 @@ _TR_IGNORE = (
     rf"\b(?:yok{_S}say(?:in|iniz)?|gormezden{_S}gel(?:in|iniz)?|unut(?:un|unuz)?"
     rf"|dikkate{_S}alma(?:yin|yiniz)?|uyma(?:yin|yiniz)?"
     rf"|gecersiz{_S}say(?:in|iniz)?|iptal{_S}et(?:in|iniz)?)\b"
+    # "iptal et komutuyla" names a command, it does not give the order.
+    rf"(?!{_S}{_TR_RULE})"
 )
 # The nearest rule noun decides; letting the gap swallow one only makes the scan
 # retry every later noun, which is what made "eski kural " repeated slow.
-_TR_BEFORE_RULE = rf"(?:(?!{_TR_RULE})[^.\n]){{0,40}}?"
+_TR_BEFORE_RULE = rf"(?:(?!{_TR_RULE})[^.]){{0,40}}?"
 # "fix: eski komutlari unut bayragi" is a commit subject, not an order.
 _COMMIT = (
     r"(?:fix|feat|chore|docs|refactor|test|perf|build|ci|style|revert)"
@@ -53,13 +55,13 @@ _COMMIT = (
 # artik" alone; a verb in the aorist ("yapabilirsin", ending "rsin") is not one.
 _TR_ROLE = (
     rf"\b(?:sen{_S}artik|artik{_S}sen|bundan{_S}(?:sonra|boyle){_S}sen)\b"
-    r"[^.\n]{0,30}[^\Wr]s[iu]n\b"
+    r"[^.]{0,30}[^\Wr]s[iu]n\b"
     rf"|\b(?:gibi{_S}davran(?:in|iniz)?|rolune{_S}gir(?:in|iniz)?"
     rf"|rolunu{_S}ustlen(?:in|iniz)?)\b"
 )
 # "gosterme mantigi" names a thing; "soyleme," or "gizle ve" gives an order.
 _TR_SECRECY = (
-    r"\bkullanici(?:ya|dan)\b[^.\n]{0,30}?"
+    r"\bkullanici(?:ya|dan)\b[^.]{0,30}?"
     r"\b(?:soyleme|bildirme|gosterme|aciklama|belirtme|bahsetme|gizle)(?:yin|yiniz)?"
     r"(?=[^\S\n]*(?:[.,;:!?)\]\"']|$|\n)"
     r"|[^\S\n]{1,4}(?:ve|veya|ama|fakat|yoksa|cunku|sakin|asla|lutfen)\b)"
@@ -79,37 +81,42 @@ _PATTERNS = (
     (
         INSTRUCTION_OVERRIDE,
         re.compile(
-            r"\b(?:ignore|disregard|forget|override)\b[^.\n]{0,40}?"
-            r"\b(?:previous|prior|above|earlier|all)\b[^.\n]{0,20}?"
+            r"\b(?:ignore|disregard|forget|override)\b[^.]{0,40}?"
+            r"\b(?:previous|prior|above|earlier|all)\b[^.]{0,20}?"
             r"\b(?:instruction|prompt|rule|direction|command)s?\b"
+            # "the previous rule set" is a thing, not the rules.
+            r"(?!\s{1,4}(?:set|file|line|engine|template)s?\b)"
         ),
     ),
     (
         INSTRUCTION_OVERRIDE,
         re.compile(
             rf"(?m)^(?![^\S\n]*{_COMMIT})[^\n]*?(?:"
-            rf"{_TR_QUALIFIER}{_TR_BEFORE_RULE}{_TR_RULE}[^.\n]{{0,30}}?{_TR_IGNORE}"
-            rf"|{_TR_IGNORE}[^.\n]{{0,30}}?{_TR_QUALIFIER}[^.\n]{{0,40}}?{_TR_RULE})"
+            rf"{_TR_QUALIFIER}{_TR_BEFORE_RULE}{_TR_RULE}[^.]{{0,30}}?{_TR_IGNORE}"
+            rf"|{_TR_IGNORE}[^.]{{0,30}}?{_TR_QUALIFIER}[^.]{{0,40}}?{_TR_RULE})"
         ),
     ),
     (
         ROLE_REASSIGNMENT,
         re.compile(
             r"\b(?:you\s{1,4}are\s{1,4}now|from\s{1,4}now\s{1,4}on\s{1,4}you"
-            r"|act\s{1,4}as\s{1,4}(?:a|an|the)\b"
+            # "act as a proxy" describes software, not a persona.
+            r"|act\s{1,4}as\s{1,4}(?:a|an|the)\b(?!\s{1,4}(?:proxy|gateway|bridge"
+            r"|cache|buffer|server|client|relay|wrapper|fallback|placeholder|backup"
+            r"|router|middleware)\b)"
             r"|pretend\s{1,4}(?:to\s{1,4}be|you\s{1,4}are))"
         ),
     ),
     (ROLE_REASSIGNMENT, re.compile(_TR_ROLE)),
     (
-        # The Turkish label is data ("Sistem: Linux 6.1", YAML "sistem:
-        # production") unless it is bracketed or followed by a sentence.
+        # A role label is data ("Sistem: Linux 6.1", YAML "system: production",
+        # a "## System: overview" heading) unless it is bracketed or goes on
+        # as a sentence.
         SYSTEM_IMPERSONATION,
         re.compile(
             r"(?:^|\n)[^\S\n]{0,8}(?:"
-            r"(?:\[|<|\#{1,3}[^\S\n]{0,4})?(?:system|assistant)[^\S\n]{0,4}(?:\]|>|:)"
-            r"|[\[<][^\S\n]{0,4}(?:sistem|asistan)[^\S\n]{0,4}[\]>:]"
-            r"|(?:\#{1,3}[^\S\n]{0,4})?(?:sistem|asistan)[^\S\n]{0,4}:"
+            r"[\[<][^\S\n]{0,4}(?:system|assistant|sistem|asistan)[^\S\n]{0,4}[\]>:]"
+            r"|(?:\#{1,3}[^\S\n]{0,4})?(?:system|assistant|sistem|asistan)[^\S\n]{0,4}:"
             r"[^\S\n]{0,4}[^\W\d_]+[^\S\n]{1,4}[^\W\d_]+)"
             r"|<[^\S\n]{0,4}/?[^\S\n]{0,4}"
             r"(?:system|important_instructions)[^\S\n]{0,4}>"
@@ -118,9 +125,10 @@ _PATTERNS = (
     (
         SECRECY_REQUEST,
         re.compile(
-            r"\b(?:do\s{0,4}not|don'?t|never)\b[^.\n]{0,30}?"
-            r"\b(?:tell|inform|mention|reveal|show|disclose)\b[^.\n]{0,20}?"
-            r"\b(?:the\s{1,4})?(?:user|human|operator)\b"
+            r"\b(?:do\s{0,4}not|don'?t|never)\b[^.]{0,30}?"
+            r"\b(?:tell|inform|mention|reveal|show|disclose)\b[^.]{0,20}?"
+            # "the user's browser" is someone else.
+            r"\b(?:the\s{1,4})?(?:user|human|operator)\b(?!['’]s\b)"
         ),
     ),
     (SECRECY_REQUEST, re.compile(_TR_SECRECY)),
@@ -175,6 +183,24 @@ _TEXT = frozenset({"text"})
 _INPUT_TEXT = frozenset({"input_text", "output_text", "text"})
 
 
+def _document(block: Mapping[str, Any]) -> Iterator[str]:
+    """The text of an Anthropic `document` block."""
+    source = block.get("source")
+    if isinstance(source, Mapping):
+        if source.get("type") == "text":
+            yield from _parts(source.get("data"), _TEXT)
+        elif source.get("type") == "content":
+            yield from _parts(source.get("content"), _TEXT)
+
+
+def _tool_result(content: Any) -> Iterator[str]:
+    """Text parts, and the documents a tool result may carry."""
+    yield from _parts(content, _TEXT)
+    for part in content if isinstance(content, list) else ():
+        if isinstance(part, Mapping) and part.get("type") == "document":
+            yield from _document(part)
+
+
 def _blocks(payload: Mapping[str, Any], protocol: str) -> Iterator[Iterator[str]]:
     """The text of each tool result and document block the request carries."""
     if protocol == "chat":
@@ -203,14 +229,9 @@ def _blocks(payload: Mapping[str, Any], protocol: str) -> Iterator[Iterator[str]
                     continue
                 kind = block.get("type")
                 if kind in {"tool_result", "search_result"}:
-                    yield _parts(block.get("content"), _TEXT)
-                elif kind == "document" and isinstance(
-                    source := block.get("source"), Mapping
-                ):
-                    if source.get("type") == "text":
-                        yield _parts(source.get("data"), _TEXT)
-                    elif source.get("type") == "content":
-                        yield _parts(source.get("content"), _TEXT)
+                    yield _tool_result(block.get("content"))
+                elif kind == "document":
+                    yield _document(block)
     elif protocol == "generate_content":
         for content in payload.get("contents") or ():
             parts = content.get("parts") if isinstance(content, Mapping) else None

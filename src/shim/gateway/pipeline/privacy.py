@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 import logging
@@ -249,19 +249,6 @@ class PrivacyStage:
     async def _run(
         self, value: PreparedInference, actions: Mapping[str, EntityAction]
     ) -> PreparedInference:
-        token_ids = (
-            value.protocol == "embeddings"
-            and not isinstance(value.payload["input"], str)
-            and not isinstance(value.payload["input"][0], str)
-        )
-        if token_ids and any(action in _HIDING for action in actions.values()):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "code": "PRIVACY_POLICY_BLOCKED",
-                    "message": "Token-id embeddings input cannot be scanned.",
-                },
-            )
         parent_map: dict[str, str] = {}
         previous_response_id = (
             value.payload.get("previous_response_id")
@@ -304,6 +291,30 @@ class PrivacyStage:
             if rule.kind == "destination" and in_scope(rule, value, tags)
         ]
         actions = destination_actions(actions, destinations)
+        token_ids = (
+            value.protocol == "embeddings"
+            and not isinstance(value.payload["input"], str)
+            and not isinstance(value.payload["input"][0], str)
+        )
+        # Token ids cannot be read, so whatever would hide or refuse text refuses them.
+        if token_ids and (
+            any(action in _HIDING for action in actions.values())
+            or any(
+                rule.state == "enforced"
+                and rule.action in {"mask", "block", "require_approval"}
+                for rule in [
+                    *(content.rules if content is not None else ()),
+                    *destinations,
+                ]
+            )
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "PRIVACY_POLICY_BLOCKED",
+                    "message": "Token-id embeddings input cannot be scanned.",
+                },
+            )
         scrub = partial(
             scrub_payload,
             value.payload,
@@ -313,6 +324,9 @@ class PrivacyStage:
             request_model=value.model,
             unmasked=unmasked,
             content=content,
+            batch=embedded_texts(value.payload, value.protocol)
+            if value.protocol in EMBEDDINGS_PROTOCOLS
+            else (),
             # An enforced block cannot see inside media either.
             protects=any(
                 (rule.state, rule.action) == ("enforced", "block")
@@ -437,6 +451,24 @@ class PrivacyStage:
         return output.privacy.trace_metadata()
 
 
+def embedded_texts(payload: Mapping[str, Any], protocol: str) -> list[str]:
+    """The texts an embeddings request embeds."""
+    if protocol == "embeddings":
+        texts = payload["input"]
+        return [
+            text
+            for text in (texts if isinstance(texts, list) else [texts])
+            if isinstance(text, str)
+        ]
+    requests = payload["requests"] if "requests" in payload else [payload]
+    return [
+        part["text"]
+        for request in requests
+        for part in request["content"]["parts"]
+        if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+    ]
+
+
 def scrub_payload(
     payload: Mapping[str, Any],
     actions: Mapping[str, EntityAction],
@@ -448,7 +480,9 @@ def scrub_payload(
     placeholder_key: bytes | None = None,
     content: ContentRules | None = None,
     protects: bool = False,
+    batch: Sequence[str] = (),
 ) -> tuple[dict[str, Any], dict[str, str]]:
+    """`batch`: texts scanned together in one analyzer pass before the walk."""
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
@@ -560,6 +594,27 @@ def scrub_payload(
             pii_cache[value] = protected(found, kept)
         text_cache[value] = scrubbed
         return scrubbed
+
+    # Tenant rules read texts one by one: a record match must not join two of them.
+    distinct = list(dict.fromkeys(batch))
+    if len(distinct) > 1 and content is None:
+        kept: dict[str, str] = {}
+        try:
+            done = scrubber.scrub_many(
+                distinct,
+                actions,
+                known_placeholders=verification_map,
+                placeholders_by_value=placeholders_by_value,
+                unmasked=kept,
+                placeholder_key=placeholder_key,
+            )
+        except PIIInputTooLarge:
+            done = None
+        if done is not None:
+            scrubbed_texts, found = done
+            verification_map.update(found)
+            unmasked.update(kept)
+            text_cache.update(zip(distinct, scrubbed_texts))
 
     def visit(value: Any, *, content: bool = False, deep: bool = False) -> Any:
         if isinstance(value, str):

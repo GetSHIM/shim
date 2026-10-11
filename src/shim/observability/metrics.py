@@ -232,6 +232,10 @@ INFLIGHT_DUPLICATES_TOTAL = Counter(
     "received its answer (true, false).",
     ("shared",),
 )
+TASK_COUNTER_UNAVAILABLE_TOTAL = Counter(
+    "shim_task_counter_unavailable_total",
+    "Calls admitted without their task caps because the task counter failed.",
+)
 TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",

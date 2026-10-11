@@ -14,7 +14,9 @@ from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from hashlib import blake2b
+import math
 import re
+from time import perf_counter
 from typing import Literal
 import unicodedata
 
@@ -45,8 +47,9 @@ _SHAPES: dict[FieldKind, re.Pattern[str]] = {
     "tckn": re.compile(r"(?<!\d)\d{11}(?!\d)"),
     "vkn": re.compile(r"(?<!\d)\d{10}(?!\d)"),
     "iban": re.compile(r"(?<![A-Za-z0-9])TR\d{2}(?: ?\d{4}){5} ?\d{2}(?!\d)", re.I),
-    "email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
-    "phone": re.compile(r"(?<![\d+])(?:\+?\d[\d ()-]{8,16}\d)(?!\d)"),
+    # Starting only where a run starts keeps a long run without "@" linear.
+    "email": re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]+(?:\.[\w-]+)+"),
+    "phone": re.compile(r"(?<![\d+(])(?:\+?\(?\d[\d ().-]{8,16}\d)(?!\d)"),
     "digits": re.compile(r"(?<!\d)\d{4,34}(?!\d)"),
     "token": re.compile(
         r"(?<![A-Za-z0-9_-])[A-Za-z0-9][A-Za-z0-9_-]{5,63}(?![A-Za-z0-9_-])"
@@ -54,6 +57,8 @@ _SHAPES: dict[FieldKind, re.Pattern[str]] = {
 }
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,63}")
 _LETTERS = re.compile(r"[^\W\d_]+")
+# Between the words of one name: spaces, and at most one hyphen or apostrophe.
+_NAME_GAP = re.compile(r"\s*[-'’]?\s*")
 _NOT_WORD = re.compile(r"[^\w]+|_+")
 
 
@@ -86,8 +91,14 @@ def normalize(
         return digits[-10:] if len(digits) >= 10 else None
     if kind == "token":
         return text.upper() if _TOKEN.fullmatch(text) else None
-    words = _fold(text).split()
-    return " ".join(words) if 1 <= len(words) <= 3 else None
+    # Letter words only, so "Ayşe-Nur" and "Ayşe Nur" are one name; text never puts
+    # a digit in a name, so a value with one is not a name.
+    words = _LETTERS.findall(_fold(text))
+    return (
+        " ".join(words)
+        if 1 <= len(words) <= 3 and not any(map(str.isdigit, text))
+        else None
+    )
 
 
 def record_hash(key: bytes, kind: str, normalized: str) -> int:
@@ -102,7 +113,10 @@ def _words(text: str) -> list[str]:
 def fingerprints(key: bytes, text: str) -> set[int]:
     """Winnowed 8-word shingles: the minimum of every window of 4, rightmost on ties."""
 
-    words = _words(text)
+    return _fingerprints(key, _words(text))
+
+
+def _fingerprints(key: bytes, words: list[str]) -> set[int]:
     shingles = [
         record_hash(key, "shingle", " ".join(words[start : start + _SHINGLE_WORDS]))
         for start in range(len(words) - _SHINGLE_WORDS + 1)
@@ -146,12 +160,10 @@ class RecordSetIndex:
         cls,
         key: bytes,
         fields: Sequence[RecordField],
-        rows: Iterable[Sequence[int]],
+        values: array,
         label: str = "RECORD",
     ) -> RecordSetIndex:
-        values = array("Q")
-        for row in rows:
-            values.extend(row)
+        """`values`: every record's field hashes in field order, one after another."""
         width = len(fields)
         pairs = sorted(
             (values[record * width + index], record)
@@ -187,8 +199,17 @@ class RecordSetIndex:
 
     @property
     def size(self) -> int:
-        """Hashes held, for the per-process cap."""
-        return len(self.values) + len(self.prints)
+        """Bytes held, for the per-process cap."""
+        return sum(
+            len(values) * values.itemsize
+            for values in (
+                self.primary,
+                self.primary_records,
+                self.values,
+                self.prints,
+                self.print_documents,
+            )
+        )
 
     def _hashes(self, kind: FieldKind, spec: RecordField, text: str, offset: int):
         """(hash, start, end) of every value of the field's shape in `text`."""
@@ -196,9 +217,8 @@ class RecordSetIndex:
             words = list(_LETTERS.finditer(text))
             for first in range(len(words)):
                 for last in range(first, min(first + 3, len(words))):
-                    if (
-                        last > first
-                        and text[words[last - 1].end() : words[last].start()].strip()
+                    if last > first and not _NAME_GAP.fullmatch(
+                        text, words[last - 1].end(), words[last].start()
                     ):
                         break
                     start, end = words[first].start(), words[last].end()
@@ -220,15 +240,19 @@ class RecordSetIndex:
                 )
 
     def match_records(
-        self, text: str, min_fields: int
+        self, text: str, min_fields: int, deadline: float = math.inf
     ) -> tuple[set[int], list[tuple[int, int]], bool]:
-        """Matched records, the spans of their found fields, and whether candidates ran out."""
+        """Matched records, the spans of their found fields, and whether candidates ran out.
+
+        Raises TimeoutError once `perf_counter()` passes `deadline`.
+        """
         width = len(self.fields)
         candidates: list[tuple[int, int, int, int]] = []  # record, field, start, end
         truncated = False
         primary_kinds = {(f.kind, f.length): f for f in self.fields if f.primary}
         for spec in primary_kinds.values():
             for hash_, start, end in self._hashes(spec.kind, spec, text, 0):
+                _check(deadline)
                 low, high = (
                     bisect_left(self.primary, hash_),
                     bisect_right(self.primary, hash_),
@@ -251,12 +275,14 @@ class RecordSetIndex:
         matched: set[int] = set()
         spans: list[tuple[int, int]] = []
         windows: dict[tuple[int, int], dict[int, list[tuple[int, int]]]] = {}
+        specs = {(f.kind, f.length): f for f in self.fields}.values()
         for record, primary_index, start, end in candidates:
+            _check(deadline)
             if (start, end) not in windows:
                 window_start = max(0, start - FIELD_WINDOW)
                 window = text[window_start : end + FIELD_WINDOW]
                 found: dict[int, list[tuple[int, int]]] = {}
-                for spec in {(f.kind, f.length): f for f in self.fields}.values():
+                for spec in specs:
                     for hash_, field_start, field_end in self._hashes(
                         spec.kind, spec, window, window_start
                     ):
@@ -273,14 +299,23 @@ class RecordSetIndex:
                 spans.extend(hits)
         return matched, spans, truncated
 
-    def match_documents(self, text: str, min_shared: int) -> set[int]:
-        if len(_words(text)) < MIN_DOCUMENT_WORDS:
+    def match_documents(
+        self, text: str, min_shared: int, deadline: float = math.inf
+    ) -> set[int]:
+        words = _words(text)
+        if len(words) < MIN_DOCUMENT_WORDS:
             return set()
         shared: Counter[int] = Counter()
-        for print_ in fingerprints(self.key, text):
+        for print_ in _fingerprints(self.key, words):
+            _check(deadline)
             low, high = (
                 bisect_left(self.prints, print_),
                 bisect_right(self.prints, print_),
             )
             shared.update(self.print_documents[low:high])
         return {document for document, count in shared.items() if count >= min_shared}
+
+
+def _check(deadline: float) -> None:
+    if perf_counter() > deadline:
+        raise TimeoutError

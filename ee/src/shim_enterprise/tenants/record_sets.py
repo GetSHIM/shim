@@ -6,7 +6,8 @@ import asyncio
 from array import array
 import base64
 from collections import OrderedDict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Sequence
+from contextlib import AbstractAsyncContextManager
 import logging
 import sys
 from typing import Any
@@ -15,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shim.core.single_flight import single_flight
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim.privacy.record_match import FINGERPRINT_VERSION, RecordField, RecordSetIndex
 from shim_enterprise.secrets.store import get_secret_store
@@ -23,7 +25,8 @@ from shim_enterprise.tenants.models import RecordSet, RecordSetChunk
 logger = logging.getLogger(__name__)
 
 KEY_PURPOSE = "record_set:hash-key"
-MAX_LOADED_HASHES = 8_000_000
+# The bytes every loaded index of this process may hold together.
+MAX_LOADED_BYTES = 128_000_000
 
 
 def _big_endian(values: array) -> bytes:
@@ -77,54 +80,60 @@ def record_fields(fields: Sequence[dict[str, Any]]) -> tuple[RecordField, ...]:
 
 
 async def load_index(
-    session: AsyncSession, organization_id: UUID, set_id: UUID, revision: int
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+    organization_id: UUID,
+    set_id: UUID,
+    revision: int,
 ) -> RecordSetIndex | None:
-    """One select of the set and its chunks; None when the set or revision is gone."""
-    row = await session.scalar(
-        select(RecordSet).where(
-            RecordSet.organization_id == organization_id, RecordSet.id == set_id
-        )
-    )
-    # A fingerprints set built with another version cannot be matched.
-    if (
-        row is None
-        or revision < 1
-        or (
-            row.kind == "fingerprints"
-            and row.fingerprint_version != FINGERPRINT_VERSION
-        )
-    ):
-        return None
-    chunks = (
-        await session.scalars(
-            select(RecordSetChunk.data)
-            .where(
-                RecordSetChunk.record_set_id == set_id,
-                RecordSetChunk.revision == revision,
+    """One select of the set and its chunks in a short session of its own; the index is
+    built after it closes. None when the set or revision is gone."""
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(RecordSet).where(
+                RecordSet.organization_id == organization_id, RecordSet.id == set_id
             )
-            .order_by(RecordSetChunk.chunk_index)
         )
-    ).all()
+        # A fingerprints set built with another version cannot be matched.
+        if (
+            row is None
+            or revision < 1
+            or (
+                row.kind == "fingerprints"
+                and row.fingerprint_version != FINGERPRINT_VERSION
+            )
+        ):
+            return None
+        chunks = (
+            await session.scalars(
+                select(RecordSetChunk.data)
+                .where(
+                    RecordSetChunk.record_set_id == set_id,
+                    RecordSetChunk.revision == revision,
+                )
+                .order_by(RecordSetChunk.chunk_index)
+            )
+        ).all()
+        fields, label, kind, key_ref = (
+            record_fields(row.fields),
+            row.label,
+            row.kind,
+            row.key_ref,
+        )
     # A revision whose chunks are gone (a stale cached revision) cannot be matched.
     if not chunks:
         return None
     key = base64.urlsafe_b64decode(
         await get_secret_store().get_secret(
             TenantId(organization_id),
-            SecretRef(row.key_ref),
+            SecretRef(key_ref),
             expected_purpose=KEY_PURPOSE,
         )
     )
-    fields, label, kind = record_fields(row.fields), row.label, row.kind
 
     def build() -> RecordSetIndex:
         if kind == "records":
             values = _from_big_endian(b"".join(chunks), "Q")
-            width = len(fields)
-            rows = (
-                values[start : start + width] for start in range(0, len(values), width)
-            )
-            return RecordSetIndex.records(key, fields, rows, label)
+            return RecordSetIndex.records(key, fields, values, label)
         return RecordSetIndex.documents(
             key, (prints for chunk in chunks for prints in unpack_documents(chunk))
         )
@@ -136,34 +145,37 @@ async def load_index(
 class RecordSetCache:
     """Loaded indexes by (organization, set, revision), least recently used evicted first."""
 
-    def __init__(self, max_hashes: int = MAX_LOADED_HASHES) -> None:
-        self.max_hashes = max_hashes
+    def __init__(self, max_bytes: int = MAX_LOADED_BYTES) -> None:
+        self.max_bytes = max_bytes
         self.entries: OrderedDict[tuple[UUID, UUID, int], RecordSetIndex] = (
             OrderedDict()
         )
-        self.locks: dict[tuple[UUID, UUID, int], asyncio.Lock] = {}
+        self.pending: dict[Hashable, asyncio.Future[RecordSetIndex | None]] = {}
 
     async def get(
-        self, session: AsyncSession, organization_id: UUID, set_id: UUID, revision: int
+        self,
+        session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+        organization_id: UUID,
+        set_id: UUID,
+        revision: int,
     ) -> RecordSetIndex | None:
         key = (organization_id, set_id, revision)
         if key in self.entries:
             self.entries.move_to_end(key)
             return self.entries[key]
-        # One load per set and revision at a time; later requests wait for it.
-        lock = self.locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            if key in self.entries:
-                return self.entries[key]
-            index = await load_index(session, organization_id, set_id, revision)
+
+        async def load() -> RecordSetIndex | None:
+            index = await load_index(session_factory, organization_id, set_id, revision)
             if index is not None:
                 self.entries[key] = index
                 total = sum(entry.size for entry in self.entries.values())
-                while total > self.max_hashes and len(self.entries) > 1:
+                while total > self.max_bytes and len(self.entries) > 1:
                     _, evicted = self.entries.popitem(last=False)
                     total -= evicted.size
-        self.locks.pop(key, None)
-        return index
+            return index
+
+        # One load per set and revision at a time; later requests share it.
+        return await single_flight(self.pending, key, load)
 
 
 RECORD_SETS = RecordSetCache()

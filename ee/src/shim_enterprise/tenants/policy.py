@@ -328,7 +328,7 @@ class TenantPolicyService:
 
 
 async def _record_sets(
-    session: AsyncSession, tenant: ResolvedTenantSettings
+    session_factory: async_sessionmaker[AsyncSession], tenant: ResolvedTenantSettings
 ) -> dict[str, RecordSetIndex] | None:
     """The loaded sets the tenant's record_set rules name; a set not loadable is left out."""
 
@@ -344,7 +344,7 @@ async def _record_sets(
         revision = tenant.record_set_revisions.get(set_id, 0)
         try:
             index = await RECORD_SETS.get(
-                session, tenant.tenant_id, UUID(set_id), revision
+                session_factory, tenant.tenant_id, UUID(set_id), revision
             )
         except Exception as exc:
             # The privacy stage treats a missing set as an evaluation error.
@@ -387,7 +387,6 @@ class TenantRequestPolicyResolver:
                 raise TenantPolicyConfigurationError(
                     "tenant policy is invalid"
                 ) from exc
-            record_sets = await _record_sets(session, tenant_settings)
             resolved = ResolvedRequestPolicy(
                 tenant_id=TenantId(tenant_settings.tenant_id),
                 tenant_policy=tenant_policy,
@@ -445,6 +444,10 @@ class TenantRequestPolicyResolver:
                 ),
                 tenant_gateway_settings=tenant_settings.gateway_settings,
                 rules=tenant_settings.rules,
-                record_sets=record_sets,
             )
-        return resolved
+        # Built after the session closes: a set's sort holds no connection.
+        return resolved.model_copy(
+            update={
+                "record_sets": await _record_sets(self.session_factory, tenant_settings)
+            }
+        )

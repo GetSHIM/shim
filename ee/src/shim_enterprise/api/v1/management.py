@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from array import array
+
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -119,7 +121,7 @@ from shim_enterprise.compliance.url_guard import (
     assert_safe_forward_url,
 )
 from shim.billing.lifecycle import load_lifecycle
-from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
 from shim.core.community_config import AZURE_DEPLOYMENT_NAME
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.secrets.azure import EntraTokenCache
@@ -441,26 +443,20 @@ class AzureEntraInput(BaseModel):
 
 
 class ProviderSecretInput(BaseModel):
-    provider: Literal["openai", "anthropic", "google"]
+    provider: Literal["openai", "anthropic", "google", "azure_entra"] = Field(
+        description="azure_entra: an Entra ID client credential for Azure OpenAI "
+        "deployments."
+    )
     name: str | None = Field(default=None, max_length=100)
-    credential_kind: Literal["api_key", "azure_entra_client"] = "api_key"
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
     azure_entra: AzureEntraInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
-    def one_credential_of_its_kind(self) -> ProviderSecretInput:
-        if self.credential_kind == "api_key" and (
-            self.key is None or self.azure_entra is not None
-        ):
-            raise ValueError("An api_key credential needs key and no azure_entra")
-        if self.credential_kind == "azure_entra_client":
-            if self.azure_entra is None or self.key is not None:
-                raise ValueError(
-                    "An azure_entra_client credential needs azure_entra and no key"
-                )
-            if self.provider != "openai":
-                raise ValueError("An Entra credential is for provider openai")
+    def one_credential_of_its_provider(self) -> ProviderSecretInput:
+        entra = self.provider == "azure_entra"
+        if (self.key is not None) == entra or (self.azure_entra is not None) != entra:
+            raise ValueError("azure_entra takes azure_entra; another provider a key")
         return self
 
 
@@ -476,7 +472,6 @@ class ProviderSecretView(BaseModel):
 
     id: UUID
     provider: str
-    credential_kind: str
     name: str | None
     masked_key: str
     created_at: datetime
@@ -2256,22 +2251,16 @@ async def create_provider_secret(
     tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
-    purpose = provider_secret_purpose(payload.provider, payload.credential_kind)
+    purpose = provider_secret_purpose(payload.provider)
     entra = payload.azure_entra
     plaintext = entra.stored() if entra is not None else payload.key
     assert plaintext is not None
     reference = await get_secret_store().put_secret(
-        TenantId(tenant_id),
-        purpose,
-        plaintext,
-        {"provider": payload.provider}
-        if entra is None
-        else {"provider": payload.provider, "kind": payload.credential_kind},
+        TenantId(tenant_id), purpose, plaintext, {"provider": payload.provider}
     )
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
-        credential_kind=payload.credential_kind,
         name=payload.name,
         masked_key=entra.masked() if entra is not None else _mask(plaintext),
         monthly_limit_usd=payload.monthly_limit_usd,
@@ -2304,20 +2293,21 @@ async def update_provider_secret(
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
-    if row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
+    entra = row.provider == "azure_entra"
+    if not entra and row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
         raise HTTPException(
             status_code=409,
             detail="Unsupported provider secrets are read-only.",
         )
-    if (patch.key is not None and row.credential_kind != "api_key") or (
-        patch.azure_entra is not None and row.credential_kind != "azure_entra_client"
+    if (patch.key is not None and entra) or (
+        patch.azure_entra is not None and not entra
     ):
         raise HTTPException(
             status_code=422,
             detail="A credential's kind never changes; create a new provider secret",
         )
     tenant_id = _tenant_id(user)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
     before = _provider_secret_details(row)
@@ -2381,13 +2371,13 @@ async def verify_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     verification_request = _PROVIDER_VERIFICATION_REQUESTS.get(row.provider)
-    if verification_request is None:
+    if verification_request is None and row.provider != "azure_entra":
         raise HTTPException(status_code=409, detail="Unsupported provider secret")
     tenant_id = _tenant_id(user)
     client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
     if client is None:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
-    if row.credential_kind == "azure_entra_client":
+    if verification_request is None:
         rejected = await _entra_rejects(row, tenant_id, client)
     else:
         rejected = await _provider_rejects(row, tenant_id, client, verification_request)
@@ -2458,16 +2448,8 @@ async def _entra_rejects(
     row: ProviderSecret, tenant_id: UUID, client: httpx.AsyncClient
 ) -> bool:
     """Whether Entra ID refuses the client credential, asked for a fresh token."""
-    resolver = ManagedProviderCredentialResolver(
-        row.provider,
-        get_secret_store(),
-        AsyncSessionLocal,
-        entra=EntraTokenCache(
-            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
-        ),
-    )
     try:
-        await resolver.resolve_row(TenantId(tenant_id), row)
+        await _fresh_resolver("openai", client).resolve_row(TenantId(tenant_id), row)
     except ProviderCallError as exc:
         if exc.status_code == 401:
             return True
@@ -2480,6 +2462,20 @@ async def _entra_rejects(
             status_code=503, detail="Provider verification unavailable"
         ) from exc
     return False
+
+
+def _fresh_resolver(
+    provider: str, client: httpx.AsyncClient
+) -> ManagedProviderCredentialResolver:
+    """A resolver with a token cache of its own, so a check always asks Entra afresh."""
+    return ManagedProviderCredentialResolver(
+        provider,
+        get_secret_store(),
+        AsyncSessionLocal,
+        entra=EntraTokenCache(
+            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
+        ),
+    )
 
 
 @router.delete(
@@ -2495,7 +2491,7 @@ async def delete_provider_secret(
     row = await _owned_provider_secret(session, user, secret_id)
     tenant_id = _tenant_id(user)
     secret_ref = SecretRef(row.secret_ref)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     details = _provider_secret_details(row)
     await session.delete(row)
     await _audit(
@@ -2627,7 +2623,7 @@ class _RuleSetPutRoute(APIRoute):
 
 
 def _check_record_set_rule(
-    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int]]
+    rule: Rule, index: int, record_sets: Mapping[str, tuple[str, int, int]]
 ) -> None:
     """The set exists here, is active, and is of the kind the match and action imply."""
 
@@ -2641,6 +2637,8 @@ def _check_record_set_rule(
         rule.match["min_shared"] is not None and kind != "fingerprints"
     ):
         problem = "min_fields is for a records set, min_shared for a fingerprints set"
+    elif (rule.match["min_fields"] or 0) > found[2]:
+        problem = "min_fields is more than the fields the set has"
     else:
         problem = None
     if problem is not None:
@@ -2730,11 +2728,14 @@ async def replace_rules(
         )
     kept_ids = {rule.id for rule in kept}
     record_sets = {
-        str(set_id): (kind, active)
-        for set_id, kind, active in await session.execute(
-            select(RecordSet.id, RecordSet.kind, RecordSet.active_revision).where(
-                RecordSet.organization_id == tenant_id
-            )
+        str(set_id): (kind, active, len(fields))
+        for set_id, kind, active, fields in await session.execute(
+            select(
+                RecordSet.id,
+                RecordSet.kind,
+                RecordSet.active_revision,
+                RecordSet.fields,
+            ).where(RecordSet.organization_id == tenant_id)
         )
     }
     for index, rule in enumerate(after.rules):
@@ -3173,14 +3174,27 @@ async def activate_record_set_revision(
 ) -> Any:
     tenant_id = _tenant_id(user)
     row = await _record_set(session, tenant_id, set_id)
-    chunks = (
-        await session.execute(
-            select(RecordSetChunk.entry_count, func.length(RecordSetChunk.data)).where(
-                RecordSetChunk.record_set_id == set_id,
-                RecordSetChunk.revision == revision,
-            )
+
+    async def chunks_of(number: int) -> list[tuple[int, bytes]]:
+        return list(
+            (
+                await session.execute(
+                    select(RecordSetChunk.entry_count, RecordSetChunk.data).where(
+                        RecordSetChunk.record_set_id == set_id,
+                        RecordSetChunk.revision == number,
+                    )
+                )
+            ).tuples()
         )
-    ).all()
+
+    def matchable(stored: list[tuple[int, bytes]]) -> int:
+        """Hashes a revision can match with: record fields that are not empty, or
+        fingerprints after each document's 4-byte count."""
+        if row.kind == "records":
+            return sum(len(data) // 8 - array("Q", data).count(0) for _, data in stored)
+        return sum(len(data) - 4 * count for count, data in stored) // 8
+
+    chunks = await chunks_of(revision)
     if revision == row.active_revision or not chunks:
         raise _record_set_error(
             409,
@@ -3189,12 +3203,10 @@ async def activate_record_set_revision(
         )
     entries = sum(count for count, _ in chunks)
     limits = _RECORD_SET_LIMITS
-    # A document's 4-byte header, then 8 bytes per fingerprint.
-    prints = (sum(size for _, size in chunks) - 4 * entries) // 8
     too_many = (
         entries > limits["records"]
         if row.kind == "records"
-        else entries > limits["documents"] or prints > limits["prints"]
+        else entries > limits["documents"] or matchable(chunks) > limits["prints"]
     )
     if too_many:
         raise _record_set_error(
@@ -3203,7 +3215,11 @@ async def activate_record_set_revision(
             "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
             "fingerprints.",
         )
-    fewer = row.active_revision > 0 and entries < row.entry_count
+    # Fewer records or documents, or fewer values to find them by, relaxes the set.
+    fewer = row.active_revision > 0 and (
+        entries < row.entry_count
+        or matchable(chunks) < matchable(await chunks_of(row.active_revision))
+    )
     row.previous_revision, row.active_revision, row.entry_count = (
         row.active_revision,
         revision,
@@ -3261,7 +3277,8 @@ async def delete_record_set(
 ) -> Response:
     tenant_id = _tenant_id(user)
     row = await _record_set(session, tenant_id, set_id)
-    rule_set = await session.get(OrganizationRuleSet, tenant_id)
+    # Locked, so a rule naming the set cannot be written while it goes.
+    rule_set = await session.get(OrganizationRuleSet, tenant_id, with_for_update=True)
     if any(
         rule.get("kind") == "record_set"
         and (rule.get("match") or {}).get("set_id") == str(set_id)
@@ -3334,136 +3351,24 @@ async def update_gateway_settings(
     session: AsyncSession = Depends(get_db),
 ) -> GatewaySettingsView:
     tenant_id = _tenant_id(user)
-    changes = patch.model_dump(exclude_unset=True)
-    row = await session.get(
-        OrganizationGatewaySettings, tenant_id, with_for_update=True
+    await lock_tenant(session, tenant_id)
+    before = (await GATEWAY_SETTINGS.snapshot(session, tenant_id, None))["_"]
+    after = await GATEWAY_SETTINGS.validate(
+        session, user, "_", before, patch.model_dump(mode="json", exclude_unset=True)
     )
-    if row is None:
-        if GatewaySettings.model_validate(changes) == GatewaySettings():
-            return _gateway_settings_view(None)
-        await session.execute(
-            insert(OrganizationGatewaySettings)
-            .values(organization_id=tenant_id)
-            .on_conflict_do_nothing()
-        )
-        row = await session.get(
-            OrganizationGatewaySettings,
-            tenant_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        assert row is not None
-    before = stored_settings(row.settings)
-    stored = before.model_dump()
-    # A nested setting changes only the fields the PATCH names.
-    after = GatewaySettings.model_validate(
-        stored
-        | {
-            key: {**stored[key], **value}
-            if isinstance(getattr(before, key), BaseModel)
-            else value
-            for key, value in changes.items()
-        }
-    )
-    for setting, field, model, ids in (
-        (
-            "restore_withheld",
-            "api_key_ids",
-            ApiKey,
-            {
-                key
-                for grant in after.restore_withheld.values()
-                for key in grant.api_key_ids
-            },
-        ),
-        (
-            "restore_withheld",
-            "team_ids",
-            Team,
-            {
-                team
-                for grant in after.restore_withheld.values()
-                for team in grant.team_ids
-            },
-        ),
-        (
-            "inflight_sharing_api_key_ids",
-            "api_key_ids",
-            ApiKey,
-            set(after.inflight_sharing_api_key_ids),
-        ),
-    ):
-        known = (
-            set(
-                await session.scalars(
-                    select(model.id).where(
-                        model.organization_id == tenant_id, model.id.in_(ids)
-                    )
-                )
-            )
-            if ids and setting in changes
-            else ids
-        )
-        if ids - known:
-            raise HTTPException(
-                422, detail=f"{setting} names {field} this organization lacks"
-            )
-    if after == before:
-        # Nothing to write; a row inserted above came from a concurrent first write.
-        return _gateway_settings_view(row)
-    # Only the fields this PATCH named are written; keys another build wrote stay.
-    row.settings = {
-        key: value for key, value in row.settings.items() if key not in changes
-    } | after.model_dump(mode="json", include=set(changes), exclude_defaults=True)
-    row.revision += 1
-    row.updated_by = user.id
-    await _audit(
-        session,
-        user,
-        "tenant.gateway_settings_updated",
-        str(tenant_id),
-        details=change_details(
-            before.model_dump(mode="json"), after.model_dump(mode="json")
-        ),
-    )
-    direction, relaxed = classify_change(before, after)
-    # Restore permission protects personal data, so it is a privacy relaxation.
-    relaxed = [field for field in relaxed if field != "restore_withheld"]
-    if relaxed:
-        await _audit(
-            session,
-            user,
-            "tenant.gateway_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
-    privacy_relaxed = restore_relaxed(before.restore_withheld, after.restore_withheld)
-    if privacy_relaxed:
-        event_id = await _audit(
-            session,
-            user,
-            "tenant.privacy_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": privacy_relaxed},
-        )
-        await ComplianceForwarderService().send_privacy_protection_relaxed(
-            session,
-            TenantId(tenant_id),
-            fields=privacy_relaxed,
-            actor=str(user.id),
-            actor_email=user.email,
-            event_id=event_id,
+    async with record_managed_write(
+        session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
+    ) as version:
+        await GATEWAY_SETTINGS.apply(
+            session, user, tenant_id, "_", before, after, policy_version=version
         )
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
-    except Exception as exc:
-        logger.warning(
-            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+    await GATEWAY_SETTINGS.after_commit(request, tenant_id)
+    return _gateway_settings_view(
+        await session.get(
+            OrganizationGatewaySettings, tenant_id, populate_existing=True
         )
-    await session.refresh(row)
-    return _gateway_settings_view(row)
+    )
 
 
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
@@ -4809,7 +4714,6 @@ def _provider_secret_details(
 ) -> dict[str, object]:
     return {
         "provider": row.provider,
-        "credential_kind": row.credential_kind,
         "name": row.name,
         "monthly_limit_usd": (
             str(row.monthly_limit_usd) if row.monthly_limit_usd is not None else None
@@ -5901,7 +5805,8 @@ _RETIREMENT_USAGE = text(
            THEN l.metadata->'tags' ELSE '[]'::jsonb END
     ) AS tag ON true
     WHERE l.organization_id = :tenant_id AND l.started_at >= :since
-      AND l.requested_model IS NOT NULL
+      AND (lower(l.requested_model) = ANY(:names)
+           OR lower(l.requested_model) LIKE ANY(:prefixes))
     GROUP BY GROUPING SETS (
       (l.provider, l.requested_model, l.api_key_id, k.name),
       (l.provider, l.requested_model, l.metadata->>'team_id'),
@@ -5909,6 +5814,8 @@ _RETIREMENT_USAGE = text(
     )
     """
 )
+# Per retiring model, at most this many keys, teams and tags, the busiest first.
+_AFFECTED_LIMIT = 100
 
 
 @router.get("/model-retirements", response_model=list[ModelRetirementView])
@@ -5921,6 +5828,14 @@ async def list_model_retirements(
     tenant_id = _tenant_id(user)
     lifecycle = load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE)
     now = datetime.now(timezone.utc)
+    soon = {
+        name
+        for entries in lifecycle.models.values()
+        for name, entry in entries.items()
+        if (entry.retires_on - now.date()).days <= days
+    }
+    if not soon:
+        return []
     deployments = {
         alias: (provider, upstream)
         for alias, provider, upstream in await session.execute(
@@ -5956,8 +5871,20 @@ async def list_model_retirements(
             },
         )
 
+    # Only usage that can match a retiring entry is read: its name, a dated id of
+    # it, the undated alias of a snapshot, or a registry alias.
     usage = await session.execute(
-        _RETIREMENT_USAGE, {"tenant_id": tenant_id, "since": now - timedelta(days=30)}
+        _RETIREMENT_USAGE,
+        {
+            "tenant_id": tenant_id,
+            "since": now - timedelta(days=30),
+            "names": sorted(
+                soon
+                | {DATE_SUFFIX.sub("", name) for name in soon}
+                | {alias.casefold() for alias in deployments}
+            ),
+            "prefixes": sorted(name.replace("_", "\\_") + "-%" for name in soon),
+        },
     )
     for row in usage:
         matched = retiring(row.provider, row.requested_model)
@@ -6002,19 +5929,19 @@ async def list_model_retirements(
                         )
                         for key_id, (name, requests, last) in sorted(
                             found["keys"].items(), key=lambda entry: -entry[1][1]
-                        )
+                        )[:_AFFECTED_LIMIT]
                     ],
                     teams=[
                         RetiringTeamView(id=team_id, requests=requests)
                         for team_id, requests in sorted(
                             found["teams"].items(), key=lambda entry: -entry[1]
-                        )
+                        )[:_AFFECTED_LIMIT]
                     ],
                     tags=[
                         RetiringTagView(tag=tag, requests=requests)
                         for tag, requests in sorted(
                             found["tags"].items(), key=lambda entry: -entry[1]
-                        )[:20]
+                        )[:_AFFECTED_LIMIT]
                     ],
                     aliases=sorted(found["aliases"]),
                 ),
@@ -6152,18 +6079,12 @@ async def check_model_deployment_health(
     # Finish the read transaction before secret-store or provider I/O.
     await session.commit()
     client = request.app.state.http_client
-    resolver = ManagedProviderCredentialResolver(
-        provider,
-        get_secret_store(),
-        AsyncSessionLocal,
-        entra=EntraTokenCache(
-            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
-        ),
-    )
     healthy = False
     try:
         async with asyncio.timeout(5):
-            credential = await resolver.resolve_row(TenantId(tenant_id), secret)
+            credential = await _fresh_resolver(provider, client).resolve_row(
+                TenantId(tenant_id), secret
+            )
             headers = (
                 {"Authorization": f"Bearer {credential}"}
                 if provider == "openai"
@@ -6497,6 +6418,233 @@ class _PrivacyResource:
         except Exception as exc:
             logger.warning(
                 "PII policy cache invalidation failed type=%s", type(exc).__name__
+            )
+
+
+class _GatewaySettingsResource:
+    name = "gateway_settings"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        row = await session.get(OrganizationGatewaySettings, organization_id)
+        return {
+            "_": stored_settings(row.settings if row is not None else {}).model_dump(
+                mode="json"
+            )
+        }
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        changes = _validated(GatewaySettingsPatch, proposed).model_dump(
+            mode="json", exclude_unset=True
+        )
+        state = before or GatewaySettings().model_dump(mode="json")
+        # A nested setting or a map changes only the entries named; null removes one.
+        after = _validated(
+            GatewaySettings,
+            state
+            | {
+                key: {
+                    name: entry
+                    for name, entry in (state[key] | value).items()
+                    if entry is not None
+                }
+                if isinstance(value, dict)
+                else value
+                for key, value in changes.items()
+            },
+        )
+        tenant_id = _tenant_id(actor)
+        named = {
+            kind
+            for kind, grant in changes.get("restore_withheld", {}).items()
+            if grant is not None
+        }
+        unknown = named - effective_entity_actions().keys()
+        if unknown:
+            rules = await session.scalar(
+                select(OrganizationRuleSet.rules).where(
+                    OrganizationRuleSet.organization_id == tenant_id
+                )
+            )
+            labels = {
+                rule["match"].get("label") for rule in rules or () if "match" in rule
+            } | set(
+                await session.scalars(
+                    select(RecordSet.label).where(
+                        RecordSet.organization_id == tenant_id
+                    )
+                )
+            )
+            if unknown - labels:
+                raise HTTPException(
+                    422,
+                    detail="restore_withheld names no entity type or rule label: "
+                    + ", ".join(sorted(unknown - labels)),
+                )
+        for setting, field, model, ids in (
+            (
+                "restore_withheld",
+                "api_key_ids",
+                ApiKey,
+                {
+                    key
+                    for grant in after.restore_withheld.values()
+                    for key in grant.api_key_ids
+                },
+            ),
+            (
+                "restore_withheld",
+                "team_ids",
+                Team,
+                {
+                    team
+                    for grant in after.restore_withheld.values()
+                    for team in grant.team_ids
+                },
+            ),
+            (
+                "inflight_sharing_api_key_ids",
+                "api_key_ids",
+                ApiKey,
+                set(after.inflight_sharing_api_key_ids),
+            ),
+        ):
+            known = (
+                set(
+                    await session.scalars(
+                        select(model.id).where(
+                            model.organization_id == tenant_id, model.id.in_(ids)
+                        )
+                    )
+                )
+                if ids and setting in changes
+                else ids
+            )
+            if ids - known:
+                raise HTTPException(
+                    422, detail=f"{setting} names {field} this organization lacks"
+                )
+        return after.model_dump(mode="json")
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert before is not None and after is not None
+        changed = {key for key in after if after[key] != before.get(key)}
+        if not changed:
+            return
+        row = await session.get(
+            OrganizationGatewaySettings, organization_id, with_for_update=True
+        )
+        if row is None:
+            await session.execute(
+                insert(OrganizationGatewaySettings)
+                .values(organization_id=organization_id)
+                .on_conflict_do_nothing()
+            )
+            row = await session.get(
+                OrganizationGatewaySettings,
+                organization_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            assert row is not None
+        previous = GatewaySettings.model_validate(before)
+        current = GatewaySettings.model_validate(after)
+        # Only the fields that changed are written; keys another build wrote stay.
+        row.settings = {
+            key: value for key, value in row.settings.items() if key not in changed
+        } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
+        row.revision += 1
+        row.updated_by = actor.id
+        await _audit(
+            session,
+            actor,
+            "tenant.gateway_settings_updated",
+            str(organization_id),
+            details={
+                **change_details(before, after),
+                **version_detail(policy_version),
+            },
+        )
+        _, relaxed = classify_change(previous, current)
+        # Restore permission protects personal data, so it is a privacy relaxation.
+        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        if relaxed:
+            await _audit(
+                session,
+                actor,
+                "tenant.gateway_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+        privacy_relaxed = restore_relaxed(
+            previous.restore_withheld, current.restore_withheld
+        )
+        if privacy_relaxed:
+            event_id = await _audit(
+                session,
+                actor,
+                "tenant.privacy_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": privacy_relaxed, **version_detail(policy_version)},
+            )
+            await ComplianceForwarderService().send_privacy_protection_relaxed(
+                session,
+                TenantId(organization_id),
+                fields=privacy_relaxed,
+                actor=str(actor.id),
+                actor_email=actor.email,
+                event_id=event_id,
+            )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_change(
+            GatewaySettings.model_validate(before),
+            GatewaySettings.model_validate(after),
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        try:
+            cache: CacheService = request.app.state.cache
+            await CacheManager(cache).invalidate_gateway_settings(str(organization_id))
+        except Exception as exc:
+            logger.warning(
+                "Gateway settings cache invalidation failed type=%s", type(exc).__name__
             )
 
 
@@ -6873,17 +7021,16 @@ class _DeploymentResource:
         secret = await _owned_provider_secret(
             session, actor, payload.provider_secret_id
         )
-        if secret.provider != payload.provider:
+        if secret.provider == "azure_entra":
+            if (payload.provider, payload.upstream) != ("openai", "azure_openai"):
+                raise HTTPException(
+                    422,
+                    detail="An Entra credential can only serve an Azure OpenAI "
+                    "deployment",
+                )
+        elif secret.provider != payload.provider:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
-            )
-        if (
-            secret.credential_kind == "azure_entra_client"
-            and payload.upstream != "azure_openai"
-        ):
-            raise HTTPException(
-                422,
-                detail="An Entra credential can only serve an Azure OpenAI deployment",
             )
         if payload.deployment_kind == "internal" and not internal_origin_approved(
             payload.base_url
@@ -6944,12 +7091,16 @@ class _DeploymentResource:
             item_id,
             details={**details, **version_detail(policy_version)},
         )
-        # Destination rules let an internal target see what an external one may not.
-        if before is not None and (
-            before["deployment_kind"],
-            after["deployment_kind"],
-        ) == ("external", "internal"):
-            relaxed = [f"deployment_kind.{item_id}"]
+        # Destination rules let an internal target see what an external one may not,
+        # so becoming internal, or an internal target moving, relaxes them.
+        relaxed = [
+            f"{field}.{item_id}"
+            for field in ("deployment_kind", "base_url")
+            if before is not None
+            and after["deployment_kind"] == "internal"
+            and before[field] != after[field]
+        ]
+        if relaxed:
             event_id = await _audit(
                 session,
                 actor,
@@ -7202,6 +7353,7 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
 
 
 PRIVACY = _PrivacyResource()
+GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()

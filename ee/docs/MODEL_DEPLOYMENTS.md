@@ -36,6 +36,8 @@ let an `internal` target see a data type an `external` one may not, so changing 
 existing deployment from `external` to `internal` is a relaxation: it records
 `tenant.privacy_protection_relaxed` with `relaxed: ["deployment_kind.<deployment id>"]`
 and alerts the tenant's forward targets, beside the update's own before and after.
+Moving an `internal` deployment to another `base_url` relaxes the same way, as
+`base_url.<deployment id>`, whether or not the operator lists internal origins.
 The reverse, and creating an `internal` deployment, write no relaxation. The
 operator can also set `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`, a JSON list of origins in
 the same format as `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` (empty by default, which keeps
@@ -97,9 +99,10 @@ uses provider `openai`, is `external`, has a base URL whose path is exactly
 `/openai/v1` (Azure's v1 API, with no `api-version`), and its `upstream_model` is the
 Azure deployment name (letters, digits, `.`, `_` and `-`, at most 64 characters,
 starting with a letter or digit); each rule refuses with its own 422. Its credential
-is an Azure key (`credential_kind: api_key`) or a Microsoft Entra ID client
-credential (`credential_kind: azure_entra_client`, provider `openai`), which can
-back only an `azure_openai` deployment and is never used for catalog routes. shim
+is an Azure key (a provider `openai` secret) or a Microsoft Entra ID client
+credential (provider `azure_entra`), which can back only an `azure_openai`
+deployment, is never used for catalog routes or their spend cap, and is never
+selected by a build that predates it. shim
 asks Entra for a token at `SHIM_AZURE_AUTHORITY_HOST` with the credential's scope
 (default `SHIM_AZURE_TOKEN_SCOPE`) and keeps it until 300 seconds before it expires;
 rotating the credential starts a new token. A `PUT` that leaves out `upstream`,
@@ -147,10 +150,11 @@ as "Models in traffic outside the registry", so the two never disagree.
 already past, that the organization used in the last 30 days or has registered:
 `provider`, `model`, `retires_on`, `deprecated_on`, `replacement`, `source`,
 `checked_on`, and `affected` with the API keys (id, name, requests, last used), the
-teams (id, requests), the top 20 tags and the registry aliases whose
-`upstream_model` it is. A request counts under the date entry its model matched,
-never under the caller's own text. It reads one aggregate over `request_lifecycle`
-by `started_at`, plus the registry.
+teams (id, requests) and tags, at most 100 of each with the busiest first, and
+the registry aliases whose `upstream_model` it is. A request counts under the date
+entry its model matched, never under the caller's own text. It reads one aggregate
+over `request_lifecycle` by `started_at`, only for the model names that can match
+an entry retiring within `days`, plus the registry.
 
 Catalog dates ship with shim. An on-prem or self-hosted model has no provider date,
 so the operator adds one in `SHIM_MODEL_LIFECYCLE_FILE` under the `registry` key,

@@ -13,6 +13,7 @@ from shim_enterprise.api.v1.management import (
     API_KEYS,
     BUDGETS,
     DEPLOYMENTS,
+    GATEWAY_SETTINGS,
     PRIVACY,
     TEAMS,
 )
@@ -76,5 +77,13 @@ class ManagedResource(Protocol):
 
 REGISTRY: Mapping[str, ManagedResource] = {
     resource.name: resource
-    for resource in (PRIVACY, TEAMS, API_KEYS, DEPLOYMENTS, BUDGETS, OVERSIGHT_POLICIES)
+    for resource in (
+        PRIVACY,
+        GATEWAY_SETTINGS,
+        TEAMS,
+        API_KEYS,
+        DEPLOYMENTS,
+        BUDGETS,
+        OVERSIGHT_POLICIES,
+    )
 }

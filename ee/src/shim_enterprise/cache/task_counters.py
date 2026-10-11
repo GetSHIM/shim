@@ -24,6 +24,12 @@ if redis.call('TTL', KEYS[1]) < 0 then
 end
 return {calls + 1, cost, 1}
 """
+_RELEASE = """
+if tonumber(redis.call('HGET', KEYS[1], 'calls') or '0') > 0 then
+    redis.call('HINCRBY', KEYS[1], 'calls', -1)
+end
+return 1
+"""
 _ADD_COST = """
 redis.call('HINCRBY', KEYS[1], 'cost_micro_usd', ARGV[1])
 if redis.call('TTL', KEYS[1]) < 0 then
@@ -77,3 +83,12 @@ class RedisTaskCounter:
             )
         except Exception as exc:
             logger.error("Task cost not recorded type=%s", type(exc).__name__)
+
+    async def release_call(self, tenant_id: str, task_key: str) -> None:
+        redis = self.cache.redis
+        try:
+            if redis is None:
+                raise ConnectionError("redis unavailable")
+            await redis.eval(_RELEASE, 1, f"task:{tenant_id}:{task_key}")
+        except Exception as exc:
+            logger.error("Task call not given back type=%s", type(exc).__name__)

@@ -301,8 +301,13 @@ from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
 `SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
 and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
-the task id}`); when Redis fails, calls go on with a `TASK_COUNTER_UNAVAILABLE`
-verdict.
+the task id}`); when Redis fails, task caps are not applied: calls go on with a
+`TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
+`shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are
+advisory, since a caller that rotates or omits its task id is not capped. The
+agent-loop counters are keyed per tenant with the installation's
+`COMPLIANCE_HASH_SALT` (else `SECRET_KEY`), so Redis never holds a bare digest of
+tool arguments.
 
 Rolling back to an older build is safe: a stored field or analyzer name that
 build does not know is left out when it reads the settings (and logged once by
@@ -382,7 +387,8 @@ revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
 `RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
-does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope) or
+does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope, or a `block`
+scoped only by tags and endpoints) or
 `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
 413. Every change records `tenant.rules_updated` with ids, kinds and counts,
 never a term; weakening an enforced rule also records
@@ -471,9 +477,15 @@ curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
    `{}`, means nobody gets the type back; a type not listed is restored for everyone.
 
 Notes: the gateway knows the key and the key's team, not the person behind it.
-`restore_withheld` is replaced whole by each PATCH; `{}` removes every grant. A key
-is an entity type or a rule label, at most 64; each grant lists at most 200 team and
-200 key ids of this organization (an unknown id is 422). Removing a type or adding an
+A PATCH changes only the types it names: a grant replaces that type's grant, and
+`null` gives the type back to everyone. A key is a built-in entity type or the label
+of one of this organization's rules or record sets, at most 64 (a name that is
+neither, such as a misspelt type, is 422); each grant lists at most 200 team and 200
+key ids of this organization (an unknown id is 422). Withholding a type the tenant
+only monitors changes nothing until something masks it: a monitored value is sent
+as it is, so there is no placeholder to withhold. A type a newer build wrote and this
+one does not know stays withheld. Every change is a policy version, so a plan can
+make it and a restore can put it back. Removing a type or adding an
 id to a grant is a privacy relaxation (`tenant.privacy_protection_relaxed` with
 `restore_withheld.<TYPE>`, forwarded to your targets); listing a type or removing an
 id tightens. A Responses continuation follows the permission of the caller of each
@@ -492,8 +504,8 @@ too long a history, before it spends any rate capacity or reaches the provider.
 
 | Field | Bound | Counts |
 | --- | --- | --- |
-| `max_tools` | 0 to 10,000 | tool definitions: `tools` (Gemini: each `functionDeclarations` entry, 1 for another tool) |
-| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items, Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
+| `max_tools` | 0 to 10,000 | tool definitions: `tools`, plus Chat's legacy `functions` and each Anthropic `mcp_servers` entry (Gemini: each `functionDeclarations` entry, 1 for another tool) |
+| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items and parts (in a tool's `output` too), Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
 | `max_history` | 1 to 100,000 | items in `messages`, `input` (1 for a string) or `contents` |
 | `max_input_bytes` | 1,024 to 32,000,000 | the request body's compact JSON bytes |
 | `below_price_tier` | `true` | see [stay under the price tier](#stay-under-the-price-tier) |
@@ -790,13 +802,12 @@ Entra ID application, priced from the catalog model it serves.
 1. As the platform operator, approve the resource: its exact origin in
    `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`, or, on a hosted gateway,
    `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".openai.azure.com"]`.
-2. Store the credential: `POST /api/v1/management/providers` with
-   `provider: "openai"` and either `key` (the Azure key) or
-   `credential_kind: "azure_entra_client"` and `azure_entra` with `tenant_id`,
-   `client_id`, `client_secret` and optionally `scope`. Give the Entra application
-   the `Cognitive Services OpenAI User` role on the resource. The view shows
-   `credential_kind` and `masked_key` (`entra:` and the masked client id), never the
-   secret. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
+2. Store the credential: `POST /api/v1/management/providers` with either
+   `provider: "openai"` and `key` (the Azure key), or `provider: "azure_entra"` and
+   `azure_entra` with `tenant_id`, `client_id`, `client_secret` and optionally
+   `scope`. Give the Entra application the `Cognitive Services OpenAI User` role on
+   the resource. The view shows the provider and `masked_key` (`entra:` and the
+   masked client id), never the secret; a refused body is never echoed in the 422. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
    `verified_at`, a refusal answers 400. `PUT /providers/{id}` with `azure_entra`
    replaces all four values; a credential's kind never changes (422).
 3. Register the deployment with `upstream: "azure_openai"`, `provider: "openai"`,
@@ -813,7 +824,7 @@ Entra ID application, priced from the catalog model it serves.
 ```console
 SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
   -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"provider\": \"openai\", \"name\": \"azure-bank\", \"credential_kind\": \"azure_entra_client\",
+  -d "{\"provider\": \"azure_entra\", \"name\": \"azure-bank\",
        \"azure_entra\": {\"tenant_id\": \"$AZURE_TENANT\", \"client_id\": \"$AZURE_CLIENT\",
                        \"client_secret\": \"$AZURE_SECRET\"}}" | jq -r .id)
 

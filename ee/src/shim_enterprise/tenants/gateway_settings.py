@@ -42,7 +42,8 @@ class RestoreGrant(BaseModel):
     api_key_ids: list[UUID] = Field(default=[], max_length=200)
 
 
-def _restorable_types(value: dict[str, RestoreGrant]) -> dict[str, RestoreGrant]:
+def _restorable_types[V](value: dict[str, V]) -> dict[str, V]:
+    """Checked when written; a stored type this build does not know stays withheld."""
     if len(value) > 64:
         raise ValueError("at most 64 entity types")
     unknown = sorted(
@@ -87,13 +88,6 @@ class GatewaySettings(BaseModel):
     def known_analyzers(cls, value: list[str]) -> list[str]:
         return _known_analyzers(value)
 
-    @field_validator("restore_withheld")
-    @classmethod
-    def restorable_types(
-        cls, value: dict[str, RestoreGrant]
-    ) -> dict[str, RestoreGrant]:
-        return _restorable_types(value)
-
 
 class GatewaySettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -102,8 +96,8 @@ class GatewaySettingsPatch(BaseModel):
     injection_markers: Literal["off", "count", "warn"] | None = None
     price_tier_warning: bool | None = None
     model_retiring_warning: Literal["record", "header"] | None = None
-    # Replaces the stored grants whole; {} restores every type for everyone again.
-    restore_withheld: dict[str, RestoreGrant] | None = None
+    # Merged into the stored grants type by type; null gives a type back to everyone.
+    restore_withheld: dict[str, RestoreGrant | None] | None = None
     # Merged into the stored values field by field; null removes a cap.
     task_caps: TaskCaps | None = None
     agent_loop: AgentLoop | None = None
@@ -128,8 +122,8 @@ class GatewaySettingsPatch(BaseModel):
     @field_validator("restore_withheld")
     @classmethod
     def restorable_types(
-        cls, value: dict[str, RestoreGrant] | None
-    ) -> dict[str, RestoreGrant] | None:
+        cls, value: dict[str, RestoreGrant | None] | None
+    ) -> dict[str, RestoreGrant | None] | None:
         return None if value is None else _restorable_types(value)
 
 

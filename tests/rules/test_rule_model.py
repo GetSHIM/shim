@@ -214,3 +214,16 @@ def test_a_stored_pattern_is_not_probed_again(monkeypatch) -> None:
     assert [rule.id for rule in kinds.load_rule_set(1, [rule]).rules] == [
         "project_names"
     ]
+
+
+def test_every_written_pattern_rule_is_probed_not_only_the_first(monkeypatch) -> None:
+    monkeypatch.setattr(patterns, "PROBE_SECONDS", 0.0)
+    first = _rule(id="terms_first", kind="term", match={"terms": ["Apollo"]})
+    second = _rule(kind="pattern", match={"regexes": [r"INV\d{6}"]})
+
+    refused = _refused({"revision": 1, "rules": [first, second]})
+
+    assert (refused.code, refused.path) == (
+        "RULE_PATTERN_UNSAFE",
+        "rules[1].match.regexes[0]",
+    )

@@ -1,6 +1,9 @@
+from array import array
+import base64
 import json
 from pathlib import Path
 import random
+import time
 import tracemalloc
 
 import pytest
@@ -88,24 +91,22 @@ def _customers(count: int = 1_000) -> RecordSetIndex:
         RecordField("iban"),
         RecordField("email"),
     )
-    rows = []
+    values = array("Q")
     for number in range(count):
-        values = [
+        row = [
             ("token", f"MUS{number:06d}"),
             ("name", "İsmail Işık" if number == 7 else f"Müşteri {number}"),
             ("tckn", "10000000146" if number == 7 else ""),
             ("iban", "TR330006100519786457841326" if number == 7 else ""),
             ("email", "ismail@example.com" if number == 7 else ""),
         ]
-        rows.append(
-            [
-                record_hash(KEY, kind, normalized)
-                if (normalized := normalize(kind, value))
-                else 0
-                for kind, value in values
-            ]
+        values.extend(
+            record_hash(KEY, kind, normalized)
+            if (normalized := normalize(kind, value))
+            else 0
+            for kind, value in row
         )
-    return RecordSetIndex.records(KEY, fields, rows)
+    return RecordSetIndex.records(KEY, fields, values)
 
 
 @pytest.mark.parametrize(
@@ -185,17 +186,21 @@ def test_a_quarter_million_records_fit_in_twenty_megabytes() -> None:
         index = RecordSetIndex.records(
             KEY,
             fields,
-            (
-                [record_hash(KEY, "token", f"T{number:08d}")]
-                + [number * 7 + extra + 1 for extra in range(5)]
-                for number in range(250_000)
+            array(
+                "Q",
+                (
+                    value
+                    for number in range(250_000)
+                    for value in [record_hash(KEY, "token", f"T{number:08d}")]
+                    + [number * 7 + extra + 1 for extra in range(5)]
+                ),
             ),
         )
         current, _ = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
-    assert index.size == 1_500_000
+    assert index.size == 1_500_000 * 8 + 250_000 * 12
     assert current < 20_000_000
 
 
@@ -259,15 +264,16 @@ def _corpus_index(fixture: dict) -> RecordSetIndex:
     fields = tuple(RecordField(**field) for field in fixture["fields"])
     with (_CORPUS.parent / fixture["csv"]).open(encoding="utf-8") as handle:
         rows = list(csv.reader(handle))[1:]
-    hashed = [
-        [
+    hashed = array(
+        "Q",
+        (
             record_hash(key, field.kind, normalized)
             if (normalized := normalize(field.kind, value, field.length))
             else 0
+            for row in rows
             for field, value in zip(fields, row, strict=True)
-        ]
-        for row in rows
-    ]
+        ),
+    )
     return RecordSetIndex.records(key, fields, hashed)
 
 
@@ -281,3 +287,83 @@ def test_the_record_set_corpus(case) -> None:
     found, _, _ = index.match_records(case["text"], case["min_fields"])
 
     assert sorted(found) == case["expect_records"]
+
+
+def _index(*fields: RecordField, rows: list[list[tuple[str, str]]]) -> RecordSetIndex:
+    return RecordSetIndex.records(
+        KEY,
+        fields,
+        array(
+            "Q",
+            (
+                record_hash(KEY, kind, normalized)
+                if (normalized := normalize(kind, value))
+                else 0
+                for row in rows
+                for kind, value in row
+            ),
+        ),
+    )
+
+
+def test_an_email_shape_scans_a_blob_without_an_at_sign_in_linear_time() -> None:
+    index = _index(
+        RecordField("email", primary=True),
+        RecordField("name"),
+        rows=[[("email", "ali@example.com"), ("name", "Ali Veli")]],
+    )
+    blob = (base64.urlsafe_b64encode(bytes(range(256)) * 48).decode() * 2)[:16_000]
+    prose = ("Ali Veli bugün aradı ve siparişini sordu. " * 400)[:16_000]
+
+    def best_of_three(text: str) -> float:
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            index.match_records(text, 2)
+            timings.append(time.perf_counter() - started)
+        return min(timings)
+
+    assert best_of_three(blob) < 4 * best_of_three(prose)
+    assert index.match_records("ali@example.com yazdı, Ali Veli", 2)[0] == {0}
+
+
+def test_a_spent_budget_stops_the_match_while_it_runs() -> None:
+    rule = _record_rule()
+    content = ContentRules(
+        _rules(rule),
+        (rule,),
+        budget=SearchBudget(0.02),
+        record_sets={"00000000-0000-0000-0000-000000000051": _customers()},
+    )
+    text = "MUS000007 İsmail Işık " * 2_000
+
+    started = time.perf_counter()
+    hits = content.search(text)
+
+    assert time.perf_counter() - started < 0.2
+    assert hits == [] and content.errors == {"customers"}
+
+
+def test_a_hyphenated_name_is_the_same_name_in_the_list_and_in_text() -> None:
+    index = _index(
+        RecordField("token", primary=True),
+        RecordField("name"),
+        rows=[[("token", "MUS000001"), ("name", "Ayşe-Nur Yılmaz")]],
+    )
+
+    assert normalize("name", "Ayşe-Nur Yılmaz") == normalize("name", "AYŞE NUR YILMAZ")
+    assert index.match_records("MUS000001 için Ayşe-Nur Yılmaz aradı", 2)[0] == {0}
+    assert index.match_records("MUS000001 için Ayşe Nur Yılmaz aradı", 2)[0] == {0}
+
+
+@pytest.mark.parametrize(
+    "written", ["0532.123.45.67", "(532) 123 45 67", "+90 (532) 123-45-67"]
+)
+def test_a_phone_written_with_dots_or_brackets_matches(written) -> None:
+    index = _index(
+        RecordField("phone", primary=True),
+        RecordField("name"),
+        rows=[[("phone", "05321234567"), ("name", "Ali Veli")]],
+    )
+
+    assert index.match_records(f"Ali Veli, tel {written}", 2)[0] == {0}

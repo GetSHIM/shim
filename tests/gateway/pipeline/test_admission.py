@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -870,6 +871,10 @@ def test_an_anthropic_deployment_price_takes_anthropic_cache_multipliers() -> No
         Decimal("6"),
     )
     assert written.deployment_price.rates(1)[3] == Decimal("4")
+    free = replace(
+        prepared, target=replace(prepared.target, cache_write_per_million=Decimal("0"))
+    )
+    assert free.deployment_price.rates(1)[3] == Decimal("0"), "a stated 0 stays 0"
     assert openai.deployment_price.rates(1)[3:] == (Decimal("3"), Decimal("3"))
 
 
@@ -1115,6 +1120,11 @@ _PARENT = f"00-{_TRACE}-b7ad6b7169203331-01"
         ({"x-shim-task-id": "  task-7/step:2  "}, "task-7/step:2", None),
         ({"x-shim-task-id": "two words"}, None, None),
         ({"x-shim-task-id": "a@b"}, None, None),
+        # Digits alone, ten or more, look like a national id or a phone number.
+        ({"x-shim-task-id": "10000000146"}, None, None),
+        ({"x-shim-task-id": "05321234567"}, None, None),
+        ({"x-shim-task-id": "123456789"}, "123456789", None),
+        ({"x-shim-task-id": "run-10000000146"}, "run-10000000146", None),
         ({"x-shim-task-id": "-leading"}, None, None),
         ({"x-shim-task-id": ""}, None, None),
         ({"traceparent": _PARENT}, _TRACE, _TRACE),
@@ -1234,6 +1244,48 @@ def test_the_tool_signature_reads_the_latest_call_and_ignores_key_order(
 
 
 @pytest.mark.parametrize(
+    "protocol", ["chat", "responses", "messages", "generate_content"]
+)
+def test_a_plain_answer_after_a_tool_call_ends_the_signature(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    history = _history(protocol, '{"path": "a"}')
+    if protocol == "responses":
+        history["input"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+    elif protocol == "generate_content":
+        history["contents"] += [
+            {"role": "model", "parts": [{"text": "done"}]},
+            {"role": "user", "parts": [{"text": "again"}]},
+        ]
+    else:
+        history["messages"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+
+    assert _tool_signature(history, protocol) is None
+
+
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+def test_deeply_nested_arguments_are_hashed_as_text_in_linear_time(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    def best_of_three(arguments: str) -> float:
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            signature = _tool_signature(_history(protocol, arguments), protocol)
+            timings.append(time.perf_counter() - started)
+            assert signature is not None
+        return min(timings)
+
+    assert best_of_three("[" * 200_000) < 4 * best_of_three('"' + "a" * 199_998 + '"')
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {"messages": [{"role": "user", "content": "no tools"}]},
@@ -1347,6 +1399,21 @@ async def test_a_task_past_its_calls_cap_is_refused_and_untasked_calls_pass(
 
 
 @pytest.mark.asyncio
+async def test_a_call_the_quota_refuses_gives_its_task_call_back() -> None:
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, usage, _ = _limit_stage({"x-shim-task-id": "t-1"})
+    usage.admit.side_effect = [HTTPException(429, detail="quota"), None]
+    prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
+
+    with pytest.raises(HTTPException):
+        await stage.run(prepared)
+    admitted = await stage.run(replace(prepared, policy_verdicts=[]))
+
+    assert admitted.admission is not None and admitted.admission.task_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() -> None:
     from shim.gateway.admission import TaskAdmission
     from shim.gateway.request_policy import TaskCaps
@@ -1357,10 +1424,17 @@ async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() ->
     )
     prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
 
+    from prometheus_client import REGISTRY
+
+    before = REGISTRY.get_sample_value("shim_task_counter_unavailable_total") or 0
+
     await stage.run(prepared)
 
     verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
     assert verdicts["task.limit"] == ("error", "TASK_COUNTER_UNAVAILABLE")
+    assert REGISTRY.get_sample_value("shim_task_counter_unavailable_total") == (
+        before + 1
+    )
 
 
 def _inflight_stage(registry, admit=None) -> AdmissionStage:
@@ -1494,6 +1568,25 @@ async def test_only_a_shareable_twin_of_the_same_key_follows(
     assert admitted.admission is not None
     assert admitted.admission.inflight_duplicate_of == "req_1"
     assert (stage.leader is not None) is follows
+
+
+@pytest.mark.asyncio
+async def test_a_twin_arriving_after_the_answer_was_published_calls_itself() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    first = await _inflight_stage(registry).run(_twin("req_1"))
+    assert first.admission is not None
+    # The leader has its answer and is still finalizing: it has not left yet.
+    registry.publish(
+        str(first.tenant_id), str(first.admission.request_digest), "req_1", "answer"
+    )
+    stage = _inflight_stage(registry)
+    late = await stage.run(_twin("req_2"))
+
+    assert late.admission is not None
+    assert late.admission.inflight_duplicate_of == "req_1"
+    assert stage.leader is None
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from itertools import chain
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -30,12 +31,12 @@ def _list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _parts(items: object) -> Iterator[Mapping[str, Any]]:
-    """The content parts of each item in a list of turns."""
+def _parts(items: object, field: str = "content") -> Iterator[Mapping[str, Any]]:
+    """The parts listed under `field` in each item of a list of turns."""
     for item in _list(items):
         if isinstance(item, Mapping):
             yield from (
-                part for part in _list(item.get("content")) if isinstance(part, Mapping)
+                part for part in _list(item.get(field)) if isinstance(part, Mapping)
             )
 
 
@@ -75,7 +76,10 @@ def request_measures(payload: Mapping[str, Any], protocol: str) -> tuple[int, in
                 ).startswith(_NOT_DOCUMENTS):
                     documents += 1
         return tools, documents, len(_list(payload.get("contents")))
-    tools = len(_list(payload.get("tools")))
+    # Legacy chat functions and Anthropic MCP servers hand the model tools too.
+    tools = len(_list(payload.get("tools"))) + len(
+        _list(payload.get("functions" if protocol == "chat" else "mcp_servers"))
+    )
     if protocol == "chat":
         documents = sum(
             part.get("type") == "file" for part in _parts(payload.get("messages"))
@@ -83,8 +87,10 @@ def request_measures(payload: Mapping[str, Any], protocol: str) -> tuple[int, in
         return tools, documents, len(_list(payload.get("messages")))
     if protocol == "responses":
         items = payload.get("input")
+        # A tool's output may return files as well.
         documents = sum(
-            part.get("type") == "input_file" for part in _parts(items)
+            part.get("type") == "input_file"
+            for part in chain(_parts(items), _parts(items, "output"))
         ) + sum(
             isinstance(item, Mapping) and item.get("type") == "input_file"
             for item in _list(items)

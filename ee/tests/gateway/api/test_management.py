@@ -79,7 +79,6 @@ async def test_provider_patch_can_clear_nullable_metadata(
         id=uuid4(),
         organization_id=tenant_id,
         provider="openai",
-        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         verified_at=datetime.now(timezone.utc),
@@ -118,7 +117,6 @@ async def test_provider_key_rotation_clears_verification(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
-        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         secret_ref="fernet:v2:old",
@@ -594,7 +592,6 @@ async def test_provider_verification_updates_only_conclusive_results(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
-        credential_kind="api_key",
         name=None,
         monthly_limit_usd=None,
         secret_ref="fernet:v2:provider",
@@ -1523,7 +1520,6 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
         id=uuid4(),
         organization_id=uuid4(),
         provider="openai",
-        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=Decimal("10"),
         secret_ref="fernet:v2:old-reference",
@@ -2436,7 +2432,13 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
     )
     await db.flush()
     statements: list[str] = []
-    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    read: list[object] = []
+
+    def listener(*args) -> None:
+        statements.append(args[2])
+        if "FROM request_lifecycle" in args[2]:
+            read.append(args[3])
+
     event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
     application = FastAPI()
     application.include_router(management_router, prefix="/api/v1")
@@ -2460,6 +2462,8 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
                 ).status_code
                 for days in (0, 731)
             ]
+            monkeypatch.setattr(management, "_AFFECTED_LIMIT", 1)
+            capped = await client.get("/api/v1/management/model-retirements")
             user.role = "member"
             member = await client.get("/api/v1/management/model-retirements")
     finally:
@@ -2496,6 +2500,16 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
     assert bounds == [422, 422]
     assert member.status_code == 403
     assert any("l.started_at >= " in statement for statement in statements)
+    # Usage is read only for models retiring within the window, and lists are capped.
+    soon_names, later_names = (
+        next(value for value in parameters if isinstance(value, list))
+        for parameters in read[:2]
+    )
+    assert "gpt-4" in soon_names and "gpt-4.1" not in soon_names
+    assert "gpt-4.1" in later_names
+    [capped_gpt4, _] = capped.json()
+    assert [key["requests"] for key in capped_gpt4["affected"]["api_keys"]] == [3]
+    assert [tag["tag"] for tag in capped_gpt4["affected"]["tags"]] == ["support"]
 
 
 @pytest.mark.asyncio
@@ -2576,8 +2590,7 @@ def _entra_row(**fields: object) -> SimpleNamespace:
         **{
             "id": uuid4(),
             "organization_id": uuid4(),
-            "provider": "openai",
-            "credential_kind": "azure_entra_client",
+            "provider": "azure_entra",
             "name": "Azure",
             "monthly_limit_usd": None,
             "secret_ref": "fernet:v2:entra",
@@ -2608,9 +2621,7 @@ async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
     monkeypatch.setattr(management, "_audit", audit)
 
     row = await management.create_provider_secret(
-        management.ProviderSecretInput(
-            provider="openai", credential_kind="azure_entra_client", azure_entra=_ENTRA
-        ),
+        management.ProviderSecretInput(provider="azure_entra", azure_entra=_ENTRA),
         SimpleNamespace(organization_id=tenant_id, is_verified=True),
         session,
     )
@@ -2624,18 +2635,48 @@ async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
         TenantId(tenant_id),
         "provider:openai:azure-entra-client",
         stored,
-        {"provider": "openai", "kind": "azure_entra_client"},
+        {"provider": "azure_entra"},
     )
-    assert (row.credential_kind, row.masked_key) == (
-        "azure_entra_client",
-        "entra:000...00a1",
-    )
+    assert (row.provider, row.masked_key) == ("azure_entra", "entra:000...00a1")
     row.id, row.created_at = uuid4(), datetime.now(timezone.utc)
     shown = management.ProviderSecretView.model_validate(row).model_dump_json()
     details = audit.await_args.kwargs["details"]
-    assert details["credential_kind"] == "azure_entra_client"
+    assert details["provider"] == "azure_entra"
     for text in (shown, json.dumps(details, default=str)):
         assert "entra-secret-value" not in text and "contoso" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"provider": "azure_entra", "key": "sk-live-secret-value-1"},
+        {"provider": "openai", "azure_entra": _ENTRA},
+    ],
+)
+async def test_a_refused_body_is_never_echoed_back(
+    db, test_user_with_org, body
+) -> None:
+    from fastapi.exceptions import RequestValidationError
+
+    from shim.gateway.api.errors import gateway_exception_handler
+
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.add_exception_handler(RequestValidationError, gateway_exception_handler)
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    application.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/v1/management/providers", json=body)
+
+    assert response.status_code == 422
+    for secret in ("sk-live-secret-value-1", "entra-secret-value", "contoso"):
+        assert secret not in response.text
 
 
 @pytest.mark.parametrize(
@@ -2643,23 +2684,10 @@ async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
     [
         {"provider": "openai"},
         {"provider": "openai", "key": "provider-api-key", "azure_entra": _ENTRA},
-        {"provider": "openai", "credential_kind": "azure_entra_client"},
-        {
-            "provider": "openai",
-            "credential_kind": "azure_entra_client",
-            "azure_entra": _ENTRA,
-            "key": "provider-api-key",
-        },
-        {
-            "provider": "anthropic",
-            "credential_kind": "azure_entra_client",
-            "azure_entra": _ENTRA,
-        },
-        {
-            "provider": "openai",
-            "credential_kind": "azure_entra_client",
-            "azure_entra": {**_ENTRA, "client_id": "app"},
-        },
+        {"provider": "azure_entra"},
+        {"provider": "azure_entra", "azure_entra": _ENTRA, "key": "provider-api-key"},
+        {"provider": "anthropic", "azure_entra": _ENTRA},
+        {"provider": "azure_entra", "azure_entra": {**_ENTRA, "client_id": "app"}},
     ],
 )
 def test_a_provider_secret_needs_exactly_the_field_of_its_kind(fields) -> None:
@@ -2706,11 +2734,11 @@ async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
     }
     assert (row.masked_key, row.verified_at) == ("entra:000...00b2", None)
     assert audit.await_args.kwargs["details"]["key_rotated"] is True
-    for patch, kind in [
-        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra_client"),
-        (management.ProviderSecretPatch(azure_entra=_ENTRA), "api_key"),
+    for patch, provider in [
+        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra"),
+        (management.ProviderSecretPatch(azure_entra=_ENTRA), "openai"),
     ]:
-        row.credential_kind = kind
+        row.provider = provider
         with pytest.raises(HTTPException) as error:
             await management.update_provider_secret(row.id, patch, user, session)
         assert error.value.status_code == 422

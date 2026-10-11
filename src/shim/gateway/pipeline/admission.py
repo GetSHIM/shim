@@ -39,6 +39,7 @@ from shim.gateway.pipeline.privacy import _is_protocol_field
 from shim.observability.metrics import (
     AGENT_LOOP_SIGNALS_TOTAL,
     TASK_ID_REJECTED_TOTAL,
+    TASK_COUNTER_UNAVAILABLE_TOTAL,
     TASK_LIMIT_REFUSALS_TOTAL,
 )
 from shim.rules.evaluate import in_scope, settle_matches
@@ -415,12 +416,14 @@ class AdmissionStage:
                 shareable,
             )
         )
-        # An answer never crosses keys.
+        # An answer never crosses keys, and one already published belongs to a call
+        # that was finishing, not one this request waited on.
         if (
             shareable
             and earlier is not None
             and earlier.shareable
             and earlier.api_key_id == str(value.api_key_id)
+            and not (earlier.outcome is not None and earlier.outcome.done())
         ):
             self.leader = earlier
         admission = AdmissionState(
@@ -443,6 +446,11 @@ class AdmissionStage:
                 self.inflight.leave(
                     str(value.tenant_id), request_digest, str(value.request_id)
                 )
+                # A call the quota refused is not one of the task's calls.
+                if task_calls and task_id is not None:
+                    await self.task_counter.release_call(
+                        str(value.tenant_id), _task_key(task_id)
+                    )
                 raise
             self.reserved = True
         return replace(
@@ -460,12 +468,16 @@ class AdmissionStage:
             return None
         task = await self.task_counter.admit_call(
             str(value.tenant_id),
-            hashlib.sha256(task_id.encode()).hexdigest(),
+            _task_key(task_id),
             max_calls=caps.max_calls,
             max_cost_micro_usd=micro_usd(caps.max_cost_usd),
             window_seconds=caps.window_seconds,
         )
         refused = not task.allowed
+        if task.unavailable:
+            # Caps are advisory: an outage admits the call, never silently (the
+            # counter logs why).
+            TASK_COUNTER_UNAVAILABLE_TOTAL.inc()
         value.record_verdict(
             "task.limit",
             stage="admission",
@@ -576,20 +588,23 @@ def micro_usd(amount: Decimal | None) -> int | None:
 
 
 def _arguments(value: object) -> object:
-    """Chat and Responses send arguments as a JSON string; parsed when valid."""
+    """Chat and Responses send arguments as a JSON string; parsed when valid.
+
+    Nesting too deep to parse is hashed as the text it is.
+    """
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except ValueError:
+        except (ValueError, RecursionError):
             return value
     return value
 
 
-def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
-    """The tool calls of one assistant (or model) turn, or [] for any other turn."""
-    if not isinstance(turn, Mapping):
-        return []
-    if protocol == "chat" and turn.get("role") == "assistant":
+def _turn_calls(
+    turn: Mapping[str, object], protocol: str
+) -> list[tuple[object, object]]:
+    """The tool calls of one assistant (or model) turn."""
+    if protocol == "chat":
         return [
             (
                 call["function"].get("name"),
@@ -598,42 +613,46 @@ def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
             for call in _listed(turn.get("tool_calls"))
             if isinstance(call, Mapping) and isinstance(call.get("function"), Mapping)
         ]
-    if protocol in {"messages", "count_tokens"} and turn.get("role") == "assistant":
-        return [
-            (block.get("name"), block.get("input"))
-            for block in _listed(turn.get("content"))
-            if isinstance(block, Mapping) and block.get("type") == "tool_use"
-        ]
-    if protocol == "generate_content" and turn.get("role") == "model":
+    if protocol == "generate_content":
         return [
             (part["functionCall"].get("name"), part["functionCall"].get("args"))
             for part in _listed(turn.get("parts"))
             if isinstance(part, Mapping)
             and isinstance(part.get("functionCall"), Mapping)
         ]
-    return []
+    return [
+        (block.get("name"), block.get("input"))
+        for block in _listed(turn.get("content"))
+        if isinstance(block, Mapping) and block.get("type") == "tool_use"
+    ]
 
 
 def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
     """A digest of the latest assistant turn's tool calls: names and canonical arguments.
 
-    Read from the end, so a long history costs one turn.
+    Read from the end, so a long history costs one turn; a latest turn without
+    calls has no signature.
     """
     calls: list[tuple[object, object]] = []
     if protocol == "responses":
-        # Calls of one turn sit next to each other; anything else ends the turn.
+        # Calls of one turn sit next to each other; anything else ends the turn,
+        # and an assistant message after them is a later turn.
         for item in reversed(_listed(payload.get("input"))):
             if isinstance(item, Mapping) and item.get("type") == "function_call":
                 calls.append((item.get("name"), _arguments(item.get("arguments"))))
-            elif calls:
+            elif calls or (
+                isinstance(item, Mapping) and item.get("role") == "assistant"
+            ):
                 break
         calls.reverse()
     else:
         turns = payload.get(
             "contents" if protocol == "generate_content" else "messages"
         )
+        role = "model" if protocol == "generate_content" else "assistant"
         for turn in reversed(_listed(turns)):
-            if calls := _turn_calls(turn, protocol):
+            if isinstance(turn, Mapping) and turn.get("role") == role:
+                calls = _turn_calls(turn, protocol)
                 break
     if not calls:
         return None
@@ -641,6 +660,11 @@ def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
         [protocol, calls], sort_keys=True, separators=(",", ":"), default=str
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _task_key(task_id: str) -> str:
+    """Counters hold a digest, never the task id itself."""
+    return hashlib.sha256(task_id.encode()).hexdigest()
 
 
 def _listed(value: object) -> list:
@@ -659,7 +683,10 @@ def _task_identity(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
         ).get_span_context()
         trace_id = format(context.trace_id, "032x") if context.is_valid else None
     task_id = (headers.get("x-shim-task-id") or "").strip()
-    if task_id and not _TASK_ID.fullmatch(task_id):
+    # Ten digits or more alone are shaped like a national id or a phone number.
+    if task_id and (
+        not _TASK_ID.fullmatch(task_id) or (task_id.isdigit() and len(task_id) >= 10)
+    ):
         TASK_ID_REJECTED_TOTAL.inc()
         task_id = ""
     return task_id or trace_id, trace_id
@@ -727,16 +754,21 @@ def _request_limits(
         for match in value.rule_matches
     ):
         blocked, _ = settle_matches(value)
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "RULE_BLOCKED",
-                "message": f"Request blocked by tenant rule {blocked[0]}.",
-                "param": blocked[0],
-            },
-            headers={"X-Shim-Rule-Id": blocked[0]},
-        )
+        raise rule_blocked(blocked[0])
     return True
+
+
+def rule_blocked(rule_id: str) -> HTTPException:
+    """The refusal of a request an enforced tenant rule blocks."""
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "RULE_BLOCKED",
+            "message": f"Request blocked by tenant rule {rule_id}.",
+            "param": rule_id,
+        },
+        headers={"X-Shim-Rule-Id": rule_id},
+    )
 
 
 def _overflow_is_managed(payload: Mapping[str, object]) -> bool:

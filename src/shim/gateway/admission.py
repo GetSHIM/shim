@@ -56,6 +56,8 @@ class TaskCounter(Protocol):
         self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
     ) -> None: ...
 
+    async def release_call(self, tenant_id: str, task_key: str) -> None: ...
+
 
 @dataclass(slots=True)
 class InFlightEntry:
@@ -167,6 +169,9 @@ class _FixedWindowCounters:
             return count
         count = current[0] + amount
         self.windows[key] = (count, current[1])
+        # Least recently updated goes first when full, so a stream of new keys
+        # cannot push out a window that is still in use.
+        self.windows.move_to_end(key)
         return count
 
     def add_within(
@@ -274,24 +279,16 @@ class InMemoryTaskCounter:
         max_entries: int = 10_000,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if max_entries < 1:
-            raise ValueError("max_entries must be positive")
-        self.max_entries = max_entries
-        self.clock = clock
-        # (tenant, task key) -> [calls, cost in micro-dollars, expiry]
-        self.tasks: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+        # Two windows per task: its calls and its cost.
+        self._counters = _FixedWindowCounters(max_entries=2 * max_entries, clock=clock)
 
-    def _entry(self, key: tuple[str, str], window_seconds: int) -> list[float]:
-        now = self.clock()
-        entry = self.tasks.get(key)
-        if entry is not None and entry[2] > now:
-            return entry
-        self.tasks.pop(key, None)
-        # ponytail: evicts oldest first; an expiry heap if task counts grow large.
-        while len(self.tasks) >= self.max_entries:
-            self.tasks.popitem(last=False)
-        self.tasks[key] = entry = [0, 0, now + window_seconds]
-        return entry
+    def _current(self, key: tuple[str, str, str]) -> int:
+        window = self._counters.windows.get(key)
+        return (
+            window[0]
+            if window is not None and window[1] > self._counters.clock()
+            else 0
+        )
 
     async def admit_call(
         self,
@@ -302,19 +299,35 @@ class InMemoryTaskCounter:
         max_cost_micro_usd: int | None,
         window_seconds: int,
     ) -> TaskAdmission:
-        entry = self._entry((tenant_id, task_key), window_seconds)
-        calls, cost = int(entry[0]), int(entry[1])
+        calls_key, cost_key = (
+            (tenant_id, task_key, "calls"),
+            (tenant_id, task_key, "cost"),
+        )
+        calls, cost = self._current(calls_key), self._current(cost_key)
         if (max_calls is not None and calls + 1 > max_calls) or (
             max_cost_micro_usd is not None and cost >= max_cost_micro_usd
         ):
             return TaskAdmission(calls, cost, allowed=False)
-        entry[0] = calls + 1
-        return TaskAdmission(calls + 1, cost, allowed=True)
+        calls = self._counters.increment(
+            calls_key, amount=1, window_seconds=window_seconds
+        )
+        # The cost window opens with the first call, as the calls window does.
+        self._counters.increment(cost_key, amount=0, window_seconds=window_seconds)
+        return TaskAdmission(calls, cost, allowed=True)
 
     async def add_cost(
         self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
     ) -> None:
-        self._entry((tenant_id, task_key), window_seconds)[1] += micro_usd
+        self._counters.increment(
+            (tenant_id, task_key, "cost"),
+            amount=micro_usd,
+            window_seconds=window_seconds,
+        )
+
+    async def release_call(self, tenant_id: str, task_key: str) -> None:
+        key = (tenant_id, task_key, "calls")
+        if calls := self._current(key):
+            self._counters.windows[key] = (calls - 1, self._counters.windows[key][1])
 
 
 def _validate_rate_window(

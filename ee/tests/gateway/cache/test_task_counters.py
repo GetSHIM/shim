@@ -51,3 +51,16 @@ async def test_an_unavailable_counter_admits_and_says_so(redis) -> None:
     await counter.add_cost("org-1", "key-1", micro_usd=1, window_seconds=60)
 
     assert (admitted.allowed, admitted.unavailable) == (True, True)
+
+
+@pytest.mark.asyncio
+async def test_a_call_is_given_back_to_the_same_hash_and_an_outage_is_logged(
+    caplog,
+) -> None:
+    redis = SimpleNamespace(eval=AsyncMock(return_value=1))
+
+    await RedisTaskCounter(SimpleNamespace(redis=redis)).release_call("org-1", "key-1")
+    await RedisTaskCounter(SimpleNamespace(redis=None)).release_call("org-1", "key-1")
+
+    assert redis.eval.await_args.args[1:] == (1, "task:org-1:key-1")
+    assert "Task call not given back" in caplog.text
