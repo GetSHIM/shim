@@ -149,7 +149,8 @@ A `request_limit` rule caps what a request may carry: `max_tools`, `max_document
 `below_price_tier`. It is evaluated in admission, after the output bounds and the
 context checks and before the rate limits, so a refused request consumes no
 requests-per-minute or tokens-per-minute window, repeat count or quota; an enforced
-`block` refuses there with `RULE_BLOCKED` and its `rule.<id>` verdict. Token
+`block` refuses there with `RULE_BLOCKED`, its `rule.<id>` verdict, `rules.evaluated`
+and the match in `rule_matches`. Token
 counting is exempt: no request-limit rule is evaluated or recorded for it, since it
 reaches no model and is how a client decides what to trim. `below_price_tier`
 applies only to catalog models with a large-context price tier: when the request's

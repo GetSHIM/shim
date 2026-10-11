@@ -57,6 +57,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         response_analysis=(),
         rules=None,
         rules_evaluated=False,
+        rule_matches=[],
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,

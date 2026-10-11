@@ -23,7 +23,7 @@ from shim.gateway.admission import (
     TaskCounter,
 )
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
-from shim.gateway.pipeline.admission import AdmissionStage
+from shim.gateway.pipeline.admission import AdmissionStage, rule_blocked
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
 from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
 from shim.gateway.pipeline.privacy import PrivacyStage
@@ -443,15 +443,7 @@ class GatewayKernel:
         if blocked:
             if not counting:
                 await self.usage.record_privacy(prepared)
-            return prepared, HTTPException(
-                status_code=400,
-                detail={
-                    "code": "RULE_BLOCKED",
-                    "message": f"Request blocked by tenant rule {blocked[0]}.",
-                    "param": blocked[0],
-                },
-                headers={"X-Shim-Rule-Id": blocked[0]},
-            )
+            return prepared, rule_blocked(blocked[0])
         if not approval:
             return prepared, None
         first = approval[0]

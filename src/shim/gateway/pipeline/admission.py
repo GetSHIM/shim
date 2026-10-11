@@ -727,16 +727,21 @@ def _request_limits(
         for match in value.rule_matches
     ):
         blocked, _ = settle_matches(value)
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "RULE_BLOCKED",
-                "message": f"Request blocked by tenant rule {blocked[0]}.",
-                "param": blocked[0],
-            },
-            headers={"X-Shim-Rule-Id": blocked[0]},
-        )
+        raise rule_blocked(blocked[0])
     return True
+
+
+def rule_blocked(rule_id: str) -> HTTPException:
+    """The refusal of a request an enforced tenant rule blocks."""
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "RULE_BLOCKED",
+            "message": f"Request blocked by tenant rule {rule_id}.",
+            "param": rule_id,
+        },
+        headers={"X-Shim-Rule-Id": rule_id},
+    )
 
 
 def _overflow_is_managed(payload: Mapping[str, object]) -> bool:

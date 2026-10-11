@@ -72,7 +72,9 @@ def match_records(prepared: PreparedInference) -> dict[str, object]:
     Absent unless a matcher ran; [] when one ran and nothing matched.
     """
 
-    if not prepared.rules_evaluated:
+    # A match means a matcher ran, also when the request was refused before the
+    # stage could say so.
+    if not (prepared.rules_evaluated or prepared.rule_matches):
         return {}
     ordered = ordered_matches(prepared.rule_matches)
     return {
@@ -166,7 +168,7 @@ def settle_matches(prepared: PreparedInference) -> tuple[list[str], list[str]]:
         unusable, ("deny", "RULE_BLOCKED")
     )
     record_rule_verdicts(prepared, blocks | verdicts)
-    if prepared.rules_evaluated:
+    if prepared.rules_evaluated or prepared.rule_matches:
         prepared.record_verdict(
             "rules.evaluated",
             stage="rules",

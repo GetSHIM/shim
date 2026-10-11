@@ -1858,6 +1858,16 @@ async def test_an_enforced_tool_cap_refuses_through_the_app_before_the_provider(
     assert line["outcome"] == "rejected"
     verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
     assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"
+    assert verdicts["rules.evaluated"] == "RULES_EVALUATED"
+    assert line["rule_matches"] == [
+        {
+            "rule_id": "tool_cap",
+            "kind": "request_limit",
+            "action": "block",
+            "state": "enforced",
+            "count": 1,
+        }
+    ]
 
 
 class _WithholdingResolver:

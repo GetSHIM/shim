@@ -185,6 +185,46 @@ def test_each_protocol_counts_tools_documents_and_history(
 
 
 @pytest.mark.parametrize(
+    ("protocol", "payload", "measures"),
+    [
+        # Legacy chat functions are tools.
+        (
+            "chat",
+            {"tools": _tools(1), "functions": [{"name": "a"}, {"name": "b"}]},
+            (3, 0, 0),
+        ),
+        # A file returned by a tool is a document.
+        (
+            "responses",
+            {
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "c",
+                        "output": [
+                            {"type": "input_file", "file_id": "f1"},
+                            {"type": "input_text", "text": "t"},
+                        ],
+                    }
+                ]
+            },
+            (0, 1, 1),
+        ),
+        # Each MCP server lends the model its tools.
+        (
+            "messages",
+            {"tools": _tools(1), "mcp_servers": [{"type": "url", "url": "u"}] * 2},
+            (3, 0, 0),
+        ),
+    ],
+)
+def test_every_way_of_sending_tools_and_documents_counts(
+    protocol, payload, measures
+) -> None:
+    assert request_measures(payload, protocol) == measures
+
+
+@pytest.mark.parametrize(
     "protocol", ["chat", "responses", "messages", "generate_content"]
 )
 @pytest.mark.parametrize(

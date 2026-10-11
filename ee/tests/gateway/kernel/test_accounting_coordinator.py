@@ -109,6 +109,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         response_analysis=(),
         rules=None,
         rules_evaluated=False,
+        rule_matches=[],
         unpriced=False,
         deployment_price=None,
         stream=False,
@@ -434,6 +435,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         policy_verdicts=[],
         privacy=privacy,
         rules_evaluated=False,
+        rule_matches=[],
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
     command = FinalizationCommand(
@@ -874,6 +876,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         policy_verdicts=[],
         rules=None,
         rules_evaluated=False,
+        rule_matches=[],
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(

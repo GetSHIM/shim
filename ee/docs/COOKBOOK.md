@@ -488,8 +488,8 @@ too long a history, before it spends any rate capacity or reaches the provider.
 
 | Field | Bound | Counts |
 | --- | --- | --- |
-| `max_tools` | 0 to 10,000 | tool definitions: `tools` (Gemini: each `functionDeclarations` entry, 1 for another tool) |
-| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items, Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
+| `max_tools` | 0 to 10,000 | tool definitions: `tools`, plus Chat's legacy `functions` and each Anthropic `mcp_servers` entry (Gemini: each `functionDeclarations` entry, 1 for another tool) |
+| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items and parts (in a tool's `output` too), Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
 | `max_history` | 1 to 100,000 | items in `messages`, `input` (1 for a string) or `contents` |
 | `max_input_bytes` | 1,024 to 32,000,000 | the request body's compact JSON bytes |
 | `below_price_tier` | `true` | see [stay under the price tier](#stay-under-the-price-tier) |
