@@ -61,6 +61,7 @@ class CommunitySettings(BaseSettings):
     PII_RESPONSE_SCAN: Literal["off", "count"] = "off"
     SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
     SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
+    SHIM_PRICE_TIER_WARNING: Literal["off", "on"] = "off"
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,

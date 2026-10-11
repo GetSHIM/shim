@@ -107,6 +107,7 @@ class AuthenticateStage:
             response_scan=policy.response_scan,
             response_analysis=policy.response_analysis,
             injection_markers=policy.injection_markers,
+            price_tier_warning=policy.price_tier_warning,
             rules=policy.rules,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),

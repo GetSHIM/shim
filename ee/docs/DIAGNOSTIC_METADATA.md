@@ -377,7 +377,10 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`, `RULE_WARN`), `[]` when none. It is in the lifecycle metadata at
+`CACHE_NOT_APPLIED`, `RULE_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`), `[]` when
+none. `PRICE_TIER_CROSSED` is raised before the provider call from the request's
+approximate size; `LARGE_CONTEXT_PRICE` after it from the settled tokens, so a request
+can carry both. It is in the lifecycle metadata at
 finalization, the analytics row, the request list and its CSV (comma-separated),
 and the community JSONL event. `GET /api/v1/management/requests?warning=<code>`
 and the export filter on one code. Rows written before it existed read as null.

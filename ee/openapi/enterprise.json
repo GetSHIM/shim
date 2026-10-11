@@ -4763,6 +4763,11 @@
             "title": "Injection Markers",
             "type": "string"
           },
+          "price_tier_warning": {
+            "default": false,
+            "title": "Price Tier Warning",
+            "type": "boolean"
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -4793,6 +4798,17 @@
               }
             ],
             "title": "Injection Markers"
+          },
+          "price_tier_warning": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Tier Warning"
           },
           "response_analysis": {
             "anyOf": [
@@ -10492,7 +10508,8 @@
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
                     "SEMANTIC_WARN",
-                    "INJECTION_MARKERS"
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED"
                   ],
                   "type": "string"
                 },
@@ -19452,7 +19469,8 @@
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
                     "SEMANTIC_WARN",
-                    "INJECTION_MARKERS"
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED"
                   ],
                   "type": "string"
                 },
@@ -19792,7 +19810,8 @@
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
                     "SEMANTIC_WARN",
-                    "INJECTION_MARKERS"
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED"
                   ],
                   "type": "string"
                 },

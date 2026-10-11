@@ -251,7 +251,9 @@ word index and pattern regexes, both built once per `RuleSet` object
 (`src/shim/rules/tr_suffixes.py`). The `destination` kind (`src/shim/rules/destination.py`)
 names entity types: for a request in its scope the privacy stage detects them,
 masks them under an enforced `mask` rule, and records the matches for the decision
-point; no other kind ships a matcher yet.
+point. The `request_limit` kind (`src/shim/rules/request_limit.py`) is evaluated in
+admission before the rate limits, where an enforced block refuses; token counting is
+exempt. No other kind ships a matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 With `SHIM_INJECTION_MARKERS` (enterprise: the `injection_markers` gateway
 setting) at `count` or `warn`, the privacy stage also counts instruction markers

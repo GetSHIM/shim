@@ -23,6 +23,8 @@ from shim.gateway.kernel.result import (
 )
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.pipeline.privacy import _is_protocol_field
+from shim.rules.evaluate import in_scope, settle_matches
+from shim.rules.request_limit import request_measures
 
 if TYPE_CHECKING:
     from shim.gateway.pipeline.authenticate import GatewayInvocation
@@ -193,6 +195,18 @@ class AdmissionStage:
                 if output_token_field == "provider_default"
                 else per_candidate_output_tokens,
             )
+        attribution = CostAttribution.resolve(
+            self.invocation.headers.get("x-shim-tag"),
+            api_key_cost_center=value.policy.cost_center,
+            maximum_length=self.cost_tag_max_length,
+        )
+        # Before the rate limits, so a refused request consumes none of them.
+        limited = value.protocol != "count_tokens" and _request_limits(
+            value,
+            attribution.tags,
+            input_bytes=input_tokens,
+            approximate_tokens=approximate_tokens,
+        )
         token_limit = tier.rate_limit_tpm
         if token_limit is not None and approximate_tokens > token_limit:
             value.record_verdict(
@@ -289,11 +303,6 @@ class AdmissionStage:
                 },
                 headers={"Retry-After": str(self.loop_window_seconds)},
             )
-        attribution = CostAttribution.resolve(
-            self.invocation.headers.get("x-shim-tag"),
-            api_key_cost_center=value.policy.cost_center,
-            maximum_length=self.cost_tag_max_length,
-        )
         admission = AdmissionState(
             estimated_input_tokens=input_tokens,
             maximum_output_tokens=output_tokens,
@@ -304,7 +313,11 @@ class AdmissionStage:
         if value.protocol != "count_tokens":
             await self.usage.admit(value, admission)
             self.reserved = True
-        return replace(value, admission=admission)
+        return replace(
+            value,
+            admission=admission,
+            rules_evaluated=value.rules_evaluated or limited,
+        )
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:
         assert output.admission is not None
@@ -364,6 +377,80 @@ def _check_catalog_limits(
             )
     if approximate_tokens + output > window:
         value.warn("CONTEXT_MAY_EXCEED")
+
+
+def _request_limits(
+    value: PreparedInference,
+    tags: tuple[str, ...],
+    *,
+    input_bytes: int,
+    approximate_tokens: int,
+) -> bool:
+    """The price-tier warning and the request-limit rules in scope; True when a rule ran.
+
+    An enforced block refuses here, before the rate limits. A request that only may cross
+    the price tier is warned, never refused.
+    """
+
+    rules = [
+        rule
+        for rule in (value.rules.rules if value.rules is not None else ())
+        if rule.kind == "request_limit" and in_scope(rule, value, tags)
+    ]
+    entry = (
+        DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+        if value.target is None
+        and (
+            value.price_tier_warning
+            or any(rule.match["below_price_tier"] for rule in rules)
+        )
+        else None
+    )
+    threshold = entry.large_context_threshold if entry is not None else None
+    if threshold is not None and value.price_tier_warning:
+        if approximate_tokens > threshold:
+            value.warn("PRICE_TIER_CROSSED")
+    if not rules:
+        return False
+    tools, documents, history = request_measures(value.payload, value.protocol)
+    # A word takes at least two bytes, so a small request skips the count.
+    words = (
+        _lower_bound_input(value.payload)
+        if threshold is not None and input_bytes // 2 > threshold
+        else 0
+    )
+    for rule in rules:
+        caps = rule.match
+        over = any(
+            cap is not None and measure > cap
+            for cap, measure in (
+                (caps["max_tools"], tools),
+                (caps["max_documents"], documents),
+                (caps["max_history"], history),
+                (caps["max_input_bytes"], input_bytes),
+            )
+        )
+        tiered = caps["below_price_tier"] and threshold is not None
+        if over or (tiered and words > threshold):
+            value.record_rule_match(rule, 1)
+        elif tiered and approximate_tokens > threshold:
+            value.record_rule_match(rule.model_copy(update={"action": "warn"}), 1)
+    if any(
+        (match.kind, match.state, match.action)
+        == ("request_limit", "enforced", "block")
+        for match in value.rule_matches
+    ):
+        blocked, _ = settle_matches(value)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "RULE_BLOCKED",
+                "message": f"Request blocked by tenant rule {blocked[0]}.",
+                "param": blocked[0],
+            },
+            headers={"X-Shim-Rule-Id": blocked[0]},
+        )
+    return True
 
 
 def _overflow_is_managed(payload: Mapping[str, object]) -> bool:

@@ -139,6 +139,7 @@ def create_community_app(
                     response_scan=configured.PII_RESPONSE_SCAN,
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
                     injection_markers=configured.SHIM_INJECTION_MARKERS,
+                    price_tier_warning=configured.SHIM_PRICE_TIER_WARNING == "on",
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

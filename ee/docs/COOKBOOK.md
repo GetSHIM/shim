@@ -18,6 +18,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
 - [Keep a data type inside](#keep-a-data-type-inside)
+- [Cap tools, documents and history](#cap-tools-documents-and-history)
+- [Stay under the price tier](#stay-under-the-price-tier)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -249,6 +251,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+| `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 
 ```console
@@ -265,10 +268,11 @@ writes no event and keeps the revision. A change the setting's direction
 classifies as relaxing also records `tenant.gateway_protection_relaxed`
 ([decision evidence](POLICY_DECISIONS.md#management-change-details));
 `response_analysis` only measures, so it is neutral; moving `injection_markers`
-down from `warn` to `count` or `off`, or from `count` to `off`, is relaxing. Gateways read the settings
+down from `warn` to `count` or `off`, or from `count` to `off`, is relaxing;
+`price_tier_warning` is a report, so turning it off is neutral. Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
-Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` and
-`SHIM_INJECTION_MARKERS` variables.
+Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
+`SHIM_INJECTION_MARKERS` and `SHIM_PRICE_TIER_WARNING` variables.
 
 Rolling back to an older build is safe: a stored field or analyzer name that
 build does not know is left out when it reads the settings (and logged once by
@@ -279,9 +283,10 @@ settings again after the rollback ends.
 
 Keep your own words and codes out of prompts: project names, product codes,
 customer lists. One set per tenant, replaced whole, beside the privacy
-settings. Three kinds are available: `term` (a word list), `pattern` (code
-shapes) and `destination` ([a data type kept inside](#keep-a-data-type-inside));
-the others are listed as unavailable until their release.
+settings. Four kinds are available: `term` (a word list), `pattern` (code
+shapes), `destination` ([a data type kept inside](#keep-a-data-type-inside)) and
+`request_limit` ([caps](#cap-tools-documents-and-history)); the others are listed
+as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (`rules.read`: owner, admin
    or auditor):
@@ -387,6 +392,55 @@ Notes: a rule can only tighten; a base `mask` cannot be loosened to `monitor` fo
 internal targets. Changing a deployment from `external` to `internal` is recorded as
 a relaxation, and the operator can restrict `internal` to listed origins with
 `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` ([model deployments](MODEL_DEPLOYMENTS.md)).
+
+## Cap tools, documents and history
+
+Stop a request that offers too many tools, attaches too many documents or carries
+too long a history, before it spends any rate capacity or reaches the provider.
+
+1. Add a `request_limit` rule to the [rule set](#write-a-tenant-rule), in `monitor`
+   state first, with one or more caps:
+
+| Field | Bound | Counts |
+| --- | --- | --- |
+| `max_tools` | 0 to 10,000 | tool definitions: `tools` (Gemini: each `functionDeclarations` entry, 1 for another tool) |
+| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items, Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
+| `max_history` | 1 to 100,000 | items in `messages`, `input` (1 for a string) or `contents` |
+| `max_input_bytes` | 1,024 to 32,000,000 | the request body's compact JSON bytes |
+| `below_price_tier` | `true` | see [stay under the price tier](#stay-under-the-price-tier) |
+
+```json
+{"id": "tool_cap", "name": "At most five tools", "kind": "request_limit",
+ "action": "block", "state": "monitor", "match": {"max_tools": 5}}
+```
+
+2. The rule matches when any cap is exceeded. In `monitor` state the request list
+   shows it in `rule_matches`; enforced, `block` refuses with 400 `RULE_BLOCKED` and
+   `X-Shim-Rule-Id` before the rate limits and the provider, and `warn` adds
+   `RULE_WARN`.
+
+Notes: images are not documents, and text pasted from a document is text. History
+kept by the provider behind `previous_response_id` is not counted. Token counting
+(`/v1/messages/count_tokens`) is never capped. Nothing is shortened to fit.
+
+## Stay under the price tier
+
+Some models price the whole request at a higher rate above a length (gpt-5.4 above
+272,000 input tokens, Gemini 3.1 Pro preview above 200,000).
+
+1. To be told before the call, turn on the gateway setting `price_tier_warning`:
+   a request whose approximate size (bytes / 4) is above the tier gets
+   `PRICE_TIER_CROSSED` in `X-Shim-Warnings`.
+2. To keep requests under it, add a `request_limit` rule with
+   `"match": {"below_price_tier": true}`. A request whose words alone exceed the tier
+   certainly crosses it, and the rule's action applies (an enforced `block` refuses
+   with `RULE_BLOCKED`). A request that only may cross it (approximate size above,
+   word count not) is recorded as a `warn` match and gets `RULE_WARN` when the rule
+   is enforced; it is never refused.
+
+Notes: only catalog models with a tier are checked; registry deployments never
+match. The settled tokens decide the price, and `LARGE_CONTEXT_PRICE` still marks a
+request that was billed at the higher rate.
 
 ## Read the daily privacy card
 

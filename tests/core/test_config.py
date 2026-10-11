@@ -237,3 +237,16 @@ def test_an_unknown_analyzer_names_the_setting_and_the_name() -> None:
     assert "SHIM_RESPONSE_ANALYSIS" in str(error.value)
     assert "unknown analyzer: nope" in str(error.value)
     assert CommunitySettings(_env_file=None).SHIM_RESPONSE_ANALYSIS == []
+
+
+@pytest.mark.parametrize(("value", "on"), [("on", True), ("off", False)])
+def test_the_price_tier_warning_setting_is_on_or_off(value, on) -> None:
+    settings = CommunitySettings(_env_file=None, SHIM_PRICE_TIER_WARNING=value)
+
+    assert (settings.SHIM_PRICE_TIER_WARNING == "on") is on
+    assert CommunitySettings(_env_file=None).SHIM_PRICE_TIER_WARNING == "off"
+
+
+def test_an_unknown_price_tier_warning_value_stops_the_gateway() -> None:
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_PRICE_TIER_WARNING="yes")

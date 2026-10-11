@@ -110,7 +110,11 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
 
     assert view.settings == GatewaySettings()
     assert view.model_dump(mode="json") == {
-        "settings": {"response_analysis": [], "injection_markers": "off"},
+        "settings": {
+            "response_analysis": [],
+            "injection_markers": "off",
+            "price_tier_warning": False,
+        },
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
@@ -299,6 +303,28 @@ async def test_turning_injection_markers_down_writes_the_relaxed_event(
         if event["endpoint"] == "tenant.gateway_protection_relaxed"
     ]
     assert relaxed == [["injection_markers"]]
+
+
+@pytest.mark.asyncio
+async def test_the_price_tier_warning_round_trips_and_is_never_a_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    on = await management.update_gateway_settings(
+        GatewaySettingsPatch(price_tier_warning=True), _request(), admin, db
+    )
+    off = await management.update_gateway_settings(
+        GatewaySettingsPatch(price_tier_warning=False), _request(), admin, db
+    )
+
+    assert (on.settings.price_tier_warning, off.settings.price_tier_warning) == (
+        True,
+        False,
+    )
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed"
+        for event in await audit_events(test_org.id)
+    )
 
 
 def test_a_stored_key_this_build_does_not_know_is_ignored_and_logged_once(

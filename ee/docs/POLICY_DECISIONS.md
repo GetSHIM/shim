@@ -85,9 +85,9 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term`, `pattern` and `destination`
-kinds are available; `GET /rules` lists the others with `available: false` and the
-reason.
+`match`. A new rule starts in `monitor`. The `term`, `pattern`, `destination`
+and `request_limit` kinds are available; `GET /rules` lists the others with
+`available: false` and the reason.
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
@@ -130,6 +130,22 @@ and counts in `monitored_entities`. Like an enforced content rule, an enforced
 `block` destination rule refuses images and files it cannot search. To keep a type
 inside, set its base action to the weakest action wanted everywhere and add a rule
 that tightens it for external targets.
+
+### Request limits
+
+A `request_limit` rule caps what a request may carry: `max_tools`, `max_documents`,
+`max_history`, `max_input_bytes`, measured on the request as the client sent it, and
+`below_price_tier`. It is evaluated in admission, after the output bounds and the
+context checks and before the rate limits, so a refused request consumes no
+requests-per-minute or tokens-per-minute window, repeat count or quota; an enforced
+`block` refuses there with `RULE_BLOCKED` and its `rule.<id>` verdict. Token
+counting is exempt: no request-limit rule is evaluated or recorded for it, since it
+reaches no model and is how a client decides what to trim. `below_price_tier`
+applies only to catalog models with a large-context price tier: when the request's
+whitespace-separated words already exceed the tier, the crossing is certain and the
+rule's action applies; when only its approximate size (bytes / 4) exceeds it, the
+crossing is possible and the rule records a `warn` match whatever its action, so it
+never refuses a request that may be under the tier.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:

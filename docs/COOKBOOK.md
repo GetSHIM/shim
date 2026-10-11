@@ -431,10 +431,17 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | --- | --- | --- |
 | `MODEL_DEPRECATED` | The catalog marks the model deprecated. It is still served. | Move to a current model before the provider retires it. |
 | `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit where it counts against the window) is above the context window of the model's own catalog entry, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
+| `PRICE_TIER_CROSSED` | `SHIM_PRICE_TIER_WARNING=on` and the request's approximate size (bytes / 4) is above the model's large-context price threshold, so the whole request may be priced at the higher tier. Known before the call, so streams carry it too. | Shorten the input, or count tokens first; the settled tokens still decide the price. |
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
 | `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
 | `RULE_WARN` | An enforced tenant rule with action `warn` matched (enterprise); the request went ahead unchanged. | Read the rule with your tenant admin; the request list shows which one. |
 | `INJECTION_MARKERS` | `SHIM_INJECTION_MARKERS=warn` and a tool result or document in the request carries an instruction marker; the request went ahead unchanged. | Check where the tool's text came from before the model acts on it. |
+
+`PRICE_TIER_CROSSED` is off by default; set `SHIM_PRICE_TIER_WARNING=on` (or `off`)
+and restart the gateway. Catalog models with a tier: Gemini 2.5 Pro and 3.1 Pro
+preview above 200,000 tokens, OpenAI gpt-5.4 and later above 272,000; Anthropic
+models have none. It is never added to a token count, and a request warned before
+the call and confirmed after it carries both codes.
 
 shim refuses before the provider only what certainly fails. It counts the
 whitespace-separated words of the prompt text, a lower bound for the public

@@ -32,6 +32,7 @@ class GatewaySettings(BaseModel):
 
     response_analysis: list[str] = []
     injection_markers: Literal["off", "count", "warn"] = "off"
+    price_tier_warning: bool = False
 
     @field_validator("response_analysis")
     @classmethod
@@ -44,6 +45,7 @@ class GatewaySettingsPatch(BaseModel):
 
     response_analysis: list[str] | None = None
     injection_markers: Literal["off", "count", "warn"] | None = None
+    price_tier_warning: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -105,6 +107,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
     "injection_markers": _marker_direction,
+    # A report, not a protection.
+    "price_tier_warning": _neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

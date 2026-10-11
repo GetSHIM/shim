@@ -1714,3 +1714,98 @@ async def test_an_enforced_destination_block_refuses_media_it_cannot_search(
 
     assert response.status_code == status
     assert len(calls) == (status == 200)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(("setting", "warned"), [("on", True), ("off", False)])
+async def test_the_price_tier_warning_reaches_json_and_streams(
+    stream, setting, warned
+) -> None:
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if stream:
+            return httpx.Response(
+                200,
+                text=_MARKED_STREAMS["/v1/chat/completions"],
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                SHIM_PRICE_TIER_WARNING=setting,
+                PII_ENTITY_ACTIONS=json.dumps(
+                    {name: "off" for name in effective_entity_actions()}
+                ),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {_GATEWAY_KEY}",
+                        "x-provider-key": "provider-secret",
+                    },
+                    json={
+                        "model": "gpt-5.4",
+                        "stream": stream,
+                        # One word over a megabyte: possibly above the 272,000-token tier.
+                        "messages": [{"role": "user", "content": "x" * 1_100_000}],
+                    },
+                )
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+
+    assert response.status_code == 200
+    assert (
+        "PRICE_TIER_CROSSED" in response.headers.get("x-shim-warnings", "")
+    ) is warned
+    assert ("PRICE_TIER_CROSSED" in line["warnings"]) is warned
+
+
+@pytest.mark.asyncio
+async def test_an_enforced_tool_cap_refuses_through_the_app_before_the_provider() -> (
+    None
+):
+    from shim.rules import validate_rule_set
+
+    rules = validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "tool_cap",
+                    "name": "Tool cap",
+                    "kind": "request_limit",
+                    "action": "block",
+                    "state": "enforced",
+                    "match": {"max_tools": 5},
+                }
+            ],
+        }
+    )
+    tools = [{"type": "function", "function": {"name": f"f{i}"}} for i in range(6)]
+
+    response, calls, [line] = await _call_with_destination(
+        rules,
+        payload={
+            "model": "gpt-5-nano",
+            "tools": tools,
+            "messages": [{"role": "user", "content": "use a tool"}],
+        },
+    )
+
+    assert response.status_code == 400 and calls == []
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED"
+    assert response.headers["x-shim-rule-id"] == "tool_cap"
+    assert line["outcome"] == "rejected"
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"

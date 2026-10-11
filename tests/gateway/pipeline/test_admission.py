@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
@@ -781,3 +782,210 @@ async def test_a_target_is_checked_against_its_own_window_only(window, refused) 
     with pytest.raises(HTTPException) as error:
         await _stage(InMemoryRateLimiter()).run(prepared)
     assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"
+
+
+def _limit_rule(match: dict, *, action="block", state="enforced", scope=None):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "tool_cap",
+                    "name": "Tool cap",
+                    "kind": "request_limit",
+                    "action": action,
+                    "state": state,
+                    "scope": scope or {},
+                    "match": match,
+                }
+            ],
+        }
+    )
+
+
+def _limit_stage(headers=None):
+    usage = SimpleNamespace(admit=AsyncMock())
+    rate_limiter = SimpleNamespace(allow=AsyncMock(return_value=True))
+    stage = AdmissionStage(
+        SimpleNamespace(headers=headers or {}),
+        usage,
+        rate_limiter=rate_limiter,
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+    return stage, usage, rate_limiter
+
+
+def _with_tools(prepared: PreparedInference, count: int, **values) -> PreparedInference:
+    tools = [{"type": "function", "function": {"name": f"f{i}"}} for i in range(count)]
+    return replace(prepared, payload={**prepared.payload, "tools": tools}, **values)
+
+
+@pytest.mark.asyncio
+async def test_an_enforced_cap_refuses_before_any_rate_capacity_or_reservation() -> (
+    None
+):
+    stage, usage, rate_limiter = _limit_stage()
+    prepared = _with_tools(
+        _prepared("six tools"), 6, rules=_limit_rule({"max_tools": 5})
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await stage.run(prepared)
+
+    assert refused.value.status_code == 400
+    assert refused.value.detail["code"] == "RULE_BLOCKED"
+    assert refused.value.headers == {"X-Shim-Rule-Id": "tool_cap"}
+    rate_limiter.allow.assert_not_awaited()
+    usage.admit.assert_not_awaited()
+    verdicts = {v.rule_id: v.reason_code for v in prepared.policy_verdicts}
+    assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tools", "matched"), [(5, False), (6, True)])
+async def test_a_monitor_cap_records_what_it_would_do_and_admits(
+    tools, matched
+) -> None:
+    stage, usage, _ = _limit_stage()
+
+    admitted = await stage.run(
+        _with_tools(
+            _prepared("tools"),
+            tools,
+            rules=_limit_rule({"max_tools": 5}, state="monitor"),
+        )
+    )
+
+    usage.admit.assert_awaited_once()
+    assert admitted.rules_evaluated is True
+    assert [(m.rule_id, m.state, m.action, m.count) for m in admitted.rule_matches] == (
+        [("tool_cap", "monitor", "block", 1)] if matched else []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("header", "refused"), [("batch", True), ("other", False)])
+async def test_a_cap_scoped_by_tag_reads_the_resolved_tags(header, refused) -> None:
+    stage, _, _ = _limit_stage({"x-shim-tag": f"Kampanya,{header}"})
+    prepared = _with_tools(
+        _prepared("tools"),
+        6,
+        rules=_limit_rule({"max_tools": 5}, scope={"tags": ["batch"]}),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException):
+            await stage.run(prepared)
+    else:
+        assert (await stage.run(prepared)).rule_matches == []
+
+
+@pytest.mark.asyncio
+async def test_token_counting_is_never_capped_and_records_nothing() -> None:
+    stage, _, _ = _limit_stage()
+    prepared = _with_tools(
+        _prepared(
+            "count",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            protocol="count_tokens",
+        ),
+        10,
+        rules=_limit_rule({"max_tools": 1}),
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.rule_matches == [] and admitted.rules_evaluated is False
+    assert not any(v.rule_id.startswith("rule.") for v in admitted.policy_verdicts)
+
+
+_CERTAIN = "a " * 272_001
+_POSSIBLE = "x" * 1_100_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "action", "refused", "warned"),
+    [
+        (_CERTAIN, "block", True, False),
+        (_POSSIBLE, "warn", False, True),
+        ("a short question", None, False, False),
+    ],
+)
+async def test_the_price_tier_rule_refuses_only_a_certain_crossing(
+    prompt, action, refused, warned
+) -> None:
+    stage, usage, _ = _limit_stage()
+    prepared = replace(
+        _prepared(prompt, model="gpt-5.4"),
+        rules=_limit_rule({"below_price_tier": True}),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.detail["code"] == "RULE_BLOCKED"
+        return
+    admitted = await stage.run(prepared)
+    assert [m.action for m in admitted.rule_matches] == ([action] if action else [])
+    assert "PRICE_TIER_CROSSED" not in admitted.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_registry_target_never_matches_the_price_tier_rule() -> None:
+    from shim.gateway.kernel.result import ProviderTarget
+
+    stage, _, _ = _limit_stage()
+    prepared = replace(
+        _prepared(_CERTAIN, model="gpt-5.4"),
+        rules=_limit_rule({"below_price_tier": True}),
+        target=ProviderTarget(
+            deployment_id="d1",
+            base_url="https://models.internal/v1",
+            upstream_model="gpt-5.4",
+            credential_reference="c1",
+            timeout_seconds=60,
+            declared_version="v1",
+        ),
+        price_tier_warning=True,
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.rule_matches == [] and admitted.warnings == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "prompt", "switch", "protocol", "warned"),
+    [
+        ("gpt-5.4", _POSSIBLE, True, "chat", True),
+        ("gpt-5.4", _POSSIBLE, False, "chat", False),
+        ("gpt-5.4", "a short question", True, "chat", False),
+        ("claude-sonnet-4-6", _POSSIBLE, True, "messages", False),
+        ("claude-sonnet-4-6", _POSSIBLE, True, "count_tokens", False),
+    ],
+)
+async def test_the_price_tier_warning_needs_the_switch_a_tier_and_the_size(
+    model, prompt, switch, protocol, warned
+) -> None:
+    stage, _, _ = _limit_stage()
+    provider = "openai" if model.startswith("gpt") else "anthropic"
+    prepared = replace(
+        _prepared(prompt, model=model, provider=provider, protocol=protocol),
+        price_tier_warning=switch,
+    )
+    if provider == "anthropic":
+        prepared = replace(prepared, payload={**prepared.payload, "max_tokens": 16})
+
+    admitted = await stage.run(prepared)
+
+    assert ("PRICE_TIER_CROSSED" in admitted.warnings) is warned

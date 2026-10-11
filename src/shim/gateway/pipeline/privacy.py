@@ -368,7 +368,9 @@ class PrivacyStage:
             value,
             payload=safe_payload,
             privacy=privacy,
-            rules_evaluated=content is not None or bool(destinations),
+            rules_evaluated=value.rules_evaluated
+            or content is not None
+            or bool(destinations),
         )
 
     def trace_metadata(
