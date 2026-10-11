@@ -1,9 +1,9 @@
-"""The gateway rules, their evaluation, and the OCSF form of a finding."""
+"""The gateway and imported-log rules, their evaluation, and the OCSF form of a finding."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import reduce
 import operator
 from types import MappingProxyType, SimpleNamespace
@@ -17,12 +17,14 @@ from uuid import UUID
 from sqlalchemy import (
     ARRAY,
     Integer,
+    Numeric,
     Text,
     and_,
     case,
     cast,
     distinct,
     func,
+    literal_column,
     not_,
     or_,
     select,
@@ -45,7 +47,7 @@ from shim.findings import (
     FindingWindow,
 )
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
-from shim_enterprise.findings.models import Finding
+from shim_enterprise.findings.models import ExternalUsageRecord, Finding
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.latency import FIRST_BYTE_SQL, SWEEP_SQL
 from shim_enterprise.observability.outcomes import OUTCOMES
@@ -83,6 +85,10 @@ DEAD_TOOLS = "gateway.dead_tools"
 CACHE_ORDER_CHURN = "gateway.cache_order_churn"
 COLD_START = "gateway.cold_start"
 QUEUEING = "gateway.queueing"
+LITELLM_UNREGISTERED_MODEL = "litellm.unregistered_model"
+LITELLM_ERROR_RATE = "litellm.error_rate"
+LITELLM_SLOW_FIRST_TOKEN = "litellm.slow_first_token"
+LITELLM_RETRY_BURST = "litellm.retry_burst"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -150,6 +156,19 @@ QUEUEING_FACTOR = 3
 QUEUEING_MIN_PEAK_CONCURRENCY = 4
 QUEUEING_MIN_HOURS = 2
 EVIDENCE_MARKERS = 5
+# Imported LiteLLM logs: windows end at the latest imported row, not at now.
+LITELLM_UNREGISTERED_WINDOW_DAYS = 7
+LITELLM_UNREGISTERED_MIN_REQUESTS = 10
+LITELLM_RATE_WINDOW_HOURS = 24
+LITELLM_ERROR_MIN_REQUESTS = 50
+LITELLM_ERROR_THRESHOLD = Decimal("0.05")
+LITELLM_SLOW_MIN_ROWS = 50
+LITELLM_SLOW_P95_MS = 10_000
+LITELLM_BURST_WINDOW = timedelta(hours=1)
+LITELLM_KEY_PREFIX = 16
+# Another gateway's ids and names: only those a Finding v1 can carry are shown.
+_EVIDENCE_ID = re.compile(r"[A-Za-z0-9_.:/-]{1,200}")
+_SUBJECT_ID_LENGTH = 200
 # Stored values that become evidence only in these shapes: a keyed prompt digest
 # and a refusal marker id of the analyzer's phrase list.
 _PROMPT_HASH = re.compile(r"hmac-sha256:v1:[0-9a-f]{64}")
@@ -188,6 +207,8 @@ class RuleSpec:
     # The typed change a person can plan from the finding; None when the fix is
     # outside the gateway (the client, the prompt or the provider).
     ACTION_KIND: str | None = None
+    # Where the evidence comes from: shim's own records or an imported log.
+    SOURCE: Literal["gateway", "litellm"] = "gateway"
 
 
 class RuleLadder(NamedTuple):
@@ -609,6 +630,111 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="reliability",
         PLAYBOOK=_playbook(QUEUEING),
+    ),
+    LITELLM_UNREGISTERED_MODEL: RuleSpec(
+        TITLE="LiteLLM serves a model outside the registry",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{requests} LiteLLM requests in {window_days} days used this model, "
+            "which matches no registry deployment.",
+            "tr": "Son {window_days} günde {requests} LiteLLM isteği bu modeli "
+            "kullandı; model hiçbir kayıtlı dağıtımla eşleşmiyor.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Register the model as a deployment if it is meant to be used, or "
+            "remove it from the LiteLLM configuration. The finding reads LiteLLM's "
+            "own log, not shim's records.",
+            "tr": "Model kullanılacaksa onu bir dağıtım olarak kaydedin, değilse "
+            "LiteLLM yapılandırmasından çıkarın. Bulgu shim kayıtlarını değil, "
+            "LiteLLM'in kendi kaydını okur.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="privacy",
+        PLAYBOOK=_playbook(LITELLM_UNREGISTERED_MODEL),
+        SOURCE="litellm",
+    ),
+    LITELLM_ERROR_RATE: RuleSpec(
+        TITLE="A model often fails behind LiteLLM",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{failed_requests} of {requests} LiteLLM requests for this model "
+            "failed in {window_hours} hours of the imported log.",
+            "tr": "İçe aktarılan kaydın {window_hours} saatinde bu model için "
+            "{requests} LiteLLM isteğinden {failed_requests} tanesi başarısız oldu.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Read the failed requests in LiteLLM by the request ids in the "
+            "evidence: a wrong key, a retired model or a provider limit fails every "
+            "call the same way.",
+            "tr": "Başarısız istekleri kanıttaki istek kimlikleriyle LiteLLM'de "
+            "okuyun: yanlış bir anahtar, emekliye ayrılmış bir model ya da bir "
+            "sağlayıcı sınırı her çağrıyı aynı şekilde başarısız kılar.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(LITELLM_ERROR_RATE),
+        SOURCE="litellm",
+    ),
+    LITELLM_SLOW_FIRST_TOKEN: RuleSpec(
+        TITLE="A model is slow to its first token behind LiteLLM",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "In {window_hours} hours, {requests} LiteLLM streams for this "
+            "model had a ninety-fifth percentile time to first token of "
+            "{ttft_ms_p95} ms.",
+            "tr": "Son {window_hours} saatte bu model için {requests} LiteLLM "
+            "isteğinde ilk tokene kadar geçen sürenin yüzde doksan beşlik dilimi "
+            "{ttft_ms_p95} ms oldu.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Check the deployment's capacity and queue at the busy hours, or "
+            "move latency-sensitive traffic to a faster model. LiteLLM records the "
+            "first token only for streams.",
+            "tr": "Yoğun saatlerde dağıtımın kapasitesine ve kuyruğuna bakın ya da "
+            "gecikmeye duyarlı trafiği daha hızlı bir modele taşıyın. LiteLLM ilk "
+            "tokeni yalnızca akışlarda kaydeder.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="model",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(LITELLM_SLOW_FIRST_TOKEN),
+        SOURCE="litellm",
+    ),
+    LITELLM_RETRY_BURST: RuleSpec(
+        TITLE="A LiteLLM key repeats the same-sized request",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "One LiteLLM key sent {repeated_requests} requests of the same model "
+            "and prompt size within {window_minutes} minutes; the threshold is "
+            "{threshold}. LiteLLM keeps no content digest, so equal token counts "
+            "stand in for equal requests.",
+            "tr": "Bir LiteLLM anahtarı {window_minutes} dakika içinde aynı model ve "
+            "aynı istem boyutunda {repeated_requests} istek gönderdi; eşik "
+            "{threshold}. LiteLLM içerik özeti tutmadığından eşit token sayıları "
+            "aynı isteğin yerine geçer.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Find the client behind this LiteLLM key and make it back off: "
+            "honour Retry-After, add jittered exponential backoff and cap retries. "
+            "Behind shim the same pattern is measured on content as "
+            "gateway.retry_storm.",
+            "tr": "Bu LiteLLM anahtarının arkasındaki istemciyi bulun ve geri "
+            "çekilmesini sağlayın: Retry-After başlığına uyun, rastgele gecikmeli "
+            "üstel geri çekilme ekleyin ve yeniden denemeleri sınırlayın. shim "
+            "arkasında aynı örüntü içerik üzerinden gateway.retry_storm olarak "
+            "ölçülür.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(LITELLM_RETRY_BURST),
+        SOURCE="litellm",
     ),
 }
 
@@ -2250,6 +2376,301 @@ async def _queueing(
     ]
 
 
+def _litellm_rows(tenant_id: UUID, end: datetime, window: timedelta) -> tuple[Any, ...]:
+    record = ExternalUsageRecord
+    return (
+        record.organization_id == tenant_id,
+        record.source == "litellm",
+        record.started_at > end - window,
+        record.started_at <= end,
+    )
+
+
+def _litellm_model() -> Any:
+    return func.coalesce(ExternalUsageRecord.model, ExternalUsageRecord.model_group)
+
+
+def _litellm_impact(condition: Any = true()) -> tuple[Any, ...]:
+    record = ExternalUsageRecord
+    return (
+        func.count().filter(condition).label("requests"),
+        func.coalesce(
+            func.sum(
+                func.coalesce(record.prompt_tokens, 0)
+                + func.coalesce(record.completion_tokens, 0)
+            ).filter(condition),
+            0,
+        ).label("tokens"),
+        func.sum(record.cost_usd).filter(condition).label("cost"),
+        _request_ids(condition, record.source_request_id, record.started_at).label(
+            "request_ids"
+        ),
+    )
+
+
+def _litellm_detection(
+    rule_id: str, subject: dict[str, str], row: Any, evidence: dict[str, Any]
+) -> Detection:
+    # The source's own cost, labelled so; never added to shim's spend.
+    return Detection(
+        rule_id=rule_id,
+        subject_key=next(iter(subject.values())),
+        subject=subject,
+        evidence={
+            **evidence,
+            "request_ids": [
+                request_id
+                for request_id in row.request_ids or []
+                if _EVIDENCE_ID.fullmatch(request_id)
+            ],
+        },
+        impact={
+            "requests": row.requests,
+            "tokens": int(row.tokens),
+            "cost_usd": None if row.cost is None else str(row.cost),
+            "cost_source": "litellm",
+        },
+    )
+
+
+async def _litellm_unregistered_models(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    deployments = (
+        await session.execute(
+            select(ModelDeployment.alias, ModelDeployment.upstream_model).where(
+                ModelDeployment.organization_id == tenant_id,
+                ModelDeployment.enabled.is_(True),
+            )
+        )
+    ).all()
+    if not deployments:
+        return []
+    names = {name for row in deployments for name in row}
+    record, model = ExternalUsageRecord, _litellm_model()
+    rows = await session.execute(
+        select(model.label("model"), *_litellm_impact())
+        .where(
+            *_litellm_rows(
+                tenant_id, end, timedelta(days=LITELLM_UNREGISTERED_WINDOW_DAYS)
+            ),
+            model.is_not(None),
+            or_(record.model.is_(None), not_(record.model.in_(names))),
+            or_(record.model_group.is_(None), not_(record.model_group.in_(names))),
+        )
+        .group_by(model)
+        .having(func.count() >= LITELLM_UNREGISTERED_MIN_REQUESTS)
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_UNREGISTERED_MODEL,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.requests,
+                "window_days": LITELLM_UNREGISTERED_WINDOW_DAYS,
+                "threshold": LITELLM_UNREGISTERED_MIN_REQUESTS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_error_rates(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record, model = ExternalUsageRecord, _litellm_model()
+    failed = and_(record.status.is_not(None), record.status != "success")
+    failures = func.count().filter(failed)
+    rows = await session.execute(
+        select(
+            model.label("model"),
+            failures.label("failed"),
+            func.count().label("all_requests"),
+            *_litellm_impact(failed),
+        )
+        .where(
+            *_litellm_rows(tenant_id, end, timedelta(hours=LITELLM_RATE_WINDOW_HOURS)),
+            model.is_not(None),
+        )
+        .group_by(model)
+        .having(
+            func.count() >= LITELLM_ERROR_MIN_REQUESTS,
+            cast(failures, Numeric) >= LITELLM_ERROR_THRESHOLD * func.count(),
+        )
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_ERROR_RATE,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.all_requests,
+                "failed_requests": row.failed,
+                "failure_share": str(round(Decimal(row.failed) / row.all_requests, 4)),
+                "threshold": str(LITELLM_ERROR_THRESHOLD),
+                "window_hours": LITELLM_RATE_WINDOW_HOURS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_slow_first_tokens(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record, model = ExternalUsageRecord, _litellm_model()
+    measured = record.ttft_ms.is_not(None)
+    p95 = func.percentile_cont(0.95).within_group(record.ttft_ms)
+    rows = await session.execute(
+        select(model.label("model"), p95.label("p95"), *_litellm_impact(measured))
+        .where(
+            *_litellm_rows(tenant_id, end, timedelta(hours=LITELLM_RATE_WINDOW_HOURS)),
+            model.is_not(None),
+            measured,
+        )
+        .group_by(model)
+        .having(func.count() >= LITELLM_SLOW_MIN_ROWS, p95 >= LITELLM_SLOW_P95_MS)
+        .order_by(model)
+    )
+    return [
+        _litellm_detection(
+            LITELLM_SLOW_FIRST_TOKEN,
+            {"model": row.model[:_SUBJECT_ID_LENGTH]},
+            row,
+            {
+                "requests": row.requests,
+                "ttft_ms_p95": round(row.p95),
+                "threshold_ms": LITELLM_SLOW_P95_MS,
+                "window_hours": LITELLM_RATE_WINDOW_HOURS,
+            },
+        )
+        for row in rows
+    ]
+
+
+async def _litellm_retry_bursts(
+    session: AsyncSession, tenant_id: UUID, end: datetime
+) -> list[Detection]:
+    record = ExternalUsageRecord
+    bucket = func.date_bin(RETRY_BUCKET, record.started_at, _EPOCH)
+    rows = await session.execute(
+        select(
+            record.source_key_hash,
+            record.model,
+            record.prompt_tokens,
+            bucket.label("bucket"),
+            *_litellm_impact(),
+        )
+        .where(
+            *_litellm_rows(tenant_id, end, LITELLM_BURST_WINDOW),
+            record.source_key_hash.is_not(None),
+            record.prompt_tokens.is_not(None),
+        )
+        .group_by(record.source_key_hash, record.model, record.prompt_tokens, bucket)
+        .having(func.count() >= RETRY_STORM_MIN_REQUESTS)
+        .order_by(record.source_key_hash, func.count().desc(), bucket.desc())
+    )
+    worst: dict[str, Any] = {}
+    for row in rows:
+        worst.setdefault(row.source_key_hash, row)
+    return [
+        _litellm_detection(
+            LITELLM_RETRY_BURST,
+            {"litellm_key": f"litellm:{key_hash[:LITELLM_KEY_PREFIX]}"},
+            row,
+            {
+                "window_start": row.bucket.isoformat(),
+                "window_minutes": RETRY_BUCKET // timedelta(minutes=1),
+                "repeated_requests": row.requests,
+                "threshold": RETRY_STORM_MIN_REQUESTS,
+                "prompt_tokens": row.prompt_tokens,
+            },
+        )
+        for key_hash, row in worst.items()
+    ]
+
+
+async def evaluate_litellm(
+    session: AsyncSession, tenant_id: UUID, *, end: datetime, import_id: UUID
+) -> list[tuple[str, bool]]:
+    """The litellm.* rules over a tenant's imported rows, the window ending at end.
+
+    Imported data is history: the worker never runs these, an import does. Each
+    rule id with whether its finding was opened (True) or updated.
+    """
+    now = datetime.now(timezone.utc)
+    modes = await finding_modes(session, tenant_id)
+    results = []
+    for rule in (
+        _litellm_unregistered_models,
+        _litellm_error_rates,
+        _litellm_slow_first_tokens,
+        _litellm_retry_bursts,
+    ):
+        for detection in await rule(session, tenant_id, end):
+            stamped = replace(
+                detection, evidence={**detection.evidence, "import_id": str(import_id)}
+            )
+            opened = await upsert_detection(
+                session, tenant_id, stamped, now=now, modes=modes
+            )
+            results.append((detection.rule_id, opened))
+    return results
+
+
+async def upsert_detection(
+    session: AsyncSession,
+    tenant_id: UUID,
+    detection: Detection,
+    *,
+    now: datetime,
+    modes: Mapping[str, Mode],
+) -> bool:
+    """One open finding per rule and subject; True when this opened it."""
+    spec = RULES[detection.rule_id]
+    statement = insert(Finding).values(
+        organization_id=tenant_id,
+        source=spec.SOURCE,
+        rule_id=detection.rule_id,
+        rule_version=RULE_VERSIONS.get(detection.rule_id, RULE_VERSION),
+        subject_key=detection.subject_key,
+        subject=detection.subject,
+        title=spec.TITLE,
+        summary=render(spec.SUMMARY["en"], measurements(detection.evidence)),
+        severity_id=spec.SEVERITY_ID,
+        first_seen_at=now,
+        last_seen_at=now,
+        evidence=detection.evidence,
+        impact=detection.impact,
+        remediation={
+            **ladder_remediation(detection.rule_id, detection.subject, modes),
+            "text": remediation_text(detection.rule_id, detection.evidence)["en"],
+            "doc": spec.PLAYBOOK,
+        },
+    )
+    return bool(
+        await session.scalar(
+            statement.on_conflict_do_update(
+                index_elements=["organization_id", "rule_id", "subject_key"],
+                index_where=Finding.status_id != STATUS_RESOLVED,
+                set_={
+                    "last_seen_at": now,
+                    "occurrences": Finding.occurrences + 1,
+                    "summary": statement.excluded.summary,
+                    "evidence": statement.excluded.evidence,
+                    "impact": statement.excluded.impact,
+                    "rule_version": statement.excluded.rule_version,
+                    "remediation": statement.excluded.remediation,
+                    "updated_at": func.now(),
+                },
+            ).returning(literal_column("xmax = 0"))
+        )
+    )
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -2280,51 +2701,8 @@ async def evaluate_organization(
             async with session.begin_nested():
                 found = await rule(session, tenant_id, now)
                 for detection in found:
-                    spec = RULES[detection.rule_id]
-                    statement = insert(Finding).values(
-                        organization_id=tenant_id,
-                        rule_id=detection.rule_id,
-                        rule_version=RULE_VERSIONS.get(detection.rule_id, RULE_VERSION),
-                        subject_key=detection.subject_key,
-                        subject=detection.subject,
-                        title=spec.TITLE,
-                        summary=render(
-                            spec.SUMMARY["en"], measurements(detection.evidence)
-                        ),
-                        severity_id=spec.SEVERITY_ID,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                        evidence=detection.evidence,
-                        impact=detection.impact,
-                        remediation={
-                            **ladder_remediation(
-                                detection.rule_id, detection.subject, modes
-                            ),
-                            "text": remediation_text(
-                                detection.rule_id, detection.evidence
-                            )["en"],
-                            "doc": spec.PLAYBOOK,
-                        },
-                    )
-                    await session.execute(
-                        statement.on_conflict_do_update(
-                            index_elements=[
-                                "organization_id",
-                                "rule_id",
-                                "subject_key",
-                            ],
-                            index_where=Finding.status_id != STATUS_RESOLVED,
-                            set_={
-                                "last_seen_at": now,
-                                "occurrences": Finding.occurrences + 1,
-                                "summary": statement.excluded.summary,
-                                "evidence": statement.excluded.evidence,
-                                "impact": statement.excluded.impact,
-                                "rule_version": statement.excluded.rule_version,
-                                "remediation": statement.excluded.remediation,
-                                "updated_at": func.now(),
-                            },
-                        )
+                    await upsert_detection(
+                        session, tenant_id, detection, now=now, modes=modes
                     )
         except Exception as exc:
             failed += rule_ids
@@ -2386,6 +2764,7 @@ async def evaluate_findings(
 
 _SUBJECT_KINDS = (
     ("api_key_id", "key"),
+    ("litellm_key", "key"),
     ("deployment_id", "deployment"),
     ("model", "model"),
 )

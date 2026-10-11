@@ -279,6 +279,7 @@ public = [
 # Python files owned by commercially licensed capabilities.
 enterprise = [
   "ee/alembic/env.py",
+  "ee/alembic/versions/099f6ff61feb_add_external_usage_records.py",
   "ee/alembic/versions/195c95f5e798_add_customer_provider_key_policy.py",
   "ee/alembic/versions/1ad1ca2101a5_add_team_id_budget_scope.py",
   "ee/alembic/versions/1f036bd115c8_add_custom_organization_roles.py",
@@ -308,6 +309,7 @@ enterprise = [
   "ee/deploy/test/test_reuse.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/generate_monthly_evidence.py",
+  "ee/scripts/import_litellm_spend_logs.py",
   "ee/scripts/offline_bundle.py",
   "ee/scripts/redrive_audit_events.py",
   "ee/scripts/sign_license.py",
@@ -510,6 +512,7 @@ enterprise = [
   "ee/tests/rules/test_preview.py",
   "ee/tests/rules/test_rule_sets.py",
   "ee/tests/rules/test_rules_resource.py",
+  "ee/tests/scripts/test_import_litellm_spend_logs.py",
   "ee/tests/scripts/test_offline_bundle.py",
   "ee/tests/scripts/test_redrive_audit_events.py",
   "ee/tests/secrets/test_ciphertext_compatibility.py",

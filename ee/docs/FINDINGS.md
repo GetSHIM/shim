@@ -4,6 +4,8 @@ A finding is the gateway's conclusion about one subject (an API key, a
 deployment or a model): what was checked, how serious it is, the evidence,
 the impact and the fix. Findings are derived from request records shim already
 keeps (`request_lifecycle` and the spend ledger); no prompt or answer text is read.
+The `litellm.*` rules read an [imported LiteLLM spend log](COOKBOOK.md#import-litellm-spend-logs)
+instead and carry `source: litellm`; everything else carries `source: gateway`.
 
 This is a different object from `/api/v1/compliance/findings`, which lists the
 findings of provider compliance APIs read by compliance connectors. That route
@@ -402,6 +404,15 @@ request ids. Impact is the count of those requests; no money.
 
 **Resolves** after 7 days below the threshold.
 
+### Model rates and key rates
+
+`gateway.answer_quality` asks whether a model is bad: it groups by model across
+every key. The two rules above ask whether one app is configured badly: they
+group by API key across models. The same traffic can raise both; they are
+separate findings with separate subjects. `GET /api/v1/management/outcomes`
+reads the same counts for any window, per model, key or team
+([diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates)).
+
 ## gateway.language_drift
 
 **Checks.** For each API key, the requests started in the last 24 hours whose
@@ -601,11 +612,83 @@ the hours.
 
 **Resolves** after 7 days without firing.
 
-### Model rates and key rates
+## litellm.unregistered_model
 
-`gateway.answer_quality` asks whether a model is bad: it groups by model across
-every key. The two rules above ask whether one app is configured badly: they
-group by API key across models. The same traffic can raise both; they are
-separate findings with separate subjects. `GET /api/v1/management/outcomes`
-reads the same counts for any window, per model, key or team
-([diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates)).
+**Checks.** An [imported LiteLLM log](COOKBOOK.md#import-litellm-spend-logs), for a
+tenant with at least one enabled registry deployment: a model (LiteLLM's `model`,
+else its `model_group`) with at least 10 requests in the last 7 days of the log
+whose `model` and `model_group` match no deployment `alias` or `upstream_model`.
+Severity low. Subject: the model. Max mode `observe`, blast radius `model`, risk
+class `privacy`. Silent for a tenant without deployments.
+
+**Why.** The same question as
+[`gateway.unregistered_model`](#gatewayunregistered_model), asked of a gateway
+shim does not sit in front of yet.
+
+**Evidence and impact.** The request count, the window and threshold, the import
+id and up to 20 LiteLLM request ids. Impact is those requests, their tokens and
+LiteLLM's own cost (`cost_source: litellm`), never added to shim's spend.
+
+**Fix.** Register the model as a deployment, or remove it from the LiteLLM
+configuration.
+
+**Resolves** after 7 days without an import that fires it.
+
+## litellm.error_rate
+
+**Checks.** The last 24 hours of an imported LiteLLM log: a model with at least
+50 requests of which at least 5 % have a `status` other than `success` (rows
+without a status are not counted as failed). Severity low. Subject: the model.
+Max mode `observe`, blast radius `model`, risk class `reliability`.
+
+**Why.** A wrong key, a retired model or a provider limit fails every call the
+same way, and LiteLLM's retries hide it from the client.
+
+**Evidence and impact.** Requests, failed requests, the failure share and
+threshold, the import id and up to 20 ids of failed requests. Impact is the
+failed requests, their tokens and LiteLLM's cost.
+
+**Fix.** Read the failed requests in LiteLLM by their ids.
+
+**Resolves** after 7 days without an import that fires it.
+
+## litellm.slow_first_token
+
+**Checks.** The last 24 hours of an imported LiteLLM log: a model with at least
+50 rows that have a time to first token (LiteLLM's `completionStartTime` minus
+`startTime`; it records one only for streams) and a 95th percentile of at least
+10,000 ms. Severity low. Subject: the model. Max mode `observe`, blast radius
+`model`, risk class `reliability`.
+
+**Why.** Users wait for the first word; behind shim the same wait shows as
+[`gateway.queueing`](#gatewayqueueing) and [`gateway.cold_start`](#gatewaycold_start).
+
+**Evidence and impact.** The measured rows, their p95 and the threshold, the
+import id and up to 20 request ids. Impact is the measured rows.
+
+**Fix.** Check the deployment's capacity and queue at busy hours, or move
+latency-sensitive traffic to a faster model.
+
+**Resolves** after 7 days without an import that fires it.
+
+## litellm.retry_burst
+
+**Checks.** The last hour of an imported LiteLLM log: one LiteLLM key (its
+`api_key`, already a hash) sending at least 20 requests with the same model and
+the same `prompt_tokens` in one 15-minute bucket. Severity low. Subject: the key,
+as `litellm:` and the first 16 characters of the hash. Max mode `observe`, blast
+radius `key`, risk class `cost`.
+
+**Why.** It mirrors [`gateway.retry_storm`](#gatewayretry_storm) with a weaker
+signal: LiteLLM keeps no content digest, so equal token counts stand in for
+equal requests. Two different prompts of the same length count as a repeat; the
+summary says so.
+
+**Evidence and impact.** The bucket, the count and threshold, the prompt size,
+the import id and up to 20 request ids. Impact is the burst's requests, tokens
+and LiteLLM's cost.
+
+**Fix.** Make the client behind the key back off: honour Retry-After, add jittered
+exponential backoff and cap retries.
+
+**Resolves** after 7 days without an import that fires it.

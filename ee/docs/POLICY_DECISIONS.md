@@ -177,6 +177,21 @@ database transaction, never open across the provider call:
   `approval_id`. `shim_request_approvals_total{outcome}` counts gate outcomes,
   `shim_request_approval_decisions_total{decision}` decisions.
 
+## Imported gateway logs
+
+A tenant can [import a LiteLLM spend log](COOKBOOK.md#import-litellm-spend-logs)
+to see findings before routing traffic through shim. The import is an operator
+script, not a connector: no API caller ever names an internal address for shim
+to fetch. Its rows live in `external_usage_records` and nowhere else; they are
+the source's claim (its status, timings, tokens and `spend`) and never touch
+`request_lifecycle`, `usage_ledger`, budgets, quotas or evidence built from
+gateway records. The findings they raise carry `source: litellm`, use the
+source's cost labelled `cost_source: litellm`, and say when a signal is weaker
+than its gateway counterpart (`litellm.retry_burst` compares token counts, not
+content). Prompts and answers in an export are ignored: only their presence is
+counted. The worker never evaluates `litellm.*` rules; an import does, with
+windows ending at the latest imported row.
+
 ## Management change details
 
 Management actions append an `audit.chain_append_requested` event in the same

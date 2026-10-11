@@ -676,8 +676,42 @@ _SUBJECTS = {
         "deployment_id": "22222222-2222-2222-2222-222222222222",
         "alias": "kurum-llama",
     },
+    service.LITELLM_RETRY_BURST: {"litellm_key": "litellm:ce77089fa9483163"},
 }
 _EVIDENCE = {
+    service.LITELLM_UNREGISTERED_MODEL: {
+        "requests": 12,
+        "window_days": 7,
+        "threshold": 10,
+        "import_id": "4b8871a5-a837-49cc-aab8-f33294a6693b",
+        "request_ids": ["chatcmpl-1", "fixture-0002"],
+    },
+    service.LITELLM_ERROR_RATE: {
+        "requests": 60,
+        "failed_requests": 6,
+        "failure_share": "0.1000",
+        "threshold": "0.05",
+        "window_hours": 24,
+        "import_id": "4b8871a5-a837-49cc-aab8-f33294a6693b",
+        "request_ids": ["fixture-0007"],
+    },
+    service.LITELLM_SLOW_FIRST_TOKEN: {
+        "requests": 50,
+        "ttft_ms_p95": 12000,
+        "threshold_ms": 10000,
+        "window_hours": 24,
+        "import_id": "4b8871a5-a837-49cc-aab8-f33294a6693b",
+        "request_ids": ["fixture-0008"],
+    },
+    service.LITELLM_RETRY_BURST: {
+        "window_start": BUCKET.isoformat(),
+        "window_minutes": 15,
+        "repeated_requests": 24,
+        "threshold": 20,
+        "prompt_tokens": 812,
+        "import_id": "4b8871a5-a837-49cc-aab8-f33294a6693b",
+        "request_ids": ["fixture-0070"],
+    },
     service.RETRY_STORM: {
         "window_start": BUCKET.isoformat(),
         "window_minutes": 15,

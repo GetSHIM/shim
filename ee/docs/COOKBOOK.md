@@ -32,6 +32,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Hold a request for approval](#hold-a-request-for-approval)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Import LiteLLM spend logs](#import-litellm-spend-logs)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Why is my request expensive](#why-is-my-request-expensive)
@@ -953,6 +954,49 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Import LiteLLM spend logs
+
+Already running LiteLLM? Hand shim its spend log and read the
+[findings](FINDINGS.md#litellmunregistered_model) it raises, without putting
+anything in front of your traffic. An operator runs the import script on the
+enterprise host, with the same environment as the gateway, for one organization
+and at most 31 days per run:
+
+```console
+# A JSON Lines export, one LiteLLM_SpendLogs row per line
+python ee/scripts/import_litellm_spend_logs.py --organization $ORG_ID \
+  --since 2026-10-01T00:00:00Z --until 2026-10-08T00:00:00Z --file spendlogs.jsonl
+
+# LiteLLM's API: GET /spend/logs/v2, 1,000 rows a page, with an admin key
+LITELLM_ADMIN_KEY=sk-... python ee/scripts/import_litellm_spend_logs.py \
+  --organization $ORG_ID --since ... --until ... --url https://litellm.internal
+
+# LiteLLM's database: one read-only SELECT of LiteLLM_SpendLogs
+LITELLM_DATABASE_URL=postgresql://reader@litellm-db/litellm \
+  python ee/scripts/import_litellm_spend_logs.py --organization $ORG_ID \
+  --since ... --until ... --database
+```
+
+The admin key and the database URL are read from the environment only, never
+from an argument (shell history), and never logged. `--url` follows no redirect,
+waits 30 seconds a page and stops on a page it cannot read. The script prints one
+JSON object: `import_id`, `rows_read`, `rows_inserted`, `rows_duplicate`,
+`rows_skipped` (no `request_id` or `startTime`, or outside the window),
+`rows_with_content_ignored`, and `findings_opened` and `findings_updated` per rule.
+
+Notes:
+
+- Re-importing a window inserts nothing new. A wrong import is undone with
+  `--delete-import <import_id> --organization <uuid>`; its findings stay.
+- Prompts and answers in an export (LiteLLM's `store_prompts_in_spend_logs`) are
+  never read or stored: the row is counted under `rows_with_content_ignored`.
+- `api_base` is kept as scheme, host and port only. LiteLLM's `api_key` is
+  already a hash of its virtual key; findings name a key by its first 16
+  characters.
+- Imported cost and tokens never reach billing, budgets, quotas or the evidence
+  files: they are LiteLLM's own numbers. The findings carry `source: litellm` in
+  the inbox and the OCSF export.
 
 ## Let shim suggest a fix
 
