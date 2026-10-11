@@ -32,10 +32,12 @@ from shim.gateway.request_policy import RequestPolicyContext
 _CATALOG = json.loads(
     Path(pricing.__file__).with_name("model_catalog.json").read_text(encoding="utf-8")
 )
+# Chat admission: embeddings models answer only the embeddings routes.
 MODELS = [
     pytest.param(provider, model_id, entry, id=f"{provider}/{model_id}")
     for provider, models in _CATALOG["providers"].items()
     for model_id, entry in models.items()
+    if entry.get("kind") != "embedding"
 ]
 _PROTOCOL = {"openai": "chat", "anthropic": "messages", "google": "generate_content"}
 _IMAGE = {

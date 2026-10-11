@@ -146,3 +146,28 @@ async def test_the_digest_survives_a_redis_outage(redis) -> None:
     assert take_repeat_digest("tenant-1") == (
         hashlib.sha256(b"normalized prompt").hexdigest()
     )
+
+
+@pytest.mark.asyncio
+async def test_the_turn_key_rides_the_same_eval_and_fails_open() -> None:
+    redis = SimpleNamespace(eval=AsyncMock(return_value=[1, 6]))
+    detector = LoopDetectionService(SimpleNamespace(redis=redis))
+
+    result = await detector.check_exact_repeat(
+        "tenant-1", "prompt", limit=8, window_seconds=300, turn_key="abc"
+    )
+
+    assert (result.chain_length, result.turn_repeats) == (1, 6)
+    redis.eval.assert_awaited_once()
+    arguments = redis.eval.await_args.args
+    assert arguments[1] == 2
+    assert arguments[2].startswith("loop:tenant-1:")
+    assert arguments[3] == "turn:tenant-1:abc"
+    assert arguments[4] == 300
+    failing = LoopDetectionService(
+        SimpleNamespace(redis=SimpleNamespace(eval=AsyncMock(side_effect=OSError())))
+    )
+    failed = await failing.check_exact_repeat(
+        "tenant-1", "prompt", limit=8, window_seconds=300, turn_key="abc"
+    )
+    assert (failed.status, failed.turn_repeats) == ("SAFE", 0)

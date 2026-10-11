@@ -238,3 +238,181 @@ def test_an_unknown_analyzer_names_the_setting_and_the_name() -> None:
     assert "SHIM_RESPONSE_ANALYSIS" in str(error.value)
     assert "unknown analyzer: nope" in str(error.value)
     assert CommunitySettings(_env_file=None).SHIM_RESPONSE_ANALYSIS == []
+
+
+@pytest.mark.parametrize(("value", "on"), [("on", True), ("off", False)])
+def test_the_price_tier_warning_setting_is_on_or_off(value, on) -> None:
+    settings = CommunitySettings(_env_file=None, SHIM_PRICE_TIER_WARNING=value)
+
+    assert (settings.SHIM_PRICE_TIER_WARNING == "on") is on
+    assert CommunitySettings(_env_file=None).SHIM_PRICE_TIER_WARNING == "off"
+
+
+def test_an_unknown_price_tier_warning_value_stops_the_gateway() -> None:
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_PRICE_TIER_WARNING="yes")
+
+
+@pytest.mark.parametrize("value", ["ignore", "honor"])
+def test_the_trace_parent_setting_is_ignore_or_honor(value) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_TRACE_PARENT == "ignore"
+    assert (
+        CommunitySettings(_env_file=None, SHIM_TRACE_PARENT=value).SHIM_TRACE_PARENT
+        == value
+    )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_TRACE_PARENT="follow")
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"SHIM_TASK_MAX_CALLS": 0},
+        {"SHIM_TASK_MAX_CALLS": 100_001},
+        {"SHIM_TASK_MAX_COST_USD": "0"},
+        {"SHIM_TASK_MAX_COST_USD": "100000.01"},
+        {"SHIM_TASK_WINDOW_SECONDS": 59},
+        {"SHIM_TASK_WINDOW_SECONDS": 86_401},
+        {"SHIM_AGENT_LOOP": "warn"},
+        {"SHIM_AGENT_LOOP_REPEATS": 2},
+        {"SHIM_AGENT_LOOP_REPEATS": 101},
+    ],
+)
+def test_task_cap_and_loop_settings_refuse_values_out_of_bounds(values) -> None:
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, **values)
+
+
+def test_task_caps_are_off_and_the_loop_signal_counts_by_default() -> None:
+    settings = CommunitySettings(_env_file=None)
+
+    assert (settings.SHIM_TASK_MAX_CALLS, settings.SHIM_TASK_MAX_COST_USD) == (
+        None,
+        None,
+    )
+    assert (settings.SHIM_TASK_WINDOW_SECONDS, settings.SHIM_AGENT_LOOP) == (
+        3600,
+        "count",
+    )
+    assert settings.SHIM_AGENT_LOOP_REPEATS == 5
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_INFLIGHT_SHARING == "off"
+    if valid:
+        assert (
+            CommunitySettings(
+                _env_file=None, SHIM_INFLIGHT_SHARING=value
+            ).SHIM_INFLIGHT_SHARING
+            == value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_INFLIGHT_SHARING=value)
+
+
+def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
+    settings = CommunitySettings(_env_file=None)
+
+    assert settings.SHIM_MODEL_RETIRING_WARNING == "record"
+    assert settings.SHIM_MODEL_LIFECYCLE_FILE is None
+    assert (
+        CommunitySettings(
+            _env_file=None,
+            SHIM_MODEL_RETIRING_WARNING="header",
+            SHIM_MODEL_LIFECYCLE_FILE=str(tmp_path / "dates.json"),
+        ).SHIM_MODEL_LIFECYCLE_FILE
+        == tmp_path / "dates.json"
+    )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_MODEL_RETIRING_WARNING="refuse")
+
+
+def test_embeddings_monitor_types_are_known_entity_types() -> None:
+    assert CommunitySettings(_env_file=None).PII_EMBEDDINGS_MONITOR == []
+    assert CommunitySettings(
+        _env_file=None, PII_EMBEDDINGS_MONITOR="TR_NATIONAL_ID, IBAN_CODE"
+    ).PII_EMBEDDINGS_MONITOR == ["IBAN_CODE", "TR_NATIONAL_ID"]
+    with pytest.raises(ValidationError, match="unknown entity type"):
+        CommunitySettings(_env_file=None, PII_EMBEDDINGS_MONITOR="NOT_A_TYPE")
+
+
+_KEY = {"SHIM_AZURE_OPENAI_API_KEY": "azure-key"}
+_ENTRA = {
+    "SHIM_AZURE_TENANT_ID": "contoso.onmicrosoft.com",
+    "SHIM_AZURE_CLIENT_ID": "00000000-0000-0000-0000-0000000000a1",
+    "SHIM_AZURE_CLIENT_SECRET": "entra-secret",
+}
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "normalised"),
+    [
+        ("https://bank.openai.azure.com", "https://bank.openai.azure.com"),
+        ("https://bank.openai.azure.com/openai/v1/", "https://bank.openai.azure.com"),
+        ("http://127.0.0.1:9101", "http://127.0.0.1:9101"),
+        ("http://localhost/openai/v1", "http://localhost"),
+        ("http://[::1]:9101", "http://[::1]:9101"),
+    ],
+)
+def test_an_azure_endpoint_is_normalised_and_http_only_on_loopback(
+    endpoint, normalised
+) -> None:
+    configured = CommunitySettings(
+        _env_file=None, SHIM_AZURE_OPENAI_ENDPOINT=endpoint, **_KEY
+    )
+
+    assert configured.SHIM_AZURE_OPENAI_ENDPOINT == normalised
+
+
+def test_azure_is_off_by_default_and_an_empty_value_is_unset(monkeypatch) -> None:
+    for name in (
+        "SHIM_AZURE_OPENAI_ENDPOINT",
+        "SHIM_AZURE_TENANT_ID",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_DEPLOYMENTS", "")
+    assert CommunitySettings(_env_file=None).SHIM_AZURE_OPENAI_ENDPOINT is None
+
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_ENDPOINT", "https://bank.openai.azure.com")
+    monkeypatch.setenv("SHIM_AZURE_OPENAI_API_KEY", "azure-key")
+    monkeypatch.setenv(
+        "SHIM_AZURE_OPENAI_DEPLOYMENTS", '{"gpt-5.6-luna": "kurum-mini"}'
+    )
+    configured = CommunitySettings(_env_file=None)
+
+    assert configured.SHIM_AZURE_OPENAI_DEPLOYMENTS == {"gpt-5.6-luna": "kurum-mini"}
+    assert configured.SHIM_AZURE_TOKEN_SCOPE == (
+        "https://cognitiveservices.azure.com/.default"
+    )
+    assert configured.SHIM_AZURE_AUTHORITY_HOST == "https://login.microsoftonline.com"
+
+
+@pytest.mark.parametrize(
+    ("values", "named"),
+    [
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://bank.openai.azure.com", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://127.0.0.2", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "http://127.0.0.1@bank.example", **_KEY}, "SHIM_AZURE_OPENAI_ENDPOINT"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com"}, "SHIM_AZURE_OPENAI_API_KEY"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, **_ENTRA}, "SHIM_AZURE_OPENAI_API_KEY"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", "SHIM_AZURE_TENANT_ID": "contoso.com"}, "SHIM_AZURE_CLIENT_ID"),
+        (_ENTRA, "SHIM_AZURE_TENANT_ID"),
+        ({"SHIM_AZURE_CLIENT_SECRET": "s"}, "SHIM_AZURE_CLIENT_SECRET needs"),
+        ({"SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"gpt-5.6-luna": "kurum-mini"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", "OPENAI_BASE_URL": "https://x.test/v1", **_KEY}, "OPENAI_BASE_URL"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_CLIENT_ID": "app"}, "SHIM_AZURE_CLIENT_ID"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_TENANT_ID": "a b"}, "SHIM_AZURE_TENANT_ID"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_ENTRA, "SHIM_AZURE_TOKEN_SCOPE": "https://ai.azure.com/"}, "SHIM_AZURE_TOKEN_SCOPE"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"kurum-mini": "kurum-mini"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": '{"gpt-5.6-luna": "-kurum"}'}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+        ({"SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com", **_KEY, "SHIM_AZURE_OPENAI_DEPLOYMENTS": "not json"}, "SHIM_AZURE_OPENAI_DEPLOYMENTS"),
+    ],
+)  # fmt: skip
+def test_an_incoherent_azure_setting_stops_the_gateway_by_name(values, named) -> None:
+    with pytest.raises(ValidationError, match=named):
+        CommunitySettings(_env_file=None, **values)

@@ -1812,3 +1812,438 @@ async def test_provider_latency_is_the_provider_call_not_the_work_around_it(
     # Credential resolution, the provider-start commit and the chain save (0.4 s each)
     # sit outside the provider call, however loaded the machine is.
     assert 50 <= result.latency_ms <= (total - 1.2) * 1_000
+
+
+def _chunk(delta: dict, finish: str | None = None) -> dict:
+    return {
+        "id": "chatcmpl_withheld",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {"index": 0, "delta": delta, "finish_reason": finish, "logprobs": None}
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "stream"), [("chat", False), ("chat", True), ("responses", False)]
+)
+async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, stream: bool
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+    text, mapping = PIIScrubberService().scrub(
+        "Kimlik 10000000146 e-posta alice@example.com", DEFAULT_ACTIONS
+    )
+    tckn = next(key for key in mapping if key.startswith("<TR_NATIONAL_ID_"))
+    arguments = json.dumps({"id": tckn})
+    split = text.index(tckn) + len(tckn) // 2
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if protocol == "responses":
+            response = _response("resp_withheld")
+            response["output"] = [
+                {
+                    "id": "msg_1",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": text,
+                            "annotations": [],
+                            "logprobs": [],
+                        }
+                    ],
+                },
+                {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": "c1",
+                    "name": "lookup",
+                    "arguments": arguments,
+                },
+            ]
+            return httpx.Response(200, json=response)
+        tool_call = {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": arguments},
+        }
+        if stream:
+            chunks = [
+                _chunk({"role": "assistant", "content": text[:split]}),
+                _chunk({"content": text[split:]}),
+                _chunk({"tool_calls": [tool_call]}),
+                {
+                    **_chunk({}, "tool_calls"),
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                },
+            ]
+            return httpx.Response(
+                200,
+                content="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                + "data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        del tool_call["index"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_withheld",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": text,
+                            "tool_calls": [tool_call],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    body = (
+        {"model": "gpt-5.6-luna", "input": text}
+        if protocol == "responses"
+        else {
+            "model": "gpt-5.6-luna",
+            "stream": stream,
+            "messages": [{"role": "user", "content": text}],
+        }
+    )
+    prepared = _prepared(
+        body,
+        tenant="11111111-1111-1111-1111-111111111111",
+        protocol=protocol,
+        mapping=mapping,
+    )
+    prepared.privacy = replace(
+        prepared.privacy, restore_withheld=frozenset({"TR_NATIONAL_ID"})
+    )
+    chain_store = SimpleNamespace(save=AsyncMock())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http, chain_store).execute(
+            invocation=SimpleNamespace(
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        wire = (
+            b"".join(
+                [chunk async for chunk in result.events if isinstance(chunk, bytes)]
+            ).decode()
+            if stream
+            else json.dumps(result.payload)
+        )
+
+    assert "alice@example.com" in wire and "<EMAIL_ADDRESS_" not in wire
+    assert "10000000146" not in wire
+    # Streamed, the text half is split over two chunks; the tool arguments hold it whole.
+    assert wire.count(tckn) == (1 if stream else 2)
+    if protocol == "responses":
+        # The chain keeps every value, so a caller with permission can continue it.
+        assert chain_store.save.await_args.args[2] == mapping
+
+
+_EMBEDDING_KEY = "gateway-secret-12345"
+
+
+def _embedding_reply(vector: object) -> dict:
+    return {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": vector}],
+        "model": "text-embedding-3-small",
+        "usage": {"prompt_tokens": 2, "total_tokens": 2},
+    }
+
+
+async def _embeddings_app(upstream_seen: list[dict]):
+    import base64
+    import struct
+
+    packed = base64.b64encode(struct.pack("<2f", 0.25, -0.5)).decode()
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        upstream_seen.append({"path": request.url.path, **body})
+        vector = packed if body.get("encoding_format") == "base64" else [0.25, -0.5]
+        return httpx.Response(200, json=_embedding_reply(vector))
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None,
+            SHIM_API_KEY=_EMBEDDING_KEY,
+            PII_ENTITY_ACTIONS=json.dumps({name: "off" for name in DEFAULT_ACTIONS}),
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    return app, outbound, packed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding_format", [None, "float", "base64"])
+@pytest.mark.parametrize("given", ["hello", ["hello", "world"]])
+async def test_the_openai_sdk_embeds_through_the_gateway(
+    given, encoding_format
+) -> None:
+    from openai import AsyncOpenAI
+
+    seen: list[dict] = []
+    app, outbound, packed = await _embeddings_app(seen)
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            raw = await client.embeddings.with_raw_response.create(
+                model="text-embedding-3-small",
+                input=given,
+                extra_headers={"x-provider-key": "sk-upstream"},
+                **({"encoding_format": encoding_format} if encoding_format else {}),
+            )
+            parsed = raw.parse()
+
+    # The SDK asks for base64 itself when the app omits the format.
+    wire = encoding_format or "base64"
+    assert seen == [
+        {
+            "path": "/v1/embeddings",
+            "model": "text-embedding-3-small",
+            "input": given,
+            "encoding_format": wire,
+        }
+    ]
+    assert json.loads(raw.content) == _embedding_reply(
+        packed if wire == "base64" else [0.25, -0.5]
+    )
+    if encoding_format != "base64":
+        assert parsed.data[0].embedding == [0.25, -0.5]
+
+
+@pytest.mark.asyncio
+async def test_an_omitted_encoding_format_is_sent_upstream_as_float() -> None:
+    seen: list[dict] = []
+    app, outbound, _ = await _embeddings_app(seen)
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            response = await inbound.post(
+                "/v1/embeddings",
+                headers={
+                    "authorization": f"Bearer {_EMBEDDING_KEY}",
+                    "x-provider-key": "sk-upstream",
+                },
+                json={
+                    "model": "text-embedding-3-small",
+                    "input": "hello",
+                    "stream": True,
+                },
+            )
+
+    assert response.status_code == 200
+    assert seen[0]["encoding_format"] == "float"
+    assert "stream" not in seen[0], "embeddings have no stream"
+    assert response.json() == _embedding_reply([0.25, -0.5])
+
+
+_AZURE = {
+    "SHIM_AZURE_OPENAI_ENDPOINT": "https://bank.openai.azure.com/openai/v1/",
+    "SHIM_AZURE_OPENAI_DEPLOYMENTS": json.dumps({"gpt-5.6-luna": "kurum-mini"}),
+}
+_ENTRA = {
+    "SHIM_AZURE_TENANT_ID": "contoso.onmicrosoft.com",
+    "SHIM_AZURE_CLIENT_ID": "00000000-0000-0000-0000-0000000000a1",
+    "SHIM_AZURE_CLIENT_SECRET": "entra-secret",
+    "SHIM_AZURE_AUTHORITY_HOST": "https://login.test",
+}
+_FILTER_RESULTS = [
+    {"prompt_index": 0, "content_filter_results": {"hate": {"filtered": False}}}
+]
+
+_FILTER_CHUNK = {
+    "id": "",
+    "object": "",
+    "created": 0,
+    "model": "",
+    "choices": [],
+    "prompt_filter_results": _FILTER_RESULTS,
+}
+
+
+def _azure_upstream(seen: list[dict]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/oauth2/v2.0/token"):
+            seen.append({"path": request.url.path})
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "entra-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                },
+            )
+        body = json.loads(request.content)
+        seen.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers["authorization"],
+                "model": body["model"],
+            }
+        )
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json=_embedding_reply([0.25, -0.5]))
+        if request.url.path.endswith("/responses"):
+            return httpx.Response(200, json=_response("resp_azure"))
+        text = body["messages"][0]["content"]
+        if not body.get("stream"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl_azure",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "gpt-5.6-luna",
+                    "prompt_filter_results": _FILTER_RESULTS,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                    },
+                },
+            )
+        chunks = [_FILTER_CHUNK, _chunk({"role": "assistant", "content": text}, "stop")]
+        return httpx.Response(
+            200,
+            content="".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            + "data: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("credential", "bearer"),
+    [
+        ({"SHIM_AZURE_OPENAI_API_KEY": "azure-key"}, "azure-key"),
+        (_ENTRA, "entra-token"),
+    ],
+)
+async def test_azure_routes_reach_the_v1_api_with_the_mapped_deployment(
+    credential: dict, bearer: str
+) -> None:
+    from openai import AsyncOpenAI
+
+    seen: list[dict] = []
+    events = StringIO()
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(_azure_upstream(seen)))
+    app = create_community_app(
+        CommunitySettings(
+            _env_file=None, SHIM_API_KEY=_EMBEDDING_KEY, **_AZURE, **credential
+        ),
+        http_client=outbound,
+        event_stream=events,
+    )
+    prompt = "Kimlik 10000000146 nedir?"
+    async with outbound, app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://shim.test"
+        ) as inbound:
+            client = AsyncOpenAI(
+                base_url="http://shim.test/v1",
+                api_key=_EMBEDDING_KEY,
+                http_client=inbound,
+                max_retries=0,
+            )
+            message = [{"role": "user", "content": prompt}]
+            chat = await client.chat.completions.create(
+                model="gpt-5.6-luna", messages=message
+            )
+            raw = await inbound.post(
+                "/v1/chat/completions",
+                headers={"authorization": f"Bearer {_EMBEDDING_KEY}"},
+                json={"model": "gpt-5.6-luna", "messages": message, "stream": True},
+            )
+            await client.responses.create(model="gpt-5.6-luna", input="hello")
+            await client.embeddings.create(model="text-embedding-3-small", input="a")
+            unmapped = await client.chat.completions.create(
+                model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
+            )
+
+    calls = [call for call in seen if "url" in call]
+    assert [call["url"] for call in calls] == [
+        "https://bank.openai.azure.com/openai/v1/chat/completions",
+        "https://bank.openai.azure.com/openai/v1/chat/completions",
+        "https://bank.openai.azure.com/openai/v1/responses",
+        "https://bank.openai.azure.com/openai/v1/embeddings",
+        "https://bank.openai.azure.com/openai/v1/chat/completions",
+    ]
+    assert [call["model"] for call in calls] == [
+        "kurum-mini",
+        "kurum-mini",
+        "kurum-mini",
+        "text-embedding-3-small",
+        "gpt-5.6-terra",
+    ]
+    assert {call["authorization"] for call in calls} == {f"Bearer {bearer}"}
+    assert len(seen) - len(calls) == (1 if credential is _ENTRA else 0)
+    assert chat.choices[0].message.content == prompt
+    assert chat.model_extra["prompt_filter_results"] == _FILTER_RESULTS
+    first, second = (
+        json.loads(line.removeprefix("data: "))
+        for line in raw.text.splitlines()
+        if line.startswith("data: {")
+    )
+    # Every upstream field and value arrives; the SDK model adds its own null fields.
+    assert first.items() >= _FILTER_CHUNK.items()
+    assert second["choices"][0]["delta"]["content"] == prompt
+    assert unmapped.choices[0].message.content == "hi"
+    logged = [json.loads(line) for line in events.getvalue().splitlines()]
+    assert [line["model"] for line in logged] == [
+        "gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "text-embedding-3-small",
+        "gpt-5.6-terra",
+    ]
+    assert logged[0]["estimated_cost_usd"] is not None

@@ -42,6 +42,31 @@ def _unhealthy_seconds_left(deployment: ModelDeployment) -> int:
     return max(0, math.ceil(UNHEALTHY_MARK_SECONDS - elapsed))
 
 
+def _origin(url: str) -> tuple[str, str | None, int]:
+    parsed = urlsplit(url)
+    return (
+        parsed.scheme,
+        parsed.hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def _operator_origins(items: list[str]) -> set[tuple[str, str | None, int]]:
+    return {
+        _origin(item)
+        for item in items
+        if (parsed := urlsplit(item)).path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.username is None
+    }
+
+
+def internal_origin_approved(url: str) -> bool:
+    allowed = settings.MODEL_DEPLOYMENT_INTERNAL_ORIGINS
+    return not allowed or _origin(url) in _operator_origins(allowed)
+
+
 def validate_deployment_url(url: str) -> str:
     """Exact origins are approved by the platform operator, never by API callers."""
     parsed = urlsplit(url)
@@ -58,23 +83,18 @@ def validate_deployment_url(url: str) -> str:
         raise ValueError(
             "Deployment URL must be an absolute HTTP(S) URL without credentials, query or fragment"
         )
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    origin = (parsed.scheme, parsed.hostname.casefold(), port)
-    approved = {
-        (
-            item.scheme,
-            item.hostname,
-            item.port or (443 if item.scheme == "https" else 80),
-        )
-        for item in map(urlsplit, settings.MODEL_DEPLOYMENT_ALLOWED_ORIGINS)
-        if item.path in {"", "/"}
-        and not item.query
-        and not item.fragment
-        and item.username is None
-    }
-    if origin not in approved:
-        raise ValueError("Deployment origin is not approved by the platform operator")
     host = parsed.hostname.casefold().rstrip(".")
+    if _origin(url) not in _operator_origins(
+        settings.MODEL_DEPLOYMENT_ALLOWED_ORIGINS
+    ) and not (
+        parsed.scheme == "https"
+        and (parsed.port or 443) == 443
+        and any(
+            host.endswith(suffix) and len(host) > len(suffix)
+            for suffix in settings.MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES
+        )
+    ):
+        raise ValueError("Deployment origin is not approved by the platform operator")
     if host in {"metadata.google.internal", "metadata", "instance-data"}:
         raise ValueError("Metadata endpoints are forbidden")
     try:
@@ -270,12 +290,21 @@ class DeploymentResolver:
             reason_code="DEPLOYMENT_APPROVED",
             policy=settings.MODEL_DEPLOYMENT_ALLOWED_ORIGINS,
         )
+        kind = cast(Literal["internal", "external"], deployment.deployment_kind)
+        # A row labelled internal before the operator listed internal origins.
+        if kind == "internal" and not internal_origin_approved(base_url):
+            kind = "external"
+            prepared.record_verdict(
+                "deployment.classification",
+                stage="admission",
+                outcome="allow",
+                reason_code="INTERNAL_ORIGIN_NOT_APPROVED",
+                policy=settings.MODEL_DEPLOYMENT_INTERNAL_ORIGINS,
+            )
         return replace(
             prepared,
             payload={**prepared.payload, "model": deployment.upstream_model},
-            deployment_kind=cast(
-                Literal["internal", "external"], deployment.deployment_kind
-            ),
+            deployment_kind=kind,
             target=ProviderTarget(
                 deployment_id=str(deployment.id),
                 base_url=base_url,
@@ -286,6 +315,9 @@ class DeploymentResolver:
                 input_per_million=deployment.input_price_per_million,
                 output_per_million=deployment.output_price_per_million,
                 context_window=deployment.context_window,
+                price_model=deployment.price_model,
+                cache_read_per_million=deployment.cache_read_price_per_million,
+                cache_write_per_million=deployment.cache_write_price_per_million,
             ),
         )
 

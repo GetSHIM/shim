@@ -210,9 +210,10 @@ async def _gateway(db, key, handler):
                 execution.credential_resolver = ManagedProviderCredentialResolver(
                     provider, store, factory
                 )
-                execution.circuit_for = lambda prepared: circuits[
-                    urlsplit(prepared.target.base_url).hostname
-                ]
+                execution.circuit_for = lambda prepared: circuits.setdefault(
+                    urlsplit(prepared.target.base_url).hostname,
+                    InMemoryCircuitBreaker(failure_threshold=1),
+                )
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app),
                 base_url="http://shim.test",
@@ -906,8 +907,11 @@ async def test_health_probe_has_a_wall_clock_deadline(
         "shim_enterprise.api.v1.management.get_secret_store",
         lambda: SimpleNamespace(get_secret=delayed_secret),
     )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(http_client=None))
+    )
     result = await check_model_deployment_health(
-        rows[0].id, SimpleNamespace(), test_user_with_org, db
+        rows[0].id, request, test_user_with_org, db
     )
     assert result.health == "unhealthy"
 
@@ -1275,3 +1279,527 @@ async def test_the_database_refuses_an_invalid_price_and_a_zero_window(
 
     with pytest.raises(IntegrityError):
         await db.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("internal_origins", "kinds"),
+    [
+        ([], {"internal-a": "internal", "internal-b": "internal"}),
+        (["https://a.internal"], {"internal-a": "internal", "internal-b": "external"}),
+    ],
+)
+async def test_an_internal_row_outside_the_operator_list_is_treated_as_external(
+    db, test_api_key, origins, monkeypatch, internal_origins, kinds
+):
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", internal_origins)
+    await _deployments(db, test_api_key)
+    ids = {}
+    async with _gateway(
+        db, test_api_key, lambda request: _success(request, False, "chat")
+    ) as (client, _, _):
+        for alias in kinds:
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": alias, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200, response.text
+            ids[alias] = response.headers["x-shim-request-id"]
+
+    for alias, kind in kinds.items():
+        row = (
+            await db.execute(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id == ids[alias]
+                )
+            )
+        ).scalar_one()
+        verdicts = {
+            verdict["rule_id"]: verdict["reason_code"]
+            for verdict in row.lifecycle_metadata["policy_verdicts"]
+        }
+        assert row.lifecycle_metadata["deployment_kind"] == kind
+        assert verdicts.get("deployment.classification") == (
+            None if kind == "internal" else "INTERNAL_ORIGIN_NOT_APPROVED"
+        )
+
+
+@pytest.mark.asyncio
+async def test_relabelling_internal_relaxes_and_follows_the_operator_list(
+    db, test_api_key, test_user_with_org, origins, monkeypatch
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    rows = await _deployments(db, test_api_key)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    payload = {
+        "alias": "relabelled",
+        "provider": "openai",
+        "upstream_model": "custom-v1",
+        "base_url": "https://a.internal/v1",
+        "provider_secret_id": str(rows[0].provider_secret_id),
+        "deployment_kind": "internal",
+        "declared_version": "sha256:v1",
+        "owner": "Platform",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        created = await client.post("/model-deployments", json=payload)
+        assert created.status_code == 201, created.text
+        url = f"/model-deployments/{created.json()['id']}"
+        external = {**payload, "deployment_kind": "external"}
+        assert (await client.put(url, json=external)).status_code == 200
+        assert (await client.put(url, json=payload)).status_code == 200
+
+        monkeypatch.setattr(
+            settings, "MODEL_DEPLOYMENT_INTERNAL_ORIGINS", ["https://b.internal"]
+        )
+        refused = [
+            await client.put(url, json=payload),
+            await client.post("/model-deployments", json={**payload, "alias": "x"}),
+        ]
+        allowed = [
+            await client.put(url, json=external),
+            await client.post(
+                "/model-deployments",
+                json={**payload, "alias": "y", "base_url": "https://b.internal/v1"},
+            ),
+        ]
+    assert [response.status_code for response in refused] == [422, 422]
+    assert {response.json()["detail"] for response in refused} == {
+        "Deployment origin is not an operator-approved internal origin"
+    }
+    assert [response.status_code for response in allowed] == [200, 201]
+    events = (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+    ).all()
+    extras = [
+        (event.payload.get("endpoint"), event.payload.get("extra", {}))
+        for event in events
+    ]
+    updates = [
+        (extra["before"], extra["after"])
+        for endpoint, extra in extras
+        if endpoint == "tenant.model_deployment_updated"
+    ]
+    assert [
+        extra["relaxed"]
+        for endpoint, extra in extras
+        if endpoint == "tenant.privacy_protection_relaxed"
+    ] == [[f"deployment_kind.{created.json()['id']}"]]
+    assert sorted(map(str, updates)) == sorted(
+        map(
+            str,
+            [
+                ({"deployment_kind": "internal"}, {"deployment_kind": "external"}),
+                ({"deployment_kind": "external"}, {"deployment_kind": "internal"}),
+                ({"deployment_kind": "internal"}, {"deployment_kind": "external"}),
+            ],
+        )
+    )
+
+
+_AZURE_BASE = "https://bank.openai.azure.com/openai/v1"
+
+
+@pytest.fixture
+def azure_suffix(monkeypatch):
+    monkeypatch.setattr(
+        settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES", [".openai.azure.com"]
+    )
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGINS", [])
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_REQUIRED", True)
+
+
+def test_an_origin_suffix_approves_https_hosts_under_it_on_443_only(
+    azure_suffix, monkeypatch
+):
+    assert validate_deployment_url(_AZURE_BASE + "/") == _AZURE_BASE
+    assert validate_deployment_url("https://bank.openai.azure.com:443/openai/v1")
+    for url in [
+        "http://bank.openai.azure.com/openai/v1",
+        "https://bank.openai.azure.com:8443/openai/v1",
+        "https://openai.azure.com/openai/v1",
+        "https://evilopenai.azure.com/openai/v1",
+        "https://bank.openai.azure.com.evil/openai/v1",
+        "https://key@bank.openai.azure.com/openai/v1",
+        "https://bank.openai.azure.com/openai/v1?api-version=1",
+    ]:
+        with pytest.raises(ValueError):
+            validate_deployment_url(url)
+    monkeypatch.setattr(
+        settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES", [".google.internal"]
+    )
+    with pytest.raises(ValueError, match="forbidden"):
+        validate_deployment_url("https://metadata.google.internal/v1")
+
+
+def _azure_input(**fields):
+    return ModelDeploymentInput.model_validate(
+        {
+            "alias": "azure-mini",
+            "provider": "openai",
+            "upstream": "azure_openai",
+            "upstream_model": "kurum-mini",
+            "base_url": _AZURE_BASE,
+            "provider_secret_id": str(uuid4()),
+            "deployment_kind": "external",
+            "declared_version": "v1",
+            "owner": "Platform",
+            **fields,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"provider": "anthropic"}, "uses provider openai"),
+        ({"deployment_kind": "internal"}, "is external"),
+        ({"base_url": "https://bank.openai.azure.com/v1"}, "ends in /openai/v1"),
+        ({"upstream_model": "kurum mini"}, "Azure deployment name"),
+        ({"price_model": "kurum-mini"}, "not a catalog model for this provider"),
+        ({"price_model": "claude-sonnet-4-5"}, "not a catalog model"),
+        ({"cache_read_price_per_million": "0.1"}, "cache price needs"),
+    ],
+)
+def test_an_azure_deployment_is_checked_rule_by_rule(azure_suffix, fields, message):
+    assert _azure_input(price_model="gpt-5.6-luna").upstream == "azure_openai"
+    with pytest.raises(ValidationError, match=message):
+        _azure_input(**fields)
+
+
+def test_a_view_survives_a_price_model_the_catalog_dropped(azure_suffix):
+    view = ModelDeploymentView.model_validate(
+        {
+            **_azure_input().model_dump(),
+            "price_model": "retired-model",
+            "id": uuid4(),
+            "health": "unknown",
+            "health_checked_at": None,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+    )
+
+    assert view.price_model == "retired-model"
+
+
+async def _azure_row(db, key, *, kind="api_key", **fields):
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=key.organization_id,
+        provider="openai",
+        credential_kind=kind,
+        secret_ref="reference-z",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(secret)
+    await db.flush()
+    row = ModelDeployment(
+        organization_id=key.organization_id,
+        alias="azure-mini",
+        provider="openai",
+        upstream_model="kurum-mini",
+        base_url=_AZURE_BASE,
+        provider_secret_id=secret.id,
+        timeout_seconds=5,
+        deployment_kind="external",
+        declared_version="v1",
+        owner="Platform",
+        **fields,
+    )
+    db.add(row)
+    await db.flush()
+    return row, secret
+
+
+@pytest.mark.asyncio
+async def test_existing_rows_default_to_generic_api_keys_and_the_database_checks(
+    db, test_api_key, origins
+):
+    from sqlalchemy.exc import IntegrityError
+
+    [row, _] = await _deployments(db, test_api_key)
+    await db.refresh(row)
+    secret = await db.get(ProviderSecret, row.provider_secret_id)
+    await db.refresh(secret)
+
+    assert (row.upstream, row.price_model, row.cache_read_price_per_million) == (
+        "generic",
+        None,
+        None,
+    )
+    assert secret.credential_kind == "api_key"
+    for field, value in [
+        ("cache_read_price_per_million", Decimal("0.1")),
+        ("upstream", "bedrock"),
+    ]:
+        async with db.begin_nested():
+            setattr(row, field, value)
+            with pytest.raises(IntegrityError):
+                await db.flush()
+        await db.refresh(row)
+
+
+@pytest.mark.asyncio
+async def test_a_put_without_the_new_fields_keeps_them(
+    db, test_api_key, test_user_with_org, azure_suffix
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    row, secret = await _azure_row(db, test_api_key)
+    entra = ProviderSecret(
+        id=uuid4(),
+        organization_id=test_api_key.organization_id,
+        provider="openai",
+        credential_kind="azure_entra_client",
+        secret_ref="reference-e",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="entra:000...00a1",
+    )
+    db.add(entra)
+    await db.flush()
+    test_user_with_org.role = "owner"
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    payload = {
+        "alias": "azure-mini",
+        "provider": "openai",
+        "upstream_model": "kurum-mini",
+        "base_url": _AZURE_BASE,
+        "provider_secret_id": str(secret.id),
+        "deployment_kind": "external",
+        "declared_version": "v1",
+        "owner": "Platform",
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        set_up = await client.put(
+            f"/model-deployments/{row.id}",
+            json={
+                **payload,
+                "upstream": "azure_openai",
+                "price_model": "gpt-5.6-luna",
+                "input_price_per_million": "1",
+                "output_price_per_million": "2",
+                "cache_read_price_per_million": "0.1",
+            },
+        )
+        prices = {"input_price_per_million": "1", "output_price_per_million": "2"}
+        kept = await client.put(
+            f"/model-deployments/{row.id}",
+            json={**payload, **prices, "declared_version": "v2"},
+        )
+        # The kept cache price still needs the input price an old client drops.
+        unpriced = await client.put(f"/model-deployments/{row.id}", json=payload)
+        cleared = await client.put(
+            f"/model-deployments/{row.id}",
+            json={
+                **payload,
+                "upstream": "generic",
+                "price_model": None,
+                "cache_read_price_per_million": None,
+            },
+        )
+        generic_entra = await client.put(
+            f"/model-deployments/{row.id}",
+            json={**payload, "provider_secret_id": str(entra.id)},
+        )
+
+    assert set_up.status_code == 200, set_up.text
+    assert {
+        key: kept.json()[key]
+        for key in ("upstream", "price_model", "cache_read_price_per_million")
+    } == {
+        "upstream": "azure_openai",
+        "price_model": "gpt-5.6-luna",
+        "cache_read_price_per_million": "0.10000000",
+    }
+    assert unpriced.status_code == 422
+    assert "A cache price needs" in unpriced.text
+    assert cleared.status_code == 200, cleared.text
+    assert (cleared.json()["upstream"], cleared.json()["price_model"]) == (
+        "generic",
+        None,
+    )
+    assert generic_entra.status_code == 422
+    assert generic_entra.json()["detail"] == (
+        "An Entra credential can only serve an Azure OpenAI deployment"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_azure_deployment_is_called_at_its_deployment_and_priced_by_its_model(
+    db, test_api_key, azure_suffix
+):
+    from shim.billing.pricing import compute_cost_usd
+
+    await _azure_row(
+        db, test_api_key, upstream="azure_openai", price_model="gpt-5.6-luna"
+    )
+    seen = []
+
+    def upstream(request):
+        body = json.loads(request.content)
+        seen.append((str(request.url), body["model"], request.headers["authorization"]))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1_000,
+                    "completion_tokens": 100,
+                    "total_tokens": 1_100,
+                    "prompt_tokens_details": {"cached_tokens": 600},
+                },
+            },
+        )
+
+    async with _gateway(db, test_api_key, upstream) as (client, _, _):
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "azure-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert seen == [(f"{_AZURE_BASE}/chat/completions", "kurum-mini", "Bearer key-z")]
+    [settlement] = (
+        await db.scalars(
+            select(UsageLedger).where(
+                UsageLedger.organization_id == test_api_key.organization_id,
+                UsageLedger.event_type == "spend_settlement",
+            )
+        )
+    ).all()
+    assert settlement.cost_usd == compute_cost_usd(
+        "gpt-5.6-luna", 1_000, 100, cache=(600, 0, 0)
+    )
+    assert settlement.cost_usd < compute_cost_usd("gpt-5.6-luna", 1_000, 100)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("upstream", "status", "health"),
+    [
+        ("azure_openai", 200, "healthy"),
+        ("azure_openai", 404, "healthy"),
+        ("azure_openai", 401, "unhealthy"),
+        ("generic", 404, "unhealthy"),
+    ],
+)
+async def test_an_azure_health_check_counts_a_404_as_reachable(
+    db,
+    test_api_key,
+    test_user_with_org,
+    azure_suffix,
+    monkeypatch,
+    upstream,
+    status,
+    health,
+):
+    row, _ = await _azure_row(db, test_api_key, upstream=upstream)
+    store = SimpleNamespace(get_secret=AsyncMock(return_value="azure-key"))
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+    )
+    seen = []
+
+    def answer(request):
+        seen.append((request.url.path, request.headers["authorization"]))
+        return httpx.Response(status)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        result = await check_model_deployment_health(
+            row.id, request, test_user_with_org, db
+        )
+
+    assert result.health == health
+    assert seen == [("/openai/v1/models", "Bearer azure-key")]
+
+
+@pytest.mark.asyncio
+async def test_an_entra_backed_health_check_sends_the_entra_token(
+    db, test_api_key, test_user_with_org, azure_suffix, monkeypatch
+):
+    row, _ = await _azure_row(
+        db, test_api_key, kind="azure_entra_client", upstream="azure_openai"
+    )
+    stored = json.dumps(
+        {
+            "tenant_id": "contoso.onmicrosoft.com",
+            "client_id": "00000000-0000-0000-0000-0000000000a1",
+            "client_secret": "entra-secret",
+            "scope": "https://cognitiveservices.azure.com/.default",
+        }
+    )
+    store = SimpleNamespace(get_secret=AsyncMock(return_value=stored))
+    monkeypatch.setattr(
+        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+    )
+    monkeypatch.setattr(settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test")
+    seen = []
+
+    def answer(request):
+        seen.append(request.url.path)
+        if request.url.host == "login.test":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "entra-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                },
+            )
+        assert request.headers["authorization"] == "Bearer entra-token"
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        result = await check_model_deployment_health(
+            row.id, request, test_user_with_org, db
+        )
+
+    assert result.health == "healthy"
+    assert seen == ["/contoso.onmicrosoft.com/oauth2/v2.0/token", "/openai/v1/models"]
+    assert store.get_secret.await_args.kwargs == {
+        "expected_purpose": "provider:openai:azure-entra-client"
+    }

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.billing.pricing import _MODALITIES, _STATUSES, _positive_int
 
 
@@ -84,6 +85,30 @@ def _eligible(model_id: str, model: object) -> bool:
         and _cost_dimensions_are_safe(cost)
         and not any(marker in searchable for marker in UNSUPPORTED_MARKERS)
     )
+
+
+def _embedding(model_id: str, model: object) -> bool:
+    """A text embeddings model with an input price the catalog can bill safely."""
+    if not isinstance(model, dict):
+        return False
+    modalities = model.get("modalities")
+    cost = model.get("cost")
+    return (
+        "embedding" in f"{model_id} {model.get('family', '')}".casefold()
+        and isinstance(modalities, dict)
+        and isinstance(modalities.get("input"), list)
+        and "text" in modalities["input"]
+        and isinstance(cost, dict)
+        and _decimal(cost.get("input")) is not None
+        and _cost_dimensions_are_safe(cost)
+    )
+
+
+def _embedding_entry(model_id: str, model: dict[str, object]) -> dict[str, Any]:
+    # A vector's dimensions are no output limit, and its output is free.
+    entry = _entry(model_id, model)
+    entry.pop("max_output_tokens", None)
+    return entry | {"kind": "embedding", "output_per_million": "0"}
 
 
 def _cost_dimensions_are_safe(cost: dict[str, object]) -> bool:
@@ -257,8 +282,14 @@ def build_catalog(source: dict[str, Any]) -> dict[str, object]:
             raise ValueError(f"Models.dev provider is missing: {provider}")
         selected = {
             model_id: _entry(model_id, model)
+            if _eligible(model_id, model)
+            else _embedding_entry(model_id, model)
             for model_id, model in sorted(models.items())
-            if isinstance(model_id, str) and _eligible(model_id, model)
+            if isinstance(model_id, str)
+            and (
+                _eligible(model_id, model)
+                or (provider != "anthropic" and _embedding(model_id, model))
+            )
         }
         if len({model_id.casefold() for model_id in selected}) != len(selected):
             raise ValueError(f"Models.dev provider has duplicate model IDs: {provider}")
@@ -278,6 +309,25 @@ def render_catalog(catalog: dict[str, object]) -> str:
     return json.dumps(catalog, indent=2, sort_keys=True) + "\n"
 
 
+def lifecycle_report(
+    catalog: dict[str, Any], lifecycle: ModelLifecycle, today: date
+) -> str:
+    """What a reviewer should check in model_lifecycle.json; the file is never changed here."""
+    lines = [
+        f"- `{provider}/{model_id}` is deprecated on Models.dev and has no retirement date."
+        for provider, models in catalog["providers"].items()
+        for model_id, model in models.items()
+        if model.get("status") == "deprecated"
+        and lifecycle.retirement(model_id, provider) is None
+    ] + [
+        f"- `{provider}/{model_id}` was last checked on {entry.checked_on}."
+        for provider, models in lifecycle.models.items()
+        for model_id, entry in models.items()
+        if (today - entry.checked_on).days > 90
+    ]
+    return "## Retirement dates\n\n" + ("\n".join(lines) or "Nothing to review.") + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -285,8 +335,18 @@ def main() -> None:
         action="store_true",
         help="fail when the checked-in catalog differs from Models.dev",
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        help="write what to review in model_lifecycle.json to this file",
+    )
     args = parser.parse_args()
-    rendered = render_catalog(build_catalog(fetch_catalog()))
+    catalog = build_catalog(fetch_catalog())
+    if args.report is not None:
+        args.report.write_text(
+            lifecycle_report(catalog, load_lifecycle(), date.today()), encoding="utf-8"
+        )
+    rendered = render_catalog(catalog)
     current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
     if args.check:
         if current != rendered:

@@ -16,6 +16,31 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AgentLoop": {
+        "additionalProperties": false,
+        "description": "What a tool call repeated in one task's history does: counted by default.",
+        "properties": {
+          "action": {
+            "default": "count",
+            "enum": [
+              "off",
+              "count",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "repeats": {
+            "default": 5,
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Repeats",
+            "type": "integer"
+          }
+        },
+        "title": "AgentLoop",
+        "type": "object"
+      },
       "AnchorMismatch": {
         "properties": {
           "anchor_date": {
@@ -1361,6 +1386,59 @@
         ],
         "title": "AuthType",
         "type": "string"
+      },
+      "AzureEntraInput": {
+        "additionalProperties": false,
+        "description": "A Microsoft Entra ID app registration's client secret.",
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Client Secret",
+            "type": "string",
+            "writeOnly": true
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "pattern": "^https://\\S+/\\.default$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the operator's SHIM_AZURE_TOKEN_SCOPE.",
+            "title": "Scope"
+          },
+          "tenant_id": {
+            "pattern": "^[A-Za-z0-9.-]{1,128}$",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "client_id",
+          "client_secret"
+        ],
+        "title": "AzureEntraInput",
+        "type": "object"
+      },
+      "BatchEmbedContentsRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Native `:batchEmbedContents` JSON, kept as sent.",
+        "title": "BatchEmbedContentsRequest",
+        "type": "object"
       },
       "Behavior": {
         "description": "Specifies the function Behavior.\n\nIf not specified, the system keeps the current function call behavior. This\nfield is currently only supported by the BidiGenerateContent method.",
@@ -3277,6 +3355,21 @@
         "title": "DynamicRetrievalConfigMode",
         "type": "string"
       },
+      "EmbedContentRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Native `:embedContent` JSON, kept as sent.",
+        "title": "EmbedContentRequest",
+        "type": "object"
+      },
+      "EmbeddingsRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "title": "EmbeddingsRequest",
+        "type": "object"
+      },
       "EnterpriseWebSearch": {
         "additionalProperties": false,
         "description": "Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.\n\nThis data type is not supported in Gemini API.",
@@ -4905,6 +4998,47 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "agent_loop": {
+            "$ref": "#/components/schemas/AgentLoop",
+            "default": {
+              "action": "count",
+              "repeats": 5
+            }
+          },
+          "inflight_sharing_api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Inflight Sharing Api Key Ids",
+            "type": "array"
+          },
+          "injection_markers": {
+            "default": "off",
+            "enum": [
+              "off",
+              "count",
+              "warn"
+            ],
+            "title": "Injection Markers",
+            "type": "string"
+          },
+          "model_retiring_warning": {
+            "default": "record",
+            "enum": [
+              "record",
+              "header"
+            ],
+            "title": "Model Retiring Warning",
+            "type": "string"
+          },
+          "price_tier_warning": {
+            "default": false,
+            "title": "Price Tier Warning",
+            "type": "boolean"
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -4912,6 +5046,20 @@
             },
             "title": "Response Analysis",
             "type": "array"
+          },
+          "restore_withheld": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RestoreGrant"
+            },
+            "default": {},
+            "title": "Restore Withheld",
+            "type": "object"
+          },
+          "task_caps": {
+            "$ref": "#/components/schemas/TaskCaps-Output",
+            "default": {
+              "window_seconds": 3600
+            }
           }
         },
         "title": "GatewaySettings",
@@ -4920,6 +5068,74 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "agent_loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inflight_sharing_api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inflight Sharing Api Key Ids"
+          },
+          "injection_markers": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "count",
+                  "warn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Injection Markers"
+          },
+          "model_retiring_warning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "record",
+                  "header"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Retiring Warning"
+          },
+          "price_tier_warning": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Tier Warning"
+          },
           "response_analysis": {
             "anyOf": [
               {
@@ -4933,6 +5149,30 @@
               }
             ],
             "title": "Response Analysis"
+          },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/RestoreGrant"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Withheld"
+          },
+          "task_caps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "GatewaySettingsPatch",
@@ -6461,6 +6701,40 @@
             "title": "Base Url",
             "type": "string"
           },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -6533,6 +6807,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6552,6 +6839,16 @@
             "minimum": 1.0,
             "title": "Timeout Seconds",
             "type": "integer"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
+            "type": "string"
           },
           "upstream_model": {
             "maxLength": 200,
@@ -6588,6 +6885,32 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
           },
           "context_window": {
             "anyOf": [
@@ -6684,6 +7007,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6707,6 +7043,16 @@
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
+            "type": "string"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
             "type": "string"
           },
           "upstream_model": {
@@ -7021,6 +7367,70 @@
           "owned_by"
         ],
         "title": "ModelRecordView",
+        "type": "object"
+      },
+      "ModelRetirementView": {
+        "properties": {
+          "affected": {
+            "$ref": "#/components/schemas/RetiringAffectedView"
+          },
+          "checked_on": {
+            "format": "date",
+            "title": "Checked On",
+            "type": "string"
+          },
+          "deprecated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deprecated On"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "retires_on": {
+            "format": "date",
+            "title": "Retires On",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "retires_on",
+          "deprecated_on",
+          "replacement",
+          "source",
+          "checked_on",
+          "affected"
+        ],
+        "title": "ModelRetirementView",
         "type": "object"
       },
       "ModelSelectionConfig": {
@@ -9142,6 +9552,21 @@
             "description": "null turns the alarm off; left unchanged when absent.",
             "title": "Bulk Threshold"
           },
+          "embeddings_monitor_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replaces the stored list whole; left unchanged when absent.",
+            "title": "Embeddings Monitor Types"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9243,6 +9668,14 @@
             "title": "Effective Actions",
             "type": "object"
           },
+          "embeddings_monitor_types": {
+            "description": "Entity types an embeddings request only counts and sends unchanged where their action masks or blocks them; chat keeps the action.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Embeddings Monitor Types",
+            "type": "array"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9287,6 +9720,7 @@
           "bulk_threshold",
           "response_scan",
           "placeholder_mode",
+          "embeddings_monitor_types",
           "effective_actions"
         ],
         "title": "PrivacySettings",
@@ -9469,11 +9903,37 @@
       },
       "ProviderSecretInput": {
         "properties": {
-          "key": {
-            "maxLength": 10000,
-            "minLength": 10,
-            "title": "Key",
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_kind": {
+            "default": "api_key",
+            "enum": [
+              "api_key",
+              "azure_entra_client"
+            ],
+            "title": "Credential Kind",
             "type": "string"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
           },
           "monthly_limit_usd": {
             "anyOf": [
@@ -9514,14 +9974,23 @@
           }
         },
         "required": [
-          "provider",
-          "key"
+          "provider"
         ],
         "title": "ProviderSecretInput",
         "type": "object"
       },
       "ProviderSecretPatch": {
         "properties": {
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
             "anyOf": [
               {
@@ -9572,6 +10041,10 @@
           "created_at": {
             "format": "date-time",
             "title": "Created At",
+            "type": "string"
+          },
+          "credential_kind": {
+            "title": "Credential Kind",
             "type": "string"
           },
           "id": {
@@ -9626,6 +10099,7 @@
         "required": [
           "id",
           "provider",
+          "credential_kind",
           "name",
           "masked_key",
           "created_at",
@@ -9952,6 +10426,313 @@
           "framework"
         ],
         "title": "ReadinessReportRequest",
+        "type": "object"
+      },
+      "RecordSetChunkPut": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents"
+          },
+          "records": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Records"
+          }
+        },
+        "title": "RecordSetChunkPut",
+        "type": "object"
+      },
+      "RecordSetCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RecordSetFieldSpec"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "RECORD",
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$",
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "RecordSetCreate",
+        "type": "object"
+      },
+      "RecordSetCreatedView": {
+        "properties": {
+          "active_revision": {
+            "title": "Active Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_count": {
+            "title": "Entry Count",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "fingerprint_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint Version"
+          },
+          "hash_key": {
+            "description": "Shown once: the base64url key the hashing tool uses.",
+            "title": "Hash Key",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "previous_revision": {
+            "title": "Previous Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "label",
+          "fields",
+          "fingerprint_version",
+          "active_revision",
+          "previous_revision",
+          "entry_count",
+          "created_at",
+          "updated_at",
+          "hash_key"
+        ],
+        "title": "RecordSetCreatedView",
+        "type": "object"
+      },
+      "RecordSetFieldSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "tckn",
+              "vkn",
+              "iban",
+              "email",
+              "phone",
+              "digits",
+              "token",
+              "name"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "length": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "digits only: the shortest and longest run, 4 to 34.",
+            "title": "Length"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "primary": {
+            "default": false,
+            "title": "Primary",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "RecordSetFieldSpec",
+        "type": "object"
+      },
+      "RecordSetView": {
+        "properties": {
+          "active_revision": {
+            "title": "Active Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_count": {
+            "title": "Entry Count",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "fingerprint_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint Version"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "previous_revision": {
+            "title": "Previous Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "label",
+          "fields",
+          "fingerprint_version",
+          "active_revision",
+          "previous_revision",
+          "entry_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RecordSetView",
         "type": "object"
       },
       "ReplicatedVoiceConfig": {
@@ -10394,6 +11175,28 @@
             ],
             "title": "Endpoint"
           },
+          "injection_markers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
+            "title": "Injection Markers"
+          },
           "model": {
             "anyOf": [
               {
@@ -10526,6 +11329,21 @@
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
           },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
+            "title": "Restore Withheld"
+          },
           "rule_matches": {
             "anyOf": [
               {
@@ -10636,7 +11454,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -10773,6 +11595,34 @@
         "title": "ResponsesRequest",
         "type": "object"
       },
+      "RestoreGrant": {
+        "additionalProperties": false,
+        "description": "Who gets a withheld type back: keys, and every key of the listed teams.",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "team_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Team Ids",
+            "type": "array"
+          }
+        },
+        "title": "RestoreGrant",
+        "type": "object"
+      },
       "RestoreInput": {
         "properties": {
           "expected_version": {
@@ -10838,6 +11688,120 @@
           "approximated"
         ],
         "title": "RestoreView",
+        "type": "object"
+      },
+      "RetiringAffectedView": {
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "api_keys": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringKeyView"
+            },
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTagView"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTeamView"
+            },
+            "title": "Teams",
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_keys",
+          "teams",
+          "tags",
+          "aliases"
+        ],
+        "title": "RetiringAffectedView",
+        "type": "object"
+      },
+      "RetiringKeyView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used": {
+            "format": "date-time",
+            "title": "Last Used",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requests",
+          "last_used"
+        ],
+        "title": "RetiringKeyView",
+        "type": "object"
+      },
+      "RetiringTagView": {
+        "properties": {
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "requests"
+        ],
+        "title": "RetiringTagView",
+        "type": "object"
+      },
+      "RetiringTeamView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requests"
+        ],
+        "title": "RetiringTeamView",
         "type": "object"
       },
       "Retrieval": {
@@ -12312,6 +13276,91 @@
           "entitlements"
         ],
         "title": "SubscriptionView",
+        "type": "object"
+      },
+      "TaskCaps-Input": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
+        "type": "object"
+      },
+      "TaskCaps-Output": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
         "type": "object"
       },
       "TeamInput": {
@@ -18634,6 +19683,61 @@
         ]
       }
     },
+    "/api/v1/management/model-retirements": {
+      "get": {
+        "description": "Models retiring within `days` that this organization used in 30 days or registered.",
+        "operationId": "list_model_retirements_api_v1_management_model_retirements_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 90,
+              "maximum": 730,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelRetirementView"
+                  },
+                  "title": "Response List Model Retirements Api V1 Management Model Retirements Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Model Retirements",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/outcomes": {
       "get": {
         "operationId": "outcome_rates_api_v1_management_outcomes_get",
@@ -19567,6 +20671,356 @@
         ]
       }
     },
+    "/api/v1/management/record-sets": {
+      "get": {
+        "operationId": "list_record_sets_api_v1_management_record_sets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RecordSetView"
+                  },
+                  "title": "Response List Record Sets Api V1 Management Record Sets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Record Sets",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_record_set_api_v1_management_record_sets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSetCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetCreatedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Record Set",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}": {
+      "delete": {
+        "operationId": "delete_record_set_api_v1_management_record_sets__set_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Record Set",
+        "tags": [
+          "management"
+        ]
+      },
+      "get": {
+        "operationId": "get_record_set_api_v1_management_record_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Record Set",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions": {
+      "post": {
+        "operationId": "open_record_set_revision_api_v1_management_record_sets__set_id__revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Open Record Set Revision Api V1 Management Record Sets  Set Id  Revisions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Record Set Revision",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions/{revision}/activate": {
+      "post": {
+        "operationId": "activate_record_set_revision_api_v1_management_record_sets__set_id__revisions__revision__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "title": "Revision",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Activate Record Set Revision",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}": {
+      "put": {
+        "operationId": "put_record_set_chunk_api_v1_management_record_sets__set_id__revisions__revision__chunks__chunk_index__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "title": "Revision",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_index",
+            "required": true,
+            "schema": {
+              "title": "Chunk Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSetChunkPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Put Record Set Chunk Api V1 Management Record Sets  Set Id  Revisions  Revision  Chunks  Chunk Index  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Record Set Chunk",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/requests": {
       "get": {
         "operationId": "list_requests_api_v1_management_requests_get",
@@ -19761,7 +21215,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -20100,7 +21558,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -21762,6 +23224,190 @@
         "summary": "Chat Completions"
       }
     },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "embeddings_v1_embeddings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Native OpenAI embeddings JSON."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "529": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Embeddings"
+      }
+    },
     "/v1/messages": {
       "post": {
         "operationId": "messages_v1_messages_post",
@@ -22889,6 +24535,128 @@
         "tags": [
           "shared-results"
         ]
+      }
+    },
+    "/v1beta/models/{model}:batchEmbedContents": {
+      "post": {
+        "operationId": "batch_embed_contents_v1beta_models__model__batchEmbedContents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchEmbedContentsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Batch Embed Contents"
+      }
+    },
+    "/v1beta/models/{model}:embedContent": {
+      "post": {
+        "operationId": "embed_content_v1beta_models__model__embedContent_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Embed Content"
       }
     },
     "/v1beta/models/{model}:generateContent": {

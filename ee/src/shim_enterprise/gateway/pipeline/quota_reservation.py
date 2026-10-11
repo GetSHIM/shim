@@ -376,6 +376,11 @@ class DurableAccountingCoordinator:
                         maximum_output_tokens=admission.maximum_output_tokens,
                         cost_center=admission.cost_center,
                         tags=admission.tags,
+                        task_id=admission.task_id,
+                        trace_id=admission.trace_id,
+                        tool_call_repeats=admission.tool_call_repeats,
+                        task_calls=admission.task_calls,
+                        inflight_duplicate_of=admission.inflight_duplicate_of,
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,
@@ -588,6 +593,20 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            **(
+                                {}
+                                if prepared.privacy.injection_markers is None
+                                else {
+                                    "injection_markers": dict(
+                                        prepared.privacy.injection_markers
+                                    )
+                                }
+                            ),
+                            **(
+                                {"restore_withheld": prepared.privacy.withheld_counts}
+                                if prepared.privacy.restore_withheld
+                                else {}
+                            ),
                             **match_records(prepared),
                             # A keyed hash of raw prompt text is still a
                             # pseudonym of the personal data in it.
@@ -1055,6 +1074,40 @@ class DurableUsageLifecycle:
                     type(exc).__name__,
                 )
             raise
+
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        terminal: StreamFinalization,
+        inflight_share: Mapping[str, Any],
+    ) -> None:
+        # One request unit, no tokens and no spend: the leader's row carries the call.
+        usage = terminal.usage
+        async with self.session_factory() as session:
+            await self.accounting.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                    quota_action=TerminalAction.SETTLE,
+                    provider_model=usage.provider_model,
+                    lifecycle_status=terminal.terminal_status,
+                    output_hash=usage.output_hash,
+                    provider_finish_reasons=usage.provider_finish_reasons,
+                    completion_outcome=usage.completion_outcome,
+                    answer_characters=usage.answer_characters,
+                    tool_call_names=usage.tool_call_names,
+                    reasoning_seen=usage.reasoning_seen,
+                    warnings=tuple(prepared.warnings),
+                    shim_latency_ms=terminal.shim_latency_ms,
+                    completed_at=terminal.completed_at,
+                    policy_verdicts=tuple(
+                        verdict.model_dump(mode="json")
+                        for verdict in prepared.policy_verdicts
+                    ),
+                    inflight_share=dict(inflight_share),
+                ),
+            )
 
     async def fail(
         self,

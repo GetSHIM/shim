@@ -656,3 +656,187 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(settings, "GOOGLE_BASE_URL", "https://upstream.test")
+    text, mapping = PIIScrubberService().scrub(
+        "Kimlik 10000000146 e-posta alice@example.com", DEFAULT_ACTIONS
+    )
+    tckn = next(key for key in mapping if key.startswith("<TR_NATIONAL_ID_"))
+    split = text.index(tckn) + len(tckn) // 2
+
+    def chunk(parts: list[dict], finish: str | None = None) -> dict:
+        candidate: dict = {"content": {"role": "model", "parts": parts}, "index": 0}
+        if finish:
+            candidate["finishReason"] = finish
+        return {
+            "candidates": [candidate],
+            "usageMetadata": {
+                "promptTokenCount": 1,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": 2,
+            },
+        }
+
+    call = {"functionCall": {"name": "lookup", "args": {"id": tckn}}}
+    chunks = (
+        [
+            chunk([{"text": text[:split]}]),
+            chunk([{"text": text[split:]}]),
+            chunk([call], "STOP"),
+        ]
+        if stream
+        else [chunk([{"text": text}, call], "STOP")]
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if stream:
+            return httpx.Response(
+                200,
+                content="".join(f"data: {json.dumps(item)}\n\n" for item in chunks),
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=chunks[0])
+
+    prepared = _prepared(
+        {"contents": [{"role": "user", "parts": [{"text": text}]}]},
+        stream=stream,
+        mapping=mapping,
+    )
+    prepared.privacy = replace(
+        prepared.privacy, restore_withheld=frozenset({"TR_NATIONAL_ID"})
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        wire = (
+            b"".join([event async for event in result.events]).decode()
+            if stream
+            else json.dumps(result.payload)
+        )
+
+    assert "alice@example.com" in wire and "<EMAIL_ADDRESS_" not in wire
+    assert "10000000146" not in wire
+    # Streamed, the text half is split over two chunks; the call arguments hold it whole.
+    assert wire.count(tckn) == (1 if stream else 2)
+
+
+_GATEWAY_KEY = "gateway-secret-12345"
+
+
+async def _embed_through_the_gateway(send):
+    """Run `send(inbound)` against a community app whose upstream records each call."""
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[tuple[str, dict, str | None]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append((request.url.path, body, request.headers.get("x-goog-api-key")))
+        if request.url.path.endswith(":batchEmbedContents"):
+            reply = {"embeddings": [{"values": [0.25, -0.5]} for _ in body["requests"]]}
+        else:
+            reply = {"embedding": {"values": [0.25, -0.5]}}
+        return httpx.Response(200, json=reply)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps(
+                    {name: "off" for name in effective_entity_actions()}
+                ),
+            ),
+            http_client=outbound,
+            event_stream=StringIO(),
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                result = await send(inbound)
+    return result, seen
+
+
+@pytest.mark.asyncio
+async def test_the_genai_sdk_embeds_through_the_gateway_on_the_native_path() -> None:
+    from google import genai
+    from google.genai import types
+
+    async def send(inbound):
+        client = genai.Client(
+            api_key=_GATEWAY_KEY,
+            http_options=types.HttpOptions(
+                base_url="http://shim.test",
+                api_version="v1beta",
+                headers={"x-provider-key": "google-upstream"},
+                retry_options=types.HttpRetryOptions(attempts=1),
+                httpx_async_client=inbound,
+            ),
+        )
+        return await client.aio.models.embed_content(
+            model="gemini-embedding-001", contents=["hello", "world"]
+        )
+
+    result, seen = await _embed_through_the_gateway(send)
+
+    assert [embedding.values for embedding in result.embeddings] == [[0.25, -0.5]] * 2
+    [(path, body, key)] = seen
+    assert path == "/v1beta/models/gemini-embedding-001:batchEmbedContents"
+    assert [request["content"]["parts"] for request in body["requests"]] == [
+        [{"text": "hello"}],
+        [{"text": "world"}],
+    ]
+    assert key == "google-upstream"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "body", "reply"),
+    [
+        (
+            "embedContent",
+            {"content": {"parts": [{"text": "hello"}]}, "taskType": "RETRIEVAL_QUERY"},
+            {"embedding": {"values": [0.25, -0.5]}},
+        ),
+        (
+            "batchEmbedContents",
+            {
+                "requests": [
+                    {
+                        "model": "models/gemini-embedding-001",
+                        "content": {"parts": [{"text": "hello"}]},
+                    }
+                ]
+            },
+            {"embeddings": [{"values": [0.25, -0.5]}]},
+        ),
+    ],
+)
+async def test_a_raw_embed_call_keeps_its_native_path_body_and_answer(
+    method, body, reply
+) -> None:
+    async def send(inbound):
+        return await inbound.post(
+            f"/v1beta/models/gemini-embedding-001:{method}",
+            headers={"x-goog-api-key": _GATEWAY_KEY, "x-provider-key": "up"},
+            json=body,
+        )
+
+    response, seen = await _embed_through_the_gateway(send)
+
+    assert response.status_code == 200 and response.json() == reply
+    assert seen == [(f"/v1beta/models/gemini-embedding-001:{method}", body, "up")]

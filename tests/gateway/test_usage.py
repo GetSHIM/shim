@@ -14,6 +14,7 @@ import pytest
 
 from shim.gateway.streaming import StreamFinalization
 from shim.gateway.kernel.result import InferenceTiming, PreparedInference
+from shim.gateway.request_policy import TaskCaps
 from shim.gateway.streaming.meter import StreamUsageSnapshot
 from shim.gateway.usage import JSONL_PROTOCOLS, LocalUsageLifecycle
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
@@ -43,7 +44,14 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             repeat_chain_length=1,
             cost_center="risk",
             tags=("risk", "batch"),
+            task_id=None,
+            trace_id=None,
+            tool_call_repeats=None,
+            task_calls=None,
+            inflight_duplicate_of=None,
         ),
+        task_caps=TaskCaps(),
+        model_retiring_warning="record",
         deployment_kind="unknown",
         response_scan="off",
         response_analysis=(),
@@ -174,6 +182,11 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "repeat_chain_length",
         "cost_center",
         "tags",
+        "task_id",
+        "trace_id",
+        "tool_call_repeats",
+        "task_calls",
+        "inflight_duplicate_of",
         "system_prompt_hash",
         "deployment_kind",
         "warnings",
@@ -209,6 +222,11 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "reasoning_seen": False,
         "repeat_chain_length": 1,
         "cost_center": "risk",
+        "task_id": None,
+        "trace_id": None,
+        "tool_call_repeats": None,
+        "task_calls": None,
+        "inflight_duplicate_of": None,
         "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
@@ -1747,3 +1765,197 @@ async def test_a_response_analysis_writes_its_own_jsonl_line() -> None:
         "request_id": "req_local",
         "results": {"probe": {"n": 1}, "versions": {"probe": "7"}},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("markers", "line"),
+    [
+        (None, None),
+        ({}, {}),
+        ({"INSTRUCTION_OVERRIDE": 2}, {"INSTRUCTION_OVERRIDE": 2}),
+        ({"error": True}, {"error": True}),
+    ],
+)
+async def test_the_jsonl_event_carries_injection_markers_only_when_scanned(
+    markers, line
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.privacy = replace(prepared.privacy, injection_markers=markers)
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert event.get("injection_markers", None) == line
+    assert ("injection_markers" in event) == (markers is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_id", "trace_id"),
+    [("task-1", "0af7651916cd43dd8448eb211c80319c"), (None, None)],
+)
+async def test_the_jsonl_event_carries_the_task_and_trace_ids(
+    task_id, trace_id
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.admission.task_id = task_id
+    prepared.admission.trace_id = trace_id
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert (event["task_id"], event["trace_id"]) == (task_id, trace_id)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_answer_writes_a_line_at_no_cost_with_the_share() -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.admission.inflight_duplicate_of = "req_leader"
+    share = {
+        "leader_request_id": "req_leader",
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "avoided_cost_usd": "0.0000106",
+    }
+
+    await usage.finalize_shared(prepared, _terminal(), share)
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    follower, leader = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert {
+        key: follower[key]
+        for key in (
+            "outcome",
+            "prompt_tokens",
+            "completion_tokens",
+            "estimated_cost_usd",
+            "estimated",
+            "completion_outcome",
+            "inflight_duplicate_of",
+            "inflight_share",
+        )
+    } == {
+        "outcome": "completed",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "estimated_cost_usd": "0",
+        "estimated": False,
+        "completion_outcome": "complete",
+        "inflight_duplicate_of": "req_leader",
+        "inflight_share": share,
+    }
+    assert "inflight_share" not in leader, "absent unless an answer was shared"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("unpriced", "added"), [(False, True), (True, False)])
+async def test_a_tasks_settled_cost_is_added_after_the_response_not_before(
+    unpriced, added
+) -> None:
+    import shim.gateway.pipeline.postprocess as module
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    released = asyncio.Event()
+    calls: list[dict] = []
+
+    async def add_cost(tenant_id, task_key, **values):
+        calls.append(values)
+        await released.wait()
+
+    counter = SimpleNamespace(add_cost=add_cost)
+    processor = module.ResponsePostprocessor(
+        SimpleNamespace(finalize=AsyncMock()),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+        task_counter=counter,
+    )
+    prepared = _prepared()
+    prepared.unpriced = unpriced
+    prepared.task_caps = TaskCaps(max_cost_usd=Decimal("1"), window_seconds=600)
+    prepared.admission.task_id = "task-1"
+
+    response = await processor.finalize(
+        prepared,
+        ProviderNonStream(
+            {
+                "choices": [
+                    {"index": 0, "message": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+            },
+            None,
+        ),
+        stream_session=None,
+    )
+
+    assert response.status_code == 200
+    await asyncio.sleep(0)
+    assert len(processor._finalization_tasks) == (1 if added else 0)
+    released.set()
+    await processor.drain()
+    assert [(c["window_seconds"], c["micro_usd"] > 0) for c in calls] == (
+        [(600, True)] if added else []
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_answer_settles_its_prompt_and_no_completion() -> None:
+    from shim.billing.pricing import compute_cost_usd
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared(model="text-embedding-3-small")
+    prepared.protocol = "embeddings"
+
+    await ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=30, output_hash_salt=None
+    ).finalize(
+        prepared,
+        ProviderNonStream(
+            payload={
+                "object": "list",
+                "data": [{"object": "embedding", "index": 0, "embedding": [0.5]}],
+                "model": "text-embedding-3-small",
+                "usage": {"prompt_tokens": 7, "total_tokens": 7},
+            },
+            request_id=None,
+        ),
+        stream_session=None,
+    )
+    await usage.aclose()
+
+    line = json.loads(stream.getvalue())
+    assert (
+        line["protocol"],
+        line["prompt_tokens"],
+        line["completion_tokens"],
+        line["estimated"],
+        line["completion_outcome"],
+        line["answer_characters"],
+    ) == ("openai_embeddings", 7, 0, False, None, None)
+    assert line["estimated_cost_usd"] == str(
+        compute_cost_usd("text-embedding-3-small", 7, 0, provider="openai")
+    )
+
+
+@pytest.mark.parametrize("protocol", ["embeddings", "embed_content"])
+def test_an_embeddings_request_has_no_system_prompt_hash(protocol) -> None:
+    from shim.gateway.usage import system_prompt_hash
+
+    prepared = _prepared(model="text-embedding-3-small")
+    prepared.protocol = protocol
+    prepared.payload = {"model": "text-embedding-3-small", "input": "hello"}
+
+    assert system_prompt_hash(prepared, b"k" * 32) is None

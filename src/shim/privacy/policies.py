@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -85,6 +86,11 @@ def effective_entity_actions(
     return dict(sorted(actions.items()))
 
 
+def placeholder_type(placeholder: str) -> str:
+    """The entity type or rule label of `<TYPE_hex>` or `<TYPE_hex~tail>`."""
+    return placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
+
+
 def block_code(blocked_types: Iterable[str]) -> str | None:
     blocked = set(blocked_types)
     if not blocked:
@@ -120,10 +126,15 @@ class PrivacyOutcome:
     monitored_entities: Mapping[str, int] = field(default_factory=dict)
     blocked_entities: Mapping[str, int] = field(default_factory=dict)
     bulk_disclosure: Mapping[str, int] | None = None
+    # Tool results and documents carrying each marker; None when the scan is off,
+    # {"error": True} when it failed.
+    injection_markers: Mapping[str, int] | None = None
     # Held for the response-side scan only; never persisted or logged.
     monitored_values: frozenset[str] = field(
         default=frozenset(), repr=False, compare=False
     )
+    # Types this caller gets back as placeholders (enterprise restore permission).
+    restore_withheld: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         for name in (
@@ -137,6 +148,27 @@ class PrivacyOutcome:
     @property
     def block_code(self) -> str | None:
         return block_code(self.blocked_entities)
+
+    @property
+    def restore_map(self) -> Mapping[str, str]:
+        """The placeholders this caller gets back as values; the rest stay placeholders."""
+        if not self.restore_withheld:
+            return self.verification_map
+        return {
+            placeholder: value
+            for placeholder, value in self.verification_map.items()
+            if placeholder_type(placeholder) not in self.restore_withheld
+        }
+
+    @property
+    def withheld_counts(self) -> dict[str, int]:
+        return dict(
+            Counter(
+                kind
+                for placeholder in self.verification_map
+                if (kind := placeholder_type(placeholder)) in self.restore_withheld
+            )
+        )
 
     def trace_metadata(self) -> dict[str, str | bool]:
         """Return only metadata safe for a sanitized pipeline trace."""

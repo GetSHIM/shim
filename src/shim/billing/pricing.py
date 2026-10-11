@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 
 TOKENS_PER_MILLION = Decimal("1000000")
@@ -53,6 +53,8 @@ class ModelPrice:
     structured_output: bool | None = None
     input_modalities: tuple[str, ...] | None = None
     status: str | None = None
+    # Embeddings models price input only and answer only the embeddings routes.
+    kind: Literal["chat", "embedding"] = "chat"
 
     def __post_init__(self) -> None:
         if (
@@ -238,7 +240,12 @@ class PriceBook:
         return self.resolve(model, provider).cost(input_tokens, output_tokens, cache)
 
     def models(self, provider: str) -> tuple[str, ...]:
-        return tuple(self.provider_prices.get(provider, ()))
+        """The chat models: what the model listings show."""
+        return tuple(
+            model
+            for model, price in self.provider_prices.get(provider, {}).items()
+            if price.kind == "chat"
+        )
 
     def maximum_output_tokens(
         self,
@@ -381,6 +388,11 @@ def _catalog_facts(raw: Mapping[str, object]) -> dict[str, Any]:
         if status not in _STATUSES:
             raise ValueError("catalog status is invalid")
         facts["status"] = status
+    kind = raw.get("kind")
+    if kind is not None:
+        if kind != "embedding":
+            raise ValueError("catalog kind is invalid")
+        facts["kind"] = kind
     return facts
 
 

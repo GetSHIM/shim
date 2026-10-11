@@ -25,6 +25,10 @@ class Settings(CommunitySettings):
     DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     MODEL_DEPLOYMENT_REQUIRED: bool = False
     MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
+    # Host suffixes such as .openai.azure.com, approved for https on port 443 only.
+    MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES: list[str] = []
+    # Empty: a deployment is internal when its tenant says so.
+    MODEL_DEPLOYMENT_INTERNAL_ORIGINS: list[str] = []
     ALERT_ALLOWED_ORIGINS: list[str] = []
     # The model-deployment name shipped in 0.1.4; existing installs still set it.
     OUTBOUND_CA_BUNDLE: str | None = Field(
@@ -152,6 +156,28 @@ class Settings(CommunitySettings):
             ):
                 raise ValueError(error)
         return value
+
+    @field_validator("MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES")
+    @classmethod
+    def validate_origin_suffixes(cls, value: list[str]) -> list[str]:
+        for suffix in value:
+            labels = suffix.split(".")[1:]
+            if (
+                suffix != suffix.lower()
+                or not suffix.startswith(".")
+                or len(labels) < 2
+                or not all(labels)
+            ):
+                raise ValueError(
+                    "MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES entries are lowercase, "
+                    "start with a dot and have at least two labels"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def azure_is_one_coherent_route(self) -> Self:
+        # Enterprise reaches Azure through registry deployments, never these settings.
+        return self
 
     @field_validator("WORKER_HEARTBEAT_PATH")
     @classmethod

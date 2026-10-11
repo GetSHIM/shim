@@ -4,25 +4,45 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from decimal import ROUND_CEILING, Decimal
+import hashlib
 import json
 import re
 from typing import TYPE_CHECKING
 import unicodedata
 
 from fastapi import HTTPException
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from shim.billing.attribution import CostAttribution
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
 from shim.core.middleware import AsyncRateLimiter
-from shim.gateway.admission import LoopDetectionResult, LoopDetector
+from shim.gateway.admission import (
+    InFlightEntry,
+    InFlightRegistry,
+    InMemoryTaskCounter,
+    LoopDetectionResult,
+    LoopDetector,
+    TaskCounter,
+)
 
 from shim.gateway.kernel.result import (
+    EMBEDDINGS_PROTOCOLS,
     AdmissionState,
     PreparedInference,
     UNSPECIFIED_PROVIDER_MODEL,
 )
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.pipeline.privacy import _is_protocol_field
+from shim.observability.metrics import (
+    AGENT_LOOP_SIGNALS_TOTAL,
+    TASK_ID_REJECTED_TOTAL,
+    TASK_LIMIT_REFUSALS_TOTAL,
+)
+from shim.rules.evaluate import in_scope, settle_matches
+from shim.rules.request_limit import request_measures
 
 if TYPE_CHECKING:
     from shim.gateway.pipeline.authenticate import GatewayInvocation
@@ -30,6 +50,7 @@ if TYPE_CHECKING:
 
 
 _WHITESPACE = re.compile(r"\s+")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _MAX_CANDIDATES = 10_000
 # A word never shares a token with its neighbour in a whitespace-splitting tokenizer.
 _WORD = re.compile(r"[^ \t\r\n]+")
@@ -74,6 +95,9 @@ class AdmissionStage:
         loop_repeat_limit: int,
         loop_window_seconds: int,
         cost_tag_max_length: int,
+        task_counter: TaskCounter | None = None,
+        inflight: InFlightRegistry | None = None,
+        model_lifecycle: ModelLifecycle | None = None,
     ) -> None:
         if loop_repeat_limit < 2 or loop_window_seconds < 1:
             raise ValueError("loop-detection bounds are invalid")
@@ -86,6 +110,11 @@ class AdmissionStage:
         self.loop_repeat_limit = loop_repeat_limit
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
+        self.task_counter = task_counter or InMemoryTaskCounter()
+        self.inflight = inflight or InFlightRegistry()
+        self.model_lifecycle = model_lifecycle or load_lifecycle()
+        # The shareable leader of this request's key whose answer it may receive.
+        self.leader: InFlightEntry | None = None
         self.loop_result = LoopDetectionResult("SAFE", 0)
         self.reserved = False
 
@@ -95,10 +124,19 @@ class AdmissionStage:
             and value.protocol == "responses"
             and value.model == UNSPECIFIED_PROVIDER_MODEL
         )
+        embeddings = value.protocol in EMBEDDINGS_PROTOCOLS
+        # An embeddings model answers only the embeddings routes, and only them.
         model_denied = (
             value.target is None
             and not unspecified_openai_response_model
-            and not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+            and (
+                not DEFAULT_PRICE_BOOK.supports(value.model, str(value.provider))
+                or (
+                    DEFAULT_PRICE_BOOK.resolve(value.model, str(value.provider)).kind
+                    == "embedding"
+                )
+                != embeddings
+            )
         )
         value.record_verdict(
             "gateway.model_catalog",
@@ -119,6 +157,16 @@ class AdmissionStage:
                     "message": "The requested model is not in this gateway's supported model catalog. Use a supported model.",
                 },
             )
+        # A warning only: the provider's own error stays the truth after the date.
+        retirement = self.model_lifecycle.retirement(
+            value.pricing_model,
+            str(value.provider),
+            value.model if value.target is not None else None,
+        )
+        if retirement is not None and (
+            code := retirement.warning(value.context.started_at.date())
+        ):
+            value.warn(code)
         payload = value.payload
         generation_config = payload.get("generationConfig")
         gemini_max = (
@@ -144,11 +192,12 @@ class AdmissionStage:
             ),
             ("provider_default", model_output_limit),
         )
-        if value.protocol == "count_tokens":
+        if value.protocol == "count_tokens" or embeddings:
             per_candidate_output_tokens = 0
         minimum_output_tokens = (
             0
             if value.protocol == "count_tokens"
+            or embeddings
             or (
                 value.provider == "anthropic"
                 and value.protocol == "messages"
@@ -176,14 +225,25 @@ class AdmissionStage:
                     ),
                 },
             )
-        input_tokens = _estimate_input_tokens(payload)
-        output_tokens = per_candidate_output_tokens * candidate_count(value)
+        input_tokens, request_digest = _estimate_input_tokens(
+            payload,
+            f"{value.provider}|{value.protocol}|{value.model}|{value.stream}",
+        )
+        candidates = candidate_count(value)
+        output_tokens = per_candidate_output_tokens * candidates
         tier = value.context.tier_policy
         key_hash = value.policy.rate_limit_key_hash
         # The byte count stays the reservation bound; the rate unit is four bytes a token.
         approximate_tokens = -(-input_tokens // 4)
-        if value.protocol != "count_tokens" and (
-            value.target is None or value.target.context_window
+        # The provider answers an oversized embeddings input natively.
+        if (
+            value.protocol != "count_tokens"
+            and not embeddings
+            and (
+                value.target is None
+                or value.target.context_window
+                or value.target.price_model
+            )
         ):
             _check_catalog_limits(
                 value,
@@ -193,6 +253,22 @@ class AdmissionStage:
                 if output_token_field == "provider_default"
                 else per_candidate_output_tokens,
             )
+        elif embeddings and value.target is None:
+            entry = DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+            if entry is not None and entry.status == "deprecated":
+                value.warn("MODEL_DEPRECATED")
+        attribution = CostAttribution.resolve(
+            self.invocation.headers.get("x-shim-tag"),
+            api_key_cost_center=value.policy.cost_center,
+            maximum_length=self.cost_tag_max_length,
+        )
+        # Before the rate limits, so a refused request consumes none of them.
+        limited = value.protocol != "count_tokens" and _request_limits(
+            value,
+            attribution.tags,
+            input_bytes=input_tokens,
+            approximate_tokens=approximate_tokens,
+        )
         token_limit = tier.rate_limit_tpm
         if token_limit is not None and approximate_tokens > token_limit:
             value.record_verdict(
@@ -261,11 +337,25 @@ class AdmissionStage:
                 "protocol": value.protocol,
             }
         )
+        task_id, trace_id = _task_identity(self.invocation.headers)
+        signature = (
+            _tool_signature(payload, value.protocol)
+            if value.agent_loop.action != "off"
+            else None
+        )
+        turn_key = (
+            hashlib.sha256(
+                f"{task_id or value.api_key_id}|{signature}".encode()
+            ).hexdigest()
+            if signature is not None
+            else None
+        )
         self.loop_result = await self.loop_detector.check_exact_repeat(
             str(value.tenant_id),
             repeat_material,
             limit=self.loop_repeat_limit,
             window_seconds=self.loop_window_seconds,
+            turn_key=turn_key,
         )
         repeated = self.loop_result.status == "BLOCKED"
         value.record_verdict(
@@ -289,22 +379,125 @@ class AdmissionStage:
                 },
                 headers={"Retry-After": str(self.loop_window_seconds)},
             )
-        attribution = CostAttribution.resolve(
-            self.invocation.headers.get("x-shim-tag"),
-            api_key_cost_center=value.policy.cost_center,
-            maximum_length=self.cost_tag_max_length,
+        tool_call_repeats = self.loop_result.turn_repeats if turn_key else None
+        if tool_call_repeats is not None and tool_call_repeats >= (
+            repeats := value.agent_loop.repeats
+        ):
+            block = value.agent_loop.action == "block" and tool_call_repeats > repeats
+            AGENT_LOOP_SIGNALS_TOTAL.labels(action="block" if block else "count").inc()
+            value.record_verdict(
+                "task.agent_loop",
+                stage="admission",
+                outcome="deny" if block else "allow",
+                reason_code="AGENT_LOOP_DETECTED" if block else "AGENT_LOOP_SUSPECTED",
+                policy=value.agent_loop.model_dump(),
+            )
+            if block:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AGENT_LOOP_DETECTED",
+                        "message": f"The same tool call was repeated {tool_call_repeats} "
+                        f"times within {self.loop_window_seconds} seconds.",
+                    },
+                    headers={"x-should-retry": "false"},
+                )
+        task_calls = await self._admit_task_call(value, task_id)
+        shareable = _shareable(value, candidates)
+        earlier = (
+            None
+            if value.protocol == "count_tokens"
+            else self.inflight.enter(
+                str(value.tenant_id),
+                request_digest,
+                str(value.request_id),
+                str(value.api_key_id),
+                shareable,
+            )
         )
+        # An answer never crosses keys.
+        if (
+            shareable
+            and earlier is not None
+            and earlier.shareable
+            and earlier.api_key_id == str(value.api_key_id)
+        ):
+            self.leader = earlier
         admission = AdmissionState(
             estimated_input_tokens=input_tokens,
             maximum_output_tokens=output_tokens,
             cost_center=attribution.cost_center,
             tags=attribution.tags,
             repeat_chain_length=self.loop_result.chain_length or None,
+            task_id=task_id,
+            trace_id=trace_id,
+            tool_call_repeats=tool_call_repeats,
+            task_calls=task_calls,
+            request_digest=request_digest,
+            inflight_duplicate_of=earlier.request_id if earlier is not None else None,
         )
         if value.protocol != "count_tokens":
-            await self.usage.admit(value, admission)
+            try:
+                await self.usage.admit(value, admission)
+            except BaseException:
+                self.inflight.leave(
+                    str(value.tenant_id), request_digest, str(value.request_id)
+                )
+                raise
             self.reserved = True
-        return replace(value, admission=admission)
+        return replace(
+            value,
+            admission=admission,
+            rules_evaluated=value.rules_evaluated or limited,
+        )
+
+    async def _admit_task_call(
+        self, value: PreparedInference, task_id: str | None
+    ) -> int | None:
+        """The task's calls after this one, or None while no cap is set."""
+        caps = value.task_caps
+        if task_id is None or (caps.max_calls is None and caps.max_cost_usd is None):
+            return None
+        task = await self.task_counter.admit_call(
+            str(value.tenant_id),
+            hashlib.sha256(task_id.encode()).hexdigest(),
+            max_calls=caps.max_calls,
+            max_cost_micro_usd=micro_usd(caps.max_cost_usd),
+            window_seconds=caps.window_seconds,
+        )
+        refused = not task.allowed
+        value.record_verdict(
+            "task.limit",
+            stage="admission",
+            outcome="error" if task.unavailable else "deny" if refused else "allow",
+            reason_code="TASK_COUNTER_UNAVAILABLE"
+            if task.unavailable
+            else "TASK_LIMIT_EXCEEDED"
+            if refused
+            else "TASK_LIMIT_PASSED",
+            policy=caps.model_dump(mode="json"),
+        )
+        if refused:
+            cap = (
+                "calls"
+                if caps.max_calls is not None and task.calls >= caps.max_calls
+                else "cost"
+            )
+            TASK_LIMIT_REFUSALS_TOTAL.labels(cap=cap).inc()
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "TASK_LIMIT_EXCEEDED",
+                    "message": (
+                        f"This task reached its limit of {caps.max_calls} calls"
+                        if cap == "calls"
+                        else f"This task reached its cost limit of {caps.max_cost_usd} USD"
+                    )
+                    + f" within {caps.window_seconds} seconds.",
+                },
+                headers={"x-should-retry": "false"},
+            )
+        return task.calls
 
     def trace_metadata(self, output: PreparedInference) -> Mapping[str, TraceValue]:
         assert output.admission is not None
@@ -344,8 +537,16 @@ def _check_catalog_limits(
         # max_tokens above the window and stop at it.
         output = requested_output if value.provider == "openai" else 0
     else:
-        # A deployment is checked against its own window only, never the catalog.
-        window, input_limit = value.target.context_window, None
+        # A deployment's own window, else its price model's: never the upstream name's.
+        entry = (
+            DEFAULT_PRICE_BOOK.exact(value.target.price_model, str(value.provider))
+            if value.target.price_model and not value.target.context_window
+            else None
+        )
+        window = value.target.context_window or (
+            entry.context_window if entry is not None else None
+        )
+        input_limit = entry.input_limit if entry is not None else None
         output = requested_output
     if window is None:
         return
@@ -364,6 +565,178 @@ def _check_catalog_limits(
             )
     if approximate_tokens + output > window:
         value.warn("CONTEXT_MAY_EXCEED")
+
+
+def micro_usd(amount: Decimal | None) -> int | None:
+    return (
+        None
+        if amount is None
+        else int((amount * 1_000_000).to_integral_value(ROUND_CEILING))
+    )
+
+
+def _arguments(value: object) -> object:
+    """Chat and Responses send arguments as a JSON string; parsed when valid."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _turn_calls(turn: object, protocol: str) -> list[tuple[object, object]]:
+    """The tool calls of one assistant (or model) turn, or [] for any other turn."""
+    if not isinstance(turn, Mapping):
+        return []
+    if protocol == "chat" and turn.get("role") == "assistant":
+        return [
+            (
+                call["function"].get("name"),
+                _arguments(call["function"].get("arguments")),
+            )
+            for call in _listed(turn.get("tool_calls"))
+            if isinstance(call, Mapping) and isinstance(call.get("function"), Mapping)
+        ]
+    if protocol in {"messages", "count_tokens"} and turn.get("role") == "assistant":
+        return [
+            (block.get("name"), block.get("input"))
+            for block in _listed(turn.get("content"))
+            if isinstance(block, Mapping) and block.get("type") == "tool_use"
+        ]
+    if protocol == "generate_content" and turn.get("role") == "model":
+        return [
+            (part["functionCall"].get("name"), part["functionCall"].get("args"))
+            for part in _listed(turn.get("parts"))
+            if isinstance(part, Mapping)
+            and isinstance(part.get("functionCall"), Mapping)
+        ]
+    return []
+
+
+def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
+    """A digest of the latest assistant turn's tool calls: names and canonical arguments.
+
+    Read from the end, so a long history costs one turn.
+    """
+    calls: list[tuple[object, object]] = []
+    if protocol == "responses":
+        # Calls of one turn sit next to each other; anything else ends the turn.
+        for item in reversed(_listed(payload.get("input"))):
+            if isinstance(item, Mapping) and item.get("type") == "function_call":
+                calls.append((item.get("name"), _arguments(item.get("arguments"))))
+            elif calls:
+                break
+        calls.reverse()
+    else:
+        turns = payload.get(
+            "contents" if protocol == "generate_content" else "messages"
+        )
+        for turn in reversed(_listed(turns)):
+            if calls := _turn_calls(turn, protocol):
+                break
+    if not calls:
+        return None
+    canonical = json.dumps(
+        [protocol, calls], sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _listed(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _task_identity(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
+    """X-Shim-Task-Id when it is one, else the incoming W3C trace id; and that trace id."""
+
+    trace_id = None
+    if "traceparent" in headers:
+        context = trace.get_current_span(
+            TraceContextTextMapPropagator().extract(
+                {"traceparent": headers["traceparent"]}
+            )
+        ).get_span_context()
+        trace_id = format(context.trace_id, "032x") if context.is_valid else None
+    task_id = (headers.get("x-shim-task-id") or "").strip()
+    if task_id and not _TASK_ID.fullmatch(task_id):
+        TASK_ID_REJECTED_TOTAL.inc()
+        task_id = ""
+    return task_id or trace_id, trace_id
+
+
+def _request_limits(
+    value: PreparedInference,
+    tags: tuple[str, ...],
+    *,
+    input_bytes: int,
+    approximate_tokens: int,
+) -> bool:
+    """The price-tier warning and the request-limit rules in scope; True when a rule ran.
+
+    An enforced block refuses here, before the rate limits. A request that only may cross
+    the price tier is warned, never refused.
+    """
+
+    rules = [
+        rule
+        for rule in (value.rules.rules if value.rules is not None else ())
+        if rule.kind == "request_limit" and in_scope(rule, value, tags)
+    ]
+    entry = (
+        DEFAULT_PRICE_BOOK.exact(value.pricing_model, str(value.provider))
+        if value.target is None
+        and (
+            value.price_tier_warning
+            or any(rule.match["below_price_tier"] for rule in rules)
+        )
+        else None
+    )
+    threshold = entry.large_context_threshold if entry is not None else None
+    if threshold is not None and value.price_tier_warning:
+        if approximate_tokens > threshold:
+            value.warn("PRICE_TIER_CROSSED")
+    if not rules:
+        return False
+    tools, documents, history = request_measures(value.payload, value.protocol)
+    # A word takes at least two bytes, so a small request skips the count.
+    words = (
+        _lower_bound_input(value.payload)
+        if threshold is not None and input_bytes // 2 > threshold
+        else 0
+    )
+    for rule in rules:
+        caps = rule.match
+        over = any(
+            cap is not None and measure > cap
+            for cap, measure in (
+                (caps["max_tools"], tools),
+                (caps["max_documents"], documents),
+                (caps["max_history"], history),
+                (caps["max_input_bytes"], input_bytes),
+            )
+        )
+        tiered = caps["below_price_tier"] and threshold is not None
+        if over or (tiered and words > threshold):
+            value.record_rule_match(rule, 1)
+        elif tiered and approximate_tokens > threshold:
+            value.record_rule_match(rule.model_copy(update={"action": "warn"}), 1)
+    if any(
+        (match.kind, match.state, match.action)
+        == ("request_limit", "enforced", "block")
+        for match in value.rule_matches
+    ):
+        blocked, _ = settle_matches(value)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "RULE_BLOCKED",
+                "message": f"Request blocked by tenant rule {blocked[0]}.",
+                "param": blocked[0],
+            },
+            headers={"X-Shim-Rule-Id": blocked[0]},
+        )
+    return True
 
 
 def _overflow_is_managed(payload: Mapping[str, object]) -> bool:
@@ -488,10 +861,38 @@ def _lower_bound_input(payload: Mapping[str, object]) -> int:
     return sum(words(payload.get(field)) for field in _PROMPT_FIELDS)
 
 
-def _estimate_input_tokens(payload: Mapping[str, object]) -> int:
+def _estimate_input_tokens(
+    payload: Mapping[str, object], identity: str
+) -> tuple[int, str]:
+    """The byte bound and the request digest: SHA-256 over the identity and those bytes.
+
+    Keys hash in the order the client sent them, so a reordered body is another request.
+    """
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = serialized.encode("utf-8", errors="backslashreplace")
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
-    return max(1, len(serialized.encode("utf-8", errors="backslashreplace")))
+    return max(1, len(encoded)), hashlib.sha256(
+        identity.encode() + b"\n" + encoded
+    ).hexdigest()
+
+
+def _shareable(value: PreparedInference, candidates: int) -> bool:
+    """One JSON answer that another identical request of the key may receive as is."""
+    if not value.inflight_sharing or value.stream or candidates != 1:
+        return False
+    if value.protocol == "generate_content":
+        config = value.payload.get("generationConfig")
+        temperature = config.get("temperature") if isinstance(config, Mapping) else None
+    elif value.protocol in {"chat", "messages"}:
+        temperature = value.payload.get("temperature")
+    else:
+        # Responses carries provider-side conversation state; a count is no answer.
+        return False
+    return not (
+        isinstance(temperature, int | float)
+        and not isinstance(temperature, bool)
+        and temperature > 0
+    )
 
 
 def candidate_count(prepared: PreparedInference) -> int:

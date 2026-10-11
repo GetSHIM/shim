@@ -79,6 +79,7 @@ async def test_provider_patch_can_clear_nullable_metadata(
         id=uuid4(),
         organization_id=tenant_id,
         provider="openai",
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         verified_at=datetime.now(timezone.utc),
@@ -117,6 +118,7 @@ async def test_provider_key_rotation_clears_verification(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=10,
         secret_ref="fernet:v2:old",
@@ -411,6 +413,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "monitored_entities",
         "blocked_entities",
         "bulk_disclosure",
+        "injection_markers",
+        "restore_withheld",
         "response_entities",
         "response_analysis",
         "rule_matches",
@@ -590,6 +594,7 @@ async def test_provider_verification_updates_only_conclusive_results(
         id=uuid4(),
         organization_id=tenant_id,
         provider=provider,
+        credential_kind="api_key",
         name=None,
         monthly_limit_usd=None,
         secret_ref="fernet:v2:provider",
@@ -1518,6 +1523,7 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
         id=uuid4(),
         organization_id=uuid4(),
         provider="openai",
+        credential_kind="api_key",
         name="Primary",
         monthly_limit_usd=Decimal("10"),
         secret_ref="fernet:v2:old-reference",
@@ -2313,3 +2319,476 @@ async def test_requests_filter_by_outcome_and_text_refusal(
     assert [row["request_id"] for row in member_soft_csv] == [ids[0]]
     assert {item["request_id"] for item in member["items"]} == {ids[1], ids[2]}
     assert member["summary"]["outcome_counts"]["truncated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_model_retirements_list_who_uses_a_retiring_model(
+    db, test_user_with_org, test_api_key, test_tier, tmp_path, monkeypatch
+) -> None:
+    from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
+
+    user = test_user_with_org
+    tenant = user.organization_id
+    today = datetime.now(timezone.utc).date()
+    dates = tmp_path / "dates.json"
+    entry = {
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11",
+    }
+    dates.write_text(
+        json.dumps(
+            {
+                "format": "shim.model.lifecycle",
+                "version": 1,
+                "models": {
+                    "openai": {
+                        "gpt-4": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=10)),
+                            "replacement": "gpt-5.6-sol",
+                        },
+                        "gpt-4.1": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=400)),
+                        },
+                    },
+                    "registry": {
+                        "internal-llm": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=20)),
+                        }
+                    },
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(management.settings, "SHIM_MODEL_LIFECYCLE_FILE", dates)
+    other = Organization(id=uuid4(), name="Other", slug=f"retire-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    second = ApiKey(
+        id=uuid4(),
+        user_id=user.id,
+        organization_id=tenant,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-ret",
+        name="batch",
+        tier=test_tier,
+        is_active=True,
+    )
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=tenant,
+        provider="openai",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add_all([second, secret])
+    await db.flush()
+    db.add_all(
+        ModelDeployment(
+            organization_id=tenant,
+            alias=alias,
+            provider="openai",
+            upstream_model=upstream,
+            base_url="https://a.internal/v1",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+        )
+        for alias, upstream in (("internal-llm", "llama"), ("cloud-gpt4", "gpt-4"))
+    )
+    team = uuid4()
+    now = datetime.now(timezone.utc)
+
+    def row(organization_id, key, model, *, age=timedelta(hours=1), **metadata):
+        return RequestLifecycle(
+            request_id=f"req_retire_{uuid4().hex}",
+            organization_id=organization_id,
+            actor_type="api_key" if key else "internal",
+            api_key_id=key.id if key else None,
+            source_endpoint="chat.completions",
+            status="completed",
+            provider="openai",
+            requested_model=model,
+            stream=False,
+            started_at=now - age,
+            lifecycle_metadata=metadata,
+        )
+
+    db.add_all(
+        [
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            # Caller text counts under the entry it matched, never as its own item.
+            row(tenant, test_api_key, "gpt-4-anything-goes"),
+            row(tenant, second, "gpt-4", team_id=str(team), tags=["support", "batch"]),
+            row(tenant, test_api_key, "internal-llm"),
+            row(tenant, test_api_key, "gpt-4.1"),
+            row(tenant, test_api_key, "gpt-5.6-luna"),
+            row(tenant, test_api_key, "gpt-4", age=timedelta(days=40)),
+            row(other.id, None, "gpt-4"),
+        ]
+    )
+    await db.flush()
+    statements: list[str] = []
+    listener = lambda *args: statements.append(args[2])  # noqa: E731
+    event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            user.role = "owner"
+            soon = await client.get("/api/v1/management/model-retirements")
+            later = await client.get(
+                "/api/v1/management/model-retirements", params={"days": 730}
+            )
+            bounds = [
+                (
+                    await client.get(
+                        "/api/v1/management/model-retirements", params={"days": days}
+                    )
+                ).status_code
+                for days in (0, 731)
+            ]
+            user.role = "member"
+            member = await client.get("/api/v1/management/model-retirements")
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", listener)
+
+    assert soon.status_code == 200, soon.text
+    items = soon.json()
+    assert [(item["provider"], item["model"]) for item in items] == [
+        ("openai", "gpt-4"),
+        ("registry", "internal-llm"),
+    ]
+    gpt4, internal = items
+    assert (gpt4["retires_on"], gpt4["replacement"]) == (
+        str(today + timedelta(days=10)),
+        "gpt-5.6-sol",
+    )
+    assert [
+        (key["id"], key["name"], key["requests"])
+        for key in gpt4["affected"]["api_keys"]
+    ] == [(str(test_api_key.id), test_api_key.name, 3), (str(second.id), "batch", 1)]
+    assert gpt4["affected"]["teams"] == [{"id": str(team), "requests": 1}]
+    assert gpt4["affected"]["tags"] == [
+        {"tag": "support", "requests": 3},
+        {"tag": "batch", "requests": 1},
+    ]
+    assert gpt4["affected"]["aliases"] == ["cloud-gpt4"]
+    assert [key["requests"] for key in internal["affected"]["api_keys"]] == [1]
+    assert internal["affected"]["aliases"] == ["internal-llm"]
+    assert [item["model"] for item in later.json()] == [
+        "gpt-4",
+        "internal-llm",
+        "gpt-4.1",
+    ]
+    assert bounds == [422, 422]
+    assert member.status_code == 403
+    assert any("l.started_at >= " in statement for statement in statements)
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
+    db, test_user_with_org, audit_events
+) -> None:
+    from sqlalchemy import text
+
+    user = test_user_with_org
+    user.role = "admin"
+    tenant_id = user.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    # The column default, as a row written before this setting existed reads it.
+    await db.execute(
+        text(
+            "INSERT INTO organization_pii_configs (id, organization_id) "
+            "VALUES (gen_random_uuid(), :tenant) ON CONFLICT DO NOTHING"
+        ),
+        {"tenant": tenant_id},
+    )
+    default = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(user, db)
+    )
+
+    async def relaxations() -> list[list[str]]:
+        return [
+            event["extra"]["relaxed"]
+            for event in await audit_events(tenant_id)
+            if event["endpoint"] == "tenant.privacy_protection_relaxed"
+        ]
+
+    added = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(
+                embeddings_monitor_types=["TR_NATIONAL_ID", "IBAN_CODE"]
+            ),
+            request,
+            user,
+            db,
+        )
+    )
+    after_adding = await relaxations()
+    removed = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(embeddings_monitor_types=["IBAN_CODE"]),
+            request,
+            user,
+            db,
+        )
+    )
+
+    assert default.embeddings_monitor_types == []
+    assert added.embeddings_monitor_types == ["IBAN_CODE", "TR_NATIONAL_ID"]
+    assert added.effective_actions["TR_NATIONAL_ID"] == "mask", "chat is unchanged"
+    assert after_adding == [
+        [
+            "embeddings_monitor_types.IBAN_CODE",
+            "embeddings_monitor_types.TR_NATIONAL_ID",
+        ]
+    ]
+    assert removed.embeddings_monitor_types == ["IBAN_CODE"]
+    assert await relaxations() == after_adding, "removing a type is no relaxation"
+    with pytest.raises(ValidationError, match="unknown entity type"):
+        management.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
+    with pytest.raises(ValidationError, match="must not be null"):
+        management.PrivacyPatch.model_validate({"embeddings_monitor_types": None})
+
+
+_ENTRA = {
+    "tenant_id": "contoso.onmicrosoft.com",
+    "client_id": "00000000-0000-0000-0000-0000000000a1",
+    "client_secret": "entra-secret-value",
+}
+
+
+def _entra_row(**fields: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            "id": uuid4(),
+            "organization_id": uuid4(),
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "name": "Azure",
+            "monthly_limit_usd": None,
+            "secret_ref": "fernet:v2:entra",
+            "secret_backend": "fernet",
+            "secret_version": "v2",
+            "masked_key": "entra:000...00a1",
+            "verified_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc),
+            **fields,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    store = SimpleNamespace(put_secret=AsyncMock(return_value="fernet:v2:stored"))
+    session = SimpleNamespace(
+        add=lambda _row: None,
+        flush=AsyncMock(),
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management, "_audit", audit)
+
+    row = await management.create_provider_secret(
+        management.ProviderSecretInput(
+            provider="openai", credential_kind="azure_entra_client", azure_entra=_ENTRA
+        ),
+        SimpleNamespace(organization_id=tenant_id, is_verified=True),
+        session,
+    )
+
+    stored = json.dumps(
+        {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    store.put_secret.assert_awaited_once_with(
+        TenantId(tenant_id),
+        "provider:openai:azure-entra-client",
+        stored,
+        {"provider": "openai", "kind": "azure_entra_client"},
+    )
+    assert (row.credential_kind, row.masked_key) == (
+        "azure_entra_client",
+        "entra:000...00a1",
+    )
+    row.id, row.created_at = uuid4(), datetime.now(timezone.utc)
+    shown = management.ProviderSecretView.model_validate(row).model_dump_json()
+    details = audit.await_args.kwargs["details"]
+    assert details["credential_kind"] == "azure_entra_client"
+    for text in (shown, json.dumps(details, default=str)):
+        assert "entra-secret-value" not in text and "contoso" not in text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"provider": "openai"},
+        {"provider": "openai", "key": "provider-api-key", "azure_entra": _ENTRA},
+        {"provider": "openai", "credential_kind": "azure_entra_client"},
+        {
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": _ENTRA,
+            "key": "provider-api-key",
+        },
+        {
+            "provider": "anthropic",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": _ENTRA,
+        },
+        {
+            "provider": "openai",
+            "credential_kind": "azure_entra_client",
+            "azure_entra": {**_ENTRA, "client_id": "app"},
+        },
+    ],
+)
+def test_a_provider_secret_needs_exactly_the_field_of_its_kind(fields) -> None:
+    with pytest.raises(ValidationError):
+        management.ProviderSecretInput.model_validate(fields)
+
+
+@pytest.mark.asyncio
+async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row()
+    store = SimpleNamespace(
+        rotate_secret=AsyncMock(return_value="fernet:v2:rotated"),
+        delete_secret=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    user = SimpleNamespace(organization_id=row.organization_id)
+    session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+    rotated = {**_ENTRA, "client_id": "00000000-0000-0000-0000-0000000000b2"}
+
+    await management.update_provider_secret(
+        row.id,
+        management.ProviderSecretPatch(
+            azure_entra={**rotated, "scope": "https://ai.azure.com/.default"}
+        ),
+        user,
+        session,
+    )
+
+    assert json.loads(store.rotate_secret.await_args.args[2]) == {
+        **rotated,
+        "scope": "https://ai.azure.com/.default",
+    }
+    assert store.rotate_secret.await_args.kwargs == {
+        "expected_purpose": "provider:openai:azure-entra-client"
+    }
+    assert (row.masked_key, row.verified_at) == ("entra:000...00b2", None)
+    assert audit.await_args.kwargs["details"]["key_rotated"] is True
+    for patch, kind in [
+        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra_client"),
+        (management.ProviderSecretPatch(azure_entra=_ENTRA), "api_key"),
+    ]:
+        row.credential_kind = kind
+        with pytest.raises(HTTPException) as error:
+            await management.update_provider_secret(row.id, patch, user, session)
+        assert error.value.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (
+            httpx.Response(
+                200,
+                json={"access_token": "t", "token_type": "Bearer", "expires_in": 3600},
+            ),
+            200,
+        ),
+        (httpx.Response(400, json={"error": "invalid_client"}), 400),
+        (httpx.Response(500), 503),
+    ],
+)
+async def test_an_entra_secret_is_verified_by_a_fresh_token(
+    monkeypatch: pytest.MonkeyPatch, answer: httpx.Response, outcome: int
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row(verified_at=None)
+    store = SimpleNamespace(
+        get_secret=AsyncMock(
+            return_value=json.dumps(
+                {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"}
+            )
+        )
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(
+        management.settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test"
+    )
+    seen = []
+
+    def entra(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return answer
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(entra)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+        if outcome == 200:
+            await management.verify_provider_secret(
+                row.id,
+                request,
+                SimpleNamespace(organization_id=row.organization_id),
+                session,
+            )
+        else:
+            with pytest.raises(HTTPException) as error:
+                await management.verify_provider_secret(
+                    row.id,
+                    request,
+                    SimpleNamespace(organization_id=row.organization_id),
+                    session,
+                )
+            assert error.value.status_code == outcome
+
+    assert seen == ["https://login.test/contoso.onmicrosoft.com/oauth2/v2.0/token"]
+    assert (row.verified_at is not None) is (outcome == 200)
+    actions = [call.args[2] for call in audit.await_args_list]
+    assert (
+        actions
+        == {
+            200: ["tenant.provider_secret_verified"],
+            400: ["tenant.provider_secret_rejected"],
+            503: [],
+        }[outcome]
+    )

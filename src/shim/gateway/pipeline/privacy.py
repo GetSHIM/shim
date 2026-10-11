@@ -6,15 +6,18 @@ import asyncio
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from functools import partial
+import logging
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, status
 
-from shim.gateway.kernel.result import PreparedInference
+from shim.gateway.kernel.result import EMBEDDINGS_PROTOCOLS, PreparedInference
 from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
+    INJECTION_MARKERS_TOTAL,
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
     PRIVACY_RESPONSE_DETECTION_TOTAL,
@@ -32,10 +35,15 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     block_code,
     effective_entity_actions,
+    placeholder_type,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.privacy.injection import scan_payload
 from shim.rules.content import ContentRules, content_rules
+from shim.rules.destination import destination_actions
 from shim.rules.evaluate import in_scope
+
+logger = logging.getLogger(__name__)
 
 _DEEP_PRIVACY_FIELDS = frozenset(
     {
@@ -149,6 +157,10 @@ def _is_protocol_field(key: object) -> bool:
     )
 
 
+# Actions that keep a value from the provider.
+_HIDING = frozenset({"mask", "mask_last4", "block"})
+
+
 class PrivacyStage:
     """Scrub content and carry reversible maps across Responses continuations."""
 
@@ -164,6 +176,14 @@ class PrivacyStage:
 
     async def run(self, value: PreparedInference) -> PreparedInference:
         actions = effective_entity_actions(value.pii_config, value.entity_actions)
+        if value.protocol in EMBEDDINGS_PROTOCOLS:
+            # The tenant's embeddings relaxation: listed types are only counted.
+            actions = {
+                kind: "monitor"
+                if kind in value.embeddings_monitor_types and action in _HIDING
+                else action
+                for kind, action in actions.items()
+            }
         policy = {"pii_config": value.pii_config, "entity_actions": actions}
         try:
             prepared = await self._run(value, actions)
@@ -215,11 +235,33 @@ class PrivacyStage:
             reason_code=reason_code,
             policy=policy,
         )
+        if value.restore_withheld:
+            withheld = privacy.withheld_counts
+            prepared.record_verdict(
+                "privacy.restore",
+                stage="privacy",
+                outcome="mask" if withheld else "allow",
+                reason_code="RESTORE_WITHHELD" if withheld else "RESTORE_NOT_NEEDED",
+                policy=sorted(value.restore_withheld),
+            )
         return prepared
 
     async def _run(
         self, value: PreparedInference, actions: Mapping[str, EntityAction]
     ) -> PreparedInference:
+        token_ids = (
+            value.protocol == "embeddings"
+            and not isinstance(value.payload["input"], str)
+            and not isinstance(value.payload["input"][0], str)
+        )
+        if token_ids and any(action in _HIDING for action in actions.values()):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "PRIVACY_POLICY_BLOCKED",
+                    "message": "Token-id embeddings input cannot be scanned.",
+                },
+            )
         parent_map: dict[str, str] = {}
         previous_response_id = (
             value.payload.get("previous_response_id")
@@ -233,8 +275,36 @@ class PrivacyStage:
             )
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
-        content = content_rules(value.rules, lambda rule: in_scope(rule, value, tags))
-        safe_payload, verification_map = await asyncio.to_thread(
+        content = content_rules(
+            value.rules, lambda rule: in_scope(rule, value, tags), value.record_sets
+        )
+        unloadable = [
+            rule
+            for rule in (content.rules if content is not None else ())
+            if rule.kind == "record_set"
+            and str(rule.match["set_id"]) not in (value.record_sets or {})
+        ]
+        # The set could not be loaded; an enforced rule would not see the text.
+        if any(
+            rule.state == "enforced" and rule.action in {"mask", "block"}
+            for rule in unloadable
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "PRIVACY_STATE_UNAVAILABLE",
+                    "message": "A record set this request is checked against could "
+                    "not be loaded; retry shortly.",
+                },
+                headers={"Retry-After": "5"},
+            )
+        destinations = [
+            rule
+            for rule in (value.rules.rules if value.rules is not None else ())
+            if rule.kind == "destination" and in_scope(rule, value, tags)
+        ]
+        actions = destination_actions(actions, destinations)
+        scrub = partial(
             scrub_payload,
             value.payload,
             actions,
@@ -243,6 +313,11 @@ class PrivacyStage:
             request_model=value.model,
             unmasked=unmasked,
             content=content,
+            # An enforced block cannot see inside media either.
+            protects=any(
+                (rule.state, rule.action) == ("enforced", "block")
+                for rule in destinations
+            ),
             placeholder_key=None
             if value.placeholder_key is None
             else placeholder_period_key(
@@ -250,6 +325,25 @@ class PrivacyStage:
                 value.tenant_id,
                 value.context.started_at,
             ),
+        )
+
+        def scrub_and_scan() -> tuple[
+            dict[str, Any], dict[str, str], Mapping[str, int] | None
+        ]:
+            scrubbed = scrub()
+            if value.injection_markers == "off":
+                return *scrubbed, None
+            try:
+                # The raw request: invisible characters are gone after scrubbing.
+                return *scrubbed, scan_payload(value.payload, value.protocol)
+            except Exception as error:
+                logger.warning(
+                    "Injection marker scan failed error_type=%s", type(error).__name__
+                )
+                return *scrubbed, {"error": True}
+
+        safe_payload, verification_map, injection_markers = await asyncio.to_thread(
+            scrub_and_scan
         )
         if (
             verification_map
@@ -282,17 +376,23 @@ class PrivacyStage:
             pii_detected=pii_detected,
             verification_map=verification_map,
             # <TYPE_hex> or <TYPE_hex~tail>
-            pii_entities=Counter(
-                placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
-                for placeholder in new_placeholders
-            ),
+            pii_entities=Counter(map(placeholder_type, new_placeholders)),
             monitored_entities=Counter(monitored.values()),
             blocked_entities=blocked,
             bulk_disclosure={"distinct_values": distinct_values, "threshold": threshold}
             if threshold is not None and distinct_values >= threshold
             else None,
             monitored_values=frozenset(monitored),
+            injection_markers=injection_markers,
+            restore_withheld=value.restore_withheld,
         )
+        if injection_markers and "error" not in injection_markers:
+            for marker, count in injection_markers.items():
+                INJECTION_MARKERS_TOTAL.labels(
+                    marker=bounded_label("marker", marker)
+                ).inc(count)
+            if value.injection_markers == "warn":
+                value.warn("INJECTION_MARKERS")
         for counts in (
             privacy.pii_entities,
             privacy.monitored_entities,
@@ -309,12 +409,24 @@ class PrivacyStage:
                         rule,
                         len(content.values.get(rule.id, ())),
                         error=rule.id in content.errors,
+                        truncated=rule.id in content.truncated,
                     )
+        detected = (
+            Counter(privacy.pii_entities)
+            + Counter(privacy.monitored_entities)
+            + Counter(privacy.blocked_entities)
+        )
+        for rule in destinations:
+            count = sum(detected[name] for name in rule.match["entity_types"])
+            if count:
+                value.record_rule_match(rule, count)
         return replace(
             value,
             payload=safe_payload,
             privacy=privacy,
-            rules_evaluated=content is not None,
+            rules_evaluated=value.rules_evaluated
+            or content is not None
+            or bool(destinations),
         )
 
     def trace_metadata(
@@ -335,15 +447,18 @@ def scrub_payload(
     unmasked: dict[str, str] | None = None,
     placeholder_key: bytes | None = None,
     content: ContentRules | None = None,
+    protects: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     verification_map = dict(known_placeholders or {})
     if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
     # Monitored values pass unchanged, so only masked or blocked types refuse
     # what cannot be rewritten; media cannot be searched for tenant terms either.
-    protects = any(
-        action in {"mask", "mask_last4", "block"} for action in actions.values()
-    ) or (content is not None and content.protects)
+    protects = (
+        protects
+        or any(action in {"mask", "mask_last4", "block"} for action in actions.values())
+        or (content is not None and content.protects)
+    )
     unmasked = {} if unmasked is None else unmasked
 
     placeholders_by_value = {

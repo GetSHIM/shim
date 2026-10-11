@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import httpx
 from pydantic import ValidationError
 import pytest
@@ -110,7 +110,20 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
 
     assert view.settings == GatewaySettings()
     assert view.model_dump(mode="json") == {
-        "settings": {"response_analysis": []},
+        "settings": {
+            "response_analysis": [],
+            "injection_markers": "off",
+            "price_tier_warning": False,
+            "model_retiring_warning": "record",
+            "restore_withheld": {},
+            "task_caps": {
+                "max_calls": None,
+                "max_cost_usd": None,
+                "window_seconds": 3600,
+            },
+            "agent_loop": {"action": "count", "repeats": 5},
+            "inflight_sharing_api_key_ids": [],
+        },
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
@@ -190,6 +203,8 @@ async def test_a_patch_that_changes_nothing_writes_nothing(
         {"response_analysis": ["shape", "shape"]},
         {"response_analysis": None},
         {"unknown": 1},
+        {"injection_markers": "block"},
+        {"injection_markers": None},
     ],
 )
 def test_a_patch_refuses_unknown_names_duplicates_nulls_and_fields(
@@ -254,6 +269,234 @@ def test_every_field_has_a_direction_and_changes_classify(
         SETTING_DIRECTIONS, "response_analysis", lambda _b, _a: "tightening"
     )
     assert classify_change(before, after) == ("tightening", [])
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ("off", "count", ("tightening", [])),
+        ("count", "warn", ("tightening", [])),
+        ("off", "warn", ("tightening", [])),
+        ("warn", "count", ("relaxing", ["injection_markers"])),
+        ("count", "off", ("relaxing", ["injection_markers"])),
+        ("warn", "off", ("relaxing", ["injection_markers"])),
+    ],
+)
+def test_injection_markers_relax_downwards(before, after, classified) -> None:
+    assert GatewaySettings().injection_markers == "off"
+    assert (
+        classify_change(
+            GatewaySettings(injection_markers=before),
+            GatewaySettings(injection_markers=after),
+        )
+        == classified
+    )
+
+
+@pytest.mark.asyncio
+async def test_turning_injection_markers_down_writes_the_relaxed_event(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(injection_markers="warn"), _request(), admin, db
+    )
+    view = await management.update_gateway_settings(
+        GatewaySettingsPatch(injection_markers="count"), _request(), admin, db
+    )
+
+    assert view.settings.injection_markers == "count"
+    relaxed = [
+        event["extra"]["relaxed"]
+        for event in await audit_events(test_org.id)
+        if event["endpoint"] == "tenant.gateway_protection_relaxed"
+    ]
+    assert relaxed == [["injection_markers"]]
+
+
+@pytest.mark.asyncio
+async def test_the_price_tier_warning_round_trips_and_is_never_a_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    on = await management.update_gateway_settings(
+        GatewaySettingsPatch(price_tier_warning=True), _request(), admin, db
+    )
+    off = await management.update_gateway_settings(
+        GatewaySettingsPatch(price_tier_warning=False), _request(), admin, db
+    )
+
+    assert (on.settings.price_tier_warning, off.settings.price_tier_warning) == (
+        True,
+        False,
+    )
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed"
+        for event in await audit_events(test_org.id)
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"NOT_A_TYPE_AT_ALL_LONGER": {}},
+        {"lowercase": {}},
+        {f"LABEL{i}": {} for i in range(65)},
+        {"TR_NATIONAL_ID": {"team_ids": ["not-a-uuid"]}},
+        {"TR_NATIONAL_ID": {"api_key_ids": [str(uuid4()) for _ in range(201)]}},
+        {"TR_NATIONAL_ID": {"people": []}},
+        None,
+    ],
+)
+def test_restore_grants_refuse_unknown_types_and_oversized_lists(value) -> None:
+    with pytest.raises(ValidationError):
+        GatewaySettingsPatch.model_validate({"restore_withheld": value})
+
+
+def test_restore_grants_take_built_in_types_and_rule_labels() -> None:
+    patch = GatewaySettingsPatch.model_validate(
+        {"restore_withheld": {"TR_NATIONAL_ID": {}, "PROJECT": {"team_ids": []}}}
+    )
+
+    assert set(patch.restore_withheld or {}) == {"TR_NATIONAL_ID", "PROJECT"}
+
+
+def _grants(**types) -> GatewaySettings:
+    return GatewaySettings.model_validate({"restore_withheld": types})
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ({}, {"IBAN_CODE": {}}, ("tightening", [])),
+        ({"IBAN_CODE": {}}, {}, ("relaxing", ["restore_withheld"])),
+        (
+            {"IBAN_CODE": {}},
+            {"IBAN_CODE": {"team_ids": [str(UUID(int=1))]}},
+            ("relaxing", ["restore_withheld"]),
+        ),
+        (
+            {"IBAN_CODE": {"api_key_ids": [str(UUID(int=1))]}},
+            {"IBAN_CODE": {}},
+            ("tightening", []),
+        ),
+    ],
+)
+def test_restore_grants_relax_when_a_type_goes_or_an_id_is_added(
+    before, after, classified
+) -> None:
+    assert classify_change(_grants(**before), _grants(**after)) == classified
+
+
+@pytest.mark.asyncio
+async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_privacy(
+    db, test_org, audit_events
+) -> None:
+    from shim_enterprise.tenants.models import Team
+
+    admin = await _admin(db, test_org.id)
+    team = Team(id=uuid4(), organization_id=test_org.id, name="Risk")
+    db.add(team)
+    await db.flush()
+
+    with pytest.raises(HTTPException) as refused:
+        await management.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(uuid4())]}}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    granted = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(team.id)]}}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(restore_withheld={}), _request(), admin, db
+    )
+
+    assert refused.value.status_code == 422
+    assert granted.settings.restore_withheld["TR_NATIONAL_ID"].team_ids == [team.id]
+    events = await audit_events(test_org.id)
+    assert [
+        event["extra"]["relaxed"]
+        for event in events
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [["restore_withheld.TR_NATIONAL_ID"]]
+    assert not any(
+        event["endpoint"] == "tenant.gateway_protection_relaxed" for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "before", "after", "direction"),
+    [
+        ("task_caps", {}, {"max_calls": 10}, "tightening"),
+        ("task_caps", {"max_calls": 10}, {"max_calls": 20}, "relaxing"),
+        ("task_caps", {"max_calls": 10}, {}, "relaxing"),
+        ("task_caps", {"max_cost_usd": "1"}, {"max_cost_usd": "0.5"}, "tightening"),
+        (
+            "task_caps",
+            {"max_calls": 10},
+            {"max_calls": 10, "window_seconds": 60},
+            "relaxing",
+        ),
+        ("agent_loop", {}, {"action": "block"}, "tightening"),
+        ("agent_loop", {"action": "block"}, {"action": "count"}, "relaxing"),
+        ("agent_loop", {}, {"action": "off"}, "relaxing"),
+        ("agent_loop", {}, {"repeats": 9}, "relaxing"),
+        ("agent_loop", {"repeats": 9}, {"repeats": 3}, "tightening"),
+    ],
+)
+def test_raising_a_task_cap_or_easing_the_loop_action_relaxes(
+    field, before, after, direction
+) -> None:
+    classified, relaxed = classify_change(
+        GatewaySettings.model_validate({field: before}),
+        GatewaySettings.model_validate({field: after}),
+    )
+
+    assert classified == direction
+    assert relaxed == ([field] if direction == "relaxing" else [])
+
+
+@pytest.mark.asyncio
+async def test_a_task_caps_patch_changes_only_the_fields_it_names(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+    await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"task_caps": {"max_calls": 10, "window_seconds": 600}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    view = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"task_caps": {"max_cost_usd": "0.5"}}),
+        _request(),
+        admin,
+        db,
+    )
+    cleared = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"task_caps": {"max_calls": None}}),
+        _request(),
+        admin,
+        db,
+    )
+
+    caps = view.settings.task_caps
+    assert (caps.max_calls, str(caps.max_cost_usd), caps.window_seconds) == (
+        10,
+        "0.5",
+        600,
+    )
+    assert cleared.settings.task_caps.max_calls is None
+    assert cleared.settings.task_caps.window_seconds == 600
 
 
 def test_a_stored_key_this_build_does_not_know_is_ignored_and_logged_once(
@@ -500,3 +743,41 @@ async def test_a_stored_analyzer_this_build_does_not_have_breaks_nothing(
     assert (same.revision, changed.revision) == (0, 1)
     row = await db.get(OrganizationGatewaySettings, test_org.id)
     assert row.settings == {"response_analysis": ["language"]}
+
+
+@pytest.mark.asyncio
+async def test_inflight_sharing_names_only_this_organizations_keys(
+    db, test_api_key, audit_events
+) -> None:
+    organization_id = test_api_key.organization_id
+    admin = await _admin(db, organization_id)
+
+    with pytest.raises(HTTPException) as refused:
+        await management.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"inflight_sharing_api_key_ids": [str(uuid4())]}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    listed = await management.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"inflight_sharing_api_key_ids": [str(test_api_key.id)]}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert refused.value.status_code == 422
+    assert "inflight_sharing_api_key_ids" in refused.value.detail
+    assert listed.settings.inflight_sharing_api_key_ids == [test_api_key.id]
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(organization_id)
+    ), "sharing within one key is neutral"
+    with pytest.raises(ValueError):
+        GatewaySettingsPatch.model_validate(
+            {"inflight_sharing_api_key_ids": [str(uuid4()) for _ in range(1001)]}
+        )

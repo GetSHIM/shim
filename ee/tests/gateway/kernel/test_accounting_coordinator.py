@@ -50,6 +50,7 @@ from shim.gateway.contracts.context import (
 )
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.pipeline.admission import AdmissionStage
+from shim.gateway.request_policy import TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -117,7 +118,14 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         admission=SimpleNamespace(
             estimated_input_tokens=20,
             maximum_output_tokens=30,
+            task_id=None,
+            trace_id=None,
+            tool_call_repeats=None,
+            task_calls=None,
+            request_digest="digest",
+            inflight_duplicate_of=None,
         ),
+        task_caps=TaskCaps(),
         payload={"messages": []},
         privacy=PrivacyOutcome(
             action=PrivacyAction.DISABLED,
@@ -3046,6 +3054,199 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "markers", [{"INSTRUCTION_OVERRIDE": 1}, {}, {"error": True}, None]
+)
+async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, markers
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.DETECTED, pii_detected=False, injection_markers=markers
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("injection_markers") == markers
+    assert ("injection_markers" in lifecycle.lifecycle_metadata) == (
+        markers is not None
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.list_requests(**filters, limit=1, offset=0)
+    exported = await management.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].injection_markers == markers
+    assert (
+        json.loads(row["injection_markers"]) if row["injection_markers"] else None
+    ) == markers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("withheld", "markers"),
+    [
+        (frozenset({"TR_NATIONAL_ID"}), {"TR_NATIONAL_ID": 1}),
+        (frozenset({"IBAN_CODE"}), {}),
+        (frozenset(), None),
+    ],
+)
+async def test_restore_withheld_counts_reach_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, withheld, markers
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        verification_map={"<TR_NATIONAL_ID_ff8d9811>": "10000000146"},
+        pii_entities={"TR_NATIONAL_ID": 1},
+        restore_withheld=withheld,
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("restore_withheld") == markers
+    assert ("restore_withheld" in lifecycle.lifecycle_metadata) == (markers is not None)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.list_requests(**filters, limit=1, offset=0)
+    exported = await management.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].restore_withheld == markers
+    assert (
+        json.loads(row["restore_withheld"]) if row["restore_withheld"] else None
+    ) == markers
+
+
+@pytest.mark.asyncio
 async def test_a_response_scan_updates_only_its_own_tenants_lifecycle(
     db, test_api_key
 ) -> None:
@@ -3266,3 +3467,174 @@ async def test_a_failed_response_analysis_record_is_logged_and_dropped(caplog) -
 
     assert "Response analysis record failed type=ConnectionError" in caplog.text
     assert "private-host" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_id", "trace_id"),
+    [("task-42", "0af7651916cd43dd8448eb211c80319c"), (None, None)],
+)
+async def test_the_reservation_records_the_task_and_trace_ids(
+    db, test_api_key, task_id, trace_id
+) -> None:
+    started_at = datetime.now(timezone.utc)
+    request_id = f"req_{uuid4().hex}"
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            task_id=task_id,
+            trace_id=trace_id,
+            tool_call_repeats=2 if task_id else None,
+            task_calls=3 if task_id else None,
+        ),
+    )
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).scalar_one()
+    metadata = lifecycle.lifecycle_metadata
+    assert (metadata["task_id"], metadata["trace_id"]) == (task_id, trace_id)
+    assert (metadata["tool_call_repeats"], metadata["task_calls"]) == (
+        (2, 3) if task_id else (None, None)
+    )
+    assert metadata["inflight_duplicate_of"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_shared_answer_settles_one_request_unit_without_tokens_or_spend(
+    db, test_api_key
+) -> None:
+    from shim.gateway.pipeline.provider_execution import ProviderNonStream
+
+    follower = _prepared()
+    follower.tenant_id = test_api_key.organization_id
+    follower.api_key_id = test_api_key.id
+    leader_id = f"req_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=follower.tenant_id,
+            api_key_id=follower.api_key_id,
+            request_id=follower.request_id,
+            requested_model=follower.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            inflight_duplicate_of=leader_id,
+        ),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    response = await ResponsePostprocessor(
+        DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope),
+        heartbeat_interval_seconds=30,
+        output_hash_salt=None,
+    ).finalize_shared(
+        follower,
+        ProviderNonStream(
+            payload={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            },
+            request_id="upstream-1",
+            latency_ms=12.0,
+        ),
+        leader_id,
+    )
+
+    lifecycle = await db.scalar(
+        select(RequestLifecycle).where(
+            RequestLifecycle.request_id == follower.request_id
+        )
+    )
+    ledger = (
+        await db.execute(
+            select(
+                UsageLedger.event_type,
+                UsageLedger.request_count,
+                UsageLedger.total_tokens,
+                UsageLedger.cost_usd,
+            ).where(UsageLedger.request_id == follower.request_id)
+        )
+    ).all()
+    assert response is not None and response.headers["x-request-id"] == "upstream-1"
+    assert (lifecycle.status, lifecycle.provider_model) == ("completed", "gpt-5.6-luna")
+    metadata = lifecycle.lifecycle_metadata
+    assert metadata["inflight_duplicate_of"] == leader_id
+    assert metadata["inflight_share"] == {
+        "leader_request_id": leader_id,
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "avoided_cost_usd": str(
+            compute_cost_usd("gpt-5.6-luna", 100, 20, provider="openai")
+        ),
+    }
+    assert ("inflight.share", "skip", "INFLIGHT_RESPONSE_SHARED") in {
+        (verdict["rule_id"], verdict["outcome"], verdict["reason_code"])
+        for verdict in metadata["policy_verdicts"]
+    }
+    assert sorted(ledger) == [
+        ("quota_reservation", 1, 50, Decimal("0")),
+        ("quota_settlement", 1, 0, Decimal("0")),
+    ], "one request unit, no tokens, no spend row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["embeddings", "embed_content"])
+async def test_an_embeddings_request_reserves_its_quota(protocol) -> None:
+    repository = SimpleNamespace(
+        reserve_quota=AsyncMock(return_value=SimpleNamespace(replayed=False))
+    )
+    policy_loader = SimpleNamespace(
+        quota=AsyncMock(return_value=QuotaPolicySnapshot("quota-v1", None, None, None))
+    )
+    prepared = _prepared()
+    prepared.protocol = protocol
+    prepared.payload = {"model": "text-embedding-3-small", "input": "hello"}
+    prepared.source_endpoint = "embeddings"
+    prepared.context.started_at = datetime.now(timezone.utc)
+    prepared.policy = SimpleNamespace(team=None)
+
+    await DurableAccountingCoordinator(
+        repository=repository, policy_loader=policy_loader
+    ).reserve_quota(
+        prepared,
+        AdmissionState(
+            estimated_input_tokens=20,
+            maximum_output_tokens=0,
+            cost_center="untagged",
+            tags=(),
+        ),
+        SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock()),
+    )
+
+    command = repository.reserve_quota.await_args.args[1]
+    assert (command.maximum_output_tokens, command.system_prompt_hash) == (0, None)

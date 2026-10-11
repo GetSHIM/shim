@@ -48,6 +48,41 @@ class ChatRequest(ProviderRequest):
         return value if isinstance(value, bool) else False
 
 
+def _embeddings_input(value: object) -> bool:
+    """A string, or a non-empty list of strings, token ids or token-id lists."""
+
+    def token(item: object) -> bool:
+        return isinstance(item, int) and not isinstance(item, bool)
+
+    if isinstance(value, str):
+        return True
+    if not isinstance(value, list) or not value:
+        return False
+    return (
+        all(isinstance(item, str) for item in value)
+        or all(token(item) for item in value)
+        or all(
+            isinstance(item, list) and item and all(token(part) for part in item)
+            for item in value
+        )
+    )
+
+
+class EmbeddingsRequest(ProviderRequest):
+    @model_validator(mode="after")
+    def validate_routing_fields(self) -> Self:
+        self.require_nonempty_string("model")
+        if not _embeddings_input(self.root.get("input")):
+            raise ValueError(
+                "input must be a string, or a list of strings, token ids or token-id lists"
+            )
+        return self
+
+    @property
+    def model(self) -> str:
+        return self.require_nonempty_string("model")
+
+
 class ModelRecordView(BaseModel):
     id: str
     object: str
@@ -230,6 +265,32 @@ async def chat_completions(
         protocol="chat",
         model=payload.model,
         stream=payload.stream,
+        gateway_service=gateway_service,
+        principal=principal,
+    )
+
+
+@router.post(
+    "/embeddings",
+    responses={
+        200: {"description": "Native OpenAI embeddings JSON."},
+        **OPENAI_ERROR_RESPONSES,
+    },
+)
+async def embeddings(
+    request: Request,
+    payload: EmbeddingsRequest,
+    gateway_service: GatewayService = Depends(get_gateway_service),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+):
+    # `stream` is ignored, as the provider ignores it: embeddings have no stream.
+    return await dispatch_gateway_inference(
+        request=request,
+        payload=payload.provider_payload("stream"),
+        provider="openai",
+        protocol="embeddings",
+        model=payload.model,
+        stream=False,
         gateway_service=gateway_service,
         principal=principal,
     )

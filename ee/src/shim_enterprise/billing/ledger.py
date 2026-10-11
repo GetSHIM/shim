@@ -198,6 +198,11 @@ class QuotaReservationCommand:
     policy: QuotaPolicySnapshot
     cost_center: str = "untagged"
     tags: tuple[str, ...] = ()
+    task_id: str | None = None
+    trace_id: str | None = None
+    tool_call_repeats: int | None = None
+    task_calls: int | None = None
+    inflight_duplicate_of: str | None = None
     team: str | None = None
     stream: bool = False
     repeat_chain_length: int | None = None
@@ -281,6 +286,8 @@ class FinalizationCommand:
     warnings: tuple[str, ...] = ()
     shim_latency_ms: int | None = None
     policy_verdicts: tuple[dict[str, Any], ...] | None = None
+    # S48: the identical in-flight request whose answer this one received.
+    inflight_share: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.quota_action is TerminalAction.NONE:
@@ -358,6 +365,11 @@ class DurableAccountingRepository:
                     "quota_policy_version": command.policy.version,
                     "cost_center": command.cost_center,
                     "tags": list(command.tags),
+                    "task_id": command.task_id,
+                    "trace_id": command.trace_id,
+                    "tool_call_repeats": command.tool_call_repeats,
+                    "task_calls": command.task_calls,
+                    "inflight_duplicate_of": command.inflight_duplicate_of,
                     "team": command.team,
                     "team_id": team_id,
                     "repeat_chain_length": command.repeat_chain_length,
@@ -635,6 +647,11 @@ class DurableAccountingRepository:
                         "reasoning_seen": command.reasoning_seen,
                     }
                     if command.quota_action is TerminalAction.SETTLE
+                    else {}
+                ),
+                **(
+                    {"inflight_share": command.inflight_share}
+                    if command.inflight_share is not None
                     else {}
                 ),
             }

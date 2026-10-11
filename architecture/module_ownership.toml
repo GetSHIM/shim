@@ -32,12 +32,13 @@ forbidden_noncloud_import_roots = [
 "shim.api.v1.messages" = ["router"]
 "shim.api.v1.responses" = ["router"]
 "shim.billing.attribution" = ["UNTAGGED", "normalize_attribution"]
+"shim.billing.lifecycle" = ["load_lifecycle"]
 "shim.billing.pricing" = ["DEFAULT_PRICE_BOOK", "compute_cost_usd"]
 "shim.core.circuit_breaker" = ["validate_circuit_limits"]
-"shim.core.community_config" = ["CommunitySettings"]
+"shim.core.community_config" = ["AZURE_DEPLOYMENT_NAME", "CommunitySettings"]
 "shim.core.http" = ["install_http_middleware"]
 "shim.findings" = ["Finding", "FindingEvidence", "FindingImpact", "FindingRemediation", "FindingSubject", "FindingText", "FindingWindow"]
-"shim.gateway.admission" = ["LoopDetectionResult"]
+"shim.gateway.admission" = ["LoopDetectionResult", "TaskAdmission"]
 "shim.gateway.analyzers" = ["ANALYZERS", "ANALYZER_NAMES"]
 "shim.gateway.api.errors" = ["gateway_exception_handler"]
 "shim.gateway.auth" = ["authentication_error", "select_gateway_credential"]
@@ -71,7 +72,13 @@ forbidden_noncloud_import_roots = [
 "shim.gateway.pipeline.google_execution" = ["GoogleExecution"]
 "shim.gateway.pipeline.openai_execution" = ["OpenAIExecution"]
 "shim.gateway.pipeline.privacy" = ["ScanPrivacyOutcome", "ScanPrivacyStage"]
-"shim.gateway.request_policy" = ["RequestPolicyContext", "ResolvedRequestPolicy"]
+"shim.gateway.pipeline.provider_execution" = ["ProviderCallError"]
+"shim.gateway.request_policy" = [
+  "AgentLoop",
+  "RequestPolicyContext",
+  "ResolvedRequestPolicy",
+  "TaskCaps",
+]
 "shim.gateway.streaming.finalization" = ["StreamFinalization"]
 "shim.gateway.usage" = ["UsageAuditPersistenceError", "UsageFailureReason", "UsageLimitExceeded", "system_prompt_hash"]
 "shim.observability.logging" = [
@@ -92,8 +99,10 @@ forbidden_noncloud_import_roots = [
   "PII_CONFIG_DEFAULTS",
   "effective_entity_actions",
 ]
+"shim.privacy.record_match" = ["FIELD_KINDS", "FINGERPRINT_VERSION", "KEY_BYTES", "RecordField", "RecordSetIndex", "fingerprints", "normalize", "record_hash"]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "load_rule_set", "match_records", "validate_rule_set"]
+"shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]
 
@@ -147,6 +156,7 @@ public = [
   "src/shim/application.py",
   "src/shim/billing/__init__.py",
   "src/shim/billing/attribution.py",
+  "src/shim/billing/lifecycle.py",
   "src/shim/billing/pricing.py",
   "src/shim/cli.py",
   "src/shim/core/__init__.py",
@@ -205,24 +215,31 @@ public = [
   "src/shim/privacy/classification.py",
   "src/shim/privacy/continuation.py",
   "src/shim/privacy/deanonymizer.py",
+  "src/shim/privacy/injection.py",
   "src/shim/privacy/pii_scrubber.py",
   "src/shim/privacy/policies.py",
   "src/shim/privacy/presidio_analyzer.py",
+  "src/shim/privacy/record_match.py",
   "src/shim/privacy/retention.py",
   "src/shim/rules/__init__.py",
   "src/shim/rules/approval.py",
   "src/shim/rules/content.py",
+  "src/shim/rules/destination.py",
   "src/shim/rules/evaluate.py",
   "src/shim/rules/kinds.py",
   "src/shim/rules/model.py",
   "src/shim/rules/patterns.py",
+  "src/shim/rules/record_set.py",
+  "src/shim/rules/request_limit.py",
   "src/shim/rules/tr_suffixes.py",
   "src/shim/secrets/__init__.py",
+  "src/shim/secrets/azure.py",
   "src/shim/secrets/credentials.py",
   "src/shim/services/__init__.py",
   "src/shim/services/gateway/__init__.py",
   "src/shim/services/gateway/service.py",
   "tests/billing/test_model_catalog_sync.py",
+  "tests/billing/test_model_lifecycle.py",
   "tests/billing/test_pricing.py",
   "tests/community/test_application.py",
   "tests/community/test_community_scan.py",
@@ -252,7 +269,10 @@ public = [
   "tests/gateway/privacy/test_continuation.py",
   "tests/gateway/privacy/test_detection_corpus.py",
   "tests/gateway/privacy/test_person_corpus.py",
+  "tests/gateway/privacy/test_injection.py",
+  "tests/gateway/privacy/test_injection_corpus.py",
   "tests/gateway/privacy/test_pii_scrubber.py",
+  "tests/gateway/privacy/test_record_match.py",
   "tests/gateway/providers/test_circuit_breaker.py",
   "tests/gateway/streaming/__init__.py",
   "tests/gateway/streaming/test_meter.py",
@@ -268,9 +288,12 @@ public = [
   "tests/observability/test_request_metrics.py",
   "tests/observability/test_sanitization.py",
   "tests/rules/test_content.py",
+  "tests/rules/test_destination.py",
   "tests/rules/test_evaluate.py",
   "tests/rules/test_patterns.py",
+  "tests/rules/test_request_limit.py",
   "tests/rules/test_rule_model.py",
+  "tests/secrets/test_azure.py",
   "tests/secrets/test_credentials.py",
   "tests/test_jsonschema_subset.py",
 ]
@@ -288,6 +311,7 @@ enterprise = [
   "ee/alembic/versions/4d4e8c6b975a_add_organization_quota_limits.py",
   "ee/alembic/versions/5050a43c2a46_add_findings.py",
   "ee/alembic/versions/73260da93588_add_model_deployment_price_and_window.py",
+  "ee/alembic/versions/73669c9be04c_add_record_sets.py",
   "ee/alembic/versions/7e3fb2338f03_add_readiness_declarations.py",
   "ee/alembic/versions/a61706150d6c_add_incidents.py",
   "ee/alembic/versions/a91e5dfc25b8_add_evidence_reports.py",
@@ -295,6 +319,8 @@ enterprise = [
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
+  "ee/alembic/versions/c9ed4e82b922_add_azure_openai_deployments.py",
+  "ee/alembic/versions/d34c574e0cc8_add_embeddings_monitor_types.py",
   "ee/alembic/versions/d94f7f0ba8a2_add_service_accounts.py",
   "ee/alembic/versions/de7150dd2f7a_tenant_level_forward_targets.py",
   "ee/alembic/versions/ea4e658a2648_normalize_budget_scope_values.py",
@@ -305,6 +331,7 @@ enterprise = [
   "ee/deploy/test/test_reuse.py",
   "ee/scripts/activate_plan.py",
   "ee/scripts/generate_monthly_evidence.py",
+  "ee/scripts/hash_record_set.py",
   "ee/scripts/offline_bundle.py",
   "ee/scripts/redrive_audit_events.py",
   "ee/scripts/sign_license.py",
@@ -341,6 +368,7 @@ enterprise = [
   "ee/src/shim_enterprise/cache/circuit_breaker.py",
   "ee/src/shim_enterprise/cache/loop_detection.py",
   "ee/src/shim_enterprise/cache/redis_index.py",
+  "ee/src/shim_enterprise/cache/task_counters.py",
   "ee/src/shim_enterprise/compliance/__init__.py",
   "ee/src/shim_enterprise/compliance/adapters/__init__.py",
   "ee/src/shim_enterprise/compliance/adapters/anthropic.py",
@@ -435,6 +463,7 @@ enterprise = [
   "ee/src/shim_enterprise/tenants/permissions.py",
   "ee/src/shim_enterprise/tenants/plans.py",
   "ee/src/shim_enterprise/tenants/policy.py",
+  "ee/src/shim_enterprise/tenants/record_sets.py",
   "ee/src/shim_enterprise/tenants/service.py",
   "ee/src/shim_enterprise/tenants/teams.py",
   "ee/src/shim_enterprise/workers/__init__.py",
@@ -472,6 +501,7 @@ enterprise = [
   "ee/tests/gateway/api/test_permission_matrix.py",
   "ee/tests/gateway/api/test_scan_endpoint.py",
   "ee/tests/gateway/cache/test_loop_detection.py",
+  "ee/tests/gateway/cache/test_task_counters.py",
   "ee/tests/gateway/kernel/test_accounting_coordinator.py",
   "ee/tests/gateway/pipeline/test_decisions.py",
   "ee/tests/gateway/pipeline/test_scan.py",
@@ -485,6 +515,7 @@ enterprise = [
   "ee/tests/outbox/test_worker.py",
   "ee/tests/policy/test_policy_versions.py",
   "ee/tests/rules/test_rule_sets.py",
+  "ee/tests/scripts/test_hash_record_set.py",
   "ee/tests/scripts/test_offline_bundle.py",
   "ee/tests/scripts/test_redrive_audit_events.py",
   "ee/tests/secrets/test_ciphertext_compatibility.py",
@@ -497,6 +528,7 @@ enterprise = [
   "ee/tests/tenants/test_permissions.py",
   "ee/tests/tenants/test_plans.py",
   "ee/tests/tenants/test_policy.py",
+  "ee/tests/tenants/test_record_sets.py",
   "ee/tests/tenants/test_service.py",
   "ee/tests/tenants/test_service_accounts.py",
   "ee/tests/tenants/test_teams.py",

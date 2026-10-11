@@ -7,6 +7,8 @@ from typing import Final
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from shim.privacy.injection import MARKERS
+
 
 LABEL_VALUES: Final = MappingProxyType(
     {
@@ -18,6 +20,9 @@ LABEL_VALUES: Final = MappingProxyType(
                 "/v1/messages/count_tokens",
                 "/v1beta/models/*:generateContent",
                 "/v1beta/models/*:streamGenerateContent",
+                "/v1/embeddings",
+                "/v1beta/models/*:embedContent",
+                "/v1beta/models/*:batchEmbedContents",
                 "/v1/scan",
                 "/v1/scan/usage",
             }
@@ -48,6 +53,7 @@ LABEL_VALUES: Final = MappingProxyType(
             }
         ),
         "provider": frozenset({"openai", "anthropic", "google"}),
+        "marker": frozenset(MARKERS),
         "model": frozenset({"gpt-*", "claude-*", "gemini-*", "other"}),
         "terminal_state": frozenset(
             {
@@ -102,12 +108,23 @@ LABEL_VALUES: Final = MappingProxyType(
                 "messages",
                 "count_tokens",
                 "generate_content",
+                "embeddings",
+                "embed_content",
                 "scan",
             }
         ),
         "actor_type": frozenset({"api_key", "user_jwt", "internal"}),
         "source_endpoint": frozenset(
-            {"chat.completions", "responses", "messages", "generateContent", "scan"}
+            {
+                "chat.completions",
+                "responses",
+                "messages",
+                "generateContent",
+                "embeddings",
+                "embedContent",
+                "batchEmbedContents",
+                "scan",
+            }
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
@@ -199,6 +216,31 @@ PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "Requests whose distinct detected values reached the bulk threshold.",
     ("provider",),
 )
+TASK_LIMIT_REFUSALS_TOTAL = Counter(
+    "shim_task_limit_refusals_total",
+    "Calls refused because their task reached a cap, by cap (calls, cost).",
+    ("cap",),
+)
+AGENT_LOOP_SIGNALS_TOTAL = Counter(
+    "shim_agent_loop_signals_total",
+    "Repeated tool calls that reached the loop threshold, by action (count, block).",
+    ("action",),
+)
+INFLIGHT_DUPLICATES_TOTAL = Counter(
+    "shim_inflight_duplicates_total",
+    "Requests admitted while an identical request was in flight, by whether they "
+    "received its answer (true, false).",
+    ("shared",),
+)
+TASK_ID_REJECTED_TOTAL = Counter(
+    "shim_task_id_rejected_total",
+    "X-Shim-Task-Id values that were not task ids and were ignored.",
+)
+INJECTION_MARKERS_TOTAL = Counter(
+    "shim_injection_markers_total",
+    "Tool results and documents carrying a hidden-instruction marker, by marker.",
+    ("marker",),
+)
 
 
 def bounded_label(kind: str, value: object) -> str:
@@ -211,7 +253,12 @@ def bounded_label(kind: str, value: object) -> str:
         if normalized.startswith("/api/v1/"):
             normalized = normalized.removeprefix("/api")
         if normalized.startswith("/v1beta/models/"):
-            for operation in ("generateContent", "streamGenerateContent"):
+            for operation in (
+                "generateContent",
+                "streamGenerateContent",
+                "embedContent",
+                "batchEmbedContents",
+            ):
                 if normalized.endswith(f":{operation}"):
                     normalized = f"/v1beta/models/*:{operation}"
                     break

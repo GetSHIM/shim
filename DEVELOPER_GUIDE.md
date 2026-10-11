@@ -146,6 +146,20 @@ models, compatibility aliases, branch-bridge migrations, or a second gateway
 implementation. Reuse the existing stage and adapter before adding another
 abstraction.
 
+## Retirement dates
+
+`src/shim/billing/model_lifecycle.json` holds the retirement dates the gateway warns
+about. Whoever reviews the daily Models.dev catalog pull request keeps it current:
+the pull request body lists catalog models Models.dev marks deprecated that have no
+date, and entries whose `checked_on` is more than 90 days old. Dates come only from
+the providers' own deprecation pages (OpenAI, Anthropic, Google), each entry with
+that page as its `https` `source` and the day it was read as `checked_on`; nobody
+merges a date without a source. List the names the page lists: a dated snapshot and
+its alias are separate entries, and an alias gets a date only when the provider names
+it. A name must be priced by the catalog, or the file fails to load in CI.
+Retirements before 2026 were left out when the file was created; a request to those
+models already fails at the provider.
+
 ## Legal boundary
 
 Apache-2.0 applies outside `ee/`; Elastic-2.0 applies under `ee/`. Preserve both

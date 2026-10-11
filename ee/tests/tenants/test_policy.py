@@ -126,6 +126,7 @@ async def test_enterprise_policy_preserves_missing_tier_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     api_key = SimpleNamespace(
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
@@ -247,9 +248,13 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         placeholder_mode="stable",
         bulk_threshold=None,
         response_scan="count",
+        embeddings_monitor_types=["IBAN_CODE"],
     )
     session = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: (row, 0)))
+        # The settings row, then the tenant's active record sets (none).
+        execute=AsyncMock(
+            side_effect=[SimpleNamespace(one_or_none=lambda: (row, 0)), []]
+        )
     )
     cache = _PolicyCache(None)
     api_key = SimpleNamespace(organization_id=UUID(int=1), tier="managed")
@@ -263,9 +268,11 @@ async def test_privacy_settings_are_cached_with_their_entity_actions() -> None:
         "placeholder_mode": "stable",
         "bulk_threshold": None,
         "response_scan": "count",
+        "embeddings_monitor_types": ["IBAN_CODE"],
     }
     assert resolved.pii_config == _SWITCHES
     assert resolved.response_scan == "count"
+    assert resolved.embeddings_monitor_types == {"IBAN_CODE"}
     assert resolved.entity_actions == {"EMAIL_ADDRESS": "monitor"}
     assert resolved.placeholder_mode == "stable"
     assert resolved.bulk_threshold is None
@@ -303,6 +310,7 @@ async def test_only_stable_tenants_get_the_placeholder_root_key(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     api_key = SimpleNamespace(
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
@@ -378,6 +386,7 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
     monkeypatch.setattr(gateway_settings, "ANALYZERS", (SimpleNamespace(name="shape"),))
     api_key = SimpleNamespace(
         organization_id=UUID(int=1),
+        id=UUID(int=3),
         key_hash="key-hash",
         tier="managed",
         cost_center=None,
@@ -407,3 +416,97 @@ async def test_the_resolver_hands_on_the_gateway_settings_object_without_more_io
     assert resolved.tenant_gateway_settings is settings[0].gateway_settings
     assert resolved.response_analysis == ("shape",)
     assert cache.gets == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key_id", "team_id", "withheld"),
+    [
+        (UUID(int=7), None, frozenset({"IBAN_CODE"})),
+        (UUID(int=8), UUID(int=20), frozenset({"IBAN_CODE"})),
+        (UUID(int=9), UUID(int=21), frozenset({"TR_NATIONAL_ID", "IBAN_CODE"})),
+        (UUID(int=9), None, frozenset({"TR_NATIONAL_ID", "IBAN_CODE"})),
+    ],
+)
+async def test_restore_permission_and_inflight_sharing_follow_the_key(
+    monkeypatch: pytest.MonkeyPatch, key_id, team_id, withheld
+) -> None:
+    from shim_enterprise.tenants.gateway_settings import GatewaySettings, RestoreGrant
+
+    api_key = SimpleNamespace(
+        id=key_id,
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+        team_id=team_id,
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+    gateway = GatewaySettings(
+        restore_withheld={
+            # Key 7 by id, every key of team 20; nobody gets IBAN_CODE back.
+            "TR_NATIONAL_ID": RestoreGrant(
+                api_key_ids=[UUID(int=7)], team_ids=[UUID(int=20)]
+            ),
+            "IBAN_CODE": RestoreGrant(),
+        },
+        inflight_sharing_api_key_ids=[UUID(int=7)],
+    )
+    policy_service = SimpleNamespace(
+        resolve=AsyncMock(
+            return_value=ResolvedTenantSettings(
+                tenant_id=UUID(int=1),
+                pii_config=None,
+                tier_definition=None,
+                gateway_settings=gateway,
+            )
+        )
+    )
+    resolver = TenantRequestPolicyResolver(
+        policy_service, Mock(return_value=SessionContext(object()))
+    )
+
+    resolved = await resolver.resolve(SimpleNamespace())
+
+    assert resolved.restore_withheld == withheld
+    assert resolved.inflight_sharing is (key_id == UUID(int=7))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "monitored"),
+    [({}, frozenset()), ({"embeddings_monitor_types": ["IBAN_CODE"]}, {"IBAN_CODE"})],
+)
+async def test_a_cached_pii_config_without_embeddings_types_relaxes_nothing(
+    cached, monitored
+) -> None:
+    service = policy_module.TenantPolicyService(
+        _PolicyCache({**_SWITCHES, "rules_revision": 0, **cached})
+    )
+
+    resolved = await service.resolve(
+        SimpleNamespace(organization_id=UUID(int=1), tier="managed"), session=None
+    )
+
+    assert resolved.embeddings_monitor_types == monitored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cached", "revisions"),
+    [({}, {}), ({"record_set_revisions": {"s-1": 3}}, {"s-1": 3})],
+)
+async def test_a_cached_pii_config_carries_record_set_revisions_when_it_has_them(
+    cached, revisions
+) -> None:
+    service = policy_module.TenantPolicyService(
+        _PolicyCache({**_SWITCHES, "rules_revision": 0, **cached})
+    )
+
+    resolved = await service.resolve(
+        SimpleNamespace(organization_id=UUID(int=1), tier="managed"), session=None
+    )
+
+    assert resolved.record_set_revisions == revisions

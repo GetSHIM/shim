@@ -17,6 +17,11 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Change the privacy settings](#change-the-privacy-settings)
 - [Change the gateway settings](#change-the-gateway-settings)
 - [Write a tenant rule](#write-a-tenant-rule)
+- [Keep a data type inside](#keep-a-data-type-inside)
+- [Catch your customer list](#catch-your-customer-list)
+- [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
+- [Cap tools, documents and history](#cap-tools-documents-and-history)
+- [Stay under the price tier](#stay-under-the-price-tier)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -215,6 +220,15 @@ shim counts the personal data in it that the request did not carry, and the
 request list shows those counts as `response_entities`. The answer is never
 changed or delayed.
 
+`embeddings_monitor_types` (default `[]`) lists entity types an embeddings request
+only counts: where their action is `mask`, `mask_last4` or `block`, an
+`/v1/embeddings` or Gemini embed request sends them unchanged and counts them in
+`monitored_entities`; chat keeps the action. Use it when the vectors go to an
+internal store; otherwise prefer `placeholder_mode: stable`, so the same text gives
+the same vector. The list replaces the stored one whole; an unknown type or `null`
+is 422. Adding a type records `tenant.privacy_protection_relaxed` with
+`embeddings_monitor_types.<TYPE>`; removing one does not.
+
 `bulk_threshold` (default 50) raises a bulk-disclosure alert when one request
 carries at least that many distinct detected values, across every type and
 action; `null` turns it off. The request still goes on as its actions decide.
@@ -253,6 +267,13 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+| `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. |
+| `agent_loop` | `count`, 5 | `action` (`off`, `count`, `block`) and `repeats` for the repeated-tool-call signal. |
+| `inflight_sharing_api_key_ids` | `[]` | API keys (at most 1,000 of this organization) whose identical JSON requests in flight on one replica share the first one's answer; see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). |
+| `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
+| `model_retiring_warning` | `"record"` | `header` also puts `MODEL_RETIRING` and `MODEL_RETIRED` in `X-Shim-Warnings`; the request list's `warnings` always has them. See [retiring models](MODEL_DEPLOYMENTS.md#retiring-models). |
+| `price_tier_warning` | `false` | Add `PRICE_TIER_CROSSED` to `X-Shim-Warnings` when a request's approximate size is above a catalog model's large-context price tier; see [stay under the price tier](#stay-under-the-price-tier). |
+| `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -267,9 +288,21 @@ the changed fields and increments `revision`; a PATCH that changes nothing
 writes no event and keeps the revision. A change the setting's direction
 classifies as relaxing also records `tenant.gateway_protection_relaxed`
 ([decision evidence](POLICY_DECISIONS.md#management-change-details));
-`response_analysis` only measures, so it is neutral. Gateways read the settings
+`response_analysis` only measures, so it is neutral; moving `injection_markers`
+down from `warn` to `count` or `off`, or from `count` to `off`, is relaxing;
+`price_tier_warning` is a report, so turning it off is neutral, and so is
+`model_retiring_warning`; raising or removing
+a task cap, shortening its window, raising `agent_loop.repeats` or moving
+`agent_loop.action` down from `block` are relaxing; listing a key in
+`inflight_sharing_api_key_ids` is neutral, because each request still passes its
+own limits and privacy and an answer never crosses keys, and an id this
+organization lacks is 422. Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
-Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
+Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
+`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
+and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+the task id}`); when Redis fails, calls go on with a `TASK_COUNTER_UNAVAILABLE`
+verdict.
 
 Rolling back to an older build is safe: a stored field or analyzer name that
 build does not know is left out when it reads the settings (and logged once by
@@ -280,8 +313,10 @@ settings again after the rollback ends.
 
 Keep your own words and codes out of prompts: project names, product codes,
 customer lists. One set per tenant, replaced whole, beside the privacy
-settings. Two kinds are available: `term` (a word list) and `pattern` (code
-shapes); the others are listed as unavailable until their release.
+settings. Four kinds are available: `term` (a word list), `pattern` (code
+shapes), `destination` ([a data type kept inside](#keep-a-data-type-inside)) and
+`request_limit` ([caps](#cap-tools-documents-and-history)); the others are listed
+as unavailable until their release.
 
 1. Read the set with `GET /api/v1/management/rules` (`rules.read`: owner, admin
    or auditor):
@@ -347,12 +382,154 @@ revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
 `RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
-does not have) or `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
+does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope) or
+`RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
 413. Every change records `tenant.rules_updated` with ids, kinds and counts,
 never a term; weakening an enforced rule also records
 `tenant.privacy_protection_relaxed` and alerts your forward targets
 ([decision evidence](POLICY_DECISIONS.md#tenant-rules)). Gateways pick up a new
 revision at once.
+
+## Keep a data type inside
+
+Let your own model servers see real national ids while cloud models get a
+placeholder, or nothing at all.
+
+1. Register your servers as `internal` [model deployments](MODEL_DEPLOYMENTS.md)
+   and the cloud ones as `external`. A catalog route (no deployment) is `unknown`,
+   which rules treat as external.
+2. Set the type's base action to what every target may see, here `monitor`:
+   `PUT /api/v1/management/settings/pii` with
+   `{"entity_actions": {"TR_NATIONAL_ID": "monitor"}}`.
+3. Add a `destination` rule that tightens it for external targets, in `monitor`
+   state first:
+
+```json
+{"revision": 3, "rules": [
+  {"id": "tckn_stays_inside", "name": "National ids stay inside", "kind": "destination",
+   "action": "mask", "state": "monitor", "scope": {"deployment_kinds": ["external"]},
+   "match": {"entity_types": ["TR_NATIONAL_ID"]}}
+]}
+```
+
+4. Watch `rule_matches` in the request list (`?rule_id=tckn_stays_inside`), then send
+   the set again with `"state": "enforced"`. Requests to internal deployments keep the
+   value; external and unclassified ones get a placeholder, restored in the answer.
+   With `"action": "block"` they are refused with 400 `RULE_BLOCKED` and
+   `X-Shim-Rule-Id: tckn_stays_inside` before any provider call.
+
+Notes: a rule can only tighten; a base `mask` cannot be loosened to `monitor` for
+internal targets. Changing a deployment from `external` to `internal` is recorded as
+a relaxation, and the operator can restrict `internal` to listed origins with
+`MODEL_DEPLOYMENT_INTERNAL_ORIGINS` ([model deployments](MODEL_DEPLOYMENTS.md)).
+
+## Catch your customer list
+
+Refuse, or count, requests that name one of your customers, without sending shim the list.
+
+1. Create a records set: `POST /api/v1/management/record-sets` with
+   `{"name": "customers", "kind": "records", "fields": [{"name": "Müşteri No", "kind":
+   "token", "primary": true}, {"name": "Ad Soyad", "kind": "name"}]}`. Save `hash_key`
+   from the answer into `key.txt`; it is shown once.
+2. Hash and upload the list on your machine:
+
+```console
+python ee/scripts/hash_record_set.py --key-file key.txt --csv customers.csv \
+  --field "Müşteri No=token:primary" --field "Ad Soyad=name" \
+  --upload http://localhost:8000 --token "$USER_TOKEN" --set <set id>
+```
+
+3. Add a rule in `monitor`: `{"id": "customers", "name": "Customer list", "kind":
+   "record_set", "action": "block", "state": "monitor", "match": {"set_id": "<set id>",
+   "min_fields": 2}}`. A request holding a customer's number and name shows in
+   `rule_matches` with `RULE_WOULD_BLOCK`; the number alone, or with another name, does
+   not.
+4. Enforce it: the same request answers 400 `RULE_BLOCKED` with `X-Shim-Rule-Id`.
+
+For documents, create a `fingerprints` set, run the tool with `--documents <folder>`, and
+use `warn` or `block` with `min_shared`. What is hashed, the key, rollback and the limits
+are in [record sets](RECORD_SETS.md).
+
+## Show masked values only to some teams
+
+Let a risk team read national ids in answers while a call centre sees only the
+placeholder. The provider gets the placeholder in both cases.
+
+1. Create the teams and give each workload a gateway key in its team
+   ([teams](team-access.md)).
+2. List the type and who may see it in the gateway settings:
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": ["<risk team id>"]}}}'
+```
+
+3. Keys in the risk team, and keys listed in `api_key_ids`, get the number back as
+   before. Every other key gets `<TR_NATIONAL_ID_…>` in the answer text, tool-call
+   arguments and streams (with `mask_last4`, `<CREDIT_CARD_…~1111>`). An empty grant,
+   `{}`, means nobody gets the type back; a type not listed is restored for everyone.
+
+Notes: the gateway knows the key and the key's team, not the person behind it.
+`restore_withheld` is replaced whole by each PATCH; `{}` removes every grant. A key
+is an entity type or a rule label, at most 64; each grant lists at most 200 team and
+200 key ids of this organization (an unknown id is 422). Removing a type or adding an
+id to a grant is a privacy relaxation (`tenant.privacy_protection_relaxed` with
+`restore_withheld.<TYPE>`, forwarded to your targets); listing a type or removing an
+id tightens. A Responses continuation follows the permission of the caller of each
+request: the chain keeps every value, and a key with permission continuing it gets
+them back. An application that reads the value from the answer, such as a tool that
+looks a customer up by national id, gets the placeholder instead. The request list
+shows `restore_withheld` counts and the `privacy.restore` verdict.
+
+## Cap tools, documents and history
+
+Stop a request that offers too many tools, attaches too many documents or carries
+too long a history, before it spends any rate capacity or reaches the provider.
+
+1. Add a `request_limit` rule to the [rule set](#write-a-tenant-rule), in `monitor`
+   state first, with one or more caps:
+
+| Field | Bound | Counts |
+| --- | --- | --- |
+| `max_tools` | 0 to 10,000 | tool definitions: `tools` (Gemini: each `functionDeclarations` entry, 1 for another tool) |
+| `max_documents` | 0 to 1,000 | Chat `file` parts, Responses `input_file` items, Anthropic `document` blocks (inside `tool_result` too), Gemini `inlineData`/`fileData` parts that are not image, audio or video |
+| `max_history` | 1 to 100,000 | items in `messages`, `input` (1 for a string) or `contents` |
+| `max_input_bytes` | 1,024 to 32,000,000 | the request body's compact JSON bytes |
+| `below_price_tier` | `true` | see [stay under the price tier](#stay-under-the-price-tier) |
+
+```json
+{"id": "tool_cap", "name": "At most five tools", "kind": "request_limit",
+ "action": "block", "state": "monitor", "match": {"max_tools": 5}}
+```
+
+2. The rule matches when any cap is exceeded. In `monitor` state the request list
+   shows it in `rule_matches`; enforced, `block` refuses with 400 `RULE_BLOCKED` and
+   `X-Shim-Rule-Id` before the rate limits and the provider, and `warn` adds
+   `RULE_WARN`.
+
+Notes: images are not documents, and text pasted from a document is text. History
+kept by the provider behind `previous_response_id` is not counted. Token counting
+(`/v1/messages/count_tokens`) is never capped. Nothing is shortened to fit.
+
+## Stay under the price tier
+
+Some models price the whole request at a higher rate above a length (gpt-5.4 above
+272,000 input tokens, Gemini 3.1 Pro preview above 200,000).
+
+1. To be told before the call, turn on the gateway setting `price_tier_warning`:
+   a request whose approximate size (bytes / 4) is above the tier gets
+   `PRICE_TIER_CROSSED` in `X-Shim-Warnings`.
+2. To keep requests under it, add a `request_limit` rule with
+   `"match": {"below_price_tier": true}`. A request whose words alone exceed the tier
+   certainly crosses it, and the rule's action applies (an enforced `block` refuses
+   with `RULE_BLOCKED`). A request that only may cross it (approximate size above,
+   word count not) is recorded as a `warn` match and gets `RULE_WARN` when the rule
+   is enforced; it is never refused.
+
+Notes: only catalog models with a tier are checked; registry deployments never
+match. The settled tokens decide the price, and `LARGE_CONTEXT_PRICE` still marks a
+request that was billed at the higher rate.
 
 ## Read the daily privacy card
 
@@ -604,6 +781,59 @@ Notes:
   public price catalog is unpriced, so a provider spending limit refuses it with
   403 `MODEL_PRICE_UNKNOWN`. The full contract is in
   [model deployments](MODEL_DEPLOYMENTS.md).
+
+## Register an Azure OpenAI deployment
+
+Route a gateway alias to your Azure OpenAI deployment, with an Azure key or an
+Entra ID application, priced from the catalog model it serves.
+
+1. As the platform operator, approve the resource: its exact origin in
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`, or, on a hosted gateway,
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".openai.azure.com"]`.
+2. Store the credential: `POST /api/v1/management/providers` with
+   `provider: "openai"` and either `key` (the Azure key) or
+   `credential_kind: "azure_entra_client"` and `azure_entra` with `tenant_id`,
+   `client_id`, `client_secret` and optionally `scope`. Give the Entra application
+   the `Cognitive Services OpenAI User` role on the resource. The view shows
+   `credential_kind` and `masked_key` (`entra:` and the masked client id), never the
+   secret. `POST /providers/{id}/verify` asks Entra for a fresh token: 200 sets
+   `verified_at`, a refusal answers 400. `PUT /providers/{id}` with `azure_entra`
+   replaces all four values; a credential's kind never changes (422).
+3. Register the deployment with `upstream: "azure_openai"`, `provider: "openai"`,
+   `deployment_kind: "external"`, `base_url` ending in `/openai/v1`,
+   `upstream_model` set to the Azure deployment name and `price_model` set to the
+   catalog model it serves. Catalog prices are OpenAI's list prices; Azure's Data
+   Zone, Regional and provisioned prices differ, so enter
+   `input_price_per_million`, `output_price_per_million` and the cache prices when
+   they apply. An Entra credential on a `generic` deployment answers 422 "An Entra
+   credential can only serve an Azure OpenAI deployment".
+4. Check health: a 200 or 404 from `/openai/v1/models` marks it `healthy`.
+5. Call the alias as the model name.
+
+```console
+SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"provider\": \"openai\", \"name\": \"azure-bank\", \"credential_kind\": \"azure_entra_client\",
+       \"azure_entra\": {\"tenant_id\": \"$AZURE_TENANT\", \"client_id\": \"$AZURE_CLIENT\",
+                       \"client_secret\": \"$AZURE_SECRET\"}}" | jq -r .id)
+
+jq -n --arg secret "$SECRET_ID" '{
+    alias: "azure-mini", provider: "openai", upstream: "azure_openai",
+    upstream_model: "kurum-mini", price_model: "gpt-5.6-luna",
+    base_url: "https://bank.openai.azure.com/openai/v1", provider_secret_id: $secret,
+    deployment_kind: "external", declared_version: "2026-10-11", owner: "platform-team"}' |
+  curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
+    -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+Notes:
+
+- A prompt Azure's content filter refuses answers 400 `PROVIDER_CONTENT_FILTERED`
+  with the filtered categories; an Entra refusal answers 401
+  `INVALID_PROVIDER_CREDENTIAL`.
+- The gateway ignores the community `SHIM_AZURE_*` settings except
+  `SHIM_AZURE_AUTHORITY_HOST` and `SHIM_AZURE_TOKEN_SCOPE`, and logs each other one
+  that is set at startup.
 
 ## Automate management with a service account
 

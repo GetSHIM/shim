@@ -658,3 +658,103 @@ async def test_a_refusal_after_admission_names_the_request_it_refused() -> None:
     assert admitted.headers["x-shim-request-id"] == "req_admitted"
     assert admitted.headers["x-shim-error-code"] == "MONTHLY_QUOTA_EXCEEDED"
     assert named.headers["x-shim-request-id"] == "req_named"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("results", "message"),
+    [
+        (None, "The provider's content filter refused the prompt."),
+        (
+            {
+                "violence": {"filtered": True, "severity": "high"},
+                "hate": {"filtered": False, "severity": "safe"},
+                "jailbreak": {"detected": True, "filtered": False},
+                "secret_internal_rule": {"filtered": True},
+                "self_harm": "not an object",
+            },
+            "The provider's content filter refused the prompt. "
+            "Categories: jailbreak, violence.",
+        ),
+    ],
+)
+async def test_an_azure_content_filter_refusal_has_its_own_code(
+    results: dict | None, message: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        inner = {
+            "code": "ResponsibleAIPolicyViolation",
+            "note": _sent_prompt("openai", request),
+        }
+        if results is not None:
+            inner["content_filter_result"] = results
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": f"The response was filtered: {_sent_prompt('openai', request)}",
+                    "type": None,
+                    "param": "prompt",
+                    "code": "content_filter",
+                    "status": 400,
+                    "innererror": inner,
+                }
+            },
+        )
+
+    async with _gateway(handler) as http:
+        response = await _gateway_error("openai", http)
+
+    assert response.status_code == 400
+    assert response.headers["x-shim-error-code"] == "PROVIDER_CONTENT_FILTERED"
+    assert _error_fields("openai", response.json()) == (
+        message,
+        "PROVIDER_CONTENT_FILTERED",
+        ERROR_HINTS["PROVIDER_CONTENT_FILTERED"],
+    )
+    for leaked in ("ResponsibleAI", "secret_internal_rule", "filtered:", "Email"):
+        assert leaked not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
+@pytest.mark.parametrize(
+    ("raised", "status", "code"),
+    [
+        (
+            ProviderCallError(
+                401, "INVALID_PROVIDER_CREDENTIAL", False, provider="any"
+            ),
+            401,
+            "INVALID_PROVIDER_CREDENTIAL",
+        ),
+        (RuntimeError("vault down: token=abc"), 503, "PROVIDER_UNAVAILABLE"),
+    ],
+)
+async def test_a_resolver_provider_error_reaches_the_client_with_its_code(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    raised: Exception,
+    status: int,
+    code: str,
+) -> None:
+    async def resolve(*_args, **_kwargs):
+        raise raised
+
+    monkeypatch.setattr(
+        "shim.secrets.credentials.EnvironmentProviderCredentialResolver.resolve",
+        resolve,
+    )
+    attempts = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(500)
+
+    async with _gateway(handler) as http:
+        response = await _gateway_error(protocol, http)
+
+    assert (response.status_code, attempts) == (status, 0)
+    assert response.headers["x-shim-error-code"] == code
+    assert "token=abc" not in response.text

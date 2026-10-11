@@ -23,10 +23,14 @@ also remains outside tenant decision evidence.
 | `tenant.zero_retention_request` | Required request flags/options passed or failed the gateway's check, or the check was not required. This does not attest to the provider's wider retention practices. |
 | `gateway.model_catalog` | Model is supported by the catalog snapshot, or was rejected. Unsupported caller-supplied model text is omitted from rejected enterprise events. |
 | `rate.requests`, `rate.tokens`, `rate.repeated_requests` | Configured burst/repeat checks passed, were unlimited, or denied admission. `rate.tokens` counts approximate tokens (serialized request bytes divided by four, rounded up; its policy carries `"unit": "approximate_tokens"`), while quota and spend reservation keep the byte count as their upper bound. A denied amount is not added to its window. Repeated content does not establish an automatic retry. |
+| `task.agent_loop` | The latest assistant turn's tool calls (names and canonical arguments) were seen at least `agent_loop.repeats` times within `LOOP_WINDOW_SECONDS` for the request's task (else its key): `allow`, `AGENT_LOOP_SUSPECTED` while the action is `count`, and once above the threshold with `block`, `deny`, `AGENT_LOOP_DETECTED` (429). Its policy carries the action and threshold. Absent below the threshold or with the action `off`. |
+| `task.limit` | Only for a request with a task id while a task cap is set: `allow`, `TASK_LIMIT_PASSED`; `deny`, `TASK_LIMIT_EXCEEDED` (429) when the task reached `max_calls` or its recorded cost reached `max_cost_usd`; `error`, `TASK_COUNTER_UNAVAILABLE` when the counter could not be reached (the call goes on). Its policy carries the caps. |
+| `inflight.share` | The request received the answer of an identical request of the same key that was in flight on the same replica: `skip`, `INFLIGHT_RESPONSE_SHARED` (stage `provider_spend`). No spend was reserved and no provider call was made for it. Absent otherwise. |
 | `quota.requests_and_tokens` | Atomic request/token reservation passed or was rejected, using the policy loaded under the accounting lock. The combined limit is not attributed to a particular counter when the atomic check cannot distinguish it. |
 | `admission.context` | The request certainly exceeds the model's catalog context window or input limit (`deny`, `MODEL_CONTEXT_EXCEEDED`), before any rate or token capacity is used. The count is the number of whitespace-separated words of the prompt text, a lower bound for the public tokenizers (OpenAI's, and the Llama, Qwen, Mistral and Gemma families), which split on whitespace before merging. Claude's and Gemini's tokenizers are not published; the same bound is assumed for them, not proven. Earlier turns' thinking and reasoning blocks are not counted. The output limit counts against the window for OpenAI models and registry deployments only: Gemini's is separate, and Claude 4.5 and later accept input plus `max_tokens` above the window and stop at it. A request the provider truncates or compacts itself (Responses `truncation: "auto"`, `context_management`, `compaction`, a compaction block) is not checked; `count_tokens` is never checked. Only a model's own catalog entry is used, never a prefix match. Recorded only on a refusal. |
 | `admission.capability` | The catalog says the model lacks tools, structured output or an input modality the request uses (`deny`, `MODEL_CAPABILITY_UNSUPPORTED`). An absent catalog flag is unknown and never refuses; only a model's own catalog entry is used, never a prefix match; OpenAI file parts are not checked (they need not be PDFs, and the catalog's OpenAI `pdf` flag is unreliable); registry deployments are not checked. Recorded only on a refusal. |
 | `privacy.input` | Scrubbing masked data (`mask`, `PII_MASKED`), only monitored values (`allow`, `PII_MONITORED`), found no enabled entity (`allow`, `PII_NOT_DETECTED`), was disabled (`skip`, `PII_DISABLED`), found a type whose action is `block`, in content or in a protocol identifier (`deny`, `SECRET_BLOCKED` when a blocked type is `SECRET` or `DB_URI`, otherwise `PII_BLOCKED`), blocked unsupported content (`deny`, `PRIVACY_POLICY_BLOCKED`), or failed closed. Its policy carries the switches and the effective action of every type, so changing an action changes `policy_version`. |
+| `privacy.restore` | Only when the caller's key and team are outside a [restore grant](COOKBOOK.md#show-masked-values-only-to-some-teams): at least one placeholder of a withheld type stays in the answer (`mask`, `RESTORE_WITHHELD`) or none was in the request (`allow`, `RESTORE_NOT_NEEDED`). Its policy carries the sorted withheld types. Absent for every caller a grant does not concern. |
 | `privacy.bulk` | The request carried at least the tenant's `bulk_threshold` of distinct detected values (`allow`, `BULK_DISCLOSURE`); recorded beside `privacy.input`, also when that one denies. Its policy carries the threshold. Absent below the threshold or with the alarm off. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
@@ -85,8 +89,12 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term` and `pattern` kinds are
-available; `GET /rules` lists the others with `available: false` and the reason.
+`match`. A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
+`destination` and `request_limit` kinds are available; `GET /rules` lists the others with
+`available: false` and the reason.
+
+A `record_set` rule matches a hashed customer list or confidential documents' fingerprints
+in the same pass; see [record sets](RECORD_SETS.md).
 
 Content rules (`term`, `pattern`) are searched inside the privacy stage, on the
 same normalized text as the built-in detectors (percent-decoded, invisible
@@ -108,6 +116,43 @@ is replaced by a `<LABEL_…>` placeholder and counted in `pii_entities` under i
 label; `block` and `require_approval` matches keep the text for the decision
 point. Rule matches never enter `monitored_entities` or `blocked_entities`.
 Protocol identifiers are not searched, and a term in one never refuses a request.
+
+### Destination rules
+
+A `destination` rule names 1 to 32 built-in entity types (`match.entity_types`) and
+needs at least one scope list (422 `RULE_SCOPE_REQUIRED` without one), typically
+`deployment_kinds: ["external"]`. A target is `internal` or `external` as its
+[deployment](MODEL_DEPLOYMENTS.md) says; a catalog route and every Gemini request
+are `unknown`, which a scope listing `external` matches. For a request in the rule's
+scope, the privacy stage looks for every type the rule names, also when the base
+action is `off`. The action applied to the text is the stronger of the base action
+and every enforced `mask` rule naming the type (`block` > `mask` > `mask_last4` >
+`monitor` > `off`); a rule never weakens the base action, and a rule in state
+`monitor` only counts. Each rule whose types were found records a `rule_matches`
+entry counting the distinct values; an enforced `block` refuses at the decision
+point with `RULE_BLOCKED`, and `warn` adds `RULE_WARN`. A type the base itself
+blocks keeps `PII_BLOCKED` or `SECRET_BLOCKED`, decided first. A value found only
+because a rule named its type is sent unchanged unless an enforced `mask` applies,
+and counts in `monitored_entities`. Like an enforced content rule, an enforced
+`block` destination rule refuses images and files it cannot search. To keep a type
+inside, set its base action to the weakest action wanted everywhere and add a rule
+that tightens it for external targets.
+
+### Request limits
+
+A `request_limit` rule caps what a request may carry: `max_tools`, `max_documents`,
+`max_history`, `max_input_bytes`, measured on the request as the client sent it, and
+`below_price_tier`. It is evaluated in admission, after the output bounds and the
+context checks and before the rate limits, so a refused request consumes no
+requests-per-minute or tokens-per-minute window, repeat count or quota; an enforced
+`block` refuses there with `RULE_BLOCKED` and its `rule.<id>` verdict. Token
+counting is exempt: no request-limit rule is evaluated or recorded for it, since it
+reaches no model and is how a client decides what to trim. `below_price_tier`
+applies only to catalog models with a large-context price tier: when the request's
+whitespace-separated words already exceed the tier, the crossing is certain and the
+rule's action applies; when only its approximate size (bytes / 4) exceeds it, the
+crossing is possible and the rule records a `warn` match whatever its action, so it
+never refuses a request that may be under the tier.
 
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
@@ -156,7 +201,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | Event | `extra` details |
 | --- | --- |
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
-| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
+| `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, `embeddings_monitor_types.<TYPE>` for a type added to the embeddings-only list, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
 | `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`); never a term, pattern, name or match hash |
 | `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed |
 | `tenant.gateway_protection_relaxed` | `relaxed`: the gateway settings fields whose change their direction classifies as relaxing; written with the update |
@@ -217,7 +262,7 @@ change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
-| `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
+| `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan`, `embeddings_monitor_types` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
 | `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |

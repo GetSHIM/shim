@@ -68,9 +68,13 @@ request it:
   refused with 400 before any provider call, naming the type, never the
   value) or `off` (not looked for). Community sets them in `PII_ENTITY_ACTIONS`;
   enterprise per tenant, which can also add its own words and code shapes
-  (project names, `PRJ-####`), found in every Turkish case form. The answer can
+  (project names, `PRJ-####`), found in every Turkish case form, and match requests
+  against keyed hashes of its customer list or of confidential documents, which never
+  leave its machine. The answer can
   also be scanned after it is delivered, counting personal data the request did
-  not carry; it is never changed.
+  not carry; it is never changed. Enterprise can keep chosen types as
+  placeholders in the answer for every gateway key and team without a grant, so a
+  call centre sees `<TR_NATIONAL_ID_…>` where a risk analyst sees the number.
   Turkish person names (`PERSON_NAME_TR`) are opt-in: `off` until an action
   turns them on. Detection is list based, never a model: a common first name
   with a frequent surname or another capitalised word (`Selin Arıkan`), or a cue
@@ -79,6 +83,9 @@ request it:
   corpus written by a different author: precision 0.992, recall 0.952. Rare
   first names, two first names without a surname, and names written surname
   first are missed.
+  shim can also count instructions hidden in
+  tool results and documents ("ignore all previous instructions", "önceki tüm
+  talimatları yok say") and warn about them; it never blocks or changes them.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request
@@ -87,7 +94,10 @@ request it:
   larger than the whole tokens-per-minute limit, which can never be admitted and
   answers `x-should-retry: false` so the OpenAI and Anthropic SDKs do not wait.
   Enterprise monthly quota and spend-limit refusals carry no `Retry-After`; they
-  clear when the period or the limit changes.
+  clear when the period or the limit changes. Identical requests in flight
+  together are counted; a key can opt in to let them share the first one's
+  answer, one provider call instead of several. Sharing is never a cache: nothing
+  is kept after the first request ends.
 - **Accounts usage and cost per request**, from that same catalog, attributed
   by the `X-Shim-Tag` header. Prompt-cache reads and writes the provider reports
   are priced at their own rates; input whose cache split is unknown is priced at
@@ -184,9 +194,14 @@ anywhere else. A non-streaming request is bounded by the provider read timeout
 (`OPENAI_READ_TIMEOUT_SECONDS`, `ANTHROPIC_READ_TIMEOUT_SECONDS`, 600 seconds by
 default), so long generations should stream.
 
-Community exposes `/v1/chat/completions`, `/v1/messages`,
-`/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent` routes,
-`/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
+Azure OpenAI is supported through its v1 API: set `SHIM_AZURE_OPENAI_ENDPOINT` and
+an Azure key or a Microsoft Entra ID app registration, and map catalog model names
+to your deployment names, so applications keep standard model names
+([cookbook](docs/COOKBOOK.md#use-azure-openai)).
+
+Community exposes `/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`,
+`/v1/messages/count_tokens`, `/v1/responses`, the Gemini `generateContent`,
+`embedContent` and `batchEmbedContents` routes, `/v1/models`, `/v1/models/{model_id}`, `/v1/scan`, `/health` and `/metrics`. The checked-in contract is [`openapi/community.json`](openapi/community.json).
 OTLP traces, structured logs and Sentry error reports are enabled by
 `OTEL_EXPORTER_OTLP_ENDPOINT`, `LOG_LEVEL` and `SENTRY_DSN`; each request's closing
 span carries its model, input and output tokens, finish reasons and cost, never

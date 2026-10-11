@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from functools import partial
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
+from hashlib import sha256
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +20,14 @@ from starlette.background import BackgroundTask
 
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, CacheSplit, compute_cost_usd
 from shim.gateway.analyzers import ANALYZERS
-from shim.gateway.kernel.result import PreparedInference, UNSPECIFIED_PROVIDER_MODEL
-from shim.gateway.pipeline.admission import candidate_count
+from shim.gateway.admission import TaskCounter
+from shim.gateway.kernel.result import (
+    EMBEDDINGS_PROTOCOLS,
+    RECORD_ONLY_WARNINGS,
+    PreparedInference,
+    UNSPECIFIED_PROVIDER_MODEL,
+)
+from shim.gateway.pipeline.admission import candidate_count, micro_usd
 from shim.gateway.pipeline.analysis import (
     AnalysisContext,
     AnalysisToolCall,
@@ -132,9 +140,11 @@ class ResponsePostprocessor:
         *,
         heartbeat_interval_seconds: float,
         output_hash_salt: str | None,
+        task_counter: TaskCounter | None = None,
     ) -> None:
         self._finalization_tasks: set[asyncio.Task[Any]] = set()
         self.usage = usage
+        self.task_counter = task_counter
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.output_hash_salt = output_hash_salt
 
@@ -145,6 +155,29 @@ class ResponsePostprocessor:
             )
             for task in pending:
                 task.cancel()
+
+    def _add_task_cost(self, prepared: PreparedInference, cost: Decimal | None) -> None:
+        """Off the response path: the settled cost of a task with a cost cap."""
+        caps, admission = prepared.task_caps, prepared.admission
+        amount = micro_usd(cost)
+        if (
+            self.task_counter is None
+            or caps.max_cost_usd is None
+            or admission is None
+            or admission.task_id is None
+            or not amount
+        ):
+            return
+        task = asyncio.create_task(
+            self.task_counter.add_cost(
+                str(prepared.tenant_id),
+                sha256(admission.task_id.encode()).hexdigest(),
+                micro_usd=amount,
+                window_seconds=caps.window_seconds,
+            )
+        )
+        self._finalization_tasks.add(task)
+        task.add_done_callback(self._finalization_tasks.discard)
 
     def _start_after_answer(
         self, prepared: PreparedInference, answer: _Answer
@@ -235,11 +268,89 @@ class ResponsePostprocessor:
                 headers=_gateway_headers(prepared, response.request_id),
             )
 
+        gateway_response, terminal = self._settle(prepared, response)
+        record_settled_usage(prepared, terminal.usage)
+        await self.usage.finalize(prepared, terminal)
+        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
+        scan = prepared.response_scan == "count"
+        analyzers = _analyzers(prepared)
+        # A vector has no text to scan or analyse.
+        if (
+            terminal.terminal_status == "completed"
+            and (scan or analyzers)
+            and prepared.protocol not in EMBEDDINGS_PROTOCOLS
+        ):
+            reads = any(analyzer.reads_answer for analyzer in analyzers)
+            text = answer_text(response.payload) if reads else ""
+            calls = answer_tool_calls(response.payload) if reads else ()
+            answer = _Answer(
+                scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
+                if scan
+                else "",
+                text=text[:KEPT_ANSWER_CHARACTERS],
+                truncated=len(text) > KEPT_ANSWER_CHARACTERS
+                or len(calls) > KEPT_TOOL_CALLS,
+                tool_calls=calls[:KEPT_TOOL_CALLS],
+                completion_outcome=terminal.usage.completion_outcome,
+            )
+
+            async def after_send() -> None:
+                await self._start_after_answer(prepared, answer)
+
+            # Starlette runs this after the body is sent.
+            gateway_response.background = BackgroundTask(after_send)
+        return gateway_response
+
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        answer: ProviderNonStream,
+        leader_request_id: str,
+    ) -> JSONResponse | None:
+        """An identical in-flight request's answer: its body, this request's headers.
+
+        None when that answer did not complete, so this request calls the provider itself.
+        The shared answer is scanned and analyzed once, on the leader's record.
+        """
+        gateway_response, terminal = self._settle(prepared, answer, shared=True)
+        if terminal.terminal_status != "completed":
+            return None
+        usage = terminal.usage
+        prepared.record_verdict(
+            "inflight.share",
+            stage="provider_spend",
+            outcome="skip",
+            reason_code="INFLIGHT_RESPONSE_SHARED",
+        )
+        await self.usage.finalize_shared(
+            prepared,
+            terminal,
+            {
+                "leader_request_id": leader_request_id,
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "avoided_cost_usd": str(usage.settlement_cost_usd),
+            },
+        )
+        return gateway_response
+
+    def _settle(
+        self,
+        prepared: PreparedInference,
+        response: ProviderNonStream,
+        *,
+        shared: bool = False,
+    ) -> tuple[JSONResponse, StreamFinalization]:
+        """The JSON response, and its usage, outcome and cost at this request's price."""
         if prepared.admission is None:
             raise ValueError("admission state is required")
+        # A shared answer made no provider call of this request's own.
+        latency_ms = None if shared else response.latency_ms
+        # Vectors: no completion tokens, no answer to classify.
+        embeddings = prepared.protocol in EMBEDDINGS_PROTOCOLS
         usage = _usage(response.payload, provider=str(prepared.provider))
         prompt_actual = usage.get("prompt")
-        completion_actual = usage.get("completion")
+        completion_actual = 0 if embeddings else usage.get("completion")
         prompt_tokens = (
             prepared.admission.estimated_input_tokens
             if prompt_actual is None
@@ -263,7 +374,7 @@ class ResponsePostprocessor:
         lifecycle_status = _lifecycle_status(
             response.payload,
             provider=provider,
-            expected_candidates=candidate_count(prepared),
+            expected_candidates=0 if embeddings else candidate_count(prepared),
         )
         response_model = response.payload.get("model")
         settlement_model = (
@@ -283,7 +394,7 @@ class ResponsePostprocessor:
             cache=split,
             price=prepared.deployment_price,
         )
-        if response.latency_ms is not None:
+        if latency_ms is not None:
             labels = {
                 "provider": bounded_label("provider", prepared.provider),
                 "model": bounded_label("model", prepared.model),
@@ -294,8 +405,9 @@ class ResponsePostprocessor:
                     "success" if lifecycle_status == "completed" else "provider_error"
                 ),
             ).inc()
-            PROVIDER_LATENCY_MS.labels(**labels).observe(response.latency_ms)
-        warn_after_answer(prepared, prompt_actual, split)
+            PROVIDER_LATENCY_MS.labels(**labels).observe(latency_ms)
+        if not shared:
+            warn_after_answer(prepared, prompt_actual, split)
         gateway_response = JSONResponse(
             content=response.payload,
             headers=_gateway_headers(prepared, response.request_id),
@@ -303,12 +415,16 @@ class ResponsePostprocessor:
         completed_at = datetime.now(timezone.utc)
         finish_reasons = native_finish_reasons(response.payload, provider=provider)
         facts = answer_facts(response.payload)
-        characters = answer_characters(response.payload)
-        outcome = completion_outcome(
-            finish_reasons,
-            output_characters=characters,
-            refusal=facts.refusal,
-            tool_call=facts.tool_call,
+        characters = None if embeddings else answer_characters(response.payload)
+        outcome = (
+            None
+            if characters is None
+            else completion_outcome(
+                finish_reasons,
+                output_characters=characters,
+                refusal=facts.refusal,
+                tool_call=facts.tool_call,
+            )
         )
         terminal = StreamFinalization(
             terminal_status=lifecycle_status,
@@ -340,9 +456,7 @@ class ResponsePostprocessor:
                     else None
                 ),
                 provider_latency_ms=(
-                    round(response.latency_ms)
-                    if response.latency_ms is not None
-                    else None
+                    round(latency_ms) if latency_ms is not None else None
                 ),
                 answer_characters=characters,
                 tool_call_names=facts.tool_names,
@@ -360,35 +474,13 @@ class ResponsePostprocessor:
             shim_latency_ms=prepared.timing.shim_latency_ms,
         )
         gateway_response.headers["X-Shim-Latency-Ms"] = str(terminal.shim_latency_ms)
-        record_settled_usage(prepared, terminal.usage)
-        await self.usage.finalize(prepared, terminal)
-        scan = prepared.response_scan == "count"
-        analyzers = _analyzers(prepared)
-        if lifecycle_status == "completed" and (scan or analyzers):
-            reads = any(analyzer.reads_answer for analyzer in analyzers)
-            text = answer_text(response.payload) if reads else ""
-            calls = answer_tool_calls(response.payload) if reads else ()
-            answer = _Answer(
-                scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
-                if scan
-                else "",
-                text=text[:KEPT_ANSWER_CHARACTERS],
-                truncated=len(text) > KEPT_ANSWER_CHARACTERS
-                or len(calls) > KEPT_TOOL_CALLS,
-                tool_calls=calls[:KEPT_TOOL_CALLS],
-                completion_outcome=terminal.usage.completion_outcome,
-            )
-
-            async def after_send() -> None:
-                await self._start_after_answer(prepared, answer)
-
-            # Starlette runs this after the body is sent.
-            gateway_response.background = BackgroundTask(after_send)
-        return gateway_response
+        return gateway_response, terminal
 
     def create_stream_session(
         self,
         prepared: PreparedInference,
+        *,
+        on_terminal: Callable[[], None] | None = None,
     ) -> StreamSession:
         if prepared.admission is None:
             raise ValueError("admission state is required")
@@ -421,6 +513,7 @@ class ResponsePostprocessor:
             )
             record_settled_usage(prepared, terminal.usage)
             await self.usage.finalize(prepared, terminal)
+            self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
             if (scan or analyzers) and terminal.terminal_status == "completed":
                 # Detached: the stream body ends only after this finalizer returns.
                 self._start_after_answer(
@@ -453,6 +546,8 @@ class ResponsePostprocessor:
             REQUESTS_IN_FLIGHT.labels(
                 provider=bounded_label("provider", prepared.provider)
             ).dec()
+            if on_terminal is not None:
+                on_terminal()
 
         return StreamSession(
             meter=meter,
@@ -649,7 +744,8 @@ def _lifecycle_status(
         and prompt_feedback.get("blockReason")
     ):
         return "provider_error"
-    if provider == "google":
+    # An embeddings answer has no candidates.
+    if provider == "google" and expected_candidates:
         candidates = payload.get("candidates")
         if not isinstance(candidates, list):
             return "provider_error"
@@ -688,8 +784,14 @@ def _gateway_headers(
     upstream_request_id: str | None,
 ) -> dict[str, str]:
     headers = {"X-Shim-Request-Id": str(prepared.request_id)}
-    if prepared.warnings:
-        headers["X-Shim-Warnings"] = ",".join(prepared.warnings)
+    warnings = [
+        code
+        for code in prepared.warnings
+        if prepared.model_retiring_warning == "header"
+        or code not in RECORD_ONLY_WARNINGS
+    ]
+    if warnings:
+        headers["X-Shim-Warnings"] = ",".join(warnings)
     if upstream_request_id:
         header = {
             "anthropic": "request-id",

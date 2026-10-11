@@ -431,6 +431,18 @@
         "structured_output": true,
         "tools": true
       },
+      "gemini-embedding-001": {
+        "context_window": 2048,
+        "input_modalities": [
+          "text"
+        ],
+        "input_per_million": "0.15",
+        "kind": "embedding",
+        "name": "Gemini Embedding 001",
+        "output_per_million": "0",
+        "release_date": "2025-05-20",
+        "tools": false
+      },
       "gemini-flash-latest": {
         "cache_read_per_million": "0.075",
         "context_window": 1048576,
@@ -1241,9 +1253,45 @@
         "status": "deprecated",
         "structured_output": true,
         "tools": true
+      },
+      "text-embedding-3-large": {
+        "context_window": 8191,
+        "input_modalities": [
+          "text"
+        ],
+        "input_per_million": "0.13",
+        "kind": "embedding",
+        "name": "text-embedding-3-large",
+        "output_per_million": "0",
+        "release_date": "2024-01-25",
+        "tools": false
+      },
+      "text-embedding-3-small": {
+        "context_window": 8191,
+        "input_modalities": [
+          "text"
+        ],
+        "input_per_million": "0.02",
+        "kind": "embedding",
+        "name": "text-embedding-3-small",
+        "output_per_million": "0",
+        "release_date": "2024-01-25",
+        "tools": false
+      },
+      "text-embedding-ada-002": {
+        "context_window": 8192,
+        "input_modalities": [
+          "text"
+        ],
+        "input_per_million": "0.1",
+        "kind": "embedding",
+        "name": "text-embedding-ada-002",
+        "output_per_million": "0",
+        "release_date": "2022-12-15",
+        "tools": false
       }
     }
   },
   "source": "https://models.dev/api.json",
-  "version": "models.dev:f63f0512ee0b7f178843fd26"
+  "version": "models.dev:282e275bc7c0993c2c42fcc5"
 }

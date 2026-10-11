@@ -400,9 +400,12 @@ def test_community_routes_are_an_initial_subset_of_the_documented_profile() -> N
         ("GET", "/v1/models"),
         ("GET", "/v1/models/{model_id}"),
         ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/embeddings"),
         ("POST", "/v1/messages"),
         ("POST", "/v1/responses"),
         ("POST", "/v1/scan"),
+        ("POST", "/v1beta/models/{model}:batchEmbedContents"),
+        ("POST", "/v1beta/models/{model}:embedContent"),
         ("POST", "/v1beta/models/{model}:generateContent"),
         ("POST", "/v1beta/models/{model}:streamGenerateContent"),
     }
@@ -421,12 +424,15 @@ application = create_community_app(CommunitySettings(_env_file=None))
 assert set(application.openapi()["paths"]) == {
     "/health",
     "/v1/chat/completions",
+    "/v1/embeddings",
     "/v1/messages",
     "/v1/messages/count_tokens",
     "/v1/models",
     "/v1/models/{model_id}",
     "/v1/responses",
     "/v1/scan",
+    "/v1beta/models/{model}:batchEmbedContents",
+    "/v1beta/models/{model}:embedContent",
     "/v1beta/models/{model}:generateContent",
     "/v1beta/models/{model}:streamGenerateContent",
 }
@@ -539,6 +545,39 @@ async def test_browsers_can_read_the_gateway_error_code() -> None:
     exposed = response.headers["access-control-expose-headers"].lower().split(",")
     assert {"x-shim-error-code", "x-shim-warnings"} <= {
         name.strip() for name in exposed
+    }
+
+
+@pytest.mark.asyncio
+async def test_browsers_may_send_trace_context_and_a_task_id() -> None:
+    origin = "https://dashboard.example.test"
+    application = create_community_app(
+        CommunitySettings(
+            SHIM_API_KEY=GATEWAY_KEY, BACKEND_CORS_ORIGINS=[origin], _env_file=None
+        ),
+        event_stream=StringIO(),
+    )
+
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.options(
+            "/v1/chat/completions",
+            headers={
+                "origin": origin,
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "traceparent,tracestate,x-shim-task-id",
+            },
+        )
+
+    assert response.status_code == 200
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert {"traceparent", "tracestate", "x-shim-task-id"} <= {
+        name.strip() for name in allowed.split(",")
     }
 
 

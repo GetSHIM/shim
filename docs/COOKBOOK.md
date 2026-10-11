@@ -10,11 +10,13 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Use the OpenAI SDK](#use-the-openai-sdk)
 - [Use the Anthropic SDK](#use-the-anthropic-sdk)
 - [Use the Gemini SDK](#use-the-gemini-sdk)
+- [Send embeddings through shim](#send-embeddings-through-shim)
 - [Tag requests and read their cost](#tag-requests-and-read-their-cost)
 - [Scan text before you send it](#scan-text-before-you-send-it)
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
 - [Read warnings](#read-warnings)
+- [Count instructions hidden in tool results](#count-instructions-hidden-in-tool-results)
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Check structured output](#check-structured-output)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
@@ -122,6 +124,75 @@ Notes: the routes are `/v1beta/models/{model}:generateContent` and
 `/v1beta/models/{model}:streamGenerateContent?alt=sse`. Gemini calls use
 `GOOGLE_TIMEOUT_SECONDS` (60 by default), not the OpenAI and Anthropic read timeouts.
 
+## Send embeddings through shim
+
+Embed documents through the same address, with the same privacy rules as chat.
+
+1. Call `client.embeddings.create(model="text-embedding-3-small", input=[...])`
+   with the OpenAI SDK set up as above (`POST /v1/embeddings`), or
+   `client.models.embed_content(model="gemini-embedding-001", contents=[...])` with
+   the Gemini SDK (it calls `:batchEmbedContents`; `:embedContent` works too).
+2. Read the vectors as the provider returned them. Without `encoding_format`, shim
+   asks OpenAI for `"float"`; a format you send is forwarded as given.
+
+Your text is scanned and masked with your actions, and a masked value becomes a
+placeholder in the vector: with random placeholders the same document gives a
+different vector each time. Set `PII_PLACEHOLDER_MODE=stable` so it does not, or,
+when the vectors stay in your own store, list the types in
+`PII_EMBEDDINGS_MONITOR` (comma-separated, for example `TR_NATIONAL_ID,IBAN_CODE`):
+for embeddings those types are only counted and sent unchanged, while chat keeps
+masking them. Token ids (`input` of integers) cannot be scanned, so they are refused
+with 400 `PRIVACY_POLICY_BLOCKED` while any type is masked or blocked. The usage
+event's `protocol` is `openai_embeddings` or `gemini_embed`, `completion_tokens` is
+0, `completion_outcome` is null, and the cost is the input tokens at the model's
+input price (`estimated` when the provider reports no count, as Gemini usually
+does). Embeddings models answer only these routes and are not in `/v1/models`;
+`gemini-embedding-2` is not priced yet (its audio rate is above its text rate).
+Behind LiteLLM, the OpenAI `api_base` ends in `/v1` as for chat.
+
+## Use Azure OpenAI
+
+Send catalog OpenAI requests to your own Azure OpenAI resource, with an Azure key or
+a Microsoft Entra ID application.
+
+1. Set `SHIM_AZURE_OPENAI_ENDPOINT` to the resource, for example
+   `https://bank.openai.azure.com`. shim calls its v1 API at `/openai/v1` (a trailing
+   `/openai/v1` in the setting is accepted), with no `api-version`. Leave
+   `OPENAI_BASE_URL` unset: the two exclude each other.
+2. Set one credential: `SHIM_AZURE_OPENAI_API_KEY`, or all three of
+   `SHIM_AZURE_TENANT_ID`, `SHIM_AZURE_CLIENT_ID` and `SHIM_AZURE_CLIENT_SECRET` for
+   an Entra application with the `Cognitive Services OpenAI User` role. shim asks
+   Entra for a token (scope `SHIM_AZURE_TOKEN_SCOPE`, by default
+   `https://cognitiveservices.azure.com/.default`; authority
+   `SHIM_AZURE_AUTHORITY_HOST`, by default `https://login.microsoftonline.com`) and
+   renews it 300 seconds before it expires. A key a caller sends in
+   `x-provider-key` still wins.
+3. Map catalog model names to your deployment names in
+   `SHIM_AZURE_OPENAI_DEPLOYMENTS`, a JSON object such as
+   `{"gpt-5.6-luna": "kurum-mini"}` (at most 200 entries). Applications keep asking
+   for `gpt-5.6-luna`; Azure receives `kurum-mini`. A model the map does not list is
+   sent under its own name. Admission, prices, warnings and the usage event keep the
+   catalog name.
+
+```bash
+SHIM_AZURE_OPENAI_ENDPOINT=https://bank.openai.azure.com
+SHIM_AZURE_OPENAI_API_KEY=...
+SHIM_AZURE_OPENAI_DEPLOYMENTS='{"gpt-5.6-luna": "kurum-mini"}'
+```
+
+Chat Completions, Responses and embeddings go to `/openai/v1/chat/completions`,
+`/openai/v1/responses` and `/openai/v1/embeddings`. A prompt Azure's content filter
+refuses answers 400 `PROVIDER_CONTENT_FILTERED`; the message names the categories
+that filtered it, such as `Categories: violence.`, and nothing else of Azure's body.
+A filtered answer keeps `finish_reason: "content_filter"`, and Azure's
+`prompt_filter_results` and `content_filter_results` fields pass through. Startup
+fails, naming the setting, when the settings do not form one route: no credential or
+two, Entra values or a map without an endpoint, a map key that is not a catalog
+OpenAI model, or an `http` endpoint that is not loopback. An empty value counts as
+unset. Prices are the catalog's OpenAI list prices; Azure's Data Zone, Regional and
+provisioned prices can differ. The enterprise gateway ignores these settings except
+the authority host and scope, and registers each Azure deployment instead.
+
 ## Tag requests and read their cost
 
 Attribute each request's tokens and cost to a feature, team or customer.
@@ -162,9 +233,13 @@ Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
-`repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
+`repeat_chain_length`, `cost_center`, `tags`, `task_id`, `trace_id`,
+`tool_call_repeats`, `task_calls`, `inflight_duplicate_of`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
-`bulk_disclosure`, `warnings` and `policy_verdicts`. The three count maps give values by
+`bulk_disclosure`, `warnings` and `policy_verdicts`, `injection_markers` when
+[the marker scan](#count-instructions-hidden-in-tool-results) is on, and
+`inflight_share` on a request that received an identical request's answer (see
+[identical requests in flight](#read-errors-and-retry)). The three count maps give values by
 entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
@@ -390,9 +465,13 @@ except openai.APIStatusError as error:
 | One request larger than the whole `DEFAULT_TPM_LIMIT`; the message gives its approximate size and the limit | 429 `RATE_LIMIT_EXCEEDED` | `x-should-retry: false`, no `Retry-After` |
 | More than `LOOP_REPEAT_LIMIT` (default 8) identical prompts within `LOOP_WINDOW_SECONDS` (default 300) | 429 `RATE_LIMIT_EXCEEDED` | `Retry-After: <LOOP_WINDOW_SECONDS>` |
 | One client IP over `GLOBAL_RATE_LIMIT_PER_MINUTE` (default 1,000) | 429 `RATE_LIMIT_EXCEEDED` on provider routes; elsewhere 429 `{"detail": "Too Many Requests"}` without a code | `Retry-After: 60` |
+| An agent task reached `SHIM_TASK_MAX_CALLS` calls, or its recorded cost reached `SHIM_TASK_MAX_COST_USD`, within `SHIM_TASK_WINDOW_SECONDS` | 429 `TASK_LIMIT_EXCEEDED`; the message names the cap | `x-should-retry: false`: start a new task or raise the cap |
+| With `SHIM_AGENT_LOOP=block`, the same tool call repeated more than `SHIM_AGENT_LOOP_REPEATS` times in one task within `LOOP_WINDOW_SECONDS` | 429 `AGENT_LOOP_DETECTED` | `x-should-retry: false`: change the agent's step |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
 | Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
-| Provider refused the provider key (401) | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
+| Provider refused the provider key (401), or Entra ID refused the configured client credential | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
+| Azure's content filter refused the prompt | 400 `PROVIDER_CONTENT_FILTERED`; the message names the categories | none: change the prompt; sending it unchanged fails again |
+| A Bedrock deployment's inference profile leaves the regions the tenant allows (enterprise) | `BEDROCK_REGION_NOT_ALLOWED` | none: use a deployment inside the allowed regions |
 | The provider SDK refused the request before sending it | 400 `INVALID_REQUEST` | none: correct the request |
 | Provider answered another error | the provider's status, `PROVIDER_TIMEOUT` for a timeout status, otherwise `PROVIDER_UNAVAILABLE` | none from shim |
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
@@ -423,6 +502,44 @@ Notes:
   The default 300-second `Retry-After` is longer than the pinned SDKs honour
   (120 seconds for `openai`, 60 for `anthropic`), so their automatic retry comes
   sooner and is refused again. Handle `repeated_requests` in your own code.
+- Agent tasks. A request names its task with `X-Shim-Task-Id` (or the incoming
+  `traceparent`, see [observe the gateway](#observe-the-gateway)). Task caps are off
+  until set: `SHIM_TASK_MAX_CALLS` (1 to 100,000) caps calls exactly;
+  `SHIM_TASK_MAX_COST_USD` (more than 0, at most 100,000) stops the next call once
+  the task's settled cost of priced requests has reached it, so one admitted call can
+  cross it, concurrent calls can each pass before any cost lands, and unpriced
+  requests add nothing; `SHIM_TASK_WINDOW_SECONDS` (60 to 86,400, default 3600)
+  is how long a task's counters live from its first call. A request without a task
+  id is never capped. Counters live in the process. The loop signal is on by
+  default: `SHIM_AGENT_LOOP=count` digests the latest tool call in the request's
+  history (name and canonical arguments, never the text) and counts it per task
+  (else per key) within `LOOP_WINDOW_SECONDS`; the usage event's
+  `tool_call_repeats` shows the count, `task_calls` the task's calls after this one,
+  and at `SHIM_AGENT_LOOP_REPEATS` (3 to 100, default 5) the `task.agent_loop`
+  verdict reads `AGENT_LOOP_SUSPECTED`. `block` refuses above the threshold; `off`
+  computes nothing. An agent loop grows its history every turn, so the exact-repeat
+  limit above never catches it.
+- Identical requests in flight. A request whose body, provider, protocol, model
+  and stream flag match a request of the same tenant that is still in flight
+  carries that request's id in `inflight_duplicate_of`
+  (`shim_inflight_duplicates_total{shared}` counts them). Identical means the same
+  bytes: a client that sends the same fields in another order sends another
+  request. Nothing else changes unless you set `SHIM_INFLIGHT_SHARING=on`; then a
+  JSON chat, Anthropic messages or Gemini `generateContent` request of the same key
+  waits for the first one's answer and returns the same body bytes with its own
+  `X-Shim-Request-Id` and `X-Shim-Latency-Ms`, without a provider call of its own.
+  It still passes its own rate limits, repeat check and privacy first. Never shared:
+  streams, Responses (provider-side conversation state), token counts, `n` above 1
+  or Gemini `candidateCount` above 1, an explicit `temperature` above 0, and other
+  keys. If the first request fails or is cancelled, the second calls the provider
+  itself, once. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
+  holds `leader_request_id`, the shared answer's `prompt_tokens` and
+  `completion_tokens`, and `avoided_cost_usd` at its own price; the first request's
+  event carries the provider call and its cost, so the events add up to the
+  provider bill. The shared answer is scanned and analysed once, on the first
+  request's event. Nothing is kept after the first request ends: this is not a
+  cache. The registry lives in the process (at most 10,000 requests, 900 seconds
+  each), so a duplicate on another replica is not seen.
 - After five provider failures with no success in between, the provider's
   circuit opens for 60 seconds. A provider 429 neither opens nor closes it.
 - The per-IP limit counts the connecting address. Behind a proxy, list the
@@ -442,10 +559,35 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | Code | When | What to do |
 | --- | --- | --- |
 | `MODEL_DEPRECATED` | The catalog marks the model deprecated. It is still served. | Move to a current model before the provider retires it. |
+| `MODEL_RETIRING` | The provider has announced the model's retirement within 90 days. The request goes ahead. | Move to the replacement the provider names before the date. |
+| `MODEL_RETIRED` | The model's retirement date has passed. The request is still sent; the provider answers with its own error, passed on as usual. | Move to the replacement. |
 | `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit where it counts against the window) is above the context window of the model's own catalog entry, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
+| `PRICE_TIER_CROSSED` | `SHIM_PRICE_TIER_WARNING=on` and the request's approximate size (bytes / 4) is above the model's large-context price threshold, so the whole request may be priced at the higher tier. Known before the call, so streams carry it too. | Shorten the input, or count tokens first; the settled tokens still decide the price. |
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
 | `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
 | `RULE_WARN` | An enforced tenant rule with action `warn` matched (enterprise); the request went ahead unchanged. | Read the rule with your tenant admin; the request list shows which one. |
+| `INJECTION_MARKERS` | `SHIM_INJECTION_MARKERS=warn` and a tool result or document in the request carries an instruction marker; the request went ahead unchanged. | Check where the tool's text came from before the model acts on it. |
+
+`PRICE_TIER_CROSSED` is off by default; set `SHIM_PRICE_TIER_WARNING=on` (or `off`)
+and restart the gateway. Catalog models with a tier: Gemini 2.5 Pro and 3.1 Pro
+preview above 200,000 tokens, OpenAI gpt-5.4 and later above 272,000; Anthropic
+models have none. It is never added to a token count, and a request warned before
+the call and confirmed after it carries both codes.
+
+`MODEL_RETIRING` and `MODEL_RETIRED` are always written to the usage event's
+`warnings`; they reach `X-Shim-Warnings` (JSON and streams) only with
+`SHIM_MODEL_RETIRING_WARNING=header` (default `record`), so default responses keep
+their headers. The dates come from `src/shim/billing/model_lifecycle.json`, filled
+from the providers' deprecation pages (OpenAI, Anthropic, Google publish no API for
+this) and reviewed like the price catalog; each entry names its `source` and when it
+was `checked_on`. An entry covers its own name and longer dated names, but never a
+name the catalog prices as a model of its own: a retiring `gpt-4` does not warn
+`gpt-4.1`, and a retiring dated snapshot does not warn the alias that points at it
+unless the provider lists the alias too. Point `SHIM_MODEL_LIFECYCLE_FILE` at a file
+of the same format to add or override dates; there a provider key may also be
+`registry`, with deployment aliases as model names. A malformed file stops the
+gateway at startup with the setting named. shim never refuses, reroutes or
+substitutes a model because of a date.
 
 shim refuses before the provider only what certainly fails. It counts the
 whitespace-separated words of the prompt text, a lower bound for the public
@@ -460,6 +602,43 @@ or a compaction block is never refused for size. Refusals use only a model's own
 catalog entry, never a longer model name matched by prefix. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
+
+## Count instructions hidden in tool results
+
+Learn when a web page, a ticket or a document your agent passed back to the model
+carries instructions of its own, without blocking or changing anything.
+
+1. Set `SHIM_INJECTION_MARKERS` to `count` or `warn` and restart the gateway. It
+   is `off` by default, and `off` scans nothing.
+2. Read `injection_markers` in the usage event: per marker, how many tool results
+   or documents in the request carried it, `{}` when none did. With `warn`, a
+   request that carries one also gets `INJECTION_MARKERS` in `X-Shim-Warnings`,
+   on JSON answers and on streams alike.
+
+```json
+{"version":4,"event":"request","request_id":"req_…","injection_markers":{"INSTRUCTION_OVERRIDE":1},"warnings":["INJECTION_MARKERS"]}
+```
+
+The markers are those shim-cli flags, in English and Turkish, typed with or
+without Turkish letters: `INSTRUCTION_OVERRIDE` ("ignore all previous
+instructions", "önceki tüm talimatları yok say"; only an order, so "kuralları yok
+saydık" is not one), `ROLE_REASSIGNMENT` ("you are now", "bundan sonra sen
+yöneticisin"), `SYSTEM_IMPERSONATION` (a `System:` or `[sistem]` line,
+`<important_instructions>`), `SECRECY_REQUEST` ("do not tell the user",
+"kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width characters, bidi controls
+and Unicode tag characters, read before anything is removed). Text under 24
+characters is skipped, and each tool result or document is read up to its first
+1,000,000 characters.
+
+What is read: Chat `tool` and `function` messages; Responses
+`function_call_output`, `custom_tool_call_output` and `mcp_call` outputs; Anthropic
+`tool_result`, `search_result` and text `document` blocks; Gemini
+`functionResponse.response`. What you type, system prompts, answers and images are
+never read: they are your own instructions. Nothing is ever blocked, rewritten or
+said to the model; a scan that fails records `{"error": true}` and the request
+goes on. The scan runs on the same worker thread as the privacy scan.
+`shim_injection_markers_total{marker}` counts the tool results and documents per
+marker. Enterprise sets it per tenant as the `injection_markers` gateway setting.
 
 ## Analyse answers after delivery
 
@@ -610,14 +789,25 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    | `OTEL_SERVICE_NAME` | `service.name` of the spans, default `shim`. |
    | `SENTRY_DSN` | Error reports only, no performance traces. Request body, URL, query string, cookies and exception messages are stripped. |
    | `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR` or `CRITICAL`; JSON lines on stdout. |
+   | `SHIM_TRACE_PARENT` | `ignore` (default): every request starts a new trace. `honor`: a request carrying a valid W3C `traceparent` (and `tracestate`) becomes a child of the caller's span, so an agent's calls are one trace. The tracer's sampler follows the caller's sampled flag, so an unsampled caller gets no gateway spans. |
    | `SYSTEM_PROMPT_HASH_KEY` | A secret of at least 32 characters. The usage event's `system_prompt_hash` becomes an HMAC of the system and developer instructions, so a changed prompt shows as a changed hash. Unset means `null`. Another installation's key gives other hashes for the same prompt. |
 
-2. Read the cost and usage of a settled request from its span attributes:
+2. Name the agent task a request belongs to with `X-Shim-Task-Id`: up to 128 of
+   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value is ignored and
+   counted in `shim_task_id_rejected_total`, never refused. Without it, the trace id
+   of a valid incoming `traceparent` is the task id. The usage event records
+   `task_id` and `trace_id` (the incoming trace id, also with `ignore`), `null` when
+   absent. Neither header is sent to the provider.
+3. Read the cost and usage of a settled request from its span attributes:
    `gen_ai.request.model` (`unpriced` for a model without a catalog price),
    `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
    `gen_ai.response.finish_reasons`, `shim.cost_usd` and `shim.usage_estimated`.
-   Span attributes come from a fixed allow-list.
-3. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the
+   Span attributes come from a fixed allow-list. The request span (`gateway.request`)
+   also carries `gen_ai.operation.name` (`chat` for Chat, Responses and Messages,
+   `generate_content` for Gemini), `gen_ai.provider.name` (`openai`, `anthropic`,
+   `gcp.gemini`) and `shim.task_id`, named as the OpenTelemetry GenAI conventions
+   at schema `https://opentelemetry.io/schemas/1.44.0`, which the tracer declares.
+4. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the
    OpenAPI document, so keep it off public networks.
 
 ```console
@@ -640,6 +830,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_time_to_first_token_seconds` (histogram, streams only) | `provider`, `model` |
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
+| `shim_injection_markers_total` | `marker` |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

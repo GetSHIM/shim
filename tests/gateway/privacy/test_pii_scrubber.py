@@ -2208,3 +2208,32 @@ def test_person_name_data_is_reviewed_and_consistent() -> None:
     for name in names.first | names.surnames:
         assert name not in names.stop_words, name
         assert not any(name.startswith(prefix) for prefix in names.stop_prefixes), name
+
+
+def test_the_restore_map_leaves_out_withheld_types_tails_and_labels_alike() -> None:
+    mapping = {
+        "<TR_NATIONAL_ID_" + "a" * 32 + ">": "10000000146",
+        "<CREDIT_CARD_" + "b" * 32 + "~1111>": "4111111111111111",
+        "<PROJECT_" + "c" * 32 + ">": "Atlas",
+        "<EMAIL_ADDRESS_" + "d" * 32 + ">": "alice@example.com",
+    }
+    everyone = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED, pii_detected=True, verification_map=mapping
+    )
+    withheld = PrivacyOutcome(
+        action=PrivacyAction.SCRUBBED,
+        pii_detected=True,
+        verification_map=mapping,
+        restore_withheld=frozenset({"TR_NATIONAL_ID", "CREDIT_CARD", "PROJECT"}),
+    )
+
+    assert everyone.restore_map == mapping and everyone.withheld_counts == {}
+    assert withheld.restore_map == {
+        "<EMAIL_ADDRESS_" + "d" * 32 + ">": "alice@example.com"
+    }
+    assert withheld.withheld_counts == {
+        "TR_NATIONAL_ID": 1,
+        "CREDIT_CARD": 1,
+        "PROJECT": 1,
+    }
+    assert withheld.verification_map == mapping
