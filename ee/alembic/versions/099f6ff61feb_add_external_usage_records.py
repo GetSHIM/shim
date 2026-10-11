@@ -1,7 +1,8 @@
 """Add external usage records.
 
 One row per call another gateway (LiteLLM first) logged, imported by an operator
-script. The source's numbers, kept apart from shim's accounting; never content.
+script. The source's numbers the findings read, kept apart from shim's
+accounting; never content, a user, a team, a tag or an endpoint.
 
 Revision: 099f6ff61feb
 Parent: b93eaf9b1386
@@ -12,7 +13,6 @@ from collections.abc import Sequence
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 
 revision: str = "099f6ff61feb"
@@ -30,28 +30,14 @@ def upgrade() -> None:
         sa.Column("source_request_id", sa.String(length=255), nullable=False),
         sa.Column("import_id", sa.UUID(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("ended_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("ttft_ms", sa.Integer(), nullable=True),
-        sa.Column("duration_ms", sa.Integer(), nullable=True),
         sa.Column("status", sa.String(length=32), nullable=True),
-        sa.Column("call_type", sa.String(length=64), nullable=True),
         sa.Column("model", sa.String(length=255), nullable=True),
         sa.Column("model_group", sa.String(length=255), nullable=True),
-        sa.Column("provider", sa.String(length=64), nullable=True),
-        sa.Column("api_base_origin", sa.String(length=512), nullable=True),
         sa.Column("source_key_hash", sa.String(length=128), nullable=True),
-        sa.Column("source_team", sa.String(length=255), nullable=True),
-        sa.Column("source_user", sa.String(length=255), nullable=True),
         sa.Column("prompt_tokens", sa.Integer(), nullable=True),
         sa.Column("completion_tokens", sa.Integer(), nullable=True),
         sa.Column("cost_usd", sa.Numeric(precision=18, scale=8), nullable=True),
-        sa.Column("cache_hit", sa.Boolean(), nullable=True),
-        sa.Column(
-            "tags",
-            postgresql.JSONB(),
-            server_default=sa.text("'[]'::jsonb"),
-            nullable=False,
-        ),
         sa.Column(
             "imported_at",
             sa.DateTime(timezone=True),

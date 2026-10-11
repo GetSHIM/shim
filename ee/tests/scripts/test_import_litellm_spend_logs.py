@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
@@ -108,23 +109,62 @@ def test_a_row_maps_to_the_source_numbers_and_nothing_else() -> None:
             endTime="2026-10-01T10:00:03.500000",
             completionStartTime="2026-10-01T10:00:00.750000",
             api_base="https://gw.example:8443/v1/chat?api-key=secret",
-            model="m" * 300,
-            team_id="t" * 300,
-            request_tags=["x" * 150] * 25,
-            cache_hit="True",
+            user="ayse.yilmaz@kurum.com.tr",
+            team_id="team-alpha",
+            request_tags=["Ayşe'nin işi"],
             messages=[{"role": "user", "content": PROMPT}],
         )
     )
 
+    assert set(record) == {
+        "source_request_id",
+        "started_at",
+        "ttft_ms",
+        "status",
+        "model",
+        "model_group",
+        "source_key_hash",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+    }
     assert record["started_at"] == datetime(2026, 10, 1, 10, tzinfo=timezone.utc)
     assert record["ttft_ms"] == 750
     assert record["cost_usd"] == Decimal("0.000123456789012345")
-    assert record["api_base_origin"] == "https://gw.example:8443"
-    assert len(record["model"]) == 255 and len(record["source_team"]) == 255
-    assert record["tags"] == ["x" * 100] * 20
-    assert record["cache_hit"] is True
     assert record["source_key_hash"] == KEY
-    assert PROMPT not in json.dumps(record, default=str)
+    written = json.dumps(record, default=str)
+    for kept_out in (PROMPT, "ayse", "Ayşe", "secret", "gw.example", "team-alpha"):
+        assert kept_out not in written
+
+
+@pytest.mark.parametrize(
+    ("model", "shown"),
+    [
+        ("gpt-5-nano", "gpt-5-nano"),
+        ("kurum-gpt", "kurum-gpt"),
+        ("llama-local", "other"),
+        ("Ayşe Yılmaz test", "other"),
+        ("m" * 300, "other"),
+    ],
+)
+def test_a_model_outside_the_price_book_and_the_registry_is_other(model, shown) -> None:
+    record = mapped(_row(1, model=model, model_group=model), frozenset({"kurum-gpt"}))
+
+    assert (record["model"], record["model_group"]) == (shown, shown)
+
+
+@pytest.mark.parametrize("spend", [float("nan"), "Infinity", -0.5, "-1", 1e12, "x"])
+def test_a_cost_that_is_not_a_finite_amount_is_unknown(spend) -> None:
+    assert mapped(_row(1, spend=spend))["cost_usd"] is None
+
+
+def test_a_raw_key_is_stored_only_as_its_digest() -> None:
+    raw = "sk-litellm-RAWSECRET0001"
+
+    stored = mapped(_row(1, api_key=raw))["source_key_hash"]
+
+    assert stored == hashlib.sha256(raw.encode()).hexdigest()
+    assert mapped(_row(2, api_key=KEY.upper()))["source_key_hash"] == KEY
 
 
 def test_missing_optional_fields_are_null_and_rows_without_keys_are_skipped() -> None:
@@ -137,7 +177,7 @@ def test_missing_optional_fields_are_null_and_rows_without_keys_are_skipped() ->
         )
     )
 
-    assert {key for key, value in bare.items() if value not in (None, [])} == {
+    assert {key for key, value in bare.items() if value is not None} == {
         "source_request_id",
         "started_at",
     }
@@ -405,7 +445,8 @@ async def test_unregistered_model_fires_at_ten_requests(db, requests) -> None:
     summary = await _import(db, organization.id, rows)
 
     fired = [row.subject for row in await _findings(db, organization.id)]
-    assert fired == ([{"model": "llama-local"}] if requests == 10 else [])
+    # Not a price-book or registry name: counted, never named.
+    assert fired == ([{"model": "other"}] if requests == 10 else [])
     assert summary["findings_opened"] == (
         {service.LITELLM_UNREGISTERED_MODEL: 1} if requests == 10 else {}
     )
@@ -579,5 +620,5 @@ async def test_a_row_without_a_model_is_judged_by_its_model_group(db) -> None:
     )
 
     assert [row.subject for row in await _findings(db, organization.id)] == [
-        {"model": "team-pool"}
+        {"model": "other"}
     ]

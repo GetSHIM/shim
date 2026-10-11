@@ -237,8 +237,11 @@ gateway records. The findings they raise carry `source: litellm`, use the
 source's cost labelled `cost_source: litellm`, and say when a signal is weaker
 than its gateway counterpart (`litellm.retry_burst` compares token counts, not
 content). Prompts and answers in an export are ignored: only their presence is
-counted. The worker never evaluates `litellm.*` rules; an import does, with
-windows ending at the latest imported row.
+counted. Nothing free-form is stored either: no user, team, tag or endpoint, a
+model only under a price-book or registry name (else `other`), a key only as a
+SHA-256 digest, and a cost only when it is a finite amount from 0 up. The worker
+never evaluates `litellm.*` rules; an import does, with windows ending at the
+latest imported row.
 
 ## Management change details
 

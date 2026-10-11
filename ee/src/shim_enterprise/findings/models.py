@@ -9,7 +9,6 @@ from uuid import UUID, uuid4
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -92,7 +91,8 @@ class ExternalUsageRecord(Base):
     """One call another gateway logged, as that gateway reported it; never content.
 
     Kept apart from request_lifecycle and usage_ledger: the source's claim, read by
-    the findings it raises and nothing else.
+    the findings it raises and nothing else. Only what those findings read is kept:
+    no user, team, tag or endpoint of the source.
     """
 
     __tablename__ = "external_usage_records"
@@ -129,25 +129,15 @@ class ExternalUsageRecord(Base):
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ttft_ms: Mapped[int | None] = mapped_column(Integer)
-    duration_ms: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str | None] = mapped_column(String(32))
-    call_type: Mapped[str | None] = mapped_column(String(64))
     model: Mapped[str | None] = mapped_column(String(255))
     model_group: Mapped[str | None] = mapped_column(String(255))
-    provider: Mapped[str | None] = mapped_column(String(64))
-    api_base_origin: Mapped[str | None] = mapped_column(String(512))
+    # A SHA-256 digest of the source's key (LiteLLM's own hash, or one of a raw key).
     source_key_hash: Mapped[str | None] = mapped_column(String(128))
-    source_team: Mapped[str | None] = mapped_column(String(255))
-    source_user: Mapped[str | None] = mapped_column(String(255))
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
-    cache_hit: Mapped[bool | None] = mapped_column(Boolean)
-    tags: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
-    )
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

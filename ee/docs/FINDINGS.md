@@ -631,7 +631,8 @@ the hours.
 tenant with at least one enabled registry deployment: a model (LiteLLM's `model`,
 else its `model_group`) with at least 10 requests in the last 7 days of the log
 whose `model` and `model_group` match no deployment `alias` or `upstream_model`.
-Severity low. Subject: the model. Max mode `observe`, blast radius `model`, risk
+Severity low. Subject: the model, or `other` for every model the price book and
+the registry do not know (the import stores those as `other`, never their text). Max mode `observe`, blast radius `model`, risk
 class `privacy`. Silent for a tenant without deployments.
 
 **Why.** The same question as

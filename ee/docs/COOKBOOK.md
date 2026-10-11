@@ -1078,9 +1078,17 @@ Notes:
   `--delete-import <import_id> --organization <uuid>`; its findings stay.
 - Prompts and answers in an export (LiteLLM's `store_prompts_in_spend_logs`) are
   never read or stored: the row is counted under `rows_with_content_ignored`.
-- `api_base` is kept as scheme, host and port only. LiteLLM's `api_key` is
-  already a hash of its virtual key; findings name a key by its first 16
-  characters.
+- Only what the findings read is kept: request id, start, time to first token,
+  status, model and model group, the key's digest, tokens and cost. LiteLLM's
+  `user`, team, tags, `api_base`, call type and cache flag are not stored.
+- A model or model group is kept by name when the price book or one of your
+  registry deployments (alias or upstream model) knows it, and stored as `other`
+  otherwise, so free text a client sent as a model never lands in a finding.
+- LiteLLM's `api_key` is usually already a SHA-256 hash of its virtual key and is
+  kept as such; anything else is replaced by its SHA-256 digest. Findings name a
+  key by the first 16 characters of the digest.
+- A `spend` that is not a finite amount from 0 up (NaN, infinite, negative,
+  unreadable) is stored as unknown.
 - Imported cost and tokens never reach billing, budgets, quotas or the evidence
   files: they are LiteLLM's own numbers. The findings carry `source: litellm` in
   the inbox and the OCSF export.

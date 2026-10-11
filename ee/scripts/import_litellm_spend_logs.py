@@ -3,49 +3,53 @@
 One source per run: a JSON Lines file, LiteLLM's /spend/logs/v2 (admin key in
 LITELLM_ADMIN_KEY) or its database (LITELLM_DATABASE_URL). Rows land in
 external_usage_records only, never in shim's accounting. Prompts and answers in
-an export are ignored: only whether they are present is counted.
+an export are ignored: only whether they are present is counted. Nothing free-form
+is kept: a model is named only when the price book or the tenant's registry knows
+it ("other" otherwise), and a key only as a SHA-256 digest.
 """
 
 import argparse
 import asyncio
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 import sys
+import re
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shim.billing.pricing import DEFAULT_PRICE_BOOK
 from shim_enterprise.core.database import AsyncSessionLocal
 from shim_enterprise.findings.models import ExternalUsageRecord
 from shim_enterprise.findings.service import evaluate_litellm
-from shim_enterprise.tenants.models import Organization
+from shim_enterprise.tenants.models import ModelDeployment, Organization
 
 logger = logging.getLogger(__name__)
 
 MAX_WINDOW = timedelta(days=31)
 PAGE_SIZE = 1_000
 PAGE_TIMEOUT_SECONDS = 30.0
-MAX_TAGS = 20
-MAX_TAG_LENGTH = 100
+OTHER_MODEL = "other"
+# Numeric(18, 8): a cost at or past this does not fit and is not a real amount.
+MAX_COST = Decimal(10) ** 10
+_KEY_DIGEST = re.compile(r"[0-9a-fA-F]{64}")
 _EMPTY = (None, "", {}, [])
 _LITELLM_TIME = "%Y-%m-%d %H:%M:%S"
 # LiteLLM's own column names; messages and response are reduced to "present".
 _SELECT = """
-    SELECT request_id, call_type, api_key, spend, prompt_tokens, completion_tokens,
-           "startTime", "endTime", "completionStartTime", request_duration_ms, model,
-           model_group, custom_llm_provider, api_base, "user", cache_hit, request_tags,
-           team_id, status,
+    SELECT request_id, api_key, spend, prompt_tokens, completion_tokens,
+           "startTime", "endTime", "completionStartTime", model, model_group, status,
            coalesce(messages, '{}'::jsonb) NOT IN ('{}', '[]', 'null', '""')
                OR coalesce(response, '{}'::jsonb) NOT IN ('{}', '[]', 'null', '""')
                AS content_present
@@ -83,15 +87,35 @@ def _ms(start: datetime | None, end: datetime | None) -> int | None:
     return int((end - start).total_seconds() * 1000)
 
 
-def _origin(api_base: Any) -> str | None:
-    """Scheme, host and port: some setups put secrets in the path or the query."""
-    if not isinstance(api_base, str) or not api_base:
+def _model(value: Any, registered: frozenset[str]) -> str | None:
+    """A name the price book or the registry knows, or "other"; never caller text."""
+    if not isinstance(value, str) or not value:
         return None
-    parts = urlsplit(api_base)
-    if not parts.scheme or not parts.hostname:
+    known = value in registered or any(
+        DEFAULT_PRICE_BOOK.supports(value, provider)
+        for provider in DEFAULT_PRICE_BOOK.provider_prices
+    )
+    return value[:255] if known else OTHER_MODEL
+
+
+def _cost(spend: Any) -> Decimal | None:
+    """The source's cost when it is a finite amount from 0 up; None otherwise."""
+    if spend is None or isinstance(spend, bool):
         return None
-    port = f":{parts.port}" if parts.port else ""
-    return f"{parts.scheme}://{parts.hostname}{port}"[:512]
+    try:
+        cost = Decimal(str(spend))
+    except InvalidOperation:
+        return None
+    return cost if cost.is_finite() and 0 <= cost < MAX_COST else None
+
+
+def _key(value: Any) -> str | None:
+    """LiteLLM's hashed key as it is; a raw key only as its SHA-256 digest."""
+    if not isinstance(value, str) or not value:
+        return None
+    if _KEY_DIGEST.fullmatch(value):
+        return value.lower()
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def content_present(row: Mapping[str, Any]) -> bool:
@@ -100,41 +124,29 @@ def content_present(row: Mapping[str, Any]) -> bool:
     return any(row.get(field) not in _EMPTY for field in ("messages", "response"))
 
 
-def mapped(row: Mapping[str, Any]) -> dict[str, Any] | None:
-    """One LiteLLM_SpendLogs row as an external usage record; None without its keys."""
+def mapped(
+    row: Mapping[str, Any], registered: frozenset[str] = frozenset()
+) -> dict[str, Any] | None:
+    """One LiteLLM_SpendLogs row as an external usage record; None without its keys.
+
+    `registered` holds the tenant's registry aliases and upstream models.
+    """
     request_id, started = _text(row.get("request_id"), 255), _time(row.get("startTime"))
     if request_id is None or started is None:
         return None
     ended, first = _time(row.get("endTime")), _time(row.get("completionStartTime"))
-    spend, cache_hit = row.get("spend"), row.get("cache_hit")
-    tags = row.get("request_tags")
     return {
         "source_request_id": request_id,
         "started_at": started,
-        "ended_at": ended,
         # LiteLLM writes completionStartTime = endTime when it saw no first token.
         "ttft_ms": None if first is None or first == ended else _ms(started, first),
-        "duration_ms": _int(row.get("request_duration_ms")),
         "status": _text(row.get("status"), 32),
-        "call_type": _text(row.get("call_type"), 64),
-        "model": _text(row.get("model"), 255),
-        "model_group": _text(row.get("model_group"), 255),
-        "provider": _text(row.get("custom_llm_provider"), 64),
-        "api_base_origin": _origin(row.get("api_base")),
-        "source_key_hash": _text(row.get("api_key"), 128),
-        "source_team": _text(row.get("team_id"), 255),
-        "source_user": _text(row.get("user"), 255),
+        "model": _model(row.get("model"), registered),
+        "model_group": _model(row.get("model_group"), registered),
+        "source_key_hash": _key(row.get("api_key")),
         "prompt_tokens": _int(row.get("prompt_tokens")),
         "completion_tokens": _int(row.get("completion_tokens")),
-        "cost_usd": None
-        if spend is None or isinstance(spend, bool)
-        else Decimal(str(spend)),
-        "cache_hit": cache_hit
-        if isinstance(cache_hit, bool)
-        else {"true": True, "false": False}.get(str(cache_hit).lower()),
-        "tags": [tag[:MAX_TAG_LENGTH] for tag in tags[:MAX_TAGS]]
-        if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags)
-        else [],
+        "cost_usd": _cost(row.get("spend")),
     }
 
 
@@ -231,6 +243,15 @@ async def import_rows(
     counts["rows_with_content_ignored"] = 0
     latest: datetime | None = None
     batch: list[dict[str, Any]] = []
+    registered = frozenset(
+        name
+        for row in await session.execute(
+            select(ModelDeployment.alias, ModelDeployment.upstream_model).where(
+                ModelDeployment.organization_id == organization_id
+            )
+        )
+        for name in row
+    )
 
     async def flush() -> None:
         inserted = (
@@ -261,7 +282,7 @@ async def import_rows(
         counts["rows_read"] += 1
         if content_present(row):
             counts["rows_with_content_ignored"] += 1
-        record = mapped(row)
+        record = mapped(row, registered)
         if record is None or not since <= record["started_at"] < until:
             counts["rows_skipped"] += 1
             continue
