@@ -114,6 +114,7 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
         "term",
         "pattern",
         "destination",
+        "request_limit",
     }
     assert all("require_approval" not in kind.actions for kind in view.kinds.values())
     count = select(func.count()).where(
