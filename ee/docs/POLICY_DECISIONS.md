@@ -70,7 +70,8 @@ exposes verdicts, caller key/user identity, actor type, and terminal lifecycle
 status. Unknown historical fields remain null. The existing chain verifier
 continues to verify this evidence.
 Decision evidence records the gateway's checks and the tenant's own rules. It is
-not a content archive, signature or independent trust anchor.
+not a content archive (unless the self-hosted [request archive](#request-archive)
+is turned on), signature or independent trust anchor.
 
 Verification: `uv run --locked python -m pytest -q
  ee/tests/gateway/pipeline/test_decisions.py` covers real quota/spend transactions,
@@ -176,6 +177,43 @@ database transaction, never open across the provider call:
   request id). The creation and the use are on the requests themselves, as
   `approval_id`. `shim_request_approvals_total{outcome}` counts gate outcomes,
   `shim_request_approval_decisions_total{decision}` decisions.
+
+## Request archive
+
+Self-hosted only, off by default, and only for requests a rule or a detector
+matched. It needs two switches: the installation's `REQUEST_ARCHIVE_ENABLED`
+(with an `ENCRYPTION_KEY`, or the gateway does not start; the hosted cloud
+refuses to start with it) and the tenant's `request_archive.enabled` in the
+gateway settings. `GET /gateway-settings` shows `request_archive_state` and, when
+the installation does not allow it, the reason under `unavailable`.
+
+- **What is kept.** A request whose privacy step masked, monitored or blocked a
+  value, or that any tenant rule matched (monitor state included: during a
+  "watch before masking" rollout this is what the admin needs). A clean request
+  and a token count are never kept, and neither is the answer. Kept: the masked
+  payload as the provider received it and the edit (placeholder to original),
+  each Fernet-encrypted with `ENCRYPTION_KEY`, plus `matched` (entity types and
+  rule ids with action and count, never a value). Nothing else is in the clear.
+- **The write never fails the request.** It runs after the privacy facts commit,
+  encrypts in a worker thread and inserts in one short transaction; any failure
+  is logged by type, counted as `shim_request_archive_writes_total{result="failed"}`
+  and the request goes on unchanged. A payload above 2,000,000 bytes is skipped
+  (`skipped_size`). The request record says `stored` only when the row committed.
+- **90 days at most.** A tenant may shorten `retention_days` (1 to 90), never
+  lengthen it; shortening moves existing rows' expiry forward in the same
+  change. The ai_act worker deletes expired rows in batches of 1,000, at most 50
+  per pass, whatever the switches say. The owner can delete the whole archive at
+  once (`DELETE /request-archive`, audited as `tenant.request_archive_purged`).
+  A deleted row stays in database backups until they rotate and in PostgreSQL's
+  storage until vacuum: keep backup retention in line with the 90 days.
+- **Only an admin opens content, and every opening is visible.** Owners and
+  admins (`content.read`, never a service account) open one request; the opening
+  is audited as `tenant.request_content_opened` and committed before anything is
+  decrypted. Auditors see every opening, a member the openings of requests made
+  with their own keys; nobody else reads the text. Content never appears in a
+  list, an export, a log or a finding.
+- Turning the archive on or keeping content longer is a loosening change for
+  [four eyes](#four-eyes); turning it off or shortening is tightening.
 
 ## Imported gateway logs
 

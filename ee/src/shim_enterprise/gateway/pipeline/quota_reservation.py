@@ -18,6 +18,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import desc, func, select, text
 
+from shim_enterprise.archive.service import archive_request
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.errors import PersistenceError
 from shim.privacy.classification import content_ref
@@ -975,6 +976,8 @@ class DurableUsageLifecycle:
     async def record_privacy(self, prepared: PreparedInference) -> None:
         async with self.session_factory() as session:
             await self.accounting.record_privacy(prepared, session)
+        # After the privacy facts committed; a failure here never fails the request.
+        await archive_request(self.session_factory, prepared)
 
     async def reserve_provider_spend(
         self,

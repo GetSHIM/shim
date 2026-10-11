@@ -37,6 +37,11 @@ REQUEST_APPROVAL_DECISIONS_TOTAL = Counter(
     "Administrator decisions on held requests.",
     ("decision",),
 )
+REQUEST_ARCHIVE_WRITES_TOTAL = Counter(
+    "shim_request_archive_writes_total",
+    "Request archive writes: stored, skipped_size or failed.",
+    ("result",),
+)
 LICENSE_DAYS_REMAINING = Gauge(
     "license_days_remaining",
     "Days until the enterprise licence expires; negative inside the grace period.",

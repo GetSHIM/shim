@@ -30,6 +30,8 @@ async def cloud_user(
 
 
 def create_cloud_app(config: CloudSettings | None = None) -> FastAPI:
+    if settings.REQUEST_ARCHIVE_ENABLED:
+        raise RuntimeError("The request archive is not available in the hosted service")
     application = create_enterprise_app()
     application.state.cloud_settings = config or CloudSettings()
     enterprise_lifespan = application.router.lifespan_context

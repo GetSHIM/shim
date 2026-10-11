@@ -1068,6 +1068,83 @@
         "title": "ApprovalView",
         "type": "object"
       },
+      "ArchivePurgeView": {
+        "properties": {
+          "rows_deleted": {
+            "minimum": 0.0,
+            "title": "Rows Deleted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows_deleted"
+        ],
+        "title": "ArchivePurgeView",
+        "type": "object"
+      },
+      "ArchivedContentView": {
+        "properties": {
+          "archived_at": {
+            "format": "date-time",
+            "title": "Archived At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "masked_payload": {
+            "title": "Masked Payload"
+          },
+          "matched": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Matched",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "original_payload": {
+            "title": "Original Payload"
+          },
+          "protocol": {
+            "title": "Protocol",
+            "type": "string"
+          },
+          "replacements": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Replacements",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "archived_at",
+          "expires_at",
+          "protocol",
+          "model",
+          "matched",
+          "masked_payload",
+          "replacements",
+          "original_payload"
+        ],
+        "title": "ArchivedContentView",
+        "type": "object"
+      },
       "AspectRatio": {
         "description": "The aspect ratio for the image output.",
         "enum": [
@@ -3093,6 +3170,75 @@
           }
         },
         "title": "Content",
+        "type": "object"
+      },
+      "ContentOpeningPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContentOpeningView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "ContentOpeningPage",
+        "type": "object"
+      },
+      "ContentOpeningView": {
+        "properties": {
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "opened_at",
+          "actor_user_id",
+          "request_id"
+        ],
+        "title": "ContentOpeningView",
         "type": "object"
       },
       "CountTokensRequest": {
@@ -5373,6 +5519,13 @@
             "title": "Four Eyes",
             "type": "string"
           },
+          "request_archive": {
+            "$ref": "#/components/schemas/RequestArchiveSettings",
+            "default": {
+              "enabled": false,
+              "retention_days": 90
+            }
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -5422,6 +5575,16 @@
             ],
             "title": "Four Eyes"
           },
+          "request_archive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestArchivePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "response_analysis": {
             "anyOf": [
               {
@@ -5448,6 +5611,15 @@
             },
             "title": "Available Analyzers",
             "type": "array"
+          },
+          "request_archive_state": {
+            "description": "on only when this installation allows the archive and the tenant turned it on.",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "title": "Request Archive State",
+            "type": "string"
           },
           "revision": {
             "minimum": 0.0,
@@ -5496,7 +5668,8 @@
           "updated_at",
           "updated_by",
           "available_analyzers",
-          "unavailable"
+          "unavailable",
+          "request_archive_state"
         ],
         "title": "GatewaySettingsView",
         "type": "object"
@@ -11397,6 +11570,12 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "content_archived": {
+            "default": false,
+            "description": "The self-hosted request archive kept this request's content; an admin can open it, and every opening is listed.",
+            "title": "Content Archived",
+            "type": "boolean"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -11729,6 +11908,57 @@
           "team"
         ],
         "title": "RequestActivityView",
+        "type": "object"
+      },
+      "RequestArchivePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "retention_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Days"
+          }
+        },
+        "title": "RequestArchivePatch",
+        "type": "object"
+      },
+      "RequestArchiveSettings": {
+        "additionalProperties": false,
+        "description": "Keep rule-matched requests, encrypted, for at most 90 days (self-hosted only).",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "retention_days": {
+            "default": 90,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "type": "integer"
+          }
+        },
+        "title": "RequestArchiveSettings",
         "type": "object"
       },
       "RequestOutcomeCountsView": {
@@ -21197,6 +21427,128 @@
         ]
       }
     },
+    "/api/v1/management/request-archive": {
+      "delete": {
+        "operationId": "purge_request_archive_api_v1_management_request_archive_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivePurgeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Purge Request Archive",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/request-archive/openings": {
+      "get": {
+        "description": "Readers see every opening; anyone else the openings of their own keys' requests.",
+        "operationId": "list_content_openings_api_v1_management_request_archive_openings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentOpeningPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Content Openings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/requests": {
       "get": {
         "operationId": "list_requests_api_v1_management_requests_get",
@@ -21898,6 +22250,54 @@
           }
         ],
         "summary": "Export Requests",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/requests/{request_id}/content": {
+      "get": {
+        "description": "The archived request as sent and as shim changed it; the opening is audited first.",
+        "operationId": "open_request_content_api_v1_management_requests__request_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedContentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Request Content",
         "tags": [
           "management"
         ]

@@ -53,6 +53,15 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "DELETE /api/v1/management/request-archive": {
+  "admin": "403 Organization owner required",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization owner required",
+  "owner": "200",
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization owner required"
+ },
  "DELETE /api/v1/management/roles/{role_id}": {
   "admin": "403 Permission required: roles.manage",
   "auditor": "403 Auditor access is read-only",
@@ -485,6 +494,15 @@
   "service_auditor": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
  },
+ "GET /api/v1/management/request-archive/openings": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "200"
+ },
  "GET /api/v1/management/requests": {
   "admin": "200",
   "auditor": "200",
@@ -502,6 +520,15 @@
   "service_admin": "200",
   "service_auditor": "200",
   "team_admin": "200"
+ },
+ "GET /api/v1/management/requests/{request_id}/content": {
+  "admin": "404",
+  "auditor": "403 Permission required: content.read",
+  "member": "403 Permission required: content.read",
+  "owner": "404",
+  "service_admin": "403 Service accounts cannot open archived content",
+  "service_auditor": "403 Permission required: content.read",
+  "team_admin": "403 Permission required: content.read"
  },
  "GET /api/v1/management/roles": {
   "admin": "403 Permission required: roles.manage",

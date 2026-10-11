@@ -6,9 +6,10 @@ from collections.abc import Callable, Mapping
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
+from shim_enterprise.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,22 @@ def _known_analyzers(value: list[str]) -> list[str]:
     return [analyzer.name for analyzer in ANALYZERS if analyzer.name in value]
 
 
+class RequestArchiveSettings(BaseModel):
+    """Keep rule-matched requests, encrypted, for at most 90 days (self-hosted only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    retention_days: int = Field(default=90, ge=1, le=90)
+
+
+class RequestArchivePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    retention_days: int | None = Field(default=None, ge=1, le=90)
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -37,6 +54,7 @@ class GatewaySettings(BaseModel):
     four_eyes: FourEyes = "off"
     # Per finding rule, how far shim may go; a rule left out observes.
     finding_modes: dict[str, FindingMode] = {}
+    request_archive: RequestArchiveSettings = RequestArchiveSettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -50,6 +68,7 @@ class GatewaySettingsPatch(BaseModel):
     response_analysis: list[str] | None = None
     four_eyes: FourEyes | None = None
     finding_modes: dict[str, FindingMode] | None = None
+    request_archive: RequestArchivePatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -143,21 +162,45 @@ def _finding_modes(
     return "relaxing" if raised else "neutral"
 
 
+def _request_archive(
+    before: RequestArchiveSettings, after: RequestArchiveSettings
+) -> Direction:
+    # More content kept is relaxing: turning it on, or keeping it longer.
+    if (after.enabled and not before.enabled) or (
+        after.retention_days > before.retention_days
+    ):
+        return "relaxing"
+    return "tightening"
+
+
 # A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
     "four_eyes": _four_eyes,
     "finding_modes": _finding_modes,
+    "request_archive": _request_archive,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
-SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {}
+SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "request_archive": lambda: (
+        None
+        if settings.REQUEST_ARCHIVE_ENABLED
+        else "off, needs REQUEST_ARCHIVE_ENABLED in this installation (self-hosted only)"
+    ),
+}
 
 
 def patched(before: Mapping[str, Any], changes: Mapping[str, Any]) -> dict[str, Any]:
-    """A PATCH: `finding_modes` merges per rule, and `observe` removes the rule."""
+    """A PATCH: `finding_modes` merges per rule, and `observe` removes the rule;
+    `request_archive` merges per field."""
     after = {**before, **changes}
+    if "request_archive" in changes:
+        after["request_archive"] = {
+            **before.get("request_archive", {}),
+            **changes["request_archive"],
+        }
     if "finding_modes" in changes:
         modes = {**before.get("finding_modes", {}), **changes["finding_modes"]}
         after["finding_modes"] = {

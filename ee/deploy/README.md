@@ -178,6 +178,12 @@ For disaster recovery, restore the backup into a separate database, confirm its
 revision and integrity, restore the corresponding secrets, then test a compatible
 application before switching customer traffic. Rehearse this on disposable data.
 
+When the self-hosted [request archive](../docs/POLICY_DECISIONS.md#request-archive)
+is on (`REQUEST_ARCHIVE_ENABLED=true`), backups hold its rows, ciphertext under
+`ENCRYPTION_KEY`, until the backups rotate, and PostgreSQL frees deleted rows on
+vacuum. Keep backup retention in line with the archive's 90 days, and keep the
+`ENCRYPTION_KEY` a restore needs: rows sealed with another key answer 410.
+
 ### PostgreSQL restore rehearsal
 
 Use a separate database and recovery application, leaving the source database and

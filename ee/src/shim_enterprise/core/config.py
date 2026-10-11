@@ -43,6 +43,9 @@ class Settings(CommunitySettings):
     SECRET_KEY: str = Field(min_length=16)
     SHIM_LICENSE_KEY: str | None = None
     ENCRYPTION_KEY: str | None = None
+    # Self-hosted only: lets tenants keep rule-matched requests, encrypted with
+    # ENCRYPTION_KEY, for at most 90 days. The hosted cloud refuses to start with it.
+    REQUEST_ARCHIVE_ENABLED: bool = False
     SECRET_BACKEND: Literal[
         "fernet",
         "gcp_secret_manager",
@@ -236,6 +239,8 @@ class Settings(CommunitySettings):
                 raise ValueError(
                     "VAULT_ADDR must be an origin; production requires HTTPS"
                 )
+        if self.REQUEST_ARCHIVE_ENABLED and not self.ENCRYPTION_KEY:
+            raise ValueError("REQUEST_ARCHIVE_ENABLED requires ENCRYPTION_KEY")
         if self.ENVIRONMENT == "production" and self.SECRET_BACKEND == "fernet":
             raise ValueError("production requires a managed secret backend")
         if self.ENVIRONMENT == "production" and self.MANUAL_TEST_DASHBOARD_ENABLED:

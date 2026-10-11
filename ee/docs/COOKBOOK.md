@@ -30,6 +30,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
 - [Hold a request for approval](#hold-a-request-for-approval)
+- [Keep matched requests and open one](#keep-matched-requests-and-open-one)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Import LiteLLM spend logs](#import-litellm-spend-logs)
@@ -906,6 +907,49 @@ Notes:
   unexpired approval can be decided (409 `APPROVAL_STATE_CONFLICT` otherwise).
 - The request list shows `approval_id` on the held, refused and sending
   requests, and `GET /api/v1/management/requests?approval_id=<id>` finds them.
+
+## Keep matched requests and open one
+
+A self-hosted installation can keep the requests a rule or a detector matched,
+so a data officer can see what was sent and what shim changed. Clean requests
+and answers are never kept; see [what is kept](POLICY_DECISIONS.md#request-archive).
+
+1. The operator sets `REQUEST_ARCHIVE_ENABLED=true` with an `ENCRYPTION_KEY`
+   and restarts the gateway. The hosted cloud cannot turn it on.
+2. An owner or admin turns it on for the tenant, optionally with a shorter
+   retention: `PATCH /api/v1/management/gateway-settings` with
+   `{"request_archive": {"enabled": true, "retention_days": 30}}`.
+   `request_archive_state` reads `on` once both switches are on. Turning it on
+   is a loosening change, so with four eyes it needs a second administrator.
+3. A matched request now shows `content_archived: true` in the request list.
+   An owner or admin opens it:
+   `GET /api/v1/management/requests/{request_id}/content` answers the masked
+   payload, the replacements and the original payload, with
+   `Cache-Control: no-store`. The opening is recorded before the content is
+   decrypted.
+4. Anyone can see who opened what: `GET /api/v1/management/request-archive/openings`
+   lists every opening for owners, admins and auditors, and the openings of a
+   member's own keys' requests for that member.
+5. The owner deletes the whole archive with
+   `DELETE /api/v1/management/request-archive`.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"request_archive": {"enabled": true}}'
+
+curl "http://localhost:8000/api/v1/management/requests/$REQUEST_ID/content" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+Notes:
+
+- Rows expire after `retention_days` (90 at most) and the ai_act worker deletes
+  them; shortening the retention moves existing rows' expiry forward.
+- A row sealed with an earlier `ENCRYPTION_KEY` answers 410; keep the key with
+  the backups. Auditors, members, team admins and service accounts get 403 on
+  content.
+- A request over 2,000,000 bytes is not kept; its record says `skipped_size`.
 
 ## See what changed after a prompt change
 

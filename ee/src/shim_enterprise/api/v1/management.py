@@ -43,9 +43,11 @@ from pydantic import (
 )
 from sqlalchemy import (
     ColumnDefault,
+    Text,
     and_,
     case,
     cast as sql_cast,
+    delete as sql_delete,
     distinct,
     func,
     inspect,
@@ -55,6 +57,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.dialects.postgresql import array as sql_array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -66,7 +69,15 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     get_current_user,
     get_invite_user,
+    get_org_owner,
     require,
+)
+from shim_enterprise.ai_act.models import AIActAuditLog
+from shim_enterprise.archive.models import RequestArchive
+from shim_enterprise.archive.service import (
+    ArchiveUndecryptable,
+    opened,
+    shorten_retention,
 )
 from shim.billing.attribution import normalize_attribution
 from shim.findings import Finding as FindingV1
@@ -1027,6 +1038,11 @@ class RequestActivityView(BaseModel):
         description="The request approval this request created, was refused under "
         "or consumed; null when no approval gate decided it.",
     )
+    content_archived: bool = Field(
+        default=False,
+        description="The self-hosted request archive kept this request's content; "
+        "an admin can open it, and every opening is listed.",
+    )
     response_analysis: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -1070,6 +1086,10 @@ class GatewaySettingsView(BaseModel):
     available_analyzers: list[str]
     unavailable: dict[str, str] = Field(
         description='Per field, why it is "off, needs X"; empty when everything is available.'
+    )
+    request_archive_state: Literal["on", "off"] = Field(
+        description="on only when this installation allows the archive and the "
+        "tenant turned it on."
     )
 
 
@@ -2518,6 +2538,10 @@ def _gateway_settings_view(
             for field, available in SETTING_AVAILABILITY.items()
             if (reason := available()) is not None
         },
+        request_archive_state="on"
+        if settings.request_archive.enabled
+        and SETTING_AVAILABILITY["request_archive"]() is None
+        else "off",
     )
 
 
@@ -3133,6 +3157,163 @@ class LanguageCostView(BaseModel):
     )
 
 
+class ArchivedContentView(BaseModel):
+    request_id: str
+    archived_at: datetime
+    expires_at: datetime
+    protocol: str
+    model: str
+    matched: list[dict[str, Any]]
+    masked_payload: Any
+    replacements: list[dict[str, str]]
+    original_payload: Any
+
+
+@router.get("/requests/{request_id}/content", response_model=ArchivedContentView)
+async def open_request_content(
+    request_id: str,
+    response: Response,
+    user: User = Depends(require("content.read")),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivedContentView:
+    """The archived request as sent and as shim changed it; the opening is audited first."""
+    if user.kind != "human":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot open archived content"
+        )
+    tenant_id = _tenant_id(user)
+    row = await session.scalar(
+        select(RequestArchive).where(
+            RequestArchive.organization_id == tenant_id,
+            RequestArchive.request_id == request_id,
+            RequestArchive.expires_at > func.now(),
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Archived request not found")
+    await _audit(
+        session,
+        user,
+        "tenant.request_content_opened",
+        request_id,
+        details={"api_key_id": None if row.api_key_id is None else str(row.api_key_id)},
+    )
+    # The opening is recorded before any content is decrypted.
+    await session.commit()
+    try:
+        parts = await asyncio.to_thread(opened, row)
+    except ArchiveUndecryptable:
+        raise HTTPException(
+            status_code=410,
+            detail="archived content cannot be decrypted with the current ENCRYPTION_KEY",
+        ) from None
+    response.headers["Cache-Control"] = "no-store"
+    return ArchivedContentView(
+        request_id=row.request_id,
+        archived_at=row.created_at,
+        expires_at=row.expires_at,
+        protocol=row.protocol,
+        model=row.model,
+        matched=row.matched,
+        **parts,
+    )
+
+
+class ContentOpeningView(BaseModel):
+    opened_at: datetime
+    actor_user_id: str | None
+    request_id: str | None
+
+
+class ContentOpeningPage(BaseModel):
+    items: list[ContentOpeningView]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/request-archive/openings", response_model=ContentOpeningPage)
+async def list_content_openings(
+    start: AwareDatetime | None = Query(default=None),
+    end: AwareDatetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> ContentOpeningPage:
+    """Readers see every opening; anyone else the openings of their own keys' requests."""
+    tenant_id = _tenant_id(user)
+    end_at = end or datetime.now(timezone.utc)
+    start_at = start or end_at - timedelta(days=30)
+    _validate_sync_window(start_at, end_at)
+    filters = [
+        AIActAuditLog.organization_id == tenant_id,
+        AIActAuditLog.endpoint == "tenant.request_content_opened",
+        AIActAuditLog.created_at >= start_at,
+        AIActAuditLog.created_at <= end_at,
+    ]
+    if "audit.read" not in await user_permissions(session, user):
+        filters.append(
+            AIActAuditLog.extra["api_key_id"]
+            .as_string()
+            .in_(
+                select(sql_cast(ApiKey.id, Text)).where(
+                    ApiKey.organization_id == tenant_id, ApiKey.user_id == user.id
+                )
+            )
+        )
+    total = await session.scalar(select(func.count()).where(*filters))
+    rows = await session.scalars(
+        select(AIActAuditLog)
+        .where(*filters)
+        .order_by(AIActAuditLog.created_at.desc(), AIActAuditLog.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return ContentOpeningPage(
+        items=[
+            ContentOpeningView(
+                opened_at=row.created_at,
+                actor_user_id=row.actor,
+                request_id=(row.extra or {}).get("subject_id"),
+            )
+            for row in rows
+        ],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+class ArchivePurgeView(BaseModel):
+    rows_deleted: int = Field(ge=0)
+
+
+@router.delete("/request-archive", response_model=ArchivePurgeView)
+async def purge_request_archive(
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivePurgeView:
+    tenant_id = _tenant_id(user)
+    deleted = cast(
+        CursorResult[Any],
+        await session.execute(
+            sql_delete(RequestArchive).where(
+                RequestArchive.organization_id == tenant_id
+            )
+        ),
+    ).rowcount
+    await _audit(
+        session,
+        user,
+        "tenant.request_archive_purged",
+        str(tenant_id),
+        details={"rows": deleted},
+    )
+    await session.commit()
+    return ArchivePurgeView(rows_deleted=deleted)
+
+
 @router.get("/language-cost", response_model=LanguageCostView)
 async def read_language_cost(
     start: AwareDatetime | None = Query(
@@ -3303,6 +3484,7 @@ async def list_requests(
                     field: (row.details or {}).get(field)
                     for field in _DIAGNOSTIC_FIELDS
                 },
+                content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
             )
@@ -3786,6 +3968,7 @@ async def export_requests(
                 "response_analysis",
                 "rule_matches",
                 "approval_id",
+                "content_archived",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -3845,6 +4028,7 @@ async def export_requests(
                     if details.get("rule_matches") is not None
                     else None,
                     details.get("approval_id"),
+                    details.get("request_archive") == "stored",
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -5614,6 +5798,9 @@ class _GatewaySettingsResource:
         } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
         row.revision += 1
         row.updated_by = actor.id
+        days = current.request_archive.retention_days
+        if days < previous.request_archive.retention_days:
+            await shorten_retention(session, organization_id, days)
         await _audit(
             session,
             actor,

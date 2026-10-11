@@ -197,12 +197,22 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
     assert patched.json()["revision"] == 1
     assert REGISTRY["gateway_settings"].permission == "settings.write"
     assert state["resources"]["gateway_settings"] == {
-        "_": {"response_analysis": [], "four_eyes": "relaxing", "finding_modes": {}}
+        "_": {
+            "response_analysis": [],
+            "four_eyes": "relaxing",
+            "finding_modes": {},
+            "request_archive": {"enabled": False, "retention_days": 90},
+        }
     }
     assert (version.source, version.risk) == ("api", "tightening")
     assert version.previous == {
         "gateway_settings": {
-            "_": {"response_analysis": [], "four_eyes": "off", "finding_modes": {}}
+            "_": {
+                "response_analysis": [],
+                "four_eyes": "off",
+                "finding_modes": {},
+                "request_archive": {"enabled": False, "retention_days": 90},
+            }
         }
     }
     assert updated == [
