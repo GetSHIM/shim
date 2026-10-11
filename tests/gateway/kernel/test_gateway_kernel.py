@@ -2506,6 +2506,31 @@ async def test_embeddings_input_is_masked_like_chat(path, payload, text) -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/embeddings", {"model": "text-embedding-3-small", "input": "hello"}),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            {"content": {"parts": [{"text": "hello"}]}},
+        ),
+    ],
+)
+async def test_an_embeddings_span_names_its_operation(
+    recorded_spans, path, payload
+) -> None:
+    response, _, _ = await _embed(path, payload, {})
+
+    [request] = [
+        span
+        for span in recorded_spans.get_finished_spans()
+        if span.name == "gateway.request"
+    ]
+    assert response.status_code == 200
+    assert (request.attributes or {})["gen_ai.operation.name"] == "embeddings"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("given", "actions", "refused"),
     [
         ([[1, 2, 3]], {"TR_NATIONAL_ID": "mask"}, True),

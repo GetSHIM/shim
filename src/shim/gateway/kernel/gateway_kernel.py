@@ -66,6 +66,8 @@ _GENAI_OPERATIONS = {
     "responses": "chat",
     "messages": "chat",
     "generate_content": "generate_content",
+    "embeddings": "embeddings",
+    "embed_content": "embeddings",
 }
 _GENAI_PROVIDERS = {
     "openai": "openai",

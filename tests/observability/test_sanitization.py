@@ -295,6 +295,7 @@ def test_the_genai_names_are_the_pinned_semantic_conventions() -> None:
     assert set(kernel_module._GENAI_OPERATIONS.values()) == {
         gen_ai.GenAiOperationNameValues.CHAT.value,
         gen_ai.GenAiOperationNameValues.GENERATE_CONTENT.value,
+        gen_ai.GenAiOperationNameValues.EMBEDDINGS.value,
     }
     assert kernel_module._GENAI_PROVIDERS == {
         "openai": gen_ai.GenAiProviderNameValues.OPENAI.value,

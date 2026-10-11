@@ -659,7 +659,10 @@ def _task_identity(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
         ).get_span_context()
         trace_id = format(context.trace_id, "032x") if context.is_valid else None
     task_id = (headers.get("x-shim-task-id") or "").strip()
-    if task_id and not _TASK_ID.fullmatch(task_id):
+    # Ten digits or more alone are shaped like a national id or a phone number.
+    if task_id and (
+        not _TASK_ID.fullmatch(task_id) or (task_id.isdigit() and len(task_id) >= 10)
+    ):
         TASK_ID_REJECTED_TOTAL.inc()
         task_id = ""
     return task_id or trace_id, trace_id

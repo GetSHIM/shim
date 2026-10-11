@@ -782,8 +782,10 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    | `SYSTEM_PROMPT_HASH_KEY` | A secret of at least 32 characters. The usage event's `system_prompt_hash` becomes an HMAC of the system and developer instructions, so a changed prompt shows as a changed hash. Unset means `null`. Another installation's key gives other hashes for the same prompt. |
 
 2. Name the agent task a request belongs to with `X-Shim-Task-Id`: up to 128 of
-   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value is ignored and
-   counted in `shim_task_id_rejected_total`, never refused. Without it, the trace id
+   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value, and ten or more
+   digits alone (the shape of a national id or a phone number), is ignored and
+   counted in `shim_task_id_rejected_total`, never refused. The task id is recorded
+   and exported, so it must never carry personal data. Without it, the trace id
    of a valid incoming `traceparent` is the task id. The usage event records
    `task_id` and `trace_id` (the incoming trace id, also with `ignore`), `null` when
    absent. Neither header is sent to the provider.
@@ -793,7 +795,8 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    `gen_ai.response.finish_reasons`, `shim.cost_usd` and `shim.usage_estimated`.
    Span attributes come from a fixed allow-list. The request span (`gateway.request`)
    also carries `gen_ai.operation.name` (`chat` for Chat, Responses and Messages,
-   `generate_content` for Gemini), `gen_ai.provider.name` (`openai`, `anthropic`,
+   `generate_content` for Gemini, `embeddings` for OpenAI and Gemini embeddings),
+   `gen_ai.provider.name` (`openai`, `anthropic`,
    `gcp.gemini`) and `shim.task_id`, named as the OpenTelemetry GenAI conventions
    at schema `https://opentelemetry.io/schemas/1.44.0`, which the tracer declares.
 4. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the

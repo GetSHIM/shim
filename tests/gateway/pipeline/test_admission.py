@@ -1115,6 +1115,11 @@ _PARENT = f"00-{_TRACE}-b7ad6b7169203331-01"
         ({"x-shim-task-id": "  task-7/step:2  "}, "task-7/step:2", None),
         ({"x-shim-task-id": "two words"}, None, None),
         ({"x-shim-task-id": "a@b"}, None, None),
+        # Digits alone, ten or more, look like a national id or a phone number.
+        ({"x-shim-task-id": "10000000146"}, None, None),
+        ({"x-shim-task-id": "05321234567"}, None, None),
+        ({"x-shim-task-id": "123456789"}, "123456789", None),
+        ({"x-shim-task-id": "run-10000000146"}, "run-10000000146", None),
         ({"x-shim-task-id": "-leading"}, None, None),
         ({"x-shim-task-id": ""}, None, None),
         ({"traceparent": _PARENT}, _TRACE, _TRACE),
