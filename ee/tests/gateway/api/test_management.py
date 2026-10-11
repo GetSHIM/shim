@@ -314,6 +314,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "completion_outcome": "refused",
             "rule_matches": [],
             "rule_matches_truncated": False,
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -415,8 +416,10 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "response_analysis",
         "rule_matches",
         "rule_matches_truncated",
+        "approval_id",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert str(page.items[0].approval_id) == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert page.items[0].rule_matches == []
     assert page.items[0].rule_matches_truncated is False
     assert page.items[0].response_analysis == {
@@ -672,6 +675,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
                     "count": 2,
                 }
             ],
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -751,6 +755,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "count": 2,
         }
     ]
+    assert exported["approval_id"] == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
@@ -1783,6 +1788,28 @@ async def test_the_request_list_filters_on_one_rule_id() -> None:
     compiled = filters[-1].compile(dialect=postgresql.dialect())
     assert "request_logs.details @>" in str(compiled)
     assert {"rule_matches": [{"rule_id": "falcon"}]} in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_the_request_list_filters_on_one_approval_id() -> None:
+    approval_id = uuid4()
+    filters = await management._request_filters(
+        None,  # type: ignore[arg-type]
+        SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        approval_id=approval_id,
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"approval_id": str(approval_id)} in compiled.params.values()
 
 
 _HASH_A = "hmac-sha256:v1:" + "a" * 64

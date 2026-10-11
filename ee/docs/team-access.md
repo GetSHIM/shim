@@ -29,7 +29,7 @@ write nor own gateway keys.
 | `members.manage` | Invite, list and revoke invites, remove members | x | x | | |
 | `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
 | `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
-| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, request approvals, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |
@@ -38,7 +38,7 @@ write nor own gateway keys.
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
 | `plans.approve` | Approve or reject a pending plan ([four eyes](POLICY_DECISIONS.md#four-eyes)); never a service account, nor the plan's creator or submitter | x | x | | |
-| `requests.approve` | Decide request approvals | x | x | | |
+| `requests.approve` | Read and decide [request approvals](POLICY_DECISIONS.md#request-approval); never a service account, nor the owner of the key that sent the request | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
 | `config.manage` | Signing keys and file mode | x | | | |
 

@@ -108,6 +108,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         response_analysis=(),
         rules=None,
         rules_evaluated=False,
+        approval_id=None,
         unpriced=False,
         deployment_price=None,
         stream=False,
@@ -426,6 +427,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         policy_verdicts=[],
         privacy=privacy,
         rules_evaluated=False,
+        approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
     command = FinalizationCommand(
@@ -542,6 +544,106 @@ async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
         counts["monitored_entities"],
         counts["blocked_entities"],
     )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason", "approval_id"),
+    [
+        ("deny", "APPROVAL_REQUIRED", str(uuid4())),
+        ("deny", "APPROVAL_REJECTED", str(uuid4())),
+        ("allow", "RULE_APPROVED", str(uuid4())),
+        ("deny", "APPROVAL_QUEUE_FULL", None),
+        ("deny", "RULE_BLOCKED", None),
+    ],
+    ids=["required", "rejected", "consumed", "queue_full", "no_gate"],
+)
+@pytest.mark.asyncio
+async def test_the_approval_id_is_recorded_listed_and_filtered(
+    db, test_api_key, monkeypatch, outcome, reason, approval_id
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    prepared.approval_id = approval_id
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(action=PrivacyAction.SCRUBBED, pii_detected=False)
+    prepared.record_verdict(
+        "rule.kasa", stage="rules", outcome=outcome, reason_code=reason
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("approval_id", "absent") == (
+        approval_id or "absent"
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+
+    async def listed(**filters) -> list:
+        page = await management.list_requests(
+            start=started_at - timedelta(minutes=1),
+            end=None,
+            status_filter=None,
+            model=None,
+            pii_detected=None,
+            tag=None,
+            cost_center=None,
+            limit=5,
+            offset=0,
+            user=SimpleNamespace(
+                custom_role_id=None, role="owner", organization_id=prepared.tenant_id
+            ),
+            session=db,
+            **filters,
+        )
+        return page.items
+
+    [item] = await listed(request_id=prepared.request_id)
+    assert (None if item.approval_id is None else str(item.approval_id)) == approval_id
+    if outcome == "deny":
+        assert item.status == "rejected"
+    if approval_id is not None:
+        assert [
+            found.request_id
+            for found in await listed(request_id=None, approval_id=UUID(approval_id))
+        ] == [prepared.request_id]
+    assert await listed(request_id=None, approval_id=uuid4()) == []
 
 
 def test_a_privacy_block_before_admission_carries_its_counts_to_the_audit() -> None:
@@ -866,6 +968,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         policy_verdicts=[],
         rules=None,
         rules_evaluated=False,
+        approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(

@@ -222,6 +222,7 @@ _DIAGNOSTIC_FIELDS = (
     "bulk_disclosure",
     "rule_matches",
     "rule_matches_truncated",
+    "approval_id",
 )
 
 

@@ -1022,6 +1022,11 @@ class RequestActivityView(BaseModel):
         ),
     )
     rule_matches_truncated: bool | None = None
+    approval_id: UUID | None = Field(
+        default=None,
+        description="The request approval this request created, was refused under "
+        "or consumed; null when no approval gate decided it.",
+    )
     response_analysis: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -2407,10 +2412,7 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
         kinds={
             kind: RuleKindView(
                 available=spec.match is not None,
-                # The approval gate is not configured until request approvals exist.
-                actions=[
-                    action for action in spec.actions if action != "require_approval"
-                ],
+                actions=list(spec.actions),
                 unavailable_reason=None
                 if spec.match is not None
                 else "Not available in this release.",
@@ -3223,6 +3225,10 @@ async def list_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -3260,6 +3266,7 @@ async def list_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -3661,6 +3668,10 @@ async def export_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -3698,6 +3709,7 @@ async def export_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -3773,6 +3785,7 @@ async def export_requests(
                 "response_entities",
                 "response_analysis",
                 "rule_matches",
+                "approval_id",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -3831,6 +3844,7 @@ async def export_requests(
                     json.dumps(details["rule_matches"], sort_keys=True)
                     if details.get("rule_matches") is not None
                     else None,
+                    details.get("approval_id"),
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -4113,6 +4127,7 @@ async def _request_filters(
     system_prompt_hash: str | None = None,
     api_key_id: UUID | None = None,
     rule_id: str | None = None,
+    approval_id: UUID | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     soft_refusal: bool | None = None,
 ) -> list[Any]:
@@ -4196,6 +4211,8 @@ async def _request_filters(
         filters.append(
             RequestLog.details.contains({"rule_matches": [{"rule_id": rule_id}]})
         )
+    if approval_id is not None:
+        filters.append(RequestLog.details.contains({"approval_id": str(approval_id)}))
     if completion_outcome is not None:
         outcome = RequestLog.details["completion_outcome"].as_string()
         filters.append(

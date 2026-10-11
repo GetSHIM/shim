@@ -114,7 +114,10 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
         "term",
         "pattern",
     }
-    assert all("require_approval" not in kind.actions for kind in view.kinds.values())
+    # The enterprise approval gate makes require_approval available where the kind allows it.
+    assert {
+        name for name, kind in view.kinds.items() if "require_approval" in kind.actions
+    } == {"term", "pattern"}
     count = select(func.count()).where(
         OrganizationRuleSet.organization_id == test_user_with_org.organization_id
     )
@@ -261,7 +264,7 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
     admin = await _admin(db, test_org.id)
 
     unavailable = await _refused(db, admin, 0, [_rule(kind="record_set")])
-    approval = await _refused(db, admin, 0, [_rule(action="require_approval")])
+    action = await _refused(db, admin, 0, [_rule(action="set")])
     unknown_key = await _refused(
         db, admin, 0, [_rule(match={"terms": ["Project"], "regex": "y"})]
     )
@@ -271,7 +274,7 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
         "RULE_KIND_UNAVAILABLE",
         "rules[0].kind",
     )
-    assert (approval["code"], approval["path"]) == (
+    assert (action["code"], action["path"]) == (
         "RULE_ACTION_UNAVAILABLE",
         "rules[0].action",
     )
@@ -279,6 +282,15 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
         "RULE_MATCH_INVALID",
         "rules[0].match.regex",
     )
+
+
+@pytest.mark.asyncio
+async def test_require_approval_is_stored_for_a_term_rule(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+
+    stored = await _put(db, admin, 0, [_rule(action="require_approval")])
+
+    assert stored.rules[0].action == "require_approval"
 
 
 @pytest.mark.asyncio
@@ -527,6 +539,7 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
                 rule_id="falcon", kind="term", action="block", state="monitor", count=2
             )
         ],
+        approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(action=PrivacyAction.DISABLED, pii_detected=False),

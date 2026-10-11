@@ -94,6 +94,7 @@ forbidden_noncloud_import_roots = [
 ]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
 "shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "load_rule_set", "match_records", "validate_rule_set"]
+"shim.rules.approval" = ["ApprovalDecision", "ApprovalRequest"]
 "shim.rules.content" = ["turkish_fold"]
 "shim.secrets.credentials" = ["EphemeralProviderCredential"]
 "shim.services.gateway.service" = ["GatewayService"]
@@ -293,6 +294,7 @@ enterprise = [
   "ee/alembic/versions/a91e5dfc25b8_add_evidence_reports.py",
   "ee/alembic/versions/aa8b038bc50c_architecture_baseline.py",
   "ee/alembic/versions/b6102c005b0c_add_organization_rule_sets.py",
+  "ee/alembic/versions/b93eaf9b1386_add_request_approvals.py",
   "ee/alembic/versions/c31b7a91d602_oidc_identity.py",
   "ee/alembic/versions/c7a108be3201_teams_roles_and_scoped_key_controls.py",
   "ee/alembic/versions/d94f7f0ba8a2_add_service_accounts.py",
@@ -332,6 +334,10 @@ enterprise = [
   "ee/src/shim_enterprise/api/v1/router.py",
   "ee/src/shim_enterprise/api/v1/scan.py",
   "ee/src/shim_enterprise/application.py",
+  "ee/src/shim_enterprise/approvals/__init__.py",
+  "ee/src/shim_enterprise/approvals/api.py",
+  "ee/src/shim_enterprise/approvals/gate.py",
+  "ee/src/shim_enterprise/approvals/models.py",
   "ee/src/shim_enterprise/billing/__init__.py",
   "ee/src/shim_enterprise/billing/ledger.py",
   "ee/src/shim_enterprise/billing/models.py",
@@ -454,6 +460,9 @@ enterprise = [
   "ee/tests/ai_act/test_audit_chain.py",
   "ee/tests/ai_act/test_control_plane.py",
   "ee/tests/ai_act/test_iso42001_readiness.py",
+  "ee/tests/approvals/test_approvals_api.py",
+  "ee/tests/approvals/test_gate.py",
+  "ee/tests/approvals/test_notification.py",
   "ee/tests/architecture/test_manual_test_dashboard.py",
   "ee/tests/billing/test_my_usage.py",
   "ee/tests/billing/test_quota.py",

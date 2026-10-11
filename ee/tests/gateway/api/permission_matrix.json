@@ -260,6 +260,24 @@
   "service_auditor": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/approvals": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: requests.approve or audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: requests.approve or audit.read"
+ },
+ "GET /api/v1/management/approvals/{approval_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: requests.approve or audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "team_admin": "403 Permission required: requests.approve or audit.read"
+ },
  "GET /api/v1/management/auth/me": {
   "admin": "200",
   "auditor": "200",
@@ -817,6 +835,24 @@
   "service_admin": "404",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "404"
+ },
+ "POST /api/v1/management/approvals/{approval_id}/approve": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: requests.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: requests.approve"
+ },
+ "POST /api/v1/management/approvals/{approval_id}/reject": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: requests.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: requests.approve"
  },
  "POST /api/v1/management/cost/budgets": {
   "admin": "422",

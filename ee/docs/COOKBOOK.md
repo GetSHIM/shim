@@ -29,6 +29,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
+- [Hold a request for approval](#hold-a-request-for-approval)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
@@ -847,6 +848,63 @@ Notes:
   relaxation.
 - What counts as loosening per resource is in
   [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
+## Hold a request for approval
+
+Make requests that carry a term go out only after an administrator approves
+them, once.
+
+1. Add a `term` or `pattern` rule with action `require_approval` to the
+   [rule set](POLICY_DECISIONS.md#tenant-rules). It starts in `monitor`: the
+   requests it would hold are recorded with `RULE_WOULD_REQUIRE_APPROVAL` and
+   the [rule preview](POLICY_DECISIONS.md#rule-previews) counts them. Move it
+   to `enforced` when the numbers look right.
+2. A matching request from a key in the rule's scope now answers 403
+   `APPROVAL_REQUIRED` before any provider call, with the approval id in
+   `X-Shim-Approval-Id` (and `error.param`), the rule in `X-Shim-Rule-Id` and
+   `x-should-retry: false`. A stream is refused before its first byte. Sending
+   the same request again returns the same id and holds nothing new. Your
+   [forward targets](#send-tenant-alerts) get `kind:
+   request_approval_requested` with rule ids, key id, model and deadline.
+3. An owner or admin who does not own the key reads
+   `GET /api/v1/management/approvals?status=pending` (or `/{id}`): the rules,
+   key, requester, team, provider, model, `stream`, detected entity and rule
+   counts, `input_bytes` and `estimated_input_tokens`. The content is not
+   stored, so `content` is null. They decide with
+   `POST /api/v1/management/approvals/{id}/approve` or `/reject`.
+4. The client sends the identical request with
+   `X-Shim-Approval-Id: <id>` within 60 minutes of the approval. It goes out
+   once, with the term unmasked; a second send with the same id is held again
+   under a new id. After a reject the same send answers 403
+   `APPROVAL_REJECTED`.
+
+```console
+curl "http://localhost:8000/api/v1/management/approvals?status=pending" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+curl -X POST "http://localhost:8000/api/v1/management/approvals/$APPROVAL_ID/approve" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+curl http://localhost:8000/v1/chat/completions \
+  -H "x-shim-key: $SHIM_API_KEY" -H "X-Shim-Approval-Id: $APPROVAL_ID" \
+  -H 'Content-Type: application/json' -d @same-request.json
+```
+
+Notes:
+
+- "The same request" is the same tenant, key, protocol, model, `stream` and
+  body, field for field; key order and whitespace do not matter. Change
+  anything and it needs its own approval.
+- A pending approval lives 24 hours; at most 200 wait per tenant, after which
+  new ones answer 403 `APPROVAL_QUEUE_FULL`. An approval is used up when the
+  request is sent, even if the provider then fails.
+- Token counting (`/v1/messages/count_tokens`) with a held term answers 403
+  `APPROVAL_REQUIRED` and creates no approval: a count sends the content too.
+- The key's owner and service accounts cannot decide (403
+  `APPROVER_NOT_ELIGIBLE`); an auditor can read the list. Only a pending,
+  unexpired approval can be decided (409 `APPROVAL_STATE_CONFLICT` otherwise).
+- The request list shows `approval_id` on the held, refused and sending
+  requests, and `GET /api/v1/management/requests?approval_id=<id>` finds them.
 
 ## See what changed after a prompt change
 

@@ -743,6 +743,331 @@
         "title": "ApiSpec",
         "type": "string"
       },
+      "ApprovalKey": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefix"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix"
+        ],
+        "title": "ApprovalKey",
+        "type": "object"
+      },
+      "ApprovalPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ApprovalPage",
+        "type": "object"
+      },
+      "ApprovalRequester": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email"
+        ],
+        "title": "ApprovalRequester",
+        "type": "object"
+      },
+      "ApprovalRule": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ApprovalRule",
+        "type": "object"
+      },
+      "ApprovalTeam": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ApprovalTeam",
+        "type": "object"
+      },
+      "ApprovalView": {
+        "properties": {
+          "api_key": {
+            "$ref": "#/components/schemas/ApprovalKey"
+          },
+          "content": {
+            "title": "Content",
+            "type": "null"
+          },
+          "content_note": {
+            "const": "content is not stored",
+            "default": "content is not stored",
+            "title": "Content Note",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "detected": {
+            "additionalProperties": true,
+            "title": "Detected",
+            "type": "object"
+          },
+          "estimated_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Input Tokens"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_bytes": {
+            "title": "Input Bytes",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "protocol": {
+            "title": "Protocol",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalRequester"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRule"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "expired",
+              "used"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "stream": {
+            "title": "Stream",
+            "type": "boolean"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalTeam"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "use_by": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use By"
+          },
+          "used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used At"
+          },
+          "used_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used Request Id"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "created_at",
+          "expires_at",
+          "decided_by",
+          "decided_at",
+          "use_by",
+          "used_at",
+          "request_id",
+          "used_request_id",
+          "rules",
+          "api_key",
+          "requested_by",
+          "team",
+          "protocol",
+          "provider",
+          "model",
+          "stream",
+          "detected",
+          "input_bytes",
+          "estimated_input_tokens"
+        ],
+        "title": "ApprovalView",
+        "type": "object"
+      },
       "AspectRatio": {
         "description": "The aspect ratio for the image output.",
         "enum": [
@@ -10993,6 +11318,19 @@
       },
       "RequestActivityView": {
         "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The request approval this request created, was refused under or consumed; null when no approval gate decided it.",
+            "title": "Approval Id"
+          },
           "blocked_entities": {
             "anyOf": [
               {
@@ -18028,6 +18366,242 @@
         ]
       }
     },
+    "/api/v1/management/approvals": {
+      "get": {
+        "operationId": "list_approvals_api_v1_management_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "expired",
+                    "used"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Only approvals created before this time.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only approvals created before this time.",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Approvals",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}": {
+      "get": {
+        "operationId": "get_approval_api_v1_management_approvals__approval_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Approval",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}/approve": {
+      "post": {
+        "operationId": "approve_request_api_v1_management_approvals__approval_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Approve Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}/reject": {
+      "post": {
+        "operationId": "reject_request_api_v1_management_approvals__approval_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/management/auth/me": {
       "get": {
         "operationId": "current_profile_api_v1_management_auth_me_get",
@@ -20866,6 +21440,25 @@
             }
           },
           {
+            "description": "Only requests this request approval decided.",
+            "in": "query",
+            "name": "approval_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests this request approval decided.",
+              "title": "Approval Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -21202,6 +21795,25 @@
               ],
               "description": "Only requests a tenant rule with this id matched.",
               "title": "Rule Id"
+            }
+          },
+          {
+            "description": "Only requests this request approval decided.",
+            "in": "query",
+            "name": "approval_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests this request approval decided.",
+              "title": "Approval Id"
             }
           },
           {

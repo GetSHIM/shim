@@ -302,6 +302,13 @@ its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 
+`approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
+the approval gate decided the request with: the one it was held under
+(`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is
+absent when the queue was full or the gate could not be reached (the error
+code says which) and on requests the gate never saw. The request list, its
+CSV and `GET /api/v1/management/requests?approval_id=<uuid>` carry it.
+
 ## Outcome filters, counts and rates
 
 `/requests` and `/requests/export` accept two optional filters:

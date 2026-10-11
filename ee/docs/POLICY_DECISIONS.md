@@ -147,6 +147,36 @@ at most 32, blocks first) and `rule_matches_truncated`; see
 database row and in process memory, never in Redis, a log, a metric or an audit
 event.
 
+### Request approval
+
+An enforced `require_approval` rule holds a request before it is sent; the
+existing oversight queue (`ai_act` oversight policies) reviews requests after
+they were sent and is unchanged. The enterprise gateway decides in one short
+database transaction, never open across the provider call:
+
+- "The same request" is a keyed digest: HMAC-SHA256, under a key derived for
+  this purpose from `COMPLIANCE_HASH_SALT` (else `SECRET_KEY`), of the tenant,
+  key, protocol, model, `stream` and the canonical JSON of the request as it
+  entered the privacy stage. Unmasked, because random placeholders would make
+  every masked request unique. Only the digest is stored; `request_approvals`
+  holds ids, counts, sizes and times, never content, a term or a pattern.
+- One approval allows one send, within 60 minutes of the approval; it is
+  consumed before the provider call, so a failed attempt needs a new approval.
+  A pending approval lives 24 hours; at most 200 wait per tenant. These are
+  constants, not settings. Expiry is lazy: the gateway and every read of the
+  approvals API store `expired`, and no worker runs.
+- A presented `X-Shim-Approval-Id` that does not fit (unknown, another tenant
+  or key, another request, used, expired, malformed) is ignored rather than
+  refused, so ids cannot be probed and a changed request gets its own approval.
+- The approver is always a second person: never the key owner, never a service
+  account, whatever the tenant's [four eyes](#four-eyes) setting (that governs
+  settings changes).
+- Decisions are audited as `tenant.request_approval_approved` and
+  `tenant.request_approval_rejected` (approval id, rule ids, key id, model,
+  request id). The creation and the use are on the requests themselves, as
+  `approval_id`. `shim_request_approvals_total{outcome}` counts gate outcomes,
+  `shim_request_approval_decisions_total{decision}` decisions.
+
 ## Management change details
 
 Management actions append an `audit.chain_append_requested` event in the same

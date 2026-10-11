@@ -98,7 +98,9 @@ def preview_digest(rule: Rule) -> str:
 
 def checked_set(revision: int, rules: list[dict[str, Any]]) -> RuleSet:
     try:
-        return validate_rule_set({"revision": revision, "rules": rules})
+        return validate_rule_set(
+            {"revision": revision, "rules": rules}, approval_available=True
+        )
     except RuleSetError as error:
         raise HTTPException(
             status_code=422,
