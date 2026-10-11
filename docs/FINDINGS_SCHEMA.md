@@ -57,6 +57,11 @@ reopens a closed one as `new`. The OCSF export keeps every field it had; its
 there, such as `repeated_cost_usd`, is rounded like any float. The exact amount
 is `impact.usd`, a decimal string.
 
+A measurement name is a fixed word, never a stored value: a count kept per
+class, provider or model reaches `measurements` only under a name from the
+producer's own vocabulary (such as `requests_openai`, with `requests_other` for
+the rest), and a value outside it stays in the producer's store.
+
 The schema checks every field's type, bounds and vocabulary, that `measurements`
 holds only names of the pattern above, that `window.start` and `window.end` are
 UTC (`Z` or `+00:00`), and that `mode` is not above `max_mode`. One rule it

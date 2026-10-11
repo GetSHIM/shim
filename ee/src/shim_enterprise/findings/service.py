@@ -90,6 +90,9 @@ EVIDENCE_KEY_IDS = 10
 EVIDENCE_MODELS = 10
 EVIDENCE_MODELS_PER_KEY = 5
 EVIDENCE_REQUEST_IDS = 20
+# Two request ids a pair, beside the 20 request ids, within Finding v1's 50 evidence items.
+EVIDENCE_PAIRS = 10
+PROVIDERS = ("openai", "anthropic", "google")
 
 STATUS_IDS = {"new": 1, "in_progress": 2, "suppressed": 3, "resolved": 4}
 STATUS_RESOLVED = STATUS_IDS["resolved"]
@@ -354,14 +357,34 @@ _TIMED_OUT = ("client_disconnected", "timeout")
 _FAILED = ("provider_error", "failed", "rejected", "internal_error", "cancelled")
 
 
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def measurements(evidence: Mapping[str, Any]) -> dict[str, int | float]:
-    """The numbers of a row's evidence; request ids and other strings stay out."""
+    """The numbers of a row's evidence; request ids and other strings stay out.
+
+    Counts keyed by a stored word take a name from a fixed vocabulary: repeat
+    classes become `repeats_<class>`, providers `requests_<provider>` (or
+    `requests_other`), and linked pairs `pairs` shown and `pairs_omitted`.
+    """
 
     values: dict[str, int | float] = {}
     for name, value in evidence.items():
-        if isinstance(value, bool):
+        if name == "classes" and isinstance(value, Mapping):
+            for kind in REPEAT_CLASSES:
+                if _count(value.get(kind)):
+                    values[f"repeats_{kind}"] = value[kind]
+        elif name == "requests" and isinstance(value, Mapping):
+            for provider, count in value.items():
+                if _count(count):
+                    key = f"requests_{provider if provider in PROVIDERS else 'other'}"
+                    values[key] = values.get(key, 0) + count
+        elif name == "pairs" and isinstance(value, list):
+            values["pairs"] = min(len(value), EVIDENCE_PAIRS)
+        elif isinstance(value, bool):
             continue
-        if isinstance(value, int):
+        elif isinstance(value, int):
             values[name] = value
         elif isinstance(value, (float, str)):
             try:
@@ -370,6 +393,9 @@ def measurements(evidence: Mapping[str, Any]) -> dict[str, int | float]:
                 continue
             if number.is_finite():
                 values[name] = float(number)
+    if "pairs" in values:
+        linked = sum(values.get(f"repeats_{kind}", 0) for kind in REPEAT_CLASSES)
+        values["pairs_omitted"] = max(0, linked - values["pairs"])
     return values
 
 
@@ -1229,6 +1255,18 @@ _STATUSES: dict[
 }
 
 
+def _request_evidence(evidence: Mapping[str, Any]) -> list[str]:
+    """Each shown pair as the repeat then the request it repeats, then the other ids."""
+
+    paired = [
+        request_id
+        for pair in (evidence.get("pairs") or [])[:EVIDENCE_PAIRS]
+        for request_id in (pair["repeat"], pair["previous"])
+    ]
+    rest = [i for i in evidence.get("request_ids") or [] if i not in paired]
+    return paired + rest
+
+
 def finding_from_row(row: Finding) -> FindingV1:
     """Total: a row this build cannot render keeps its stored English text.
 
@@ -1270,7 +1308,7 @@ def finding_from_row(row: Finding) -> FindingV1:
             subject=FindingSubject(kind=kind, id=str(row.subject[field])),
             evidence=[
                 FindingEvidence(kind="request", id=request_id)
-                for request_id in row.evidence.get("request_ids") or []
+                for request_id in _request_evidence(row.evidence)
             ],
             measurements=values,
             impact=FindingImpact(

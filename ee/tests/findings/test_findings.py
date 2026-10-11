@@ -881,6 +881,68 @@ def test_measurements_keep_finite_numbers_only() -> None:
     ) == {"count": 3, "rate": 0.25}
 
 
+def test_repeat_classes_and_pairs_reach_the_api_under_bounded_names() -> None:
+    pairs = [
+        {
+            "repeat": f"req_r{index}",
+            "previous": f"req_p{index}",
+            "class": "after_success",
+            "gap_seconds": 1,
+        }
+        for index in range(20)
+    ]
+    for rule_id in (service.RETRY_STORM, service.REPEAT_SPEND):
+        evidence = {
+            **_EVIDENCE[rule_id],
+            "request_ids": [f"req_r{index}" for index in range(20)],
+            "classes": {
+                "after_timeout": 1,
+                "after_error": 0,
+                "after_success": 29,
+                "pending": 0,
+                "Free text": 7,
+            },
+            "pairs": pairs,
+        }
+
+        finding = service.finding_from_row(_row(rule_id, evidence=evidence))
+
+        assert {
+            name: value
+            for name, value in finding.measurements.items()
+            if name.startswith(("repeats_", "pairs"))
+        } == {
+            "repeats_after_timeout": 1,
+            "repeats_after_error": 0,
+            "repeats_after_success": 29,
+            "repeats_pending": 0,
+            "pairs": 10,
+            "pairs_omitted": 20,
+        }
+        ids = [ref.id for ref in finding.evidence]
+        assert ids[:4] == ["req_r0", "req_p0", "req_r1", "req_p1"]
+        assert ids[20:] == [f"req_r{index}" for index in range(10, 20)]
+        assert {ref.kind for ref in finding.evidence} == {"request"}
+        assert _published(finding)
+
+
+def test_byok_requests_per_provider_reach_the_api_without_model_names() -> None:
+    evidence = {
+        **_EVIDENCE[service.BYOK_USAGE],
+        "requests": {"openai": 6, "anthropic": 2, "Mistral Large": 1, "x": 3},
+    }
+
+    finding = service.finding_from_row(_row(service.BYOK_USAGE, evidence=evidence))
+
+    assert {
+        name: value
+        for name, value in finding.measurements.items()
+        if name.startswith("requests_")
+    } == {"requests_openai": 6, "requests_anthropic": 2, "requests_other": 4}
+    assert "gpt-5-mini" not in finding.model_dump_json()
+    assert _published(finding)
+
+
 def test_templates_use_measurement_names_and_carry_no_other_number() -> None:
     import re
     from string import Formatter
@@ -1337,6 +1399,17 @@ async def test_a_storm_of_linked_repeats_names_its_cause(
     }
     assert len(storm.evidence["pairs"]) == 20
     (finding,) = await _findings(db, test_api_key)
+    served = service.finding_from_row(finding)
+    assert served.measurements["repeats_after_error"] == 20
+    assert (served.measurements["pairs"], served.measurements["pairs_omitted"]) == (
+        10,
+        10,
+    )
+    assert [ref.id for ref in served.evidence[:2]] == [
+        str(retried[0]),
+        str(previous[0]),
+    ]
+    assert _published(served)
     assert finding.rule_version == 2
     assert finding.remediation["text"] == service.STORM_FIXES["after_error"]["en"]
     assert (
@@ -1730,6 +1803,12 @@ async def test_a_key_sending_its_own_provider_key_past_a_stored_one_is_byok_usag
     assert finding.evidence["models"] == ["gpt-5-mini"]
     assert finding.impact == {"cost_usd": "0.50000000", "requests": 5}
     assert "spend limit" in finding.evidence["note"]
+    (row,) = [
+        row
+        for row in await _findings(db, test_api_key)
+        if row.rule_id == service.BYOK_USAGE
+    ]
+    assert service.finding_from_row(row).measurements["requests_openai"] == 5
 
 
 @pytest.mark.asyncio

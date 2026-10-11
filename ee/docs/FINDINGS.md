@@ -16,7 +16,7 @@ The API returns every finding in the published
 ([JSON Schema](../../docs/schemas/finding-v1.json)): `rule_id` and `rule_version`,
 `title`, `summary` in English and Turkish, `severity`, `status` and
 `status_detail`, `subject` (`key`, `deployment` or `model` with its id),
-`window` (first and last time seen), `occurrences`, `evidence` (up to 20 request
+`window` (first and last time seen), `occurrences`, `evidence` (up to 40 request
 references), `measurements` (the measured numbers), `impact` (`requests`, `usd`,
 `risk_class`), `remediation` (`mode`, which stays `observe` for now, `max_mode`,
 `reversible`, `blast_radius`, the fix `text`), `playbook` (the rule's section
@@ -26,6 +26,17 @@ A row this build cannot render (a rule it does not have, a measurement its
 template lacks, a subject of a later kind) is served with its stored English
 title and summary, the tenant as its subject and no evidence or measurements,
 and logged by id; a list or an export never fails on it.
+
+Stored evidence that is not a plain number reaches the API under fixed names
+only. Repeat `classes` become `repeats_after_timeout`, `repeats_after_error`,
+`repeats_after_success` and `repeats_pending`. Requests per provider become
+`requests_openai`, `requests_anthropic` and `requests_google`; any other
+provider counts toward `requests_other`. The first 10 stored `pairs` lead
+`evidence`, each as the repeat's request followed by the request it repeats, and
+the rule's other request ids follow. `pairs` counts the pairs shown and
+`pairs_omitted` the linked repeats left out. A pair's class and gap, the models
+of `gateway.byok_usage` and any other word stay in the stored row: a finding
+carries no free text beyond its templates.
 
 | Stored `severity_id` | `severity` | | Stored `status_id` | `status` / `status_detail` |
 | --- | --- | --- | --- | --- |
@@ -131,7 +142,8 @@ trip provider rate limits for the whole tenant.
 threshold, how many of the key's requests in that bucket ended
 `client_disconnected` or `timeout` (`abandoned_requests`), up to 20 request
 ids, `classes` (linked repeats per class) and up to 20 `pairs`
-(`{"repeat", "previous", "class", "gap_seconds"}`). Impact is the known cost and
+(`{"repeat", "previous", "class", "gap_seconds"}`), served as `repeats_<class>`,
+`pairs`, `pairs_omitted` and pair references ([shape](#shape)). Impact is the known cost and
 the count of the repeated requests. `repeat_chain_length` counts identical
 content in the loop window; it is not proof that a client retried
 ([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
@@ -163,7 +175,8 @@ was refunded did not double the bill, so it is not counted as waste.
 **Evidence and impact.** The period start, the repeated cost, the known spend,
 their share, the repeated request count, up to 20 request ids, `classes`,
 `billed_repeats`, `unbilled_repeats` (repeats of refunded or unbilled requests,
-never in the impact) and up to 20 `pairs`. Impact is the repeated cost and count.
+never in the impact) and up to 20 `pairs`, served as for
+[`gateway.retry_storm`](#gatewayretry_storm). Impact is the repeated cost and count.
 
 **Fix.** Retry only on retryable errors, deduplicate in the client, or cache
 answers the client asks for again.
@@ -261,7 +274,9 @@ managed secret.
 [`gateway.unregistered_model`](#gatewayunregistered_model)), up to 20
 request ids, the settled cost and a note that these requests skipped the spend
 limit and the stored key. Nothing derived from the caller's provider key is
-recorded. Impact is the requests and their settled cost.
+recorded. The API serves the requests as `requests_<provider>` and leaves the
+model names in the stored row ([shape](#shape)). Impact is the requests and
+their settled cost.
 
 **Fix.** Give the app the managed key path (no `x-provider-key`), or route it
 through a registry deployment, whose stored secret always wins. To refuse such
