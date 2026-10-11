@@ -262,12 +262,13 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Six resources are managed: every write to them records a version, a plan can
+Seven resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan`, `embeddings_monitor_types` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
+| `gateway_settings` | `_` | every gateway setting | `PATCH /gateway-settings` | the change records `tenant.gateway_protection_relaxed` or `tenant.privacy_protection_relaxed` |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
 | `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |

@@ -3334,136 +3334,24 @@ async def update_gateway_settings(
     session: AsyncSession = Depends(get_db),
 ) -> GatewaySettingsView:
     tenant_id = _tenant_id(user)
-    changes = patch.model_dump(exclude_unset=True)
-    row = await session.get(
-        OrganizationGatewaySettings, tenant_id, with_for_update=True
+    await lock_tenant(session, tenant_id)
+    before = (await GATEWAY_SETTINGS.snapshot(session, tenant_id, None))["_"]
+    after = await GATEWAY_SETTINGS.validate(
+        session, user, "_", before, patch.model_dump(mode="json", exclude_unset=True)
     )
-    if row is None:
-        if GatewaySettings.model_validate(changes) == GatewaySettings():
-            return _gateway_settings_view(None)
-        await session.execute(
-            insert(OrganizationGatewaySettings)
-            .values(organization_id=tenant_id)
-            .on_conflict_do_nothing()
-        )
-        row = await session.get(
-            OrganizationGatewaySettings,
-            tenant_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        assert row is not None
-    before = stored_settings(row.settings)
-    stored = before.model_dump()
-    # A nested setting changes only the fields the PATCH names.
-    after = GatewaySettings.model_validate(
-        stored
-        | {
-            key: {**stored[key], **value}
-            if isinstance(getattr(before, key), BaseModel)
-            else value
-            for key, value in changes.items()
-        }
-    )
-    for setting, field, model, ids in (
-        (
-            "restore_withheld",
-            "api_key_ids",
-            ApiKey,
-            {
-                key
-                for grant in after.restore_withheld.values()
-                for key in grant.api_key_ids
-            },
-        ),
-        (
-            "restore_withheld",
-            "team_ids",
-            Team,
-            {
-                team
-                for grant in after.restore_withheld.values()
-                for team in grant.team_ids
-            },
-        ),
-        (
-            "inflight_sharing_api_key_ids",
-            "api_key_ids",
-            ApiKey,
-            set(after.inflight_sharing_api_key_ids),
-        ),
-    ):
-        known = (
-            set(
-                await session.scalars(
-                    select(model.id).where(
-                        model.organization_id == tenant_id, model.id.in_(ids)
-                    )
-                )
-            )
-            if ids and setting in changes
-            else ids
-        )
-        if ids - known:
-            raise HTTPException(
-                422, detail=f"{setting} names {field} this organization lacks"
-            )
-    if after == before:
-        # Nothing to write; a row inserted above came from a concurrent first write.
-        return _gateway_settings_view(row)
-    # Only the fields this PATCH named are written; keys another build wrote stay.
-    row.settings = {
-        key: value for key, value in row.settings.items() if key not in changes
-    } | after.model_dump(mode="json", include=set(changes), exclude_defaults=True)
-    row.revision += 1
-    row.updated_by = user.id
-    await _audit(
-        session,
-        user,
-        "tenant.gateway_settings_updated",
-        str(tenant_id),
-        details=change_details(
-            before.model_dump(mode="json"), after.model_dump(mode="json")
-        ),
-    )
-    direction, relaxed = classify_change(before, after)
-    # Restore permission protects personal data, so it is a privacy relaxation.
-    relaxed = [field for field in relaxed if field != "restore_withheld"]
-    if relaxed:
-        await _audit(
-            session,
-            user,
-            "tenant.gateway_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
-    privacy_relaxed = restore_relaxed(before.restore_withheld, after.restore_withheld)
-    if privacy_relaxed:
-        event_id = await _audit(
-            session,
-            user,
-            "tenant.privacy_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": privacy_relaxed},
-        )
-        await ComplianceForwarderService().send_privacy_protection_relaxed(
-            session,
-            TenantId(tenant_id),
-            fields=privacy_relaxed,
-            actor=str(user.id),
-            actor_email=user.email,
-            event_id=event_id,
+    async with record_managed_write(
+        session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
+    ) as version:
+        await GATEWAY_SETTINGS.apply(
+            session, user, tenant_id, "_", before, after, policy_version=version
         )
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
-    except Exception as exc:
-        logger.warning(
-            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+    await GATEWAY_SETTINGS.after_commit(request, tenant_id)
+    return _gateway_settings_view(
+        await session.get(
+            OrganizationGatewaySettings, tenant_id, populate_existing=True
         )
-    await session.refresh(row)
-    return _gateway_settings_view(row)
+    )
 
 
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
@@ -6500,6 +6388,233 @@ class _PrivacyResource:
             )
 
 
+class _GatewaySettingsResource:
+    name = "gateway_settings"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        row = await session.get(OrganizationGatewaySettings, organization_id)
+        return {
+            "_": stored_settings(row.settings if row is not None else {}).model_dump(
+                mode="json"
+            )
+        }
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        changes = _validated(GatewaySettingsPatch, proposed).model_dump(
+            mode="json", exclude_unset=True
+        )
+        state = before or GatewaySettings().model_dump(mode="json")
+        # A nested setting or a map changes only the entries named; null removes one.
+        after = _validated(
+            GatewaySettings,
+            state
+            | {
+                key: {
+                    name: entry
+                    for name, entry in (state[key] | value).items()
+                    if entry is not None
+                }
+                if isinstance(value, dict)
+                else value
+                for key, value in changes.items()
+            },
+        )
+        tenant_id = _tenant_id(actor)
+        named = {
+            kind
+            for kind, grant in changes.get("restore_withheld", {}).items()
+            if grant is not None
+        }
+        unknown = named - effective_entity_actions().keys()
+        if unknown:
+            rules = await session.scalar(
+                select(OrganizationRuleSet.rules).where(
+                    OrganizationRuleSet.organization_id == tenant_id
+                )
+            )
+            labels = {
+                rule["match"].get("label") for rule in rules or () if "match" in rule
+            } | set(
+                await session.scalars(
+                    select(RecordSet.label).where(
+                        RecordSet.organization_id == tenant_id
+                    )
+                )
+            )
+            if unknown - labels:
+                raise HTTPException(
+                    422,
+                    detail="restore_withheld names no entity type or rule label: "
+                    + ", ".join(sorted(unknown - labels)),
+                )
+        for setting, field, model, ids in (
+            (
+                "restore_withheld",
+                "api_key_ids",
+                ApiKey,
+                {
+                    key
+                    for grant in after.restore_withheld.values()
+                    for key in grant.api_key_ids
+                },
+            ),
+            (
+                "restore_withheld",
+                "team_ids",
+                Team,
+                {
+                    team
+                    for grant in after.restore_withheld.values()
+                    for team in grant.team_ids
+                },
+            ),
+            (
+                "inflight_sharing_api_key_ids",
+                "api_key_ids",
+                ApiKey,
+                set(after.inflight_sharing_api_key_ids),
+            ),
+        ):
+            known = (
+                set(
+                    await session.scalars(
+                        select(model.id).where(
+                            model.organization_id == tenant_id, model.id.in_(ids)
+                        )
+                    )
+                )
+                if ids and setting in changes
+                else ids
+            )
+            if ids - known:
+                raise HTTPException(
+                    422, detail=f"{setting} names {field} this organization lacks"
+                )
+        return after.model_dump(mode="json")
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert before is not None and after is not None
+        changed = {key for key in after if after[key] != before.get(key)}
+        if not changed:
+            return
+        row = await session.get(
+            OrganizationGatewaySettings, organization_id, with_for_update=True
+        )
+        if row is None:
+            await session.execute(
+                insert(OrganizationGatewaySettings)
+                .values(organization_id=organization_id)
+                .on_conflict_do_nothing()
+            )
+            row = await session.get(
+                OrganizationGatewaySettings,
+                organization_id,
+                with_for_update=True,
+                populate_existing=True,
+            )
+            assert row is not None
+        previous = GatewaySettings.model_validate(before)
+        current = GatewaySettings.model_validate(after)
+        # Only the fields that changed are written; keys another build wrote stay.
+        row.settings = {
+            key: value for key, value in row.settings.items() if key not in changed
+        } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
+        row.revision += 1
+        row.updated_by = actor.id
+        await _audit(
+            session,
+            actor,
+            "tenant.gateway_settings_updated",
+            str(organization_id),
+            details={
+                **change_details(before, after),
+                **version_detail(policy_version),
+            },
+        )
+        _, relaxed = classify_change(previous, current)
+        # Restore permission protects personal data, so it is a privacy relaxation.
+        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        if relaxed:
+            await _audit(
+                session,
+                actor,
+                "tenant.gateway_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+        privacy_relaxed = restore_relaxed(
+            previous.restore_withheld, current.restore_withheld
+        )
+        if privacy_relaxed:
+            event_id = await _audit(
+                session,
+                actor,
+                "tenant.privacy_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": privacy_relaxed, **version_detail(policy_version)},
+            )
+            await ComplianceForwarderService().send_privacy_protection_relaxed(
+                session,
+                TenantId(organization_id),
+                fields=privacy_relaxed,
+                actor=str(actor.id),
+                actor_email=actor.email,
+                event_id=event_id,
+            )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_change(
+            GatewaySettings.model_validate(before),
+            GatewaySettings.model_validate(after),
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        try:
+            cache: CacheService = request.app.state.cache
+            await CacheManager(cache).invalidate_gateway_settings(str(organization_id))
+        except Exception as exc:
+            logger.warning(
+                "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+            )
+
+
 _TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_limit")
 
 
@@ -7206,6 +7321,7 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
 
 
 PRIVACY = _PrivacyResource()
+GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()

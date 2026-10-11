@@ -467,9 +467,15 @@ curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
    `{}`, means nobody gets the type back; a type not listed is restored for everyone.
 
 Notes: the gateway knows the key and the key's team, not the person behind it.
-`restore_withheld` is replaced whole by each PATCH; `{}` removes every grant. A key
-is an entity type or a rule label, at most 64; each grant lists at most 200 team and
-200 key ids of this organization (an unknown id is 422). Removing a type or adding an
+A PATCH changes only the types it names: a grant replaces that type's grant, and
+`null` gives the type back to everyone. A key is a built-in entity type or the label
+of one of this organization's rules or record sets, at most 64 (a name that is
+neither, such as a misspelt type, is 422); each grant lists at most 200 team and 200
+key ids of this organization (an unknown id is 422). Withholding a type the tenant
+only monitors changes nothing until something masks it: a monitored value is sent
+as it is, so there is no placeholder to withhold. A type a newer build wrote and this
+one does not know stays withheld. Every change is a policy version, so a plan can
+make it and a restore can put it back. Removing a type or adding an
 id to a grant is a privacy relaxation (`tenant.privacy_protection_relaxed` with
 `restore_withheld.<TYPE>`, forwarded to your targets); listing a type or removing an
 id tightens. A Responses continuation follows the permission of the caller of each

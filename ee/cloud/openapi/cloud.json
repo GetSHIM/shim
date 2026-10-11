@@ -5154,7 +5154,14 @@
             "anyOf": [
               {
                 "additionalProperties": {
-                  "$ref": "#/components/schemas/RestoreGrant"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RestoreGrant"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "type": "object"
               },
