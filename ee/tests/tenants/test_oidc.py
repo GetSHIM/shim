@@ -406,7 +406,7 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
         "subject_id": str(user.id),
         "actor_type": "user_jwt",
         "source": "oidc",
-        "after": {"role": "member", "oidc_teams": {}},
+        "after": {"role": "member", "custom_role": None, "oidc_teams": {}},
     }
     changes = [event["extra"] for event in events[1:]]
     assert [event["endpoint"] for event in events[1:]] == [
@@ -420,4 +420,140 @@ async def test_identity_sync_audits_provisioning_and_changes_but_not_plain_login
     assert (changes[1]["before"], changes[1]["after"]) == (
         {"oidc_teams": {}},
         {"oidc_teams": {str(team.id): "member"}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_login_sets_and_clears_the_mapped_custom_role(
+    db, test_org, monkeypatch, oidc_config, caplog, audit_events
+):
+    from shim_enterprise.tenants.models import OrganizationRole
+
+    roles = {
+        slug: OrganizationRole(
+            organization_id=test_org.id, slug=slug, name=slug, permissions=[]
+        )
+        for slug in ("b-viewer", "a-viewer")
+    }
+    db.add_all(roles.values())
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_GROUP_CUSTOM_ROLE_MAP",
+        {"/shim/b": "b-viewer", "/shim/a": "a-viewer", "/shim/old": "retired-role"},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="custom-role-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members", "/shim/b", "/shim/a", "/shim/old"],
+    )
+
+    user = await oidc.synchronize_user(db, claims)
+    assert user.custom_role_id == roles["a-viewer"].id
+    assert "custom role the organization lacks" in caplog.text
+    assert "retired-role" not in caplog.text
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/owners", "/shim/a"]})
+    assert (user.role, user.custom_role_id) == ("owner", None)
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/members", "/shim/b"]})
+    assert user.custom_role_id == roles["b-viewer"].id
+    await oidc.synchronize_user(db, claims | {"groups": ["/shim/members"]})
+    assert user.custom_role_id is None
+    changes = [
+        (
+            event["extra"].get("before", {}).get("custom_role"),
+            event["extra"]["after"].get("custom_role"),
+        )
+        for event in await audit_events(test_org.id)
+    ]
+    assert changes == [
+        (None, "a-viewer"),
+        ("a-viewer", None),
+        (None, "b-viewer"),
+        ("b-viewer", None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_login_that_takes_keys_own_away_revokes_the_users_keys(
+    db, test_org, monkeypatch, oidc_config, audit_events
+):
+    from shim_enterprise.tenants.models import ApiKey, OrganizationRole
+
+    db.add_all(
+        OrganizationRole(
+            organization_id=test_org.id, slug=slug, name=slug, permissions=granted
+        )
+        for slug, granted in (("keys", ["keys.own"]), ("reader", ["usage.read"]))
+    )
+    await db.flush()
+    monkeypatch.setattr(settings, "OIDC_ORGANIZATION_ID", test_org.id)
+    monkeypatch.setattr(
+        settings,
+        "OIDC_GROUP_CUSTOM_ROLE_MAP",
+        {"/shim/keys": "keys", "/shim/reader": "reader"},
+    )
+    claims = dict(
+        iss=settings.OIDC_ISSUER_URL,
+        sub="key-holder-subject",
+        email=f"{uuid4()}@example.com",
+        email_verified=True,
+        groups=["/shim/members"],
+    )
+    user = await oidc.synchronize_user(db, claims)
+    keys = [
+        ApiKey(
+            id=uuid4(),
+            organization_id=test_org.id,
+            user_id=user.id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-oidc",
+            tier="free",
+            is_active=True,
+        )
+        for _ in range(2)
+    ]
+    db.add_all(keys)
+    await db.flush()
+
+    await oidc.synchronize_user(
+        db, claims | {"groups": ["/shim/members", "/shim/keys"]}
+    )
+    kept = [key.is_active for key in keys]
+    await oidc.synchronize_user(
+        db, claims | {"groups": ["/shim/members", "/shim/reader"]}
+    )
+    for key in keys:
+        await db.refresh(key)
+
+    assert kept == [True, True]
+    assert [key.is_active for key in keys] == [False, False]
+    revoked = (await audit_events(test_org.id))[-1]["extra"]
+    assert revoked["api_keys_revoked"] == 2
+    assert (revoked["before"]["custom_role"], revoked["after"]["custom_role"]) == (
+        "keys",
+        "reader",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_oidc_members_custom_role_is_set_in_the_identity_provider(
+    db, test_user_with_org, oidc_config
+):
+    from shim_enterprise.api.v1 import management
+
+    test_user_with_org.role = "owner"
+    with pytest.raises(HTTPException) as refused:
+        await management.update_team_member(
+            uuid4(),
+            management.TeamRolePatch(role="member", custom_role_id=None),
+            test_user_with_org,
+            db,
+        )
+
+    assert (refused.value.status_code, refused.value.detail) == (
+        409,
+        "Manage this role in the identity provider",
     )

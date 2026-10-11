@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -14,7 +15,8 @@ import shim_enterprise.tenants.policy as policy_module
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.rules import KINDS, LIMITS, Rule, RuleSet, validate_rule_set
 from shim.rules.model import RuleMatch
-from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
+import shim_enterprise.api.enterprise_deps as enterprise_deps
+from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED
 from shim_enterprise.api.v1 import management
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.core.database import get_db
@@ -287,7 +289,9 @@ async def test_a_body_over_the_size_limit_is_refused_while_it_arrives(
     session = SimpleNamespace(execute=AsyncMock())
     application = FastAPI()
     application.include_router(management_router, prefix="/api/v1")
-    application.dependency_overrides[get_org_admin] = lambda: test_user_with_org
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
     application.dependency_overrides[get_db] = lambda: session
     padding = b" " * LIMITS["request_bytes"]
 
@@ -315,16 +319,22 @@ async def test_a_body_over_the_size_limit_is_refused_while_it_arrives(
 
 def test_readers_read_and_admins_write() -> None:
     guards = {
-        (method, route.path): {
-            dependency.call for dependency in route.dependant.dependencies
-        }
+        (method, route.path): inspect.getclosurevars(dependency.call).nonlocals
         for route in management.router.routes
         if route.path == "/rules"
         for method in route.methods
+        for dependency in route.dependant.dependencies
+        if dependency.call.__qualname__ == "require.<locals>.guard"
     }
 
-    assert get_org_reader in guards["GET", "/rules"]
-    assert get_org_admin in guards["PUT", "/rules"]
+    assert guards["GET", "/rules"] == {
+        "permissions": ("rules.read",),
+        "legacy_detail": None,
+    }
+    assert guards["PUT", "/rules"] == {
+        "permissions": ("rules.write",),
+        "legacy_detail": ADMIN_REQUIRED,
+    }
 
 
 @pytest.mark.asyncio

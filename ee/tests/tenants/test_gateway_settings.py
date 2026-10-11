@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib.util
+import inspect
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +19,7 @@ from sqlalchemy import func, select, text
 import shim_enterprise.tenants.gateway_settings as gateway_settings
 import shim_enterprise.tenants.policy as policy_module
 import shim_enterprise.api.enterprise_deps as enterprise_deps
-from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
+from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED
 from shim_enterprise.api.v1 import management
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.core.database import get_db
@@ -198,18 +199,24 @@ def test_a_patch_refuses_unknown_names_duplicates_nulls_and_fields(
         GatewaySettingsPatch.model_validate(body)
 
 
-def test_the_routes_ask_readers_to_read_and_admins_to_write() -> None:
+def test_the_routes_ask_settings_read_to_read_and_settings_write_to_write() -> None:
     guards = {
-        (method, route.path): {
-            dependency.call for dependency in route.dependant.dependencies
-        }
+        (method, route.path): inspect.getclosurevars(dependency.call).nonlocals
         for route in management.router.routes
         if route.path.endswith("/gateway-settings")
         for method in route.methods
+        for dependency in route.dependant.dependencies
+        if dependency.call.__qualname__ == "require.<locals>.guard"
     }
 
-    assert get_org_reader in guards["GET", "/gateway-settings"]
-    assert get_org_admin in guards["PATCH", "/gateway-settings"]
+    assert guards["GET", "/gateway-settings"] == {
+        "permissions": ("settings.read",),
+        "legacy_detail": None,
+    }
+    assert guards["PATCH", "/gateway-settings"] == {
+        "permissions": ("settings.write",),
+        "legacy_detail": ADMIN_REQUIRED,
+    }
 
 
 @pytest.mark.asyncio
@@ -351,7 +358,7 @@ async def test_one_tenants_patch_leaves_another_tenant_alone(
 
 
 @pytest.mark.asyncio
-async def test_members_and_auditors_cannot_write_and_members_cannot_read(
+async def test_members_and_auditors_read_and_only_admins_write(
     db, test_org, registry
 ) -> None:
     user = await _admin(db, test_org.id)
@@ -377,7 +384,8 @@ async def test_members_and_auditors_cannot_write_and_members_cannot_read(
             )
 
     assert statuses == {
-        "member": (403, 403),
+        # settings.read, as for the privacy settings (E31's permission map).
+        "member": (200, 403),
         "auditor": (200, 403),
         "admin": (200, 200),
     }

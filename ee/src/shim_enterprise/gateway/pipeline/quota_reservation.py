@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import cache
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -49,6 +51,7 @@ from shim_enterprise.billing.ledger import (
     TerminalAction,
 )
 from shim_enterprise.billing.models import RequestLifecycle
+from shim_enterprise.cache.loop_detection import take_repeat_digest
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
@@ -58,15 +61,16 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
 from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
     ProviderSecret,
     TierDefinition,
     Team,
-    TeamMembership,
     User,
 )
+from shim_enterprise.tenants.teams import may_hold_team_key
 from shim_enterprise.observability.enterprise_metrics import (
     QUOTA_RESERVATION_TOTAL,
     USAGE_SETTLEMENT_TOTAL,
@@ -86,6 +90,10 @@ class AccountingPersistenceError(PersistenceError):
 logger = logging.getLogger(__name__)
 # The spend-policy version that records a tenant's refusal of customer provider keys.
 _CUSTOMER_KEY_REFUSED = "spend:customer-provider-key:refused:v1"
+
+
+# Recorded on the spend verdict of a request that carried its own provider key.
+EPHEMERAL_BYOK_SPEND_POLICY_VERSION = "spend:ephemeral-byok:unlimited:v1"
 
 
 class AccountingPolicyLoader:
@@ -162,20 +170,14 @@ class AccountingPolicyLoader:
                 User.id == api_key.user_id,
                 User.organization_id == api_key.organization_id,
                 User.is_active.is_(True),
-                User.role != "auditor",
+                User.role.in_(KEY_OWNER_ROLES),
             )
         )
         if owner is None:
             raise HTTPException(status_code=401, detail="Invalid API Key")
         team_policy = None
         if api_key.team_id is not None:
-            if owner.role not in {"owner", "admin"} and not await session.scalar(
-                select(TeamMembership.user_id).where(
-                    TeamMembership.organization_id == api_key.organization_id,
-                    TeamMembership.team_id == api_key.team_id,
-                    TeamMembership.user_id == owner.id,
-                )
-            ):
+            if not await may_hold_team_key(session, owner, api_key.team_id):
                 raise HTTPException(
                     status_code=403, detail="API-key owner is no longer a team member"
                 )
@@ -268,7 +270,7 @@ class AccountingPolicyLoader:
                 )
             )
             return SpendPolicySnapshot(
-                version="spend:ephemeral-byok:unlimited:v1"
+                version=EPHEMERAL_BYOK_SPEND_POLICY_VERSION
                 if allowed
                 else _CUSTOMER_KEY_REFUSED,
                 monthly_limit_usd=None,
@@ -343,6 +345,10 @@ class DurableAccountingCoordinator:
         session: AsyncSession,
     ) -> ReservationResult:
         policy: QuotaPolicySnapshot | None = None
+        hash_key = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode(
+            "utf-8"
+        )
+        loop_digest = take_repeat_digest(str(prepared.tenant_id))
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
@@ -373,13 +379,18 @@ class DurableAccountingCoordinator:
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,
-                        system_prompt_hash=system_prompt_hash(
-                            prepared,
-                            (
-                                settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY
-                            ).encode("utf-8"),
-                        ),
+                        system_prompt_hash=system_prompt_hash(prepared, hash_key),
                         deployment_kind=prepared.deployment_kind,
+                        deployment_id=(
+                            prepared.target.deployment_id if prepared.target else None
+                        ),
+                        repeat_digest=(
+                            None
+                            if loop_digest is None
+                            else keyed_repeat_digest(
+                                hash_key, str(prepared.tenant_id), loop_digest
+                            )
+                        ),
                         policy=policy,
                         audit_policy_mode=prepared.context.audit_policy.mode,
                         policy_verdicts=tuple(
@@ -578,6 +589,13 @@ class DurableAccountingCoordinator:
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
                             **match_records(prepared),
+                            # A keyed hash of raw prompt text is still a
+                            # pseudonym of the personal data in it.
+                            **(
+                                {"repeat_digest": None}
+                                if privacy_facts["pii_detected"]
+                                else {}
+                            ),
                         }
                     ),
                 },
@@ -1248,6 +1266,19 @@ def scan_usage_status(count: int, limit: int, now: datetime) -> ScanUsageStatus:
         scans_remaining=-1 if limit == -1 else max(0, limit - count),
         resets_at=None if limit == -1 else next_month.isoformat(),
     )
+
+
+@cache
+def _repeat_digest_key(base_key: bytes) -> bytes:
+    return hmac.new(base_key, b"shim-repeat-digest-v1", hashlib.sha256).digest()
+
+
+def keyed_repeat_digest(base_key: bytes, tenant_id: str, digest: str) -> str:
+    return hmac.new(
+        _repeat_digest_key(base_key),
+        f"{tenant_id}:{digest}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _provider_reconciliation_due_at(started_at: datetime, provider: str) -> datetime:

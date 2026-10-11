@@ -10,12 +10,22 @@ from typing import Any
 
 from sqlalchemy import Integer, Select, case, cast, func, select, true
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.billing.models import RequestLifecycle
 
 
 REPORT_FONT = "Vera"
 REPORT_FONT_BOLD = "Vera-Bold"
+NOT_RECORDED = "bu sürümde kaydedilmiyor"
+# Table cells do not wrap, so a count column breaks the phrase to stay narrow.
+NOT_RECORDED_CELL = "\n".join(NOT_RECORDED.rsplit(" ", 1))
+# Lifecycle metadata map, action and Turkish label of each privacy action.
+ENTITY_ACTIONS = (
+    ("pii_entities", "masked", "Maskelenen"),
+    ("monitored_entities", "monitored", "İzlenen"),
+    ("blocked_entities", "blocked", "Durdurulan"),
+)
 
 
 def ensure_report_fonts() -> None:
@@ -44,7 +54,7 @@ def ensure_report_fonts() -> None:
 
 
 def report_styles() -> Any:
-    """reportlab's sample stylesheet with the report fonts on its three styles."""
+    """reportlab's sample stylesheet with the report fonts on the styles reports use."""
     from reportlab.lib.styles import getSampleStyleSheet
 
     ensure_report_fonts()
@@ -52,6 +62,7 @@ def report_styles() -> Any:
     for style_name, font in (
         ("Title", REPORT_FONT_BOLD),
         ("Heading2", REPORT_FONT_BOLD),
+        ("Heading3", REPORT_FONT_BOLD),
         ("Normal", REPORT_FONT),
     ):
         styles[style_name].fontName = font
@@ -157,3 +168,16 @@ def entity_sums(key: str, window: Sequence[Any], *group_by: Any) -> Select[Any]:
         .where(*window)
         .group_by(*group_by, entries.c.key)
     )
+
+
+async def recorded_entity_sums(
+    session: AsyncSession, key: str, window: Sequence[Any], *group_by: Any
+) -> list[Any] | None:
+    """`entity_sums` rows, or None when no row in the window recorded the key."""
+    if not await session.scalar(
+        select(RequestLifecycle.id)
+        .where(*window, RequestLifecycle.lifecycle_metadata.has_key(key))
+        .limit(1)
+    ):
+        return None
+    return list(await session.execute(entity_sums(key, window, *group_by)))

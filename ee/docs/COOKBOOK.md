@@ -24,8 +24,13 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
+- [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Find truncated and refused answers](#find-truncated-and-refused-answers)
+- [Is our model list complete?](#is-our-model-list-complete)
+- [Record an incident](#record-an-incident)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 - [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
@@ -503,11 +508,14 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/kvkk \
   -o kvkk_exposure.pdf
 ```
 
-Notes: a tenant-wide PDF, one without `connector_id`, adds a "Gateway
-detections" section: per entity type, its KVKK category and the sum over
-requests started in the window of the distinct values the gateway detected and
-masked in each. A connector-scoped report and every CSV hold compliance
-connector findings only. More than 10,000 findings answers 422. Details are in
+Notes: the PDF is in Turkish and names the organization as
+`Kurum: <name> (<id>)`. A tenant-wide report, one without `connector_id`, adds
+the gateway's counts per entity type: masked, monitored, blocked and seen in
+answers. The CSV ends with `source` and `count`: connector findings have
+`source` `connector`, and a tenant-wide CSV adds one `gateway_masked`,
+`gateway_monitored`, `gateway_blocked` or `gateway_response` row per entity type
+and action. Filter on `source` if a spreadsheet expects connector rows only.
+More than 10,000 findings answers 422. Details are in
 [decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
 
 ## Register a private model deployment
@@ -628,6 +636,95 @@ Notes:
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
 
+## Give someone exactly the access they need
+
+Let a finance colleague read billing without seeing privacy settings or holding
+gateway keys.
+
+1. As the owner, create a role with the permissions it needs:
+   `POST /api/v1/management/roles` with `slug`, `name` and `permissions`
+   ([the permission table](team-access.md#permissions)). It needs a plan with
+   team access.
+2. Give it to a member: `PATCH /api/v1/management/team/members/{member_id}` with
+   `{"role": "member", "custom_role_id": "<role id>"}`.
+3. The member's `GET /api/v1/management/auth/me` now lists exactly the role's
+   `permissions`.
+
+```console
+ROLE_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/roles \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug": "billing-viewer", "name": "Billing viewer", "permissions": ["usage.read"]}' | jq -r .id)
+
+curl -X PATCH "http://localhost:8000/api/v1/management/team/members/$MEMBER_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"role\": \"member\", \"custom_role_id\": \"$ROLE_ID\"}"
+```
+
+Notes:
+
+- A role without `keys.own` cannot go to someone who holds an active gateway
+  key: the PATCH answers 409 `ROLE_HOLDERS_HAVE_KEYS`. Revoke the keys first.
+- Owner-only permissions (`roles.manage`, `config.manage`), `keys.manage` and
+  the ones that open content or decide approvals cannot be part of a custom
+  role (422).
+- `"custom_role_id": null` takes the role away; deleting a role someone holds
+  answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
+  instead ([on-prem identity](ON_PREM_IDENTITY.md)).
+- Details are in [team access](team-access.md#custom-roles).
+
+## Plan, apply and undo a change
+
+See what a policy change would have affected before it takes effect, apply it in
+one step, and take it back in one step.
+
+1. Create a plan (`plans.create`, owners and admins, plus the permission each
+   change's own route asks for):
+   `POST /api/v1/management/policy/plans` with up to 100 `changes`. A change is
+   `{"resource", "item", "set": {...}}` to update, `"item": null` to create, or
+   `{"resource", "item", "delete": true}`. The answer lists each change's
+   `before`, `after`, `risk` and `impact` over the last `window_days` (default 7,
+   at most 31).
+2. Apply it (`plans.apply`): `POST /api/v1/management/policy/plans/{id}/apply`.
+   A 409 `PLAN_STALE` names the items someone changed since the plan was made;
+   create a new plan.
+3. Undo: `POST /api/v1/management/policy/versions/{version}/restore` with an
+   optional `reason`; restoring `current - 1` undoes the last change. Send the
+   `expected_version` you read to get 409 `POLICY_VERSION_CHANGED` instead of
+   undoing a change someone made since. Read the
+   versions with `GET /api/v1/management/policy/versions` and the current state
+   with `GET /api/v1/management/policy/state` (owners, admins and auditors).
+
+```console
+PLAN_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/policy/plans \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "watch e-mail before masking it",
+       "changes": [{"resource": "privacy", "item": "_",
+                    "set": {"entity_actions": {"EMAIL_ADDRESS": "monitor"}}}]}' | jq -r .id)
+
+curl -X POST "http://localhost:8000/api/v1/management/policy/plans/$PLAN_ID/apply" \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/policy/versions/4/restore \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "back to masking"}'
+```
+
+Notes:
+
+- Every write to privacy settings, teams, key model and team policies,
+  deployments, budgets and oversight policies records a version, whether it came
+  through a plan or not, so a tenant that never plans can still undo.
+- A plan expires after 7 days; an expired, applied or rolled-back plan answers
+  409 `PLAN_STATE_CONFLICT` on apply. The body is at most 256 KB.
+- A restore cannot bring back a revoked key or delete a team, and a re-created
+  budget has no notification targets: those are listed in `not_restored`, as is
+  an item its own route would now refuse (a deleted provider secret, for
+  example); everything else is restored. A
+  deployment registered after the version is disabled instead of deleted
+  (`approximated`).
+- The resources, what counts as relaxing and the audit details are in
+  [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
 ## See what changed after a prompt change
 
 Compare how answers ended before and after your system prompt changed.
@@ -676,6 +773,92 @@ Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
 
+## Find truncated and refused answers
+
+See which apps get cut-off or refused answers, then open those requests.
+
+1. As an owner, admin or auditor, read the rates per app:
+   `GET /api/v1/management/outcomes?group_by=api_key` (or `model`, `team`;
+   default the last 7 days, at most 31). Each group has `truncation_rate` and
+   `refusal_rate` (refused, filtered or empty).
+2. Open the requests behind a rate:
+   `GET /api/v1/management/requests?completion_outcome=truncated&api_key_id=…`.
+   `refused`, `filtered`, `empty`, `complete` and `none` (no recorded outcome)
+   work the same, in the CSV export too. The summary's `outcome_counts` count
+   every class under the filters you set.
+
+```console
+curl 'http://localhost:8000/api/v1/management/outcomes?group_by=api_key' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.groups[] | {name, settled, truncation_rate, refusal_rate}'
+```
+
+Notes: a key with 50 or more answers in 24 hours and either rate at 5 percent
+or more raises `gateway.truncation_rate` or `gateway.refusal_rate`
+([findings](FINDINGS.md#gatewaytruncation_rate)). The classes are the
+provider's own signals; text refusals ("yardımcı olamam") are counted only in
+`soft_refusal_rate`, and only when the tenant enabled the refusal analyzer; the
+`soft_refusal` request filter matches only answers it read. Details are in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates).
+
+## Is our model list complete?
+
+Compare the registry with what the gateway actually served.
+
+1. As an owner, admin or auditor, read
+   `GET /api/v1/management/model-inventory?start=…&end=…` (default the last 30
+   days, at most 31).
+2. `registry` items are your registered deployments with their traffic;
+   `catalog` items (`registered: false`) are models requests reached through a
+   provider's public endpoint. `byok_requests` counts requests that brought their
+   own provider key.
+
+```console
+curl 'http://localhost:8000/api/v1/management/model-inventory' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.items[] | {route, alias, model, requests, byok_requests}'
+```
+
+Notes: once a registry exists, catalog models with 5 or more requests in 7 days
+raise `gateway.unregistered_model`, and keys sending their own provider key past
+a stored one raise `gateway.byok_usage` ([findings](FINDINGS.md)). Refused
+unknown model names and servers that never see traffic through shim are not in
+the inventory. Details are in [model deployments](MODEL_DEPLOYMENTS.md#the-inventory).
+
+## Record an incident
+
+Keep one record per incident, with its owner, its evidence and the KVKK 72-hour
+clock.
+
+1. As an owner or admin, open it with what you know, linking the requests or
+   findings involved: `POST /api/v1/compliance/incidents`. Keep personal data
+   out of the title and description; it belongs in `breach`.
+2. If personal data may have been exposed, set `is_suspected_breach: true`: the
+   `kvkk_board` row gets a deadline 72 hours after `aware_at`, and
+   `kvkk_data_subjects` a row without one. Add `gdpr_authority` with
+   `PUT .../notifications/gdpr_authority` when GDPR applies.
+3. Read `GET /api/v1/compliance/incidents/{id}`: `evidence_summary` lists the
+   entity types and KVKK categories of the linked requests.
+4. Record each stage you send:
+   `POST .../notifications/kvkk_board/submissions` with the form or case number.
+5. Move the status as work goes on, and close it at the end.
+
+```console
+curl -X POST http://localhost:8000/api/v1/compliance/incidents \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "TCKN sent to a provider", "severity_id": 4, "is_suspected_breach": true,
+       "aware_at": "2026-10-10T09:00:00Z", "links": {"request_ids": ["req_…"]}}'
+
+curl -X POST http://localhost:8000/api/v1/compliance/incidents/$INCIDENT/notifications/kvkk_board/submissions \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reference": "KVKK-2026-0042", "fields_sent": ["data_categories", "approx_subjects"]}'
+```
+
+Notes: forward targets get a reminder 24 hours before a deadline and another
+once it passes without a submission. A submission after the deadline needs
+`late_reason`. shim files nothing with a regulator, and the deadlines are for
+your counsel to confirm. Auditors read and export
+(`GET /api/v1/compliance/incidents/export`, OCSF Incident Finding). Details are
+in [incidents](INCIDENTS.md).
+
 ## Collect the monthly evidence file
 
 Hand an auditor last month's gateway evidence without generating anything by hand.
@@ -706,6 +889,9 @@ Notes:
   `python ee/scripts/generate_monthly_evidence.py --organization <uuid> --period <current YYYY-MM>`
   in the enterprise image, then downloads it with `?kind=monthly_partial`. Each
   kind and month is written once; the script refuses a second run.
+- The file is in Turkish. Section 7, "Kim neye erişti", answers who read or
+  exported evidence (audited actions by user id and current role) and which API
+  keys and teams called which models.
 - What the file contains and does not contain is in
   [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).
 
@@ -734,10 +920,20 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
   -o iso42001_readiness.csv
 ```
 
+3. Read the gap list: every control whose status is `gap` or `partial`, gaps
+   first, each with what is missing and the next steps. A step marked "in shim"
+   points at the feature that produces the missing evidence; the others are for
+   your organization, and shim does not check the documents they produce.
+   Declare a control once your organization has done its steps.
+
 Notes: the CSV starts with the cover sentences, one per row, and a blank row;
 then come the columns `control_id`, `title`, `source` (`measured`, `input` or
-`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`.
-The PDF holds the same 38 rows, with text over 900 characters cut and marked
-"(truncated, see CSV)". The report is not an audit or a certification.
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration`, `note`,
+`status` (`ready`, `partial` or `gap`) and `next_steps` (empty for a ready
+control, otherwise the steps joined with ` | `, each prefixed `in_shim: ` or
+`organization: `). The PDF holds the same 38 rows with a status column, then
+the gap list, with text over 900 characters cut and marked
+"(truncated, see CSV)". The report is not an audit or a certification and
+carries no score.
 Sources, rules and the numbering caveat are in
 [decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

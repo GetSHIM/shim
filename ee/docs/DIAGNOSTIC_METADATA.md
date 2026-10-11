@@ -17,6 +17,8 @@ provider attempt rule are unchanged.
 | `reasoning_seen` | `true` when the answer carried reasoning (a Responses `reasoning` item or `response.reasoning*` event, an Anthropic `thinking` or `redacted_thinking` block, a Gemini `thought: true` part, a chat `reasoning_content` field) or reported reasoning tokens above 0 (`reasoning_tokens`, `thoughtsTokenCount`). Token-per-character ratios that include reasoning output are distorted. | `false` when none was seen; not recorded for failed and rejected requests. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
+| `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
+| `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
 first class that matches, in this order, wins, including across several choices
@@ -55,6 +57,38 @@ sorts JSON keys, applies NFKC normalization, and collapses whitespace. The
 window and any process/Redis state loss affect comparability. A denied request
 that never acquires a durable lifecycle has no diagnostic projection; its
 policy-decision event owns denial evidence.
+
+`repeat_digest` links a repeat to the request it repeats even when it arrives
+after the loop window, for example a retry after the SDK's 600-second timeout,
+which starts a new `repeat_chain_length` at 1. It is
+`HMAC-SHA256(key, "<tenant id>:<detector digest>")` with
+`key = HMAC-SHA256(COMPLIANCE_HASH_SALT or SECRET_KEY, "shim-repeat-digest-v1")`,
+so two tenants sending the same prompt get different values. The key falls back
+to `SECRET_KEY` when `COMPLIANCE_HASH_SALT` is unset. It is computed even when
+Redis is unavailable.
+
+The repeat material is the prompt-bearing fields plus the provider, protocol and
+model alias, normalized. Tools, sampling parameters and `prompt` are not in it,
+so two requests that differ only there share a value; renaming a model alias
+changes the material and breaks the link.
+
+The value carries no version prefix. After `COMPLIANCE_HASH_SALT` (or the
+`SECRET_KEY` fallback) is rotated, old and new values cannot be told apart and
+do not link.
+
+The digest is written at reservation, before privacy runs. When privacy detects
+PII, whether it is scrubbed, monitored or blocked, the same update that records
+`pii_detected` sets `repeat_digest` to `null`: a keyed hash of raw prompt text is
+still a pseudonym of the personal data in it. Requests with PII therefore cannot
+be linked as repeats. `deployment_id` is unaffected.
+
+The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
+metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
+`LOOP_WINDOW_SECONDS`.
+
+`deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
+`request_lifecycle.metadata` and not in the analytics row, the request list, its
+CSV or the audit completion. Community JSONL does not carry them.
 
 TTFT is gateway observation time, not the model's internal computation time or
 the client's first-byte time. It excludes request admission and input privacy
@@ -133,7 +167,8 @@ A new digest is a new prompt version. `GET /api/v1/management/prompt-versions`
 (`start` and `end`, default the last 7 days, at most 31; optional `api_key_id`
 and `model`, a case-insensitive substring) by digest. Each item has
 `system_prompt_hash`, `first_seen` and `last_seen` within the window,
-`requests`, up to 10 `api_keys` and `models`, `outcomes` (the counts of each
+`requests`, up to 10 `api_keys` and `models` (a Responses request that named no
+model shows as `model not specified`), `outcomes` (the counts of each
 `completion_outcome`), `failed` (requests that ended `provider_error`,
 `timeout`, `internal_error` or `failed`) and `p95_shim_latency_ms` over completed
 requests. Requests without a digest form one item with
@@ -266,6 +301,36 @@ run (those show as a `rule.<id>` verdict). A match is ids and counts, never the 
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+
+## Outcome filters, counts and rates
+
+`/requests` and `/requests/export` accept two optional filters:
+
+- `completion_outcome`: `complete`, `truncated`, `empty`, `refused`,
+  `filtered`, or `none` for a request without a recorded outcome (failed,
+  rejected and historical rows). Any other value is 422.
+- `soft_refusal`: `true` or `false`, matched against
+  `response_analysis.refusal.soft_refusal` on the request's lifecycle row. The
+  refusal analyzer writes that field only when the tenant enabled it, so an
+  answer it never read matches neither value.
+
+Both combine with every other filter, and a member still sees only their own
+keys. The list summary carries `outcome_counts` (`complete`, `truncated`,
+`empty`, `refused`, `filtered`, `none`) under the active filters; they sum to
+`requests`.
+
+`GET /api/v1/management/outcomes?start&end&group_by=model|api_key|team` (owner,
+admin, auditor; window default the last 7 days, at most 31) counts the requests
+with a `completion_outcome` per requested model, API key (with its name) or team
+(`team_id`, with its name; requests without a team are one group with a null
+`group`). Each group has `settled` and the five outcome counts,
+`truncation_rate` (truncated / settled) and `refusal_rate` ((refused + filtered
++ empty) / settled), and `analysed`, `soft_refused` and `soft_refusal_rate` for
+answers the refusal analyzer read. A rate is null when its denominator is 0.
+Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
+`totals` covers every group. The rates per API key also drive the
+[`gateway.truncation_rate` and `gateway.refusal_rate`
+findings](FINDINGS.md#gatewaytruncation_rate).
 
 ## Responses continuation markers
 

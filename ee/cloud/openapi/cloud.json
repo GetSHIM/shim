@@ -1635,6 +1635,125 @@
         "title": "Blob",
         "type": "object"
       },
+      "Breach": {
+        "additionalProperties": false,
+        "description": "The breach register fields; the organization's own text, never exported.",
+        "properties": {
+          "approx_records": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approx Records"
+          },
+          "approx_subjects": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approx Subjects"
+          },
+          "contact_person": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Person"
+          },
+          "data_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Categories"
+          },
+          "likely_consequences": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Likely Consequences"
+          },
+          "measures_planned": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measures Planned"
+          },
+          "measures_taken": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measures Taken"
+          },
+          "subjects_informed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjects Informed"
+          },
+          "subjects_informed_how": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subjects Informed How"
+          }
+        },
+        "title": "Breach",
+        "type": "object"
+      },
       "BudgetEvaluationItem": {
         "properties": {
           "budget_id": {
@@ -2018,6 +2137,48 @@
           "from_seq"
         ],
         "title": "ChainStart",
+        "type": "object"
+      },
+      "ChangeInput": {
+        "additionalProperties": false,
+        "properties": {
+          "delete": {
+            "default": false,
+            "title": "Delete",
+            "type": "boolean"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "set": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set"
+          }
+        },
+        "required": [
+          "resource"
+        ],
+        "title": "ChangeInput",
         "type": "object"
       },
       "ChatRequest": {
@@ -2858,6 +3019,121 @@
         "title": "CreatedTeamInvite",
         "type": "object"
       },
+      "CustomRoleInput": {
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 27,
+            "title": "Permissions",
+            "type": "array"
+          },
+          "slug": {
+            "pattern": "^[a-z][a-z0-9-]{1,31}$",
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name",
+          "permissions"
+        ],
+        "title": "CustomRoleInput",
+        "type": "object"
+      },
+      "CustomRoleView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "enum": [
+                "settings.read",
+                "settings.write",
+                "rules.read",
+                "rules.write",
+                "deployments.read",
+                "deployments.manage",
+                "providers.manage",
+                "budgets.manage",
+                "teams.manage",
+                "keys.own",
+                "keys.manage",
+                "members.read",
+                "members.manage",
+                "roles.manage",
+                "usage.read",
+                "audit.read",
+                "compliance.manage",
+                "findings.read",
+                "findings.manage",
+                "incidents.read",
+                "incidents.manage",
+                "plans.create",
+                "plans.apply",
+                "plans.approve",
+                "requests.approve",
+                "content.read",
+                "config.manage"
+              ],
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "name",
+          "permissions",
+          "created_by",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CustomRoleView",
+        "type": "object"
+      },
       "DailyUsageView": {
         "properties": {
           "completion_tokens": {
@@ -3358,291 +3634,14 @@
         "title": "FileSearch",
         "type": "object"
       },
-      "Finding": {
-        "description": "Evidence references, never contains, a value: title, summary and text come from rule templates.",
-        "properties": {
-          "evidence": {
-            "items": {
-              "$ref": "#/components/schemas/FindingEvidence"
-            },
-            "maxItems": 50,
-            "title": "Evidence",
-            "type": "array"
-          },
-          "id": {
-            "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
-            "title": "Id",
-            "type": "string"
-          },
-          "impact": {
-            "$ref": "#/components/schemas/FindingImpact"
-          },
-          "measurements": {
-            "additionalProperties": false,
-            "maxProperties": 32,
-            "patternProperties": {
-              "^[a-z][a-z0-9_]{0,63}(?![\\s\\S])": {
-                "anyOf": [
-                  {
-                    "type": "integer"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ]
-              }
-            },
-            "title": "Measurements",
-            "type": "object"
-          },
-          "occurrences": {
-            "anyOf": [
-              {
-                "minimum": 1.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Occurrences"
-          },
-          "playbook": {
-            "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+(?![\\s\\S])",
-            "title": "Playbook",
-            "type": "string"
-          },
-          "remediation": {
-            "$ref": "#/components/schemas/FindingRemediation"
-          },
-          "resolved_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolved At"
-          },
-          "resolved_by": {
-            "anyOf": [
-              {
-                "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolved By"
-          },
-          "rule_id": {
-            "maxLength": 96,
-            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+(?![\\s\\S])",
-            "title": "Rule Id",
-            "type": "string"
-          },
-          "rule_version": {
-            "minimum": 1.0,
-            "title": "Rule Version",
-            "type": "integer"
-          },
-          "schema_version": {
-            "const": "1",
-            "title": "Schema Version",
-            "type": "string"
-          },
-          "severity": {
-            "enum": [
-              "informational",
-              "low",
-              "medium",
-              "high",
-              "critical"
-            ],
-            "title": "Severity",
-            "type": "string"
-          },
-          "source": {
-            "enum": [
-              "gateway",
-              "litellm",
-              "shim-cli"
-            ],
-            "title": "Source",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "open",
-              "resolved",
-              "dismissed"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "status_detail": {
-            "anyOf": [
-              {
-                "enum": [
-                  "new",
-                  "in_progress",
-                  "suppressed",
-                  "resolved"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status Detail"
-          },
-          "subject": {
-            "$ref": "#/components/schemas/FindingSubject"
-          },
-          "summary": {
-            "$ref": "#/components/schemas/FindingText"
-          },
-          "title": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Title",
-            "type": "string"
-          },
-          "window": {
-            "$ref": "#/components/schemas/FindingWindow"
-          }
-        },
-        "required": [
-          "schema_version",
-          "id",
-          "source",
-          "rule_id",
-          "rule_version",
-          "title",
-          "summary",
-          "severity",
-          "status",
-          "status_detail",
-          "subject",
-          "window",
-          "occurrences",
-          "evidence",
-          "measurements",
-          "impact",
-          "remediation",
-          "playbook"
-        ],
-        "title": "Finding",
-        "type": "object"
-      },
-      "FindingEvidence": {
-        "properties": {
-          "id": {
-            "pattern": "^[A-Za-z0-9_.:/-]{1,200}(?![\\s\\S])",
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "request",
-              "ledger_row",
-              "audit_row",
-              "finding",
-              "policy_version",
-              "cli_session"
-            ],
-            "title": "Kind",
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "id"
-        ],
-        "title": "FindingEvidence",
-        "type": "object"
-      },
-      "FindingImpact": {
-        "properties": {
-          "requests": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requests"
-          },
-          "risk_class": {
-            "anyOf": [
-              {
-                "enum": [
-                  "privacy",
-                  "cost",
-                  "reliability",
-                  "quality"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Risk Class"
-          },
-          "tokens": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Tokens"
-          },
-          "usd": {
-            "anyOf": [
-              {
-                "pattern": "^\\d+(\\.\\d+)?(?![\\s\\S])",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Usd"
-          }
-        },
-        "required": [
-          "requests",
-          "tokens",
-          "usd",
-          "risk_class"
-        ],
-        "title": "FindingImpact",
-        "type": "object"
-      },
       "FindingPatch": {
         "properties": {
           "status": {
             "enum": [
-              "open",
-              "dismissed",
-              "resolved",
               "new",
               "in_progress",
-              "suppressed"
+              "suppressed",
+              "resolved"
             ],
             "title": "Status",
             "type": "string"
@@ -3779,139 +3778,6 @@
         "title": "FindingRead",
         "type": "object"
       },
-      "FindingRemediation": {
-        "anyOf": [
-          {
-            "properties": {
-              "max_mode": {
-                "const": "auto"
-              }
-            }
-          },
-          {
-            "properties": {
-              "max_mode": {
-                "const": "suggest"
-              },
-              "mode": {
-                "enum": [
-                  "observe",
-                  "suggest"
-                ]
-              }
-            }
-          },
-          {
-            "properties": {
-              "mode": {
-                "const": "observe"
-              }
-            }
-          }
-        ],
-        "properties": {
-          "action": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Action"
-          },
-          "blast_radius": {
-            "enum": [
-              "key",
-              "team",
-              "deployment",
-              "model",
-              "tenant",
-              "app"
-            ],
-            "title": "Blast Radius",
-            "type": "string"
-          },
-          "max_mode": {
-            "enum": [
-              "observe",
-              "suggest",
-              "auto"
-            ],
-            "title": "Max Mode",
-            "type": "string"
-          },
-          "mode": {
-            "enum": [
-              "observe",
-              "suggest",
-              "auto"
-            ],
-            "title": "Mode",
-            "type": "string"
-          },
-          "proof_after": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Proof After"
-          },
-          "reversible": {
-            "title": "Reversible",
-            "type": "boolean"
-          },
-          "text": {
-            "$ref": "#/components/schemas/FindingText"
-          }
-        },
-        "required": [
-          "mode",
-          "max_mode",
-          "action",
-          "reversible",
-          "blast_radius",
-          "proof_after",
-          "text"
-        ],
-        "title": "FindingRemediation",
-        "type": "object"
-      },
-      "FindingSubject": {
-        "properties": {
-          "id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "key",
-              "team",
-              "deployment",
-              "model",
-              "tenant",
-              "app"
-            ],
-            "title": "Kind",
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "id"
-        ],
-        "title": "FindingSubject",
-        "type": "object"
-      },
       "FindingSummary": {
         "properties": {
           "by_entity_type": {
@@ -3957,48 +3823,138 @@
         "title": "FindingSummary",
         "type": "object"
       },
-      "FindingText": {
+      "FindingView": {
         "properties": {
-          "en": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "En",
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "first_seen_at": {
+            "format": "date-time",
+            "title": "First Seen At",
             "type": "string"
           },
-          "tr": {
-            "maxLength": 500,
-            "minLength": 1,
-            "title": "Tr",
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
+          "last_seen_at": {
+            "format": "date-time",
+            "title": "Last Seen At",
+            "type": "string"
+          },
+          "occurrences": {
+            "title": "Occurrences",
+            "type": "integer"
+          },
+          "remediation": {
+            "additionalProperties": true,
+            "title": "Remediation",
+            "type": "object"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "severity_id": {
+            "title": "Severity Id",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "suppressed",
+              "resolved"
+            ],
+            "readOnly": true,
+            "title": "Status",
+            "type": "string"
+          },
+          "status_id": {
+            "title": "Status Id",
+            "type": "integer"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "title": "Subject",
+            "type": "object"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
             "type": "string"
           }
         },
         "required": [
-          "en",
-          "tr"
+          "id",
+          "source",
+          "rule_id",
+          "rule_version",
+          "subject",
+          "title",
+          "summary",
+          "severity_id",
+          "status_id",
+          "first_seen_at",
+          "last_seen_at",
+          "occurrences",
+          "evidence",
+          "impact",
+          "remediation",
+          "resolved_at",
+          "resolved_by",
+          "status"
         ],
-        "title": "FindingText",
-        "type": "object"
-      },
-      "FindingWindow": {
-        "properties": {
-          "end": {
-            "format": "date-time",
-            "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
-            "title": "End",
-            "type": "string"
-          },
-          "start": {
-            "format": "date-time",
-            "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
-            "title": "Start",
-            "type": "string"
-          }
-        },
-        "required": [
-          "start",
-          "end"
-        ],
-        "title": "FindingWindow",
+        "title": "FindingView",
         "type": "object"
       },
       "ForwardTargetCreate": {
@@ -4626,103 +4582,6 @@
         ],
         "title": "FunctionResponseScheduling",
         "type": "string"
-      },
-      "GatewaySettings": {
-        "description": "The effective settings; a later PRD adds a field here, never a column.",
-        "properties": {
-          "response_analysis": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Response Analysis",
-            "type": "array"
-          }
-        },
-        "title": "GatewaySettings",
-        "type": "object"
-      },
-      "GatewaySettingsPatch": {
-        "additionalProperties": false,
-        "properties": {
-          "response_analysis": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Response Analysis"
-          }
-        },
-        "title": "GatewaySettingsPatch",
-        "type": "object"
-      },
-      "GatewaySettingsView": {
-        "properties": {
-          "available_analyzers": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Available Analyzers",
-            "type": "array"
-          },
-          "revision": {
-            "minimum": 0.0,
-            "title": "Revision",
-            "type": "integer"
-          },
-          "settings": {
-            "$ref": "#/components/schemas/GatewaySettings"
-          },
-          "unavailable": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Per field, why it is \"off, needs X\"; empty when everything is available.",
-            "title": "Unavailable",
-            "type": "object"
-          },
-          "updated_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated At"
-          },
-          "updated_by": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated By"
-          }
-        },
-        "required": [
-          "settings",
-          "revision",
-          "updated_at",
-          "updated_by",
-          "available_analyzers",
-          "unavailable"
-        ],
-        "title": "GatewaySettingsView",
-        "type": "object"
       },
       "GenerateContentRequest": {
         "additionalProperties": false,
@@ -5529,6 +5388,391 @@
         "title": "ImageSize",
         "type": "string"
       },
+      "IncidentInput": {
+        "additionalProperties": false,
+        "properties": {
+          "aware_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the organization became aware; defaults to now.",
+            "title": "Aware At"
+          },
+          "breach": {
+            "$ref": "#/components/schemas/Breach"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "is_suspected_breach": {
+            "default": false,
+            "title": "Is Suspected Breach",
+            "type": "boolean"
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "severity_id": {
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Severity Id",
+            "type": "integer"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "severity_id"
+        ],
+        "title": "IncidentInput",
+        "type": "object"
+      },
+      "IncidentPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "IncidentPage",
+        "type": "object"
+      },
+      "IncidentPatch": {
+        "additionalProperties": false,
+        "description": "Only the fields sent change: breach fields merge, link lists replace.",
+        "properties": {
+          "aware_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aware At"
+          },
+          "breach": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Breach"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "is_suspected_breach": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Suspected Breach"
+          },
+          "links": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Links"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "severity_id": {
+            "anyOf": [
+              {
+                "maximum": 5.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "IncidentPatch",
+        "type": "object"
+      },
+      "IncidentView": {
+        "properties": {
+          "aware_at": {
+            "format": "date-time",
+            "title": "Aware At",
+            "type": "string"
+          },
+          "breach": {
+            "additionalProperties": true,
+            "title": "Breach",
+            "type": "object"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deadline_missed": {
+            "description": "A required notification's deadline passed, or the incident was closed, before anything was submitted.",
+            "title": "Deadline Missed",
+            "type": "boolean"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Entity types, providers, models and findings of the linked rows, computed on read; suggests data_categories, never written into breach.",
+            "title": "Evidence Summary"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_suspected_breach": {
+            "title": "Is Suspected Breach",
+            "type": "boolean"
+          },
+          "links": {
+            "additionalProperties": true,
+            "title": "Links",
+            "type": "object"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationView"
+            },
+            "title": "Notifications",
+            "type": "array"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
+          },
+          "opened_by": {
+            "title": "Opened By",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "severity_id": {
+            "title": "Severity Id",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "severity_id",
+          "status",
+          "owner_user_id",
+          "opened_by",
+          "occurred_at",
+          "aware_at",
+          "is_suspected_breach",
+          "breach",
+          "links",
+          "resolved_at",
+          "closed_at",
+          "created_at",
+          "updated_at",
+          "notifications",
+          "deadline_missed"
+        ],
+        "title": "IncidentView",
+        "type": "object"
+      },
       "Interval": {
         "additionalProperties": false,
         "description": "Represents a time interval, encoded as a Timestamp start (inclusive) and a Timestamp end (exclusive).\n\nThe start must be less than or equal to the end. When the start equals the\nend, the interval is empty (matches no time). When both start and end are\nunspecified, the interval matches any time.",
@@ -5633,6 +5877,42 @@
           }
         },
         "title": "LatLng",
+        "type": "object"
+      },
+      "Links": {
+        "additionalProperties": false,
+        "description": "References only: no content is copied from the linked rows.",
+        "properties": {
+          "audit_seqs": {
+            "items": {
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 100,
+            "title": "Audit Seqs",
+            "type": "array"
+          },
+          "finding_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Finding Ids",
+            "type": "array"
+          },
+          "request_ids": {
+            "items": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Request Ids",
+            "type": "array"
+          }
+        },
+        "title": "Links",
         "type": "object"
       },
       "McpServer": {
@@ -6038,6 +6318,246 @@
         "title": "ModelDeploymentView",
         "type": "object"
       },
+      "ModelInventoryItemView": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "api_keys": {
+            "minimum": 0.0,
+            "title": "Api Keys",
+            "type": "integer"
+          },
+          "byok_requests": {
+            "description": "Requests that carried their own provider key.",
+            "minimum": 0.0,
+            "title": "Byok Requests",
+            "type": "integer"
+          },
+          "declared_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared Version"
+          },
+          "deployment_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Id"
+          },
+          "deployment_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Kind"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "first_seen": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen"
+          },
+          "health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The registry's upstream model, or the model a catalog request named.",
+            "title": "Model"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "registered": {
+            "title": "Registered",
+            "type": "boolean"
+          },
+          "requests": {
+            "minimum": 0.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "route": {
+            "enum": [
+              "registry",
+              "catalog"
+            ],
+            "title": "Route",
+            "type": "string"
+          },
+          "teams": {
+            "minimum": 0.0,
+            "title": "Teams",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "route",
+          "registered",
+          "deployment_id",
+          "alias",
+          "provider",
+          "model",
+          "deployment_kind",
+          "declared_version",
+          "owner",
+          "enabled",
+          "health",
+          "requests",
+          "first_seen",
+          "last_seen",
+          "api_keys",
+          "teams",
+          "byok_requests"
+        ],
+        "title": "ModelInventoryItemView",
+        "type": "object"
+      },
+      "ModelInventoryView": {
+        "properties": {
+          "byok_requests": {
+            "minimum": 0.0,
+            "title": "Byok Requests",
+            "type": "integer"
+          },
+          "catalog_models": {
+            "minimum": 0.0,
+            "title": "Catalog Models",
+            "type": "integer"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInventoryItemView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "registry_deployments": {
+            "minimum": 0.0,
+            "title": "Registry Deployments",
+            "type": "integer"
+          },
+          "requests": {
+            "minimum": 0.0,
+            "title": "Requests",
+            "type": "integer"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "items",
+          "truncated",
+          "registry_deployments",
+          "catalog_models",
+          "requests",
+          "byok_requests"
+        ],
+        "title": "ModelInventoryView",
+        "type": "object"
+      },
       "ModelListView": {
         "properties": {
           "data": {
@@ -6213,6 +6733,31 @@
         "title": "MyUsageView",
         "type": "object"
       },
+      "NotificationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "not_required_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Required Reason"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "title": "NotificationInput",
+        "type": "object"
+      },
       "NotificationTargetInput": {
         "properties": {
           "endpoint": {
@@ -6275,6 +6820,82 @@
           "signed"
         ],
         "title": "NotificationTargetView",
+        "type": "object"
+      },
+      "NotificationView": {
+        "properties": {
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "not_required_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Not Required Reason"
+          },
+          "regime": {
+            "enum": [
+              "kvkk_board",
+              "kvkk_data_subjects",
+              "gdpr_authority"
+            ],
+            "title": "Regime",
+            "type": "string"
+          },
+          "reminded": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reminded",
+            "type": "array"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "submitted",
+              "not_required",
+              "overdue",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "submissions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Submissions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "regime",
+          "due_at",
+          "required",
+          "not_required_reason",
+          "state",
+          "submissions",
+          "reminded"
+        ],
+        "title": "NotificationView",
         "type": "object"
       },
       "OpenAIErrorDetail": {
@@ -6364,6 +6985,179 @@
         ],
         "title": "Outcome",
         "type": "string"
+      },
+      "OutcomeRatesPage": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "group_by": {
+            "enum": [
+              "model",
+              "api_key",
+              "team"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/OutcomeRatesView"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/OutcomeRatesView"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "groups",
+          "truncated",
+          "totals"
+        ],
+        "title": "OutcomeRatesPage",
+        "type": "object"
+      },
+      "OutcomeRatesView": {
+        "properties": {
+          "analysed": {
+            "description": "Answers the refusal analyzer read.",
+            "minimum": 0.0,
+            "title": "Analysed",
+            "type": "integer"
+          },
+          "complete": {
+            "minimum": 0.0,
+            "title": "Complete",
+            "type": "integer"
+          },
+          "empty": {
+            "minimum": 0.0,
+            "title": "Empty",
+            "type": "integer"
+          },
+          "filtered": {
+            "minimum": 0.0,
+            "title": "Filtered",
+            "type": "integer"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The model, API key id or team id; null groups requests without a team.",
+            "title": "Group"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The API key or team name.",
+            "title": "Name"
+          },
+          "refusal_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "(refused + filtered + empty) / settled.",
+            "title": "Refusal Rate"
+          },
+          "refused": {
+            "minimum": 0.0,
+            "title": "Refused",
+            "type": "integer"
+          },
+          "settled": {
+            "minimum": 0.0,
+            "title": "Settled",
+            "type": "integer"
+          },
+          "soft_refusal_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soft Refusal Rate"
+          },
+          "soft_refused": {
+            "minimum": 0.0,
+            "title": "Soft Refused",
+            "type": "integer"
+          },
+          "truncated": {
+            "minimum": 0.0,
+            "title": "Truncated",
+            "type": "integer"
+          },
+          "truncation_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncation Rate"
+          }
+        },
+        "required": [
+          "group",
+          "name",
+          "settled",
+          "complete",
+          "truncated",
+          "empty",
+          "refused",
+          "filtered",
+          "truncation_rate",
+          "refusal_rate",
+          "analysed",
+          "soft_refused",
+          "soft_refusal_rate"
+        ],
+        "title": "OutcomeRatesView",
+        "type": "object"
       },
       "OversightDecision": {
         "properties": {
@@ -7437,6 +8231,251 @@
         ],
         "title": "PhishBlockThreshold",
         "type": "string"
+      },
+      "PlanInput": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChangeInput"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Changes",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "title": "PlanInput",
+        "type": "object"
+      },
+      "PlanView": {
+        "properties": {
+          "applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied At"
+          },
+          "applied_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied By"
+          },
+          "applied_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Version"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "base_version": {
+            "title": "Base Version",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "created_by_actor_type": {
+            "title": "Created By Actor Type",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "pending_approval",
+              "applied",
+              "rejected",
+              "expired",
+              "rolled_back"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "submitted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted By"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "source",
+          "risk",
+          "reason",
+          "base_version",
+          "changes",
+          "context",
+          "created_by",
+          "created_by_actor_type",
+          "created_at",
+          "submitted_by",
+          "submitted_at",
+          "approved_by",
+          "approved_at",
+          "applied_by",
+          "applied_at",
+          "applied_version",
+          "expires_at"
+        ],
+        "title": "PlanView",
+        "type": "object"
+      },
+      "PolicyStateView": {
+        "properties": {
+          "resources": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "title": "Resources",
+            "type": "object"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "resources"
+        ],
+        "title": "PolicyStateView",
+        "type": "object"
       },
       "PrebuiltVoiceConfig": {
         "additionalProperties": false,
@@ -8727,6 +9766,9 @@
             "title": "Cost Complete",
             "type": "boolean"
           },
+          "outcome_counts": {
+            "$ref": "#/components/schemas/RequestOutcomeCountsView"
+          },
           "p95_completed_shim_latency_ms": {
             "anyOf": [
               {
@@ -8803,7 +9845,8 @@
           "pii_detected_requests",
           "technical_failures",
           "policy_rejections",
-          "status_counts"
+          "status_counts",
+          "outcome_counts"
         ],
         "title": "RequestActivitySummaryView",
         "type": "object"
@@ -9010,19 +10053,6 @@
             ],
             "title": "Provider Finish Reasons"
           },
-          "provider_latency_ms": {
-            "anyOf": [
-              {
-                "minimum": 0.0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "JSON answers: milliseconds from before the provider call to the parsed answer; null for streams and older rows.",
-            "title": "Provider Latency Ms"
-          },
           "repeat_chain_length": {
             "anyOf": [
               {
@@ -9039,19 +10069,6 @@
             "title": "Request Id",
             "type": "string"
           },
-          "response_analysis": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Results of the after-answer analyzers by name, with their versions; null when no analyzer ran or the pass has not finished.",
-            "title": "Response Analysis"
-          },
           "response_entities": {
             "anyOf": [
               {
@@ -9066,33 +10083,6 @@
             ],
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
-          },
-          "rule_matches": {
-            "anyOf": [
-              {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Tenant rules that matched, by id, kind, action, state and count; [] when the rule set was evaluated and nothing matched, null without rules.",
-            "title": "Rule Matches"
-          },
-          "rule_matches_truncated": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rule Matches Truncated"
           },
           "shim_latency_ms": {
             "anyOf": [
@@ -9175,9 +10165,7 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED",
-                    "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "CACHE_NOT_APPLIED"
                   ],
                   "type": "string"
                 },
@@ -9208,6 +10196,51 @@
           "team"
         ],
         "title": "RequestActivityView",
+        "type": "object"
+      },
+      "RequestOutcomeCountsView": {
+        "properties": {
+          "complete": {
+            "minimum": 0.0,
+            "title": "Complete",
+            "type": "integer"
+          },
+          "empty": {
+            "minimum": 0.0,
+            "title": "Empty",
+            "type": "integer"
+          },
+          "filtered": {
+            "minimum": 0.0,
+            "title": "Filtered",
+            "type": "integer"
+          },
+          "none": {
+            "description": "Requests without a recorded outcome.",
+            "minimum": 0.0,
+            "title": "None",
+            "type": "integer"
+          },
+          "refused": {
+            "minimum": 0.0,
+            "title": "Refused",
+            "type": "integer"
+          },
+          "truncated": {
+            "minimum": 0.0,
+            "title": "Truncated",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "truncated",
+          "empty",
+          "refused",
+          "filtered",
+          "none"
+        ],
+        "title": "RequestOutcomeCountsView",
         "type": "object"
       },
       "ResponseFormat": {
@@ -9267,6 +10300,73 @@
           "$ref": "#/components/schemas/JsonValue"
         },
         "title": "ResponsesRequest",
+        "type": "object"
+      },
+      "RestoreInput": {
+        "properties": {
+          "expected_version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The current version the caller read; 409 when it moved since.",
+            "title": "Expected Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "RestoreInput",
+        "type": "object"
+      },
+      "RestoreView": {
+        "properties": {
+          "approximated": {
+            "items": {
+              "$ref": "#/components/schemas/Unrestored"
+            },
+            "title": "Approximated",
+            "type": "array"
+          },
+          "not_restored": {
+            "items": {
+              "$ref": "#/components/schemas/Unrestored"
+            },
+            "title": "Not Restored",
+            "type": "array"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "plan",
+          "not_restored",
+          "approximated"
+        ],
+        "title": "RestoreView",
         "type": "object"
       },
       "Retrieval": {
@@ -9351,291 +10451,6 @@
           }
         },
         "title": "RetrievalConfig",
-        "type": "object"
-      },
-      "Rule": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "enum": [
-              "monitor",
-              "warn",
-              "mask",
-              "block",
-              "require_approval",
-              "set",
-              "route"
-            ],
-            "title": "Action",
-            "type": "string"
-          },
-          "id": {
-            "pattern": "^[a-z][a-z0-9_]{0,47}$",
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "term",
-              "pattern",
-              "record_set",
-              "destination",
-              "request_limit",
-              "parameter_pin",
-              "route"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "match": {
-            "additionalProperties": true,
-            "default": {},
-            "title": "Match",
-            "type": "object"
-          },
-          "name": {
-            "maxLength": 100,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "scope": {
-            "$ref": "#/components/schemas/RuleScope",
-            "default": {
-              "api_key_ids": [],
-              "deployment_kinds": [],
-              "endpoints": [],
-              "models": [],
-              "tags": [],
-              "team_ids": []
-            }
-          },
-          "state": {
-            "enum": [
-              "monitor",
-              "enforced"
-            ],
-            "title": "State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "kind",
-          "action",
-          "state"
-        ],
-        "title": "Rule",
-        "type": "object"
-      },
-      "RuleKindView": {
-        "properties": {
-          "actions": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Actions",
-            "type": "array"
-          },
-          "available": {
-            "title": "Available",
-            "type": "boolean"
-          },
-          "unavailable_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unavailable Reason"
-          }
-        },
-        "required": [
-          "available",
-          "actions",
-          "unavailable_reason"
-        ],
-        "title": "RuleKindView",
-        "type": "object"
-      },
-      "RuleScope": {
-        "additionalProperties": false,
-        "properties": {
-          "api_key_ids": {
-            "default": [],
-            "items": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Api Key Ids",
-            "type": "array"
-          },
-          "deployment_kinds": {
-            "default": [],
-            "items": {
-              "enum": [
-                "internal",
-                "external"
-              ],
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Deployment Kinds",
-            "type": "array"
-          },
-          "endpoints": {
-            "default": [],
-            "items": {
-              "enum": [
-                "chat",
-                "responses",
-                "messages",
-                "count_tokens",
-                "generate_content"
-              ],
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Endpoints",
-            "type": "array"
-          },
-          "models": {
-            "default": [],
-            "items": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Models",
-            "type": "array"
-          },
-          "tags": {
-            "default": [],
-            "items": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Tags",
-            "type": "array"
-          },
-          "team_ids": {
-            "default": [],
-            "items": {
-              "maxLength": 200,
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 100,
-            "title": "Team Ids",
-            "type": "array"
-          }
-        },
-        "title": "RuleScope",
-        "type": "object"
-      },
-      "RuleSetPut": {
-        "additionalProperties": false,
-        "properties": {
-          "revision": {
-            "description": "The revision this set was read at.",
-            "minimum": 0.0,
-            "title": "Revision",
-            "type": "integer"
-          },
-          "rules": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Rules",
-            "type": "array"
-          }
-        },
-        "required": [
-          "revision",
-          "rules"
-        ],
-        "title": "RuleSetPut",
-        "type": "object"
-      },
-      "RuleSetView": {
-        "properties": {
-          "kinds": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/RuleKindView"
-            },
-            "title": "Kinds",
-            "type": "object"
-          },
-          "limits": {
-            "additionalProperties": true,
-            "title": "Limits",
-            "type": "object"
-          },
-          "revision": {
-            "minimum": 0.0,
-            "title": "Revision",
-            "type": "integer"
-          },
-          "rules": {
-            "items": {
-              "$ref": "#/components/schemas/Rule"
-            },
-            "title": "Rules",
-            "type": "array"
-          },
-          "unavailable_rules": {
-            "description": "Stored rules this release cannot run, as stored. A PUT keeps them; an enforced one refuses the requests in its scope with RULE_BLOCKED.",
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Unavailable Rules",
-            "type": "array"
-          },
-          "updated_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated At"
-          },
-          "updated_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated By"
-          }
-        },
-        "required": [
-          "revision",
-          "rules",
-          "unavailable_rules",
-          "updated_by",
-          "updated_at",
-          "limits",
-          "kinds"
-        ],
-        "title": "RuleSetView",
         "type": "object"
       },
       "RunResult": {
@@ -10475,6 +11290,27 @@
         "title": "SpeechConfig",
         "type": "object"
       },
+      "StatusChange": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "new",
+              "in_progress",
+              "on_hold",
+              "resolved",
+              "closed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StatusChange",
+        "type": "object"
+      },
       "StreamHealth": {
         "properties": {
           "event_type": {
@@ -10603,6 +11439,79 @@
           }
         },
         "title": "StreamableHttpTransport",
+        "type": "object"
+      },
+      "SubmissionInput": {
+        "additionalProperties": false,
+        "description": "Information sent in stages; shim records it and sends nothing itself.",
+        "properties": {
+          "fields_sent": {
+            "items": {
+              "enum": [
+                "data_categories",
+                "approx_subjects",
+                "approx_records",
+                "likely_consequences",
+                "measures_taken",
+                "measures_planned",
+                "contact_person",
+                "subjects_informed",
+                "subjects_informed_how"
+              ],
+              "type": "string"
+            },
+            "title": "Fields Sent",
+            "type": "array"
+          },
+          "late_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Reason"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reference": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Reference",
+            "type": "string"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the information was sent; defaults to now.",
+            "title": "Submitted At"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "SubmissionInput",
         "type": "object"
       },
       "SubscriptionView": {
@@ -10803,10 +11712,29 @@
             "title": "Created At",
             "type": "string"
           },
+          "custom_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role"
+          },
           "email": {
-            "format": "email",
-            "title": "Email",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "email",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for team administrators without the members.read permission.",
+            "title": "Email"
           },
           "full_name": {
             "anyOf": [
@@ -10852,6 +11780,18 @@
       },
       "TeamRolePatch": {
         "properties": {
+          "custom_role_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role Id"
+          },
           "role": {
             "enum": [
               "owner",
@@ -11575,6 +12515,29 @@
         "title": "Type",
         "type": "string"
       },
+      "Unrestored": {
+        "properties": {
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "item",
+          "reason"
+        ],
+        "title": "Unrestored",
+        "type": "object"
+      },
       "UrlContext": {
         "additionalProperties": false,
         "description": "Tool to support URL context.",
@@ -11838,6 +12801,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "custom_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role"
+          },
           "email": {
             "format": "email",
             "title": "Email",
@@ -11871,6 +12845,42 @@
             "title": "Organization Name",
             "type": "string"
           },
+          "permissions": {
+            "items": {
+              "enum": [
+                "settings.read",
+                "settings.write",
+                "rules.read",
+                "rules.write",
+                "deployments.read",
+                "deployments.manage",
+                "providers.manage",
+                "budgets.manage",
+                "teams.manage",
+                "keys.own",
+                "keys.manage",
+                "members.read",
+                "members.manage",
+                "roles.manage",
+                "usage.read",
+                "audit.read",
+                "compliance.manage",
+                "findings.read",
+                "findings.manage",
+                "incidents.read",
+                "incidents.manage",
+                "plans.create",
+                "plans.apply",
+                "plans.approve",
+                "requests.approve",
+                "content.read",
+                "config.manage"
+              ],
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
           "role": {
             "enum": [
               "owner",
@@ -11888,6 +12898,8 @@
           "full_name",
           "organization_name",
           "role",
+          "custom_role",
+          "permissions",
           "is_active",
           "is_verified",
           "created_at"
@@ -11991,6 +13003,220 @@
           "anchors_checked"
         ],
         "title": "VerifyResult",
+        "type": "object"
+      },
+      "VersionSummary": {
+        "properties": {
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "items": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The items this version changed, by resource.",
+            "title": "Items",
+            "type": "object"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "created_at",
+          "source",
+          "created_by",
+          "actor_type",
+          "risk",
+          "plan_id",
+          "reason",
+          "items"
+        ],
+        "title": "VersionSummary",
+        "type": "object"
+      },
+      "VersionView": {
+        "properties": {
+          "actor_type": {
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "items": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": "The items this version changed, by resource.",
+            "title": "Items",
+            "type": "object"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "previous": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Previous",
+            "type": "object"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "snapshot": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "created_at",
+          "source",
+          "created_by",
+          "actor_type",
+          "risk",
+          "plan_id",
+          "reason",
+          "items",
+          "snapshot",
+          "previous"
+        ],
+        "title": "VersionView",
         "type": "object"
       },
       "VertexAISearch": {
@@ -12419,7 +13645,7 @@
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/Finding"
+              "$ref": "#/components/schemas/FindingView"
             },
             "title": "Items",
             "type": "array"
@@ -13713,6 +14939,565 @@
           }
         ],
         "summary": "Update Forward Target",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents": {
+      "get": {
+        "operationId": "list_incidents_api_v1_compliance_incidents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "in_progress",
+                    "on_hold",
+                    "resolved",
+                    "closed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 5,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "suspected_breach",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Suspected Breach"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Incidents",
+        "tags": [
+          "compliance"
+        ]
+      },
+      "post": {
+        "operationId": "open_incident_api_v1_compliance_incidents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Incident",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/export": {
+      "get": {
+        "operationId": "export_incidents_api_v1_compliance_incidents_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "in_progress",
+                    "on_hold",
+                    "resolved",
+                    "closed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 5,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "suspected_breach",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Suspected Breach"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {}
+            },
+            "description": "One OCSF Incident Finding per line."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Incidents",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}": {
+      "get": {
+        "operationId": "get_incident_api_v1_compliance_incidents__incident_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Incident",
+        "tags": [
+          "compliance"
+        ]
+      },
+      "patch": {
+        "operationId": "update_incident_api_v1_compliance_incidents__incident_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Incident",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/notifications/{regime}": {
+      "put": {
+        "operationId": "set_incident_notification_api_v1_compliance_incidents__incident_id__notifications__regime__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "regime",
+            "required": true,
+            "schema": {
+              "enum": [
+                "kvkk_board",
+                "kvkk_data_subjects",
+                "gdpr_authority"
+              ],
+              "title": "Regime",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Incident Notification",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/notifications/{regime}/submissions": {
+      "post": {
+        "operationId": "record_incident_submission_api_v1_compliance_incidents__incident_id__notifications__regime__submissions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "regime",
+            "required": true,
+            "schema": {
+              "enum": [
+                "kvkk_board",
+                "kvkk_data_subjects",
+                "gdpr_authority"
+              ],
+              "title": "Regime",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmissionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record Incident Submission",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
+    "/api/v1/compliance/incidents/{incident_id}/status": {
+      "post": {
+        "operationId": "change_incident_status_api_v1_compliance_incidents__incident_id__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Change Incident Status",
         "tags": [
           "compliance"
         ]
@@ -15464,12 +17249,10 @@
               "anyOf": [
                 {
                   "enum": [
-                    "open",
-                    "dismissed",
-                    "resolved",
                     "new",
                     "in_progress",
-                    "suppressed"
+                    "suppressed",
+                    "resolved"
                   ],
                   "type": "string"
                 },
@@ -15585,12 +17368,10 @@
               "anyOf": [
                 {
                   "enum": [
-                    "open",
-                    "dismissed",
-                    "resolved",
                     "new",
                     "in_progress",
-                    "suppressed"
+                    "suppressed",
+                    "resolved"
                   ],
                   "type": "string"
                 },
@@ -15687,7 +17468,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Finding"
+                  "$ref": "#/components/schemas/FindingView"
                 }
               }
             },
@@ -15743,7 +17524,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Finding"
+                  "$ref": "#/components/schemas/FindingView"
                 }
               }
             },
@@ -15766,76 +17547,6 @@
           }
         ],
         "summary": "Update Finding",
-        "tags": [
-          "management"
-        ]
-      }
-    },
-    "/api/v1/management/gateway-settings": {
-      "get": {
-        "operationId": "get_gateway_settings_api_v1_management_gateway_settings_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GatewaySettingsView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Get Gateway Settings",
-        "tags": [
-          "management"
-        ]
-      },
-      "patch": {
-        "operationId": "update_gateway_settings_api_v1_management_gateway_settings_patch",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GatewaySettingsPatch"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GatewaySettingsView"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Update Gateway Settings",
         "tags": [
           "management"
         ]
@@ -16021,6 +17732,173 @@
         ]
       }
     },
+    "/api/v1/management/model-inventory": {
+      "get": {
+        "operationId": "model_inventory_api_v1_management_model_inventory_get",
+        "parameters": [
+          {
+            "description": "Inclusive start; defaults to 30 days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive start; defaults to 30 days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive end; defaults to the current time.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive end; defaults to the current time.",
+              "title": "End"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelInventoryView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Model Inventory",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/outcomes": {
+      "get": {
+        "operationId": "outcome_rates_api_v1_management_outcomes_get",
+        "parameters": [
+          {
+            "description": "Inclusive start; defaults to seven days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive start; defaults to seven days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive end; defaults to the current time.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive end; defaults to the current time.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "enum": [
+                "model",
+                "api_key",
+                "team"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeRatesPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Outcome Rates",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/overview": {
       "get": {
         "operationId": "dashboard_overview_api_v1_management_overview_get",
@@ -16094,6 +17972,444 @@
         "summary": "Dashboard Overview",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans": {
+      "get": {
+        "operationId": "list_plans_api_v1_management_policy_plans_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "draft",
+                    "pending_approval",
+                    "applied",
+                    "rejected",
+                    "expired",
+                    "rolled_back"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PlanView"
+                  },
+                  "title": "Response List Plans Api V1 Management Policy Plans Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Plans",
+        "tags": [
+          "policy"
+        ]
+      },
+      "post": {
+        "operationId": "create_plan_api_v1_management_policy_plans_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "window_days",
+            "required": false,
+            "schema": {
+              "default": 7,
+              "maximum": 31,
+              "minimum": 1,
+              "title": "Window Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}": {
+      "get": {
+        "operationId": "get_plan_api_v1_management_policy_plans__plan_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/apply": {
+      "post": {
+        "operationId": "apply_plan_api_v1_management_policy_plans__plan_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Apply Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/state": {
+      "get": {
+        "operationId": "policy_state_api_v1_management_policy_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyStateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Policy State",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions": {
+      "get": {
+        "operationId": "list_versions_api_v1_management_policy_versions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/VersionSummary"
+                  },
+                  "title": "Response List Versions Api V1 Management Policy Versions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Versions",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions/{version}": {
+      "get": {
+        "operationId": "get_version_api_v1_management_policy_versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Version",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/versions/{version}/restore": {
+      "post": {
+        "operationId": "restore_version_api_v1_management_policy_versions__version__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Restore Version",
+        "tags": [
+          "policy"
         ]
       }
     },
@@ -16617,9 +18933,7 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED",
-                    "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "CACHE_NOT_APPLIED"
                   ],
                   "type": "string"
                 },
@@ -16649,22 +18963,47 @@
             }
           },
           {
-            "description": "Only requests a tenant rule with this id matched.",
+            "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
-            "name": "rule_id",
+            "name": "completion_outcome",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "enum": [
+                    "complete",
+                    "truncated",
+                    "empty",
+                    "refused",
+                    "filtered",
+                    "none"
+                  ],
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only requests a tenant rule with this id matched.",
-              "title": "Rule Id"
+              "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+              "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+            "in": "query",
+            "name": "soft_refusal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+              "title": "Soft Refusal"
             }
           },
           {
@@ -16912,9 +19251,7 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED",
-                    "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "CACHE_NOT_APPLIED"
                   ],
                   "type": "string"
                 },
@@ -16944,22 +19281,47 @@
             }
           },
           {
-            "description": "Only requests a tenant rule with this id matched.",
+            "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
-            "name": "rule_id",
+            "name": "completion_outcome",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "enum": [
+                    "complete",
+                    "truncated",
+                    "empty",
+                    "refused",
+                    "filtered",
+                    "none"
+                  ],
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Only requests a tenant rule with this id matched.",
-              "title": "Rule Id"
+              "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
+              "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+            "in": "query",
+            "name": "soft_refusal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
+              "title": "Soft Refusal"
             }
           }
         ],
@@ -17005,15 +19367,19 @@
         ]
       }
     },
-    "/api/v1/management/rules": {
+    "/api/v1/management/roles": {
       "get": {
-        "operationId": "get_rules_api_v1_management_rules_get",
+        "operationId": "list_custom_roles_api_v1_management_roles_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RuleSetView"
+                  "items": {
+                    "$ref": "#/components/schemas/CustomRoleView"
+                  },
+                  "title": "Response List Custom Roles Api V1 Management Roles Get",
+                  "type": "array"
                 }
               }
             },
@@ -17025,29 +19391,29 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "Get Rules",
+        "summary": "List Custom Roles",
         "tags": [
           "management"
         ]
       },
-      "put": {
-        "operationId": "replace_rules_api_v1_management_rules_put",
+      "post": {
+        "operationId": "create_custom_role_api_v1_management_roles_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RuleSetPut"
+                "$ref": "#/components/schemas/CustomRoleInput"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RuleSetView"
+                  "$ref": "#/components/schemas/CustomRoleView"
                 }
               }
             },
@@ -17069,7 +19435,104 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "Replace Rules",
+        "summary": "Create Custom Role",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/roles/{role_id}": {
+      "delete": {
+        "operationId": "delete_custom_role_api_v1_management_roles__role_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Custom Role",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "update_custom_role_api_v1_management_roles__role_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "role_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Role Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomRoleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomRoleView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Custom Role",
         "tags": [
           "management"
         ]
