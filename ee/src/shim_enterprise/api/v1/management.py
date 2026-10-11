@@ -52,6 +52,17 @@ from shim_enterprise.api.enterprise_deps import (
     get_org_reader,
 )
 from shim.billing.attribution import normalize_attribution
+from shim.findings import Finding as FindingV1
+from shim.gateway.analyzers import ANALYZERS
+from shim.rules import (
+    KINDS,
+    LIMITS,
+    Rule,
+    RuleScope,
+    RuleSet,
+    RuleSetError,
+    validate_rule_set,
+)
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
     AuditIntent,
@@ -93,6 +104,7 @@ from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
     STATUS_IDS,
     STATUS_RESOLVED,
+    finding_from_row,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
@@ -108,9 +120,19 @@ from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
+from shim_enterprise.rules.changes import classify_rule_changes
+from shim_enterprise.rules.models import OrganizationRuleSet
+from shim_enterprise.tenants.gateway_settings import (
+    SETTING_AVAILABILITY,
+    GatewaySettings,
+    GatewaySettingsPatch,
+    classify_change,
+    stored_settings,
+)
 from shim_enterprise.tenants.models import (
     ApiKey,
     ModelDeployment,
+    OrganizationGatewaySettings,
     OrganizationInvite,
     Organization,
     ProviderSecret,
@@ -723,35 +745,8 @@ FindingStatus = Literal["new", "in_progress", "suppressed", "resolved"]
 _FINDING_STATUSES = {value: name for name, value in STATUS_IDS.items()}
 
 
-class FindingView(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    source: str
-    rule_id: str
-    rule_version: int
-    subject: dict[str, Any]
-    title: str
-    summary: str
-    severity_id: int
-    status_id: int
-    first_seen_at: datetime
-    last_seen_at: datetime
-    occurrences: int
-    evidence: dict[str, Any]
-    impact: dict[str, Any] | None
-    remediation: dict[str, Any]
-    resolved_at: datetime | None
-    resolved_by: str | None
-
-    @computed_field
-    @property
-    def status(self) -> FindingStatus:
-        return cast(FindingStatus, _FINDING_STATUSES[self.status_id])
-
-
 class FindingPage(BaseModel):
-    items: list[FindingView]
+    items: list[FindingV1]
     total: int
     limit: int
     offset: int
@@ -844,6 +839,14 @@ class RequestActivityView(BaseModel):
     ) = None
     repeat_chain_length: int | None = Field(default=None, ge=1)
     ttft_ms: float | None = Field(default=None, ge=0)
+    provider_latency_ms: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "JSON answers: milliseconds from before the provider call to the parsed "
+            "answer; null for streams and older rows."
+        ),
+    )
     warnings: list[ResponseWarning] | None = Field(
         default=None,
         description="X-Shim-Warnings codes the request carried; null on older rows.",
@@ -882,6 +885,54 @@ class RequestActivityView(BaseModel):
             "Distinct values the answer carried that the request did not, by "
             "entity type; null when the response scan was off or has not finished."
         ),
+    )
+    rule_matches: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Tenant rules that matched, by id, kind, action, state and count; [] when "
+            "the rule set was evaluated and nothing matched, null without rules."
+        ),
+    )
+    rule_matches_truncated: bool | None = None
+    response_analysis: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Results of the after-answer analyzers by name, with their versions; "
+            "null when no analyzer ran or the pass has not finished."
+        ),
+    )
+
+
+class RuleKindView(BaseModel):
+    available: bool
+    actions: list[str]
+    unavailable_reason: str | None
+
+
+class RuleSetView(BaseModel):
+    revision: int = Field(ge=0)
+    rules: list[Rule]
+    updated_by: str | None
+    updated_at: datetime | None
+    limits: dict[str, Any]
+    kinds: dict[str, RuleKindView]
+
+
+class RuleSetPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision: int = Field(ge=0, description="The revision this set was read at.")
+    rules: list[dict[str, Any]]
+
+
+class GatewaySettingsView(BaseModel):
+    settings: GatewaySettings
+    revision: int = Field(ge=0)
+    updated_at: datetime | None
+    updated_by: UUID | None
+    available_analyzers: list[str]
+    unavailable: dict[str, str] = Field(
+        description='Per field, why it is "off, needs X"; empty when everything is available.'
     )
 
 
@@ -2117,6 +2168,302 @@ async def update_privacy_settings(
     return row
 
 
+def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
+    return RuleSetView(
+        revision=row.revision if row is not None else 0,
+        rules=[Rule.model_validate(rule) for rule in row.rules]
+        if row is not None
+        else [],
+        updated_by=row.updated_by if row is not None else None,
+        updated_at=row.updated_at if row is not None else None,
+        limits=LIMITS,
+        kinds={
+            kind: RuleKindView(
+                available=spec.match is not None,
+                # The approval gate is not configured until request approvals exist.
+                actions=[
+                    action for action in spec.actions if action != "require_approval"
+                ],
+                unavailable_reason=None
+                if spec.match is not None
+                else "Not available in this release.",
+            )
+            for kind, spec in KINDS.items()
+        },
+    )
+
+
+def _rule_audit(rule: Rule, before: Rule | None) -> dict[str, object]:
+    # Ids, kinds and counts only: never a term, a pattern, a name or a match hash.
+    return {
+        "id": rule.id,
+        "kind": rule.kind,
+        "action": rule.action,
+        "state": rule.state,
+        "scope": [
+            field for field in RuleScope.model_fields if getattr(rule.scope, field)
+        ],
+        "match_changed": before is not None and before.match != rule.match,
+        "counts": {
+            key: len(value)
+            for key, value in rule.match.items()
+            if isinstance(value, list)
+        },
+    }
+
+
+@router.get("/rules", response_model=RuleSetView)
+async def get_rules(
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> RuleSetView:
+    return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))
+
+
+@router.put("/rules", response_model=RuleSetView)
+async def replace_rules(
+    payload: RuleSetPut,
+    request: Request,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> RuleSetView:
+    if int(request.headers.get("content-length") or 0) > LIMITS["request_bytes"]:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "REQUEST_TOO_LARGE",
+                "message": "A rule set is at most 1,000,000 bytes.",
+            },
+        )
+    tenant_id = _tenant_id(user)
+    await session.execute(
+        insert(OrganizationRuleSet)
+        .values(organization_id=tenant_id)
+        .on_conflict_do_nothing()
+    )
+    row = await session.get(
+        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
+    )
+    assert row is not None
+    if payload.revision != row.revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RULE_SET_REVISION_CONFLICT",
+                "message": "The rule set changed since it was read; read it again.",
+                "revision": row.revision,
+            },
+        )
+    try:
+        after = validate_rule_set(
+            {"revision": row.revision + 1, "rules": payload.rules},
+            approval_available=False,
+        )
+    except RuleSetError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "path": error.path, "message": str(error)},
+        ) from None
+    before = (
+        RuleSet.model_validate({"revision": row.revision, "rules": row.rules})
+        if row.revision > 0
+        else None
+    )
+    stored = {rule.id: rule for rule in before.rules} if before is not None else {}
+    keys = {key for rule in after.rules for key in rule.scope.api_key_ids}
+    teams = {team for rule in after.rules for team in rule.scope.team_ids}
+    known_keys = (
+        {
+            str(key)
+            for key in await session.scalars(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id, ApiKey.id.in_(keys)
+                )
+            )
+        }
+        if keys
+        else set()
+    )
+    known_teams = (
+        {
+            str(team)
+            for team in await session.scalars(
+                select(Team.id).where(
+                    Team.organization_id == tenant_id, Team.id.in_(teams)
+                )
+            )
+        }
+        if teams
+        else set()
+    )
+    for index, rule in enumerate(after.rules):
+        for field, known in (("api_key_ids", known_keys), ("team_ids", known_teams)):
+            for position, value in enumerate(getattr(rule.scope, field)):
+                if value not in known:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "RULE_SCOPE_UNKNOWN",
+                            "path": f"rules[{index}].scope.{field}[{position}]",
+                            "message": f"{field} names an id this organization does not have.",
+                        },
+                    )
+        if rule.id not in stored and rule.state != "monitor":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "RULE_MUST_START_IN_MONITOR",
+                    "path": f"rules[{index}].state",
+                    "message": "A new rule starts in state monitor.",
+                },
+            )
+    current = {rule.id: rule for rule in after.rules}
+    await _audit(
+        session,
+        user,
+        "tenant.rules_updated",
+        str(tenant_id),
+        details={
+            "revision": after.revision,
+            "added": [
+                _rule_audit(rule, None) for rule in after.rules if rule.id not in stored
+            ],
+            "changed": [
+                _rule_audit(rule, stored[rule.id])
+                for rule in after.rules
+                if rule.id in stored and stored[rule.id] != rule
+            ],
+            "removed": [
+                _rule_audit(rule, None)
+                for rule in stored.values()
+                if rule.id not in current
+            ],
+        },
+    )
+    relaxed = classify_rule_changes(before, after)
+    if relaxed:
+        event_id = await _audit(
+            session,
+            user,
+            "tenant.privacy_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": relaxed},
+        )
+        await ComplianceForwarderService().send_privacy_protection_relaxed(
+            session,
+            TenantId(tenant_id),
+            fields=relaxed,
+            actor=str(user.id),
+            actor_email=user.email,
+            event_id=event_id,
+        )
+    row.rules = [rule.model_dump(mode="json") for rule in after.rules]
+    row.revision = after.revision
+    row.updated_by = str(user.id)
+    await session.commit()
+    try:
+        cache: CacheService = request.app.state.cache
+        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
+    except Exception as exc:
+        logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
+    await session.refresh(row)
+    return _rule_set_view(row)
+
+
+def _gateway_settings_view(
+    row: OrganizationGatewaySettings | None,
+) -> GatewaySettingsView:
+    return GatewaySettingsView(
+        settings=stored_settings(row.settings)
+        if row is not None
+        else GatewaySettings(),
+        revision=row.revision if row is not None else 0,
+        updated_at=row.updated_at if row is not None else None,
+        updated_by=row.updated_by if row is not None else None,
+        available_analyzers=[analyzer.name for analyzer in ANALYZERS],
+        unavailable={
+            field: reason
+            for field, available in SETTING_AVAILABILITY.items()
+            if (reason := available()) is not None
+        },
+    )
+
+
+@router.get("/gateway-settings", response_model=GatewaySettingsView)
+async def get_gateway_settings(
+    user: User = Depends(get_org_reader),
+    session: AsyncSession = Depends(get_db),
+) -> GatewaySettingsView:
+    return _gateway_settings_view(
+        await session.get(OrganizationGatewaySettings, _tenant_id(user))
+    )
+
+
+@router.patch("/gateway-settings", response_model=GatewaySettingsView)
+async def update_gateway_settings(
+    patch: GatewaySettingsPatch,
+    request: Request,
+    user: User = Depends(get_org_admin),
+    session: AsyncSession = Depends(get_db),
+) -> GatewaySettingsView:
+    tenant_id = _tenant_id(user)
+    changes = patch.model_dump(exclude_unset=True)
+    row = await session.get(
+        OrganizationGatewaySettings, tenant_id, with_for_update=True
+    )
+    if row is None:
+        if GatewaySettings.model_validate(changes) == GatewaySettings():
+            return _gateway_settings_view(None)
+        await session.execute(
+            insert(OrganizationGatewaySettings)
+            .values(organization_id=tenant_id)
+            .on_conflict_do_nothing()
+        )
+        row = await session.get(
+            OrganizationGatewaySettings,
+            tenant_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        assert row is not None
+    before = stored_settings(row.settings)
+    after = GatewaySettings.model_validate({**before.model_dump(), **changes})
+    if after == before:
+        # Nothing to write; a row inserted above came from a concurrent first write.
+        return _gateway_settings_view(row)
+    row.settings = after.model_dump(mode="json", exclude_defaults=True)
+    row.revision += 1
+    row.updated_by = user.id
+    await _audit(
+        session,
+        user,
+        "tenant.gateway_settings_updated",
+        str(tenant_id),
+        details=change_details(
+            before.model_dump(mode="json"), after.model_dump(mode="json")
+        ),
+    )
+    direction, relaxed = classify_change(before, after)
+    if direction == "relaxing":
+        await _audit(
+            session,
+            user,
+            "tenant.gateway_protection_relaxed",
+            str(tenant_id),
+            details={"relaxed": relaxed},
+        )
+    await session.commit()
+    try:
+        cache: CacheService = request.app.state.cache
+        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
+    except Exception as exc:
+        logger.warning(
+            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+        )
+    await session.refresh(row)
+    return _gateway_settings_view(row)
+
+
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
 async def get_provider_key_settings(
     user: User = Depends(get_current_user),
@@ -2495,6 +2842,13 @@ async def list_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
+    rule_id: Annotated[
+        str | None,
+        Query(
+            pattern=r"^[a-z][a-z0-9_]{0,47}$",
+            description="Only requests a tenant rule with this id matched.",
+        ),
+    ] = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -2515,6 +2869,7 @@ async def list_requests(
         cost_center=cost_center,
         warning=warning,
         system_prompt_hash=system_prompt_hash,
+        rule_id=rule_id,
     )
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
@@ -2550,8 +2905,9 @@ async def list_requests(
                     for field in _DIAGNOSTIC_FIELDS
                 },
                 response_entities=response_entities,
+                response_analysis=response_analysis,
             )
-            for row, cost_usd, response_entities in rows
+            for row, cost_usd, response_entities, response_analysis in rows
         ],
         total=summary.requests,
         limit=limit,
@@ -2703,7 +3059,7 @@ async def list_findings(
         .offset(offset)
     )
     return FindingPage(
-        items=[FindingView.model_validate(row) for row in rows],
+        items=[finding_from_row(row) for row in rows],
         total=total or 0,
         limit=limit,
         offset=offset,
@@ -2750,24 +3106,22 @@ async def export_findings(
     return Response(body, media_type="application/x-ndjson")
 
 
-@router.get("/findings/{finding_id}", response_model=FindingView)
+@router.get("/findings/{finding_id}", response_model=FindingV1)
 async def get_finding(
     finding_id: UUID,
     user: User = Depends(get_org_reader),
     session: AsyncSession = Depends(get_db),
-) -> FindingView:
-    return FindingView.model_validate(
-        await _owned_finding(session, user, finding_id, lock=False)
-    )
+) -> FindingV1:
+    return finding_from_row(await _owned_finding(session, user, finding_id, lock=False))
 
 
-@router.patch("/findings/{finding_id}", response_model=FindingView)
+@router.patch("/findings/{finding_id}", response_model=FindingV1)
 async def update_finding(
     finding_id: UUID,
     patch: FindingPatch,
     user: User = Depends(get_org_admin),
     session: AsyncSession = Depends(get_db),
-) -> FindingView:
+) -> FindingV1:
     finding = await _owned_finding(session, user, finding_id, lock=True)
     before = _FINDING_STATUSES[finding.status_id]
     target = STATUS_IDS[patch.status]
@@ -2809,7 +3163,7 @@ async def update_finding(
         )
         await session.commit()
         await session.refresh(finding)
-    return FindingView.model_validate(finding)
+    return finding_from_row(finding)
 
 
 async def _owned_finding(
@@ -2863,6 +3217,13 @@ async def export_requests(
     system_prompt_hash: Annotated[
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
+    rule_id: Annotated[
+        str | None,
+        Query(
+            pattern=r"^[a-z][a-z0-9_]{0,47}$",
+            description="Only requests a tenant rule with this id matched.",
+        ),
+    ] = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -2883,6 +3244,7 @@ async def export_requests(
         cost_center=cost_center,
         warning=warning,
         system_prompt_hash=system_prompt_hash,
+        rule_id=rule_id,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
@@ -2943,6 +3305,7 @@ async def export_requests(
                 "completion_outcome",
                 "repeat_chain_length",
                 "ttft_ms",
+                "provider_latency_ms",
                 "cached_input_tokens",
                 "warnings",
                 "system_prompt_hash",
@@ -2953,10 +3316,12 @@ async def export_requests(
                 "blocked_entities",
                 "bulk_disclosure",
                 "response_entities",
+                "response_analysis",
+                "rule_matches",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
-        for row, cost_usd, response_entities in rows:
+        for row, cost_usd, response_entities, response_analysis in rows:
             details = row.details or {}
             output.seek(0)
             output.truncate(0)
@@ -2985,6 +3350,7 @@ async def export_requests(
                     details.get("completion_outcome"),
                     details.get("repeat_chain_length"),
                     details.get("ttft_ms"),
+                    details.get("provider_latency_ms"),
                     details.get("cached_input_tokens"),
                     ",".join(details.get("warnings") or []),
                     details.get("system_prompt_hash"),
@@ -3003,6 +3369,12 @@ async def export_requests(
                     ),
                     json.dumps(response_entities, sort_keys=True)
                     if response_entities is not None
+                    else None,
+                    json.dumps(response_analysis, sort_keys=True, separators=(",", ":"))
+                    if response_analysis is not None
+                    else None,
+                    json.dumps(details["rule_matches"], sort_keys=True)
+                    if details.get("rule_matches") is not None
                     else None,
                 )
             )
@@ -3284,6 +3656,7 @@ def _request_filters(
     warning: ResponseWarning | None = None,
     system_prompt_hash: str | None = None,
     api_key_id: UUID | None = None,
+    rule_id: str | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -3362,6 +3735,10 @@ def _request_filters(
         )
     if warning is not None:
         filters.append(RequestLog.details.contains({"warnings": [warning]}))
+    if rule_id is not None:
+        filters.append(
+            RequestLog.details.contains({"rule_matches": [{"rule_id": rule_id}]})
+        )
     return filters
 
 
@@ -3503,6 +3880,9 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
             # The response scan finishes after the analytics row is projected.
             RequestLifecycle.lifecycle_metadata["response_entities"].label(
                 "response_entities"
+            ),
+            RequestLifecycle.lifecycle_metadata["response_analysis"].label(
+                "response_analysis"
             ),
         )
         .outerjoin(

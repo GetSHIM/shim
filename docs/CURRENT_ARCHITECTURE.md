@@ -56,7 +56,7 @@ GatewayService
         |
         v
 GatewayKernel
-  policy -> admission -> privacy -> provider start
+  policy -> admission -> privacy -> rules -> provider start
          -> one SDK attempt -> restore -> finalize
         |
         v
@@ -194,7 +194,8 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `MODEL_CONTEXT_EXCEEDED`,
 `MODEL_CAPABILITY_UNSUPPORTED`, `PROVIDER_NOT_ALLOWED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
-`SECRET_BLOCKED`, `PII_BLOCKED`,
+`SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
+`APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
 `PROVIDER_REJECTED_REQUEST`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and
 `INTERNAL_ERROR`; enterprise adds
@@ -212,6 +213,35 @@ Enterprise can resolve tenant aliases through its approved deployment registry;
 reuse the native executions with operator-approved destinations and stored
 credential references. Unpriced deployments remain explicit in accounting, and
 monetary caps reject them. See [`MODEL_DEPLOYMENTS.md`](../ee/docs/MODEL_DEPLOYMENTS.md).
+
+After a completed answer has been delivered (after the last body byte of a JSON
+answer, after a stream's finalization), one background task per request runs the
+opt-in response scan and the opt-in response analyzers
+(`src/shim/gateway/pipeline/analysis.py`, registry in
+`src/shim/gateway/analyzers/`) on a dedicated single-worker executor, then
+writes each record: community JSONL lines, enterprise lifecycle metadata in a
+short transaction of its own. The task is registered with the postprocessor and
+drained at shutdown. With both off nothing is kept and no task is created.
+Enterprise tenant switches live in `organization_gateway_settings`, one validated
+`GatewaySettings` model read next to the privacy settings and cached for 300
+seconds; core sees it only as `tenant_gateway_settings` on the request.
+
+Tenant rules (`src/shim/rules/`) are one validated `Rule` object with a fixed
+table of kinds; each kind names the point where it is evaluated: `resolver`,
+`admission`, `privacy` or `settings`. Matchers record `RuleMatch` facts on the
+request; after the base privacy decision, which wins, the kernel's decision
+point turns them into `rule.<id>` verdicts, refuses an enforced block with
+`RULE_BLOCKED` (400, `X-Shim-Rule-Id`), adds the `RULE_WARN` warning, and asks
+the optional `ApprovalGate` port (`src/shim/rules/approval.py`) about an
+enforced `require_approval` match, passing the payload as it entered privacy.
+Without a gate such a match is a block. Community has no rule store: the set
+arrives as `rules` on the resolved policy, which enterprise reads from
+`organization_rule_sets`, keyed by a revision kept in the privacy cache entry,
+with the rules themselves only in process memory. The `term` and `pattern`
+kinds (`src/shim/rules/content.py`) are searched by `PIIScrubberService` on its
+normalized text, compiled once per `RuleSet` object; no other kind ships a
+matcher yet.
+`ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 
 Anthropic token counting shares authentication, registry authorization and
 privacy transformation. It persists nonbillable enterprise audit preflight and

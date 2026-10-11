@@ -90,6 +90,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         target=None,
         deployment_kind="unknown",
         response_scan="off",
+        response_analysis=(),
+        rules=None,
         unpriced=False,
         deployment_price=None,
         stream=False,
@@ -268,14 +270,24 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         provider_finish_reasons={"choices.1.finish_reason": "length"},
         completion_outcome="truncated",
         ttft_ms=125.5,
+        provider_latency_ms=812,
+        answer_characters=40,
+        tool_call_names=("lookup",),
+        reasoning_seen=True,
         shim_latency_ms=0,
         cached_input_tokens=10_000,
         warnings=("MODEL_DEPRECATED", "CACHE_NOT_APPLIED"),
     )
     await repository.finalize(db, command)
-    assert (
-        await repository.finalize(db, replace(command, shim_latency_ms=999))
-    ).replayed
+    replayed = replace(
+        command,
+        shim_latency_ms=999,
+        provider_latency_ms=1,
+        answer_characters=1,
+        tool_call_names=("other",),
+        reasoning_seen=False,
+    )
+    assert (await repository.finalize(db, replayed)).replayed
     await db.flush()
     lifecycle = (
         await db.execute(
@@ -289,12 +301,22 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
         "provider_finish_reasons": {"choices.1.finish_reason": "length"},
         "completion_outcome": "truncated",
         "ttft_ms": 125.5,
+        "provider_latency_ms": 812,
         "shim_latency_ms": 0,
         "cached_input_tokens": 10_000,
         "warnings": ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"],
     }
     assert all(
         lifecycle.lifecycle_metadata[key] == value for key, value in expected.items()
+    )
+    lifecycle_only = {
+        "answer_characters": 40,
+        "tool_call_names": ["lookup"],
+        "reasoning_seen": True,
+    }
+    assert all(
+        lifecycle.lifecycle_metadata[key] == value
+        for key, value in lifecycle_only.items()
     )
     event = (
         await db.execute(
@@ -675,6 +697,7 @@ async def test_disconnected_stream_settles_reserved_usage() -> None:
     assert terminal.terminal_status == "client_disconnected"
     assert terminal.usage.provider_finish_reasons is None
     assert terminal.usage.ttft_ms is None
+    assert terminal.usage.provider_latency_ms is None
 
 
 @pytest.mark.asyncio
@@ -737,6 +760,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     checked = SimpleNamespace(
         policy_verdicts=[],
+        rules=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
         privacy=PrivacyOutcome(
@@ -2844,3 +2868,150 @@ async def test_an_anthropic_reservation_prices_input_at_the_one_hour_write_rate(
     # 20 input tokens at 2x the $1 base, 30 output tokens at $5.
     assert command.estimated_cost_usd == Decimal("0.00019")
     assert command.pricing_metadata["cache_write_1h_per_million"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_finalization_passes_the_answer_facts_and_a_refund_records_none(
+    db, test_api_key
+) -> None:
+    @asynccontextmanager
+    async def session_scope():
+        yield object()
+
+    accounting = SimpleNamespace(finalize=AsyncMock())
+    terminal = _terminal()
+    terminal = replace(
+        terminal,
+        usage=replace(
+            terminal.usage,
+            provider_latency_ms=812,
+            answer_characters=40,
+            tool_call_names=("lookup",),
+            reasoning_seen=True,
+        ),
+    )
+    await DurableUsageLifecycle(accounting, session_scope).finalize(
+        _prepared(), terminal
+    )
+    command = accounting.finalize.await_args.args[1]
+    assert (
+        command.provider_latency_ms,
+        command.answer_characters,
+        command.tool_call_names,
+        command.reasoning_seen,
+    ) == (812, 40, ("lookup",), True)
+
+    repository = DurableAccountingRepository()
+    request_id = f"req_refund_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc)
+    await repository.reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    await repository.finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=test_api_key.organization_id,
+            request_id=request_id,
+            quota_action=TerminalAction.REFUND,
+            lifecycle_status="failed",
+        ),
+    )
+    await db.flush()
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).scalar_one()
+    assert not {
+        "provider_latency_ms",
+        "answer_characters",
+        "tool_call_names",
+        "reasoning_seen",
+    } & set(lifecycle.lifecycle_metadata)
+
+
+@pytest.mark.asyncio
+async def test_a_response_analysis_updates_only_its_own_tenants_lifecycle(
+    db, test_api_key, caplog
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    def lifecycle():
+        return db.execute(
+            select(RequestLifecycle)
+            .where(RequestLifecycle.request_id == prepared.request_id)
+            .execution_options(populate_existing=True)
+        )
+
+    reserved = dict((await lifecycle()).scalar_one().lifecycle_metadata)
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    stranger = _prepared()
+    stranger.request_id = prepared.request_id
+    missing = _prepared()
+    missing.tenant_id = prepared.tenant_id
+    missing.request_id = f"req_missing_{uuid4().hex}"
+    await usage.record_response_analysis(
+        prepared, {"probe": {"n": 1}, "versions": {"probe": "1"}}
+    )
+    await usage.record_response_analysis(
+        stranger, {"probe": {"n": 9}, "versions": {"probe": "1"}}
+    )
+    await usage.record_response_analysis(
+        missing, {"probe": {"n": 2}, "versions": {"probe": "1"}}
+    )
+
+    metadata = (await lifecycle()).scalar_one().lifecycle_metadata
+    assert metadata == {
+        **reserved,
+        "response_analysis": {"probe": {"n": 1}, "versions": {"probe": "1"}},
+    }
+    assert "Response analysis record failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_response_analysis_record_is_logged_and_dropped(caplog) -> None:
+    @asynccontextmanager
+    async def broken_scope():
+        raise ConnectionError("database at private-host down")
+        yield
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), broken_scope)
+
+    await usage.record_response_analysis(_prepared(), {"versions": {}})
+
+    assert "Response analysis record failed type=ConnectionError" in caplog.text
+    assert "private-host" not in caplog.text

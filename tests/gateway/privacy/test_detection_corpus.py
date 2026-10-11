@@ -13,38 +13,69 @@ import pytest
 
 from shim.privacy.pii_scrubber import PIIScrubberService
 from shim.privacy.policies import effective_entity_actions
+from shim.rules import validate_rule_set
+from shim.rules.content import content_rules
 
 
-CORPUS = json.loads(
-    (Path(__file__).parent / "corpus" / "detection-v1.json").read_text(encoding="utf-8")
-)
-CASES: list[dict[str, Any]] = CORPUS["cases"]
+CORPORA: dict[str, dict[str, Any]] = {
+    path.stem: corpus
+    for path in sorted((Path(__file__).parent / "corpus").glob("*.json"))
+    if (corpus := json.loads(path.read_text(encoding="utf-8"))).get("format")
+    == "shim.detection.corpus"
+}
+CASES: list[dict[str, Any]] = [
+    case for corpus in CORPORA.values() for case in corpus["cases"]
+]
 
 
-def _expected(case: dict[str, Any], key: str = "expect") -> set[tuple[str, str]]:
-    return {(item["entity"], item["value"]) for item in case[key]}
+# (entity type or rule label, value, rule id for a rule detection)
+Detection = tuple[str, str, str | None]
 
 
-def _actual(case: dict[str, Any]) -> set[tuple[str, str]]:
+def _expected(case: dict[str, Any], key: str = "expect") -> set[Detection]:
+    return {(item["entity"], item["value"], item.get("rule_id")) for item in case[key]}
+
+
+def _actual(case: dict[str, Any]) -> set[Detection]:
+    # Version 2 cases carry the tenant's config; a missing key keeps its default.
+    config = case.get("config", {})
+    actions = effective_entity_actions(
+        config.get("pii_config"), config.get("entity_actions")
+    )
+    rule_set = validate_rule_set({"revision": 1, "rules": config.get("rules", [])})
     text = case["text"]
     return {
-        (finding["type"], text[finding["start"] : finding["end"]])
-        for finding in PIIScrubberService().analyze(text, effective_entity_actions())
+        (
+            finding["type"],
+            text[finding["start"] : finding["end"]],
+            finding.get("rule_id"),
+        )
+        for finding in PIIScrubberService().analyze(
+            text, actions, content_rules(rule_set, lambda _rule: True)
+        )
     }
 
 
-def test_corpus_is_well_formed() -> None:
+def test_corpora_are_well_formed() -> None:
     ids = [case["id"] for case in CASES]
-    entities = set(CORPUS["entities"])
 
-    assert CORPUS["format"] == "shim.detection.corpus"
-    assert CORPUS["version"] == 1
+    assert "detection-v1" in CORPORA
     assert len(ids) == len(set(ids))
-    for case in CASES:
-        assert ("known_gap" in case) == ("known_actual" in case), case["id"]
-        for item in case["expect"] + case.get("known_actual", []):
-            assert item["entity"] in entities, case["id"]
-            assert item["value"] in case["text"], case["id"]
+    for corpus in CORPORA.values():
+        assert corpus["version"] in {1, 2}
+        entities = set(corpus["entities"])
+        for case in corpus["cases"]:
+            assert corpus["version"] == 2 or "config" not in case, case["id"]
+            rules = validate_rule_set(
+                {"revision": 1, "rules": case.get("config", {}).get("rules", [])}
+            ).rules
+            labels = {rule.id: rule.match["label"] for rule in rules}
+            assert ("known_gap" in case) == ("known_actual" in case), case["id"]
+            for item in case["expect"] + case.get("known_actual", []):
+                assert item["entity"] in entities, case["id"]
+                assert item["value"] in case["text"], case["id"]
+                if "rule_id" in item:
+                    assert labels[item["rule_id"]] == item["entity"], case["id"]
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case["id"] for case in CASES])
@@ -65,22 +96,24 @@ def test_corpus_case(case: dict[str, Any]) -> None:
         )
 
 
-def test_corpus_precision_and_recall_per_entity() -> None:
-    measured = [case for case in CASES if "known_gap" not in case]
+@pytest.mark.parametrize("name", list(CORPORA))
+def test_corpus_precision_and_recall_per_entity(name: str) -> None:
+    cases = CORPORA[name]["cases"]
+    measured = [case for case in cases if "known_gap" not in case]
     true_positive: Counter[str] = Counter()
     false_positive: Counter[str] = Counter()
     false_negative: Counter[str] = Counter()
     for case in measured:
         expected, actual = _expected(case), _actual(case)
-        for entity, _ in expected & actual:
+        for entity, *_ in expected & actual:
             true_positive[entity] += 1
-        for entity, _ in actual - expected:
+        for entity, *_ in actual - expected:
             false_positive[entity] += 1
-        for entity, _ in expected - actual:
+        for entity, *_ in expected - actual:
             false_negative[entity] += 1
 
     print(
-        f"corpus: {len(CASES)} cases, {len(CASES) - len(measured)} known gaps, "
+        f"{name}: {len(cases)} cases, {len(cases) - len(measured)} known gaps, "
         f"{sum(true_positive.values())} findings, "
         f"{sum(1 for case in measured if not case['expect'])} negatives"
     )

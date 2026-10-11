@@ -16,6 +16,7 @@ from presidio_analyzer import RecognizerResult
 
 from shim.privacy.policies import EntityAction
 from shim.privacy.presidio_analyzer import PresidioAnalyzer
+from shim.rules.content import ContentHit, ContentRules, resolve_overlaps
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
@@ -170,8 +171,9 @@ class PIIScrubberService:
         self,
         text: str,
         actions: Mapping[str, EntityAction],
+        content: ContentRules | None = None,
     ) -> list[dict[str, Any]]:
-        detections = self._source_detections(text, actions)
+        detections, hits = self._source_detections(text, actions, content)
         return [
             {
                 "type": item.entity_type,
@@ -181,6 +183,17 @@ class PIIScrubberService:
                 "action": actions[item.entity_type],
             }
             for item in detections
+        ] + [
+            {
+                "type": rule.match["label"],
+                "start": hit.start,
+                "end": hit.end,
+                "score": 1.0,
+                "action": rule.action,
+                "rule_id": rule.id,
+            }
+            for hit in hits
+            for rule in hit.rules
         ]
 
     def scrub(
@@ -192,14 +205,18 @@ class PIIScrubberService:
         placeholders_by_value: dict[str, str] | None = None,
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
+        content: ContentRules | None = None,
     ) -> tuple[str, dict[str, str]]:
-        """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type)."""
+        """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type).
+
+        Tenant rule matches are recorded on `content`, never in `unmasked`.
+        """
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
-        if all(action == "off" for action in actions.values()):
+        if content is None and all(action == "off" for action in actions.values()):
             return text, {}
-        detections = self._source_detections(text, actions)
-        if not detections:
+        detections, hits = self._source_detections(text, actions, content)
+        if not detections and not hits:
             return text, {}
         if placeholders_by_value is None:
             placeholders_by_value = {
@@ -209,31 +226,39 @@ class PIIScrubberService:
         verification_map: dict[str, str] = {}
         scrubbed: list[str] = []
         cursor = 0
-        for item in detections:
+        # Built-in and rule spans never overlap: a rule match touching a built-in one was dropped.
+        for item in sorted([*detections, *hits], key=lambda item: item.start):
             value = text[item.start : item.end]
-            action = actions[item.entity_type]
-            if action not in {"mask", "mask_last4"}:
-                if unmasked is not None:
-                    unmasked[value] = item.entity_type
-                continue
+            if isinstance(item, ContentHit):
+                assert content is not None
+                label = content.record(item, value)
+                if label is None:
+                    continue
+                entity_type, action = label, "mask"
+            else:
+                entity_type, action = item.entity_type, actions[item.entity_type]
+                if action not in {"mask", "mask_last4"}:
+                    if unmasked is not None:
+                        unmasked[value] = entity_type
+                    continue
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
-                tail = _tail(item.entity_type, value) if action == "mask_last4" else ""
+                tail = _tail(entity_type, value) if action == "mask_last4" else ""
                 if placeholder_key:
                     digest = hmac.new(
                         placeholder_key,
-                        f"{item.entity_type}\x1f{value}".encode(),
+                        f"{entity_type}\x1f{value}".encode(),
                         sha256,
                     ).hexdigest()
-                    placeholder = f"<{item.entity_type}_{digest[:32]}{tail}>"
+                    placeholder = f"<{entity_type}_{digest[:32]}{tail}>"
                 else:
-                    placeholder = self._placeholder(item.entity_type, tail)
+                    placeholder = self._placeholder(entity_type, tail)
                 # A placeholder held by another value falls back to a random one.
                 while (
                     placeholder in (known_placeholders or {})
                     or placeholder in verification_map
                 ):
-                    placeholder = self._placeholder(item.entity_type, tail)
+                    placeholder = self._placeholder(entity_type, tail)
                 placeholders_by_value[value] = placeholder
             verification_map[placeholder] = value
             scrubbed.append(text[cursor : item.start])
@@ -280,7 +305,8 @@ class PIIScrubberService:
         self,
         text: str,
         actions: Mapping[str, EntityAction],
-    ) -> list[RecognizerResult]:
+        content: ContentRules | None = None,
+    ) -> tuple[list[RecognizerResult], list[ContentHit]]:
         if len(text) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
         prepared, spans = _preprocess_with_spans(text)
@@ -299,7 +325,16 @@ class PIIScrubberService:
                     score=item.score,
                 )
             )
-        return self._non_overlapping(mapped, actions)
+        detections = self._non_overlapping(mapped, actions)
+        if content is None:
+            return detections, []
+        hits = []
+        # Rule matches run on the same preprocessed text; a built-in match wins every overlap.
+        for hit in content.search(prepared):
+            start, end = spans[hit.start][0], spans[hit.end - 1][1]
+            if not any(start < item.end and item.start < end for item in detections):
+                hits.append(ContentHit(start, end, hit.rules))
+        return detections, resolve_overlaps(hits)
 
     @staticmethod
     def _deduplicate(items: Iterable[RecognizerResult]) -> list[RecognizerResult]:

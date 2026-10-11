@@ -1658,3 +1658,100 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_answers_are_byte_identical_with_an_analyzer_on_and_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shim.core.community_config as community_config
+    import shim.gateway.pipeline.postprocess as postprocess
+
+    class Probe:
+        name = "probe"
+        version = "1"
+
+        def analyze(self, ctx):
+            return {"answer_characters": len(ctx.answer_text)}
+
+    monkeypatch.setattr(community_config, "ANALYZERS", (Probe(),))
+    monkeypatch.setattr(community_config, "ANALYZER_NAMES", frozenset({"probe"}))
+    monkeypatch.setattr(postprocess, "ANALYZERS", (Probe(),))
+    completion = {
+        "id": "chat_analysis",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+    }
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if not json.loads(request.content).get("stream"):
+            return httpx.Response(200, json=completion)
+        chunk = {
+            **completion,
+            "object": "chat.completion.chunk",
+            "choices": [
+                {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+            ],
+        }
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    bodies: dict[str, list[bytes]] = {}
+    lines: dict[str, list[dict]] = {}
+    for analysis in ("", "probe"):
+        events = StringIO()
+        outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        application = create_community_app(
+            CommunitySettings(
+                OPENAI_BASE_URL="https://upstream.test/v1",
+                BACKEND_CORS_ORIGINS=[],
+                SHIM_RESPONSE_ANALYSIS=analysis,
+                _env_file=None,
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with (
+            application.router.lifespan_context(application),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=application),
+                base_url="http://127.0.0.1",
+            ) as client,
+        ):
+            bodies[analysis] = [
+                (
+                    await client.post(
+                        "/v1/chat/completions",
+                        headers={"x-provider-key": "sk-provider"},
+                        json={
+                            "model": "gpt-5.6-luna",
+                            "stream": stream,
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                    )
+                ).content
+                for stream in (False, True)
+            ]
+        await outbound.aclose()
+        lines[analysis] = [json.loads(line) for line in events.getvalue().splitlines()]
+
+    assert bodies[""] == bodies["probe"]
+    assert [line["event"] for line in lines[""]] == ["request", "request"]
+    assert sorted(line["event"] for line in lines["probe"]) == [
+        "request",
+        "request",
+        "response_analysis",
+        "response_analysis",
+    ]

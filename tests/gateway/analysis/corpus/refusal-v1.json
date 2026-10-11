@@ -1,0 +1,457 @@
+{
+ "format": "shim.refusal.corpus",
+ "version": 1,
+ "cases": [
+  {
+   "id": "tr-01",
+   "text": "Üzgünüm, bu konuda yardımcı olamam.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-02",
+   "text": "Maalesef bu konuda size yardımcı olamıyorum.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-03",
+   "text": "Üzgünüm ama bu talebe yardımcı olmam mümkün değil.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-04",
+   "text": "Bu konuda size yardımcı olamayacağım, anlayışınız için teşekkürler.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-05",
+   "text": "Uzgunum, bu konuda yardimci olamam.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-06",
+   "text": "maalesef yardimci olamiyorum",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-07",
+   "text": "ÜZGÜNÜM, BU KONUDA YARDIMCI OLAMAM.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-08",
+   "text": "**Üzgünüm**, bu konuda yardımcı olamam.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-09",
+   "text": "> Bu konuda yardımcı olamıyorum.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-10",
+   "text": "Değerli müşterimiz, bu konuda yardımcı olamıyoruz; lütfen şubenizle görüşün. Yardımcı olamam.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-11",
+   "text": "Üzgünüm, bu isteği yerine getiremem.",
+   "expect": "tr.yerine_getiremem"
+  },
+  {
+   "id": "tr-12",
+   "text": "Bu talebi yerine getiremem çünkü kurallara aykırı.",
+   "expect": "tr.yerine_getiremem"
+  },
+  {
+   "id": "tr-13",
+   "text": "Kusura bakmayın, bu isteğinizi yerine getiremem.",
+   "expect": "tr.yerine_getiremem"
+  },
+  {
+   "id": "tr-14",
+   "text": "bu istegi yerine getiremem",
+   "expect": "tr.yerine_getiremem"
+  },
+  {
+   "id": "tr-15",
+   "text": "Üzgünüm, bu konuda bilgi veremem.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-16",
+   "text": "Bu bilgiyi paylaşamam, gizlilik politikamız buna izin vermiyor.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-17",
+   "text": "Bu konuda yorum yapamam.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-18",
+   "text": "Maalesef bu konuda bilgi veremem, lütfen yetkili birime danışın.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-19",
+   "text": "bu bilgiyi paylasamam",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-20",
+   "text": "Üzgünüm, bunu yapamam.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-21",
+   "text": "Bunu yapmam mümkün değil.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-22",
+   "text": "Anlıyorum ama bunu yapamam.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-23",
+   "text": "Sayın kullanıcı, bunu yapmam mümkün değil, anlayışınız için teşekkür ederiz.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-24",
+   "text": "Üzgünüm; bunu yapamam.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-25",
+   "text": "“Üzgünüm, bu konuda yardımcı olamam.”",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "en-01",
+   "text": "I can't help with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-02",
+   "text": "I cannot help with this request.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-03",
+   "text": "Sorry, I can't assist with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-04",
+   "text": "I cannot assist with creating that content.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-05",
+   "text": "I'm unable to help with this one.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-06",
+   "text": "I am unable to help with requests like this.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-07",
+   "text": "I'm not able to help with that request.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-08",
+   "text": "I’m unable to help with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-09",
+   "text": "**I can't help with that.**",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-10",
+   "text": "Unfortunately I cannot help with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-11",
+   "text": "I can't comply with this request.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-12",
+   "text": "I cannot comply with that.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-13",
+   "text": "I won't be able to help you with this.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-14",
+   "text": "I can't provide that information.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-15",
+   "text": "I cannot provide that kind of advice.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-16",
+   "text": "I'm sorry, but I can't do that.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-17",
+   "text": "Sorry, but I can't share those details.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-18",
+   "text": "I apologize, but I can't generate that.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-19",
+   "text": "I'm sorry, but I cannot continue with this.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-20",
+   "text": "I’m sorry, but I can’t answer that.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-21",
+   "text": "I'M SORRY, BUT I CAN'T DO THAT.",
+   "expect": "en.sorry_but"
+  },
+  {
+   "id": "en-22",
+   "text": "  \n\nI can't help with that, as it would break the policy.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-23",
+   "text": "# Response\nI cannot help with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-24",
+   "text": "I'm sorry, but I can't help with that request.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-25",
+   "text": "Thanks for asking. I can't comply with that.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "negative-01",
+   "text": "Bunu yapamam diye düşünmeyin, adım adım gidersek kolayca hallederiz.",
+   "expect": null
+  },
+  {
+   "id": "negative-02",
+   "text": "Kredi başvurunuz onaylandı, ilk taksit gelecek ay başlıyor.",
+   "expect": null
+  },
+  {
+   "id": "negative-03",
+   "text": "Elbette, raporun özeti aşağıda: gelirler yüzde on arttı.",
+   "expect": null
+  },
+  {
+   "id": "negative-04",
+   "text": "Toplantıyı yarın saat onda yapabiliriz, uygun mu?",
+   "expect": null
+  },
+  {
+   "id": "negative-05",
+   "text": "Bu konuda size yardımcı olabilirim: önce uygulamayı güncelleyin.",
+   "expect": null
+  },
+  {
+   "id": "negative-06",
+   "text": "Yardımcı olamam dediğim kısım yalnızca vergi tavsiyesiydi; işte hesaplama adımları ve örnek bir tablo, ayrıntılı olarak aşağıda.",
+   "expect": null
+  },
+  {
+   "id": "negative-07",
+   "text": "Müşteri “yardımcı olamam” cevabını aldığını söyledi, nedenini inceliyoruz.",
+   "expect": null
+  },
+  {
+   "id": "negative-08",
+   "text": "Asistan 'bu konuda yardımcı olamam' dedi, sonra tekrar denedik ve çalıştı.",
+   "expect": null
+  },
+  {
+   "id": "negative-09",
+   "text": "Üzgünüm, bu konuda yardımcı olamam; ancak şu adımları deneyebilirsiniz: şifrenizi sıfırlayın.",
+   "expect": null
+  },
+  {
+   "id": "negative-10",
+   "text": "Bunu yapamam ama şu yöntemi önerebilirim: ekstreyi PDF olarak indirin.",
+   "expect": null
+  },
+  {
+   "id": "negative-11",
+   "text": "Bu bilgiyi paylaşamam, bunun yerine genel oranları gönderebilirim.",
+   "expect": null
+  },
+  {
+   "id": "negative-12",
+   "text": "Şifrenizi sıfırlamak için ayarlar menüsüne gidin ve talimatları izleyin.",
+   "expect": null
+  },
+  {
+   "id": "negative-13",
+   "text": "Kodun çıktısı aşağıda:\n```python\nprint('yardımcı olamam')\n```",
+   "expect": null
+  },
+  {
+   "id": "negative-14",
+   "text": "Merhaba! Nasıl yardımcı olabilirim?",
+   "expect": null
+  },
+  {
+   "id": "negative-15",
+   "text": "Tabii ki, işte istediğiniz liste.",
+   "expect": null
+  },
+  {
+   "id": "negative-16",
+   "text": "I can't stress enough how useful this feature is for our team.",
+   "expect": null
+  },
+  {
+   "id": "negative-17",
+   "text": "I can't wait to see the results of the new campaign.",
+   "expect": null
+  },
+  {
+   "id": "negative-18",
+   "text": "Here is the summary you asked for: revenue grew by ten percent.",
+   "expect": null
+  },
+  {
+   "id": "negative-19",
+   "text": "Sure, the meeting is moved to Tuesday at ten.",
+   "expect": null
+  },
+  {
+   "id": "negative-20",
+   "text": "I can help with that. First, open the settings page.",
+   "expect": null
+  },
+  {
+   "id": "negative-21",
+   "text": "The model said 'I can't help with that' and then answered anyway.",
+   "expect": null
+  },
+  {
+   "id": "negative-22",
+   "text": "The log shows \"I cannot help with this request\" from the old model.",
+   "expect": null
+  },
+  {
+   "id": "negative-23",
+   "text": "I can't provide exact figures, but here are estimates: about 40 percent.",
+   "expect": null
+  },
+  {
+   "id": "negative-24",
+   "text": "I can't help with the tax part, however, here is the loan calculation.",
+   "expect": null
+  },
+  {
+   "id": "negative-25",
+   "text": "I cannot assist with the legal question; instead, here is a general overview.",
+   "expect": null
+  },
+  {
+   "id": "negative-26",
+   "text": "I'm sorry, but I can't make it to the meeting, so here are my notes.",
+   "expect": null
+  },
+  {
+   "id": "negative-27",
+   "text": "Run `echo \"I can't help with that\"` to test the filter.",
+   "expect": null
+  },
+  {
+   "id": "negative-28",
+   "text": "Of course! Here is the corrected paragraph with the typos fixed.",
+   "expect": null
+  },
+  {
+   "id": "negative-29",
+   "text": "Your account balance is 1,250 TL and the next payment is due on the 15th.",
+   "expect": null
+  },
+  {
+   "id": "negative-30",
+   "text": "The function returns an empty list when the input is null.",
+   "expect": null
+  },
+  {
+   "id": "negative-31",
+   "text": "Yes, that works. I can't see any problem with the new schedule.",
+   "expect": null
+  },
+  {
+   "id": "negative-32",
+   "text": "Thanks! I can't believe how fast the deployment was.",
+   "expect": null
+  },
+  {
+   "id": "negative-33",
+   "text": "Great question. Let me walk you through it step by step.",
+   "expect": null
+  },
+  {
+   "id": "negative-34",
+   "text": "The answer depends on the interest rate and the loan term you choose.",
+   "expect": null
+  },
+  {
+   "id": "negative-35",
+   "text": "I'm not able to attend tomorrow, but the team will present the results.",
+   "expect": null
+  },
+  {
+   "id": "negative-36",
+   "text": "Below is a long and helpful answer. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. It explains each step in detail. I can't help with that last part.",
+   "expect": null
+  },
+  {
+   "id": "negative-37",
+   "text": "Bu uzun ve faydalı bir cevaptır. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Her adım ayrıntılı olarak anlatılıyor. Bu konuda yardımcı olamam.",
+   "expect": null
+  },
+  {
+   "id": "negative-38",
+   "text": "Here is an introduction that runs for a while before anything else is said, covering the background, the context and the goals of the project in some detail, so that every reader understands it fully and in order. Then: I can't help with that.",
+   "expect": null
+  },
+  {
+   "id": "negative-39",
+   "text": "def refuse():\n    return \"I'm sorry, but I can't\"\n",
+   "expect": null,
+   "known_gap": "A shorter phrase inside a quoted refusal is not directly preceded by the quote."
+  },
+  {
+   "id": "negative-40",
+   "text": "Okay.",
+   "expect": null
+  }
+ ]
+}

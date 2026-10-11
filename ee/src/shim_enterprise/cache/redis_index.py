@@ -94,6 +94,15 @@ class CacheManager:
     async def invalidate_pii_config(self, tenant_id: str) -> None:
         await self.cache.delete(_PII_CONFIG_KEY.format(tenant_id))
 
+    async def get_gateway_settings(self, tenant_id: str) -> dict[str, Any] | None:
+        return _mapping(await self.cache.get(f"config:gateway:{tenant_id}"))
+
+    async def set_gateway_settings(self, tenant_id: str, value: dict[str, Any]) -> None:
+        await self.cache.set(f"config:gateway:{tenant_id}", value, expire=300)
+
+    async def invalidate_gateway_settings(self, tenant_id: str) -> None:
+        await self.cache.delete(f"config:gateway:{tenant_id}")
+
     async def get_tier_definition(self, slug: str) -> dict[str, Any] | None:
         return _mapping(await self.cache.get(f"config:tier:{slug}"))
 

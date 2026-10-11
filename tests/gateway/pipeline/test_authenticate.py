@@ -195,3 +195,47 @@ def test_zero_retention_rejects_provider_features_that_retain_data(
     )
 
     assert _zero_retention_requested(invocation) is allowed
+
+
+@pytest.mark.asyncio
+async def test_authenticate_copies_the_analyzers_and_the_tenant_settings_object() -> (
+    None
+):
+    tenant_settings = object()
+    resolved = ResolvedRequestPolicy(
+        tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),
+        tenant_policy=TenantPolicy(),
+        tier_policy=TierPolicy(rate_limit_rpm=60, rate_limit_tpm=10_000),
+        audit_policy=AuditPolicy(mode="off"),
+        request_policy=RequestPolicyContext(rate_limit_key_hash="key", tier="local"),
+        pii_config=None,
+        response_analysis=("shape",),
+        tenant_gateway_settings=tenant_settings,
+    )
+    invocation = GatewayInvocation(
+        principal=AuthenticatedPrincipal(
+            actor_type="api_key",
+            api_key_id=UUID("22222222-2222-2222-2222-222222222222"),
+            user_id=None,
+            authenticated_at=datetime(2026, 10, 9, tzinfo=UTC),
+        ),
+        payload={"model": "gpt-5.6-luna", "messages": []},
+        provider="openai",
+        protocol="chat",
+        model="gpt-5.6-luna",
+        stream=False,
+        headers={},
+        provider_credential=None,
+        metadata=GatewayRequestMetadata(endpoint="/v1/chat/completions"),
+    )
+
+    prepared = await AuthenticateStage(
+        SimpleNamespace(resolve=AsyncMock(return_value=resolved))
+    ).run(invocation)
+
+    assert prepared.response_analysis == ("shape",)
+    assert prepared.tenant_gateway_settings is tenant_settings
+    [field] = [
+        item for item in fields(prepared) if item.name == "tenant_gateway_settings"
+    ]
+    assert (field.repr, field.compare) == (False, False)

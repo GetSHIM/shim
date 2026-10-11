@@ -285,3 +285,25 @@ async def test_the_placeholder_key_is_carried_but_never_shown() -> None:
         item for item in fields(PreparedInference) if item.name == "placeholder_key"
     ]
     assert field.repr is False
+
+
+@pytest.mark.asyncio
+async def test_the_local_policy_names_its_analyzers_and_has_no_tenant_settings() -> (
+    None
+):
+    principal = LocalAuthenticator(SecretStr(LOCAL_KEY)).authenticate(
+        {"x-shim-key": LOCAL_KEY}
+    )
+
+    default = await LocalRequestPolicyResolver(
+        rate_limit_rpm=60, rate_limit_tpm=10_000
+    ).resolve(principal)
+    named = await LocalRequestPolicyResolver(
+        rate_limit_rpm=60, rate_limit_tpm=10_000, response_analysis=("shape",)
+    ).resolve(principal)
+
+    assert (default.response_analysis, default.tenant_gateway_settings) == ((), None)
+    assert (named.response_analysis, named.tenant_gateway_settings) == (
+        ("shape",),
+        None,
+    )

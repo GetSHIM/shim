@@ -33,6 +33,7 @@ from shim.gateway.contracts.ids import RequestId, TenantId
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.streaming.finalization import StreamFinalization
 from shim.gateway.usage import UsageFailureReason, system_prompt_hash
+from shim.rules import match_records
 from shim_enterprise.billing.ledger import (
     DurableAccountingRepository,
     FailureReservationState,
@@ -576,6 +577,7 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            **match_records(prepared),
                         }
                     ),
                 },
@@ -898,6 +900,28 @@ class DurableUsageLifecycle:
             )
             await session.commit()
 
+    async def record_response_analysis(
+        self, prepared: PreparedInference, results: Mapping[str, Any]
+    ) -> None:
+        # The answer is long gone: a missing row or a failure is logged and dropped.
+        try:
+            async with self.session_factory() as session:
+                await RequestLifecycleRepository.update(
+                    session,
+                    organization_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                    values={
+                        "lifecycle_metadata": RequestLifecycle.lifecycle_metadata.op(
+                            "||"
+                        )({"response_analysis": dict(results)})
+                    },
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                "Response analysis record failed type=%s", type(exc).__name__
+            )
+
     async def record_token_count(
         self, prepared: PreparedInference, input_tokens: int | None
     ) -> None:
@@ -982,6 +1006,10 @@ class DurableUsageLifecycle:
                         provider_finish_reasons=usage.provider_finish_reasons,
                         completion_outcome=usage.completion_outcome,
                         ttft_ms=usage.ttft_ms,
+                        provider_latency_ms=usage.provider_latency_ms,
+                        answer_characters=usage.answer_characters,
+                        tool_call_names=usage.tool_call_names,
+                        reasoning_seen=usage.reasoning_seen,
                         cached_input_tokens=None
                         if usage.cache_split is None
                         else sum(usage.cache_split),

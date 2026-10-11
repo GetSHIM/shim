@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -201,3 +203,37 @@ def test_cli_names_a_short_system_prompt_hash_key(
     error = capsys.readouterr().err
     assert "shim: error: SYSTEM_PROMPT_HASH_KEY: Value should have at least 32" in error
     assert "k" * 31 not in error
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", []),
+        ("language,shape", ["shape", "language"]),
+        (' ["shape", "language", "shape"] ', ["shape", "language"]),
+        ("shape, shape", ["shape"]),
+    ],
+)
+def test_response_analysis_names_follow_the_registry(
+    monkeypatch, value, expected
+) -> None:
+    import shim.core.community_config as community_config
+
+    analyzers = (SimpleNamespace(name="shape"), SimpleNamespace(name="language"))
+    monkeypatch.setattr(community_config, "ANALYZERS", analyzers)
+    monkeypatch.setattr(
+        community_config, "ANALYZER_NAMES", frozenset({"shape", "language"})
+    )
+
+    settings = CommunitySettings(_env_file=None, SHIM_RESPONSE_ANALYSIS=value)
+
+    assert settings.SHIM_RESPONSE_ANALYSIS == expected
+
+
+def test_an_unknown_analyzer_names_the_setting_and_the_name() -> None:
+    with pytest.raises(ValidationError) as error:
+        CommunitySettings(_env_file=None, SHIM_RESPONSE_ANALYSIS="nope")
+
+    assert "SHIM_RESPONSE_ANALYSIS" in str(error.value)
+    assert "unknown analyzer: nope" in str(error.value)
+    assert CommunitySettings(_env_file=None).SHIM_RESPONSE_ANALYSIS == []

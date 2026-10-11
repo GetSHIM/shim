@@ -302,6 +302,8 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "provider": "openai",
             "usage_estimated": False,
             "completion_outcome": "refused",
+            "rule_matches": [],
+            "rule_matches_truncated": False,
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -317,7 +319,14 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             side_effect=(
                 SimpleNamespace(one=lambda: summary_row),
                 SimpleNamespace(
-                    all=lambda: [(row, Decimal("0.12500000"), {"TR_NATIONAL_ID": 1})]
+                    all=lambda: [
+                        (
+                            row,
+                            Decimal("0.12500000"),
+                            {"TR_NATIONAL_ID": 1},
+                            {"probe": {"n": 1}, "versions": {"probe": "1"}},
+                        )
+                    ]
                 ),
             )
         ),
@@ -381,6 +390,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "completion_outcome",
         "repeat_chain_length",
         "ttft_ms",
+        "provider_latency_ms",
         "cached_input_tokens",
         "warnings",
         "system_prompt_hash",
@@ -390,8 +400,17 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "blocked_entities",
         "bulk_disclosure",
         "response_entities",
+        "response_analysis",
+        "rule_matches",
+        "rule_matches_truncated",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert page.items[0].rule_matches == []
+    assert page.items[0].rule_matches_truncated is False
+    assert page.items[0].response_analysis == {
+        "probe": {"n": 1},
+        "versions": {"probe": "1"},
+    }
     assert page.items[0].provider_finish_reasons is None
     assert page.items[0].completion_outcome == "refused"
     assert page.items[0].repeat_chain_length is None
@@ -399,6 +418,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     assert "latency_ms" not in page.items[0].model_dump()
     assert "request_duration_ms" not in page.items[0].model_dump()
     assert page.items[0].ttft_ms is None
+    assert page.items[0].provider_latency_ms is None
     assert page.items[0].system_prompt_hash is None
     assert page.items[0].deployment_kind is None
     assert page.items[0].cost_complete is True
@@ -609,12 +629,22 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "completion_outcome": "truncated",
             "repeat_chain_length": 2,
             "ttft_ms": 42.5,
+            "provider_latency_ms": 812,
             "shim_latency_ms": 0,
             "deployment_kind": "internal",
             "pii_entities": {},
             "blocked_entities": {"SECRET": 1},
             "cached_input_tokens": 10,
             "warnings": ["MODEL_DEPRECATED", "CACHE_NOT_APPLIED"],
+            "rule_matches": [
+                {
+                    "rule_id": "falcon",
+                    "kind": "term",
+                    "action": "block",
+                    "state": "monitor",
+                    "count": 2,
+                }
+            ],
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -627,7 +657,16 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     session = SimpleNamespace(
         scalar=AsyncMock(return_value=1),
         execute=AsyncMock(
-            return_value=SimpleNamespace(all=lambda: [(row, Decimal("0.000001"), None)])
+            return_value=SimpleNamespace(
+                all=lambda: [
+                    (
+                        row,
+                        Decimal("0.000001"),
+                        None,
+                        {"versions": {"probe": "1"}, "probe": {"n": 1}},
+                    )
+                ]
+            )
         ),
         commit=AsyncMock(),
     )
@@ -660,6 +699,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["completion_outcome"] == "truncated"
     assert exported["repeat_chain_length"] == "2"
     assert exported["ttft_ms"] == "42.5"
+    assert exported["provider_latency_ms"] == "812"
+    header = list(exported)
+    assert header.index("provider_latency_ms") == header.index("ttft_ms") + 1
     assert exported["deployment_kind"] == "internal"
     assert exported["system_prompt_hash"] == ""
     assert exported["shim_latency_ms"] == "0"
@@ -670,6 +712,16 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
     assert exported["monitored_entities"] == ""
     assert exported["blocked_entities"] == '{"SECRET": 1}'
     assert exported["response_entities"] == ""
+    assert exported["response_analysis"] == '{"probe":{"n":1},"versions":{"probe":"1"}}'
+    assert json.loads(exported["rule_matches"]) == [
+        {
+            "rule_id": "falcon",
+            "kind": "term",
+            "action": "block",
+            "state": "monitor",
+            "count": 2,
+        }
+    ]
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
@@ -1673,6 +1725,25 @@ def test_the_request_list_filters_on_one_warning_code() -> None:
     compiled = filters[-1].compile(dialect=postgresql.dialect())
     assert "request_logs.details @>" in str(compiled)
     assert {"warnings": ["CACHE_NOT_APPLIED"]} in compiled.params.values()
+
+
+def test_the_request_list_filters_on_one_rule_id() -> None:
+    filters = management._request_filters(
+        SimpleNamespace(role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        rule_id="falcon",
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"rule_matches": [{"rule_id": "falcon"}]} in compiled.params.values()
 
 
 _HASH_A = "hmac-sha256:v1:" + "a" * 64

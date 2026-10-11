@@ -124,6 +124,8 @@ def test_public_metrics_are_bounded_and_exclude_enterprise_families() -> None:
         "provider_latency_ms",
         "provider_requests",
         "requests",
+        "shim_requests_in_flight",
+        "shim_time_to_first_token_seconds",
         "stream_terminal_state",
     }
     enterprise_only = {

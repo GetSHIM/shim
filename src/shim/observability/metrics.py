@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Final
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 
 LABEL_VALUES: Final = MappingProxyType(
@@ -110,6 +110,21 @@ LABEL_VALUES: Final = MappingProxyType(
         ),
         "action": frozenset({"disabled", "detected", "scrubbed"}),
         "outcome": frozenset({"complete", "truncated", "empty", "refused", "filtered"}),
+        "rule_kind": frozenset(
+            {
+                "term",
+                "pattern",
+                "record_set",
+                "destination",
+                "request_limit",
+                "parameter_pin",
+                "route",
+            }
+        ),
+        "rule_action": frozenset(
+            {"monitor", "warn", "mask", "block", "require_approval", "set", "route"}
+        ),
+        "rule_state": frozenset({"monitor", "enforced"}),
     }
 )
 
@@ -128,7 +143,35 @@ PROVIDER_LATENCY_MS = Histogram(
     "provider_latency_ms",
     "Provider request latency in milliseconds.",
     ("provider", "model"),
-    buckets=(5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000),
+    buckets=(
+        5,
+        10,
+        25,
+        50,
+        100,
+        250,
+        500,
+        1_000,
+        2_500,
+        5_000,
+        10_000,
+        30_000,
+        60_000,
+        120_000,
+        300_000,
+        600_000,
+    ),
+)
+TIME_TO_FIRST_TOKEN_SECONDS = Histogram(
+    "shim_time_to_first_token_seconds",
+    "Time from the provider call to the first streamed content, in seconds.",
+    ("provider", "model"),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600),
+)
+REQUESTS_IN_FLIGHT = Gauge(
+    "shim_requests_in_flight",
+    "Provider calls in progress, by provider.",
+    ("provider",),
 )
 STREAM_TERMINAL_STATE_TOTAL = Counter(
     "stream_terminal_state_total",
@@ -192,6 +235,16 @@ COMPLETION_OUTCOMES_TOTAL = Counter(
     "shim_completion_outcomes_total",
     "Settled requests by provider and completion outcome.",
     ("provider", "outcome"),
+)
+RESPONSE_ANALYSIS_TOTAL = Counter(
+    "shim_response_analysis_total",
+    "After-answer analyzer runs by analyzer and result (ok, none, error).",
+    ("analyzer", "result"),
+)
+RULE_MATCHES_TOTAL = Counter(
+    "shim_rule_matches_total",
+    "Tenant rule matches by kind, action and state.",
+    ("kind", "action", "state"),
 )
 LOCAL_USAGE_DROPPED_TOTAL = Counter(
     "shim_local_usage_dropped_total",

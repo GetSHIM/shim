@@ -34,6 +34,8 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.rules.content import ContentRules, content_rules
+from shim.rules.evaluate import in_scope
 
 _DEEP_PRIVACY_FIELDS = frozenset(
     {
@@ -230,6 +232,8 @@ class PrivacyStage:
                 or {}
             )
         unmasked: dict[str, str] = {}
+        tags = value.admission.tags if value.admission is not None else ()
+        content = content_rules(value.rules, lambda rule: in_scope(rule, value, tags))
         safe_payload, verification_map = await asyncio.to_thread(
             scrub_payload,
             value.payload,
@@ -238,6 +242,7 @@ class PrivacyStage:
             known_placeholders=parent_map,
             request_model=value.model,
             unmasked=unmasked,
+            content=content,
             placeholder_key=None
             if value.placeholder_key is None
             else placeholder_period_key(
@@ -297,6 +302,14 @@ class PrivacyStage:
                 PRIVACY_DETECTION_TOTAL.labels(
                     entity_type=bounded_label("entity_type", entity_type)
                 ).inc(count)
+        if content is not None:
+            for rule in content.rules:
+                if rule.id in content.values or rule.id in content.errors:
+                    value.record_rule_match(
+                        rule,
+                        len(content.values.get(rule.id, ())),
+                        error=rule.id in content.errors,
+                    )
         return replace(value, payload=safe_payload, privacy=privacy)
 
     def trace_metadata(
@@ -316,15 +329,16 @@ def scrub_payload(
     request_model: str | None = None,
     unmasked: dict[str, str] | None = None,
     placeholder_key: bytes | None = None,
+    content: ContentRules | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     verification_map = dict(known_placeholders or {})
-    if all(action == "off" for action in actions.values()):
+    if content is None and all(action == "off" for action in actions.values()):
         return dict(payload), verification_map
     # Monitored values pass unchanged, so only masked or blocked types refuse
-    # what cannot be rewritten.
+    # what cannot be rewritten; media cannot be searched for tenant terms either.
     protects = any(
         action in {"mask", "mask_last4", "block"} for action in actions.values()
-    )
+    ) or (content is not None and content.protects)
     unmasked = {} if unmasked is None else unmasked
 
     placeholders_by_value = {
@@ -358,7 +372,9 @@ def scrub_payload(
                 _, found = scrubber.scrub(value, actions, unmasked=kept)
                 detected = protected(found, kept)
                 pii_cache[value] = detected
-                if not found and not kept:
+                # Identifiers are not searched for tenant terms, so a clean
+                # identifier says nothing about the same text as content.
+                if not found and not kept and content is None:
                     text_cache[value] = value
             masked, blocked = detected
             if blocked:
@@ -415,6 +431,7 @@ def scrub_payload(
             placeholders_by_value=placeholders_by_value,
             unmasked=kept,
             placeholder_key=placeholder_key,
+            content=content,
         )
         verification_map.update(found)
         unmasked.update(kept)
