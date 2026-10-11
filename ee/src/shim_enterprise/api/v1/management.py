@@ -178,6 +178,7 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
+    count_approvers,
     lock_tenant,
     no_impact,
     record_managed_write,
@@ -2654,64 +2655,23 @@ async def update_gateway_settings(
     session: AsyncSession = Depends(get_db),
 ) -> GatewaySettingsView:
     tenant_id = _tenant_id(user)
-    changes = patch.model_dump(exclude_unset=True)
-    row = await session.get(
-        OrganizationGatewaySettings, tenant_id, with_for_update=True
-    )
-    if row is None:
-        if GatewaySettings.model_validate(changes) == GatewaySettings():
-            return _gateway_settings_view(None)
-        await session.execute(
-            insert(OrganizationGatewaySettings)
-            .values(organization_id=tenant_id)
-            .on_conflict_do_nothing()
-        )
-        row = await session.get(
-            OrganizationGatewaySettings,
-            tenant_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        assert row is not None
-    before = stored_settings(row.settings)
-    after = GatewaySettings.model_validate({**before.model_dump(), **changes})
-    if after == before:
-        # Nothing to write; a row inserted above came from a concurrent first write.
-        return _gateway_settings_view(row)
-    # Only the fields this PATCH named are written; keys another build wrote stay.
-    row.settings = {
-        key: value for key, value in row.settings.items() if key not in changes
-    } | after.model_dump(mode="json", include=set(changes), exclude_defaults=True)
-    row.revision += 1
-    row.updated_by = user.id
-    await _audit(
-        session,
-        user,
-        "tenant.gateway_settings_updated",
-        str(tenant_id),
-        details=change_details(
-            before.model_dump(mode="json"), after.model_dump(mode="json")
-        ),
-    )
-    direction, relaxed = classify_change(before, after)
-    if direction == "relaxing":
-        await _audit(
-            session,
-            user,
-            "tenant.gateway_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
+    await lock_tenant(session, tenant_id)
+    before = (await GATEWAY_SETTINGS.snapshot(session, tenant_id, None))["_"]
+    after = {**before, **patch.model_dump(mode="json", exclude_unset=True)}
+    async with record_managed_write(
+        session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
+    ) as version:
+        if version is not None:
+            await GATEWAY_SETTINGS.apply(
+                session, user, tenant_id, "_", before, after, policy_version=version
+            )
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
-    except Exception as exc:
-        logger.warning(
-            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+    await GATEWAY_SETTINGS.after_commit(request, tenant_id)
+    return _gateway_settings_view(
+        await session.get(
+            OrganizationGatewaySettings, tenant_id, populate_existing=True
         )
-    await session.refresh(row)
-    return _gateway_settings_view(row)
+    )
 
 
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
@@ -5483,6 +5443,137 @@ class _PrivacyResource:
             )
 
 
+async def _require_two_approvers(session: AsyncSession, organization_id: UUID) -> None:
+    if await count_approvers(session, organization_id) < 2:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUR_EYES_UNAVAILABLE",
+                "message": "Four eyes needs two active administrators.",
+            },
+        )
+
+
+class _GatewaySettingsResource:
+    name = "gateway_settings"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        row = await session.get(OrganizationGatewaySettings, organization_id)
+        settings = GatewaySettings() if row is None else stored_settings(row.settings)
+        return {"_": settings.model_dump(mode="json")}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        patch = _validated(GatewaySettingsPatch, proposed)
+        after = {**(before or {}), **patch.model_dump(mode="json", exclude_unset=True)}
+        turned_on = after.get("four_eyes") == "relaxing"
+        if turned_on and (before or {}).get("four_eyes") != "relaxing":
+            await _require_two_approvers(session, actor.organization_id)
+        return after
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert before is not None and after is not None
+        previous = GatewaySettings.model_validate(before)
+        current = GatewaySettings.model_validate(after)
+        if current.four_eyes == "relaxing" and previous.four_eyes != "relaxing":
+            await _require_two_approvers(session, organization_id)
+        changed = {
+            field
+            for field in GatewaySettings.model_fields
+            if getattr(previous, field) != getattr(current, field)
+        }
+        await session.execute(
+            insert(OrganizationGatewaySettings)
+            .values(organization_id=organization_id)
+            .on_conflict_do_nothing()
+        )
+        row = await session.get(
+            OrganizationGatewaySettings,
+            organization_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        assert row is not None
+        # Only the changed fields are written; keys another build wrote stay.
+        row.settings = {
+            key: value for key, value in row.settings.items() if key not in changed
+        } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
+        row.revision += 1
+        row.updated_by = actor.id
+        await _audit(
+            session,
+            actor,
+            "tenant.gateway_settings_updated",
+            str(organization_id),
+            details={
+                **change_details(
+                    previous.model_dump(mode="json"), current.model_dump(mode="json")
+                ),
+                **version_detail(policy_version),
+            },
+        )
+        direction, relaxed = classify_change(previous, current)
+        if direction == "relaxing":
+            await _audit(
+                session,
+                actor,
+                "tenant.gateway_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_change(
+            GatewaySettings.model_validate(before),
+            GatewaySettings.model_validate(after),
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        try:
+            cache: CacheService = request.app.state.cache
+            await CacheManager(cache).invalidate_gateway_settings(str(organization_id))
+        except Exception as exc:
+            logger.warning(
+                "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+            )
+
+
 _TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_limit")
 
 
@@ -6149,6 +6240,7 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
 
 
 PRIVACY = _PrivacyResource()
+GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()

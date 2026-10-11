@@ -13,6 +13,7 @@ from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 logger = logging.getLogger(__name__)
 
 Direction = Literal["tightening", "relaxing", "neutral"]
+FourEyes = Literal["off", "relaxing"]
 _logged_unknown: set[tuple[str, str]] = set()
 
 
@@ -31,6 +32,8 @@ class GatewaySettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     response_analysis: list[str] = []
+    # A change that loosens protection needs a second administrator's approval.
+    four_eyes: FourEyes = "off"
 
     @field_validator("response_analysis")
     @classmethod
@@ -42,6 +45,7 @@ class GatewaySettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     response_analysis: list[str] | None = None
+    four_eyes: FourEyes | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -88,9 +92,19 @@ def _neutral(_before: Any, _after: Any) -> Direction:
     return "neutral"
 
 
+def _relaxing(_before: Any, _after: Any) -> Direction:
+    return "relaxing"
+
+
+def _four_eyes(_before: FourEyes, after: FourEyes) -> Direction:
+    return "relaxing" if after == "off" else "tightening"
+
+
+# A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
+    "four_eyes": _four_eyes,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
@@ -101,7 +115,9 @@ def classify_change(
     before: GatewaySettings, after: GatewaySettings
 ) -> tuple[Direction, list[str]]:
     directions = {
-        field: SETTING_DIRECTIONS[field](getattr(before, field), getattr(after, field))
+        field: SETTING_DIRECTIONS.get(field, _relaxing)(
+            getattr(before, field), getattr(after, field)
+        )
         for field in GatewaySettings.model_fields
         if getattr(before, field) != getattr(after, field)
     }

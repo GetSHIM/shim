@@ -26,6 +26,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
+- [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
@@ -248,6 +249,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+| `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -262,7 +264,9 @@ the changed fields and increments `revision`; a PATCH that changes nothing
 writes no event and keeps the revision. A change the setting's direction
 classifies as relaxing also records `tenant.gateway_protection_relaxed`
 ([decision evidence](POLICY_DECISIONS.md#management-change-details));
-`response_analysis` only measures, so it is neutral. Gateways read the settings
+`response_analysis` only measures, so it is neutral; turning `four_eyes` off is
+relaxing, and a field without a direction counts as relaxing. Every change
+records a [policy version](#plan-apply-and-undo-a-change). Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
 
@@ -724,6 +728,55 @@ Notes:
   deployment registered after the version is disabled instead of deleted
   (`approximated`).
 - The resources, what counts as relaxing and the audit details are in
+  [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
+## Require a second admin for loosening changes
+
+Make every change that loosens protection wait for a second administrator.
+
+1. As an owner or admin, turn it on:
+   `PATCH /api/v1/management/gateway-settings` with `{"four_eyes": "relaxing"}`.
+   It needs two active people whose role can approve (owners and admins, not
+   service accounts); with fewer the answer is 409 `FOUR_EYES_UNAVAILABLE`.
+2. A direct write that loosens protection (masking off, a raised limit, a
+   model added to a key, a new deployment, a deleted budget, ...) now answers
+   409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the `resource.item.field`
+   names it would loosen, and writes nothing. Tightening and neutral writes are
+   unchanged.
+3. Make the change a [plan](#plan-apply-and-undo-a-change) instead. Applying a
+   loosening plan answers 202 with the plan in `pending_approval` and alerts
+   your [forward targets](#send-tenant-alerts) (`kind:
+   policy_approval_requested`, ids and resource names only). A restore that
+   loosens waits the same way.
+4. Another owner or admin, neither the plan's creator nor the one who applied
+   it, approves it: `POST /api/v1/management/policy/plans/{id}/approve`
+   (`plans.approve`) with an optional `{"note": "..."}`. The plan is applied in
+   the same call. `POST .../reject` closes it as `rejected` and changes nothing.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"four_eyes": "relaxing"}'
+
+curl -X POST "http://localhost:8000/api/v1/management/policy/plans/$PLAN_ID/approve" \
+  -H "Authorization: Bearer $OTHER_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"note": "checked with the data officer"}'
+```
+
+Notes:
+
+- A pending plan expires 72 hours after it was submitted. An approval that
+  finds an item changed since answers 409 `PLAN_STALE` and the plan keeps
+  waiting; reject it and plan again.
+- The creator, the submitter and service accounts get 403
+  `APPROVER_NOT_ELIGIBLE`. The note is kept on the plan (`context.decision_note`),
+  never in the audit chain.
+- Turning four eyes off is itself loosening, so it needs approval too. When
+  fewer than two people can approve (an administrator left), an owner may turn
+  it off directly; that write is audited as
+  `tenant.four_eyes_single_admin_override` and alerted like a privacy
+  relaxation.
+- What counts as loosening per resource is in
   [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
 
 ## See what changed after a prompt change

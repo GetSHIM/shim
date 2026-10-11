@@ -3037,6 +3037,24 @@
         "title": "DailyUsageView",
         "type": "object"
       },
+      "DecisionInput": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "DecisionInput",
+        "type": "object"
+      },
       "Delivery": {
         "description": "Delivery mode for the generated content.",
         "enum": [
@@ -4753,6 +4771,15 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "four_eyes": {
+            "default": "off",
+            "enum": [
+              "off",
+              "relaxing"
+            ],
+            "title": "Four Eyes",
+            "type": "string"
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -4768,6 +4795,21 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "four_eyes": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "relaxing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Four Eyes"
+          },
           "response_analysis": {
             "anyOf": [
               {
@@ -18652,6 +18694,16 @@
             },
             "description": "Successful Response"
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -18669,6 +18721,122 @@
           }
         ],
         "summary": "Apply Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/approve": {
+      "post": {
+        "operationId": "approve_plan_api_v1_management_policy_plans__plan_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Approve Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/reject": {
+      "post": {
+        "operationId": "reject_plan_api_v1_management_policy_plans__plan_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Plan",
         "tags": [
           "policy"
         ]
@@ -18857,6 +19025,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
           },
           "422": {
             "content": {

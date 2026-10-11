@@ -158,7 +158,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.privacy_policy_updated` | `before` and `after` of the privacy switches and of `entity_actions` when they changed |
 | `tenant.privacy_protection_relaxed` | `relaxed`: the switches turned from on to off by name, and `entity_actions.<TYPE>` for a type whose override moved its effective action down the order `block`, `mask`, `mask_last4`, `monitor`, `off`, `placeholder_mode` when it moved from `random` to `stable`, `bulk_threshold` when it was raised or cleared, `response_scan` when it moved from `count` to `off`, and `rules.<id>` for an enforced tenant rule that was removed, moved to `monitor`, given a weaker action, a narrower scope or a match other than added terms or patterns |
 | `tenant.rules_updated` | `revision`, and `added`, `changed` and `removed` rules as `id`, `kind`, `action`, `state`, the non-empty `scope` keys, `match_changed` and entry counts (`{"terms": 12}`); never a term, pattern, name or match hash |
-| `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed |
+| `tenant.gateway_settings_updated` | `before` and `after` of the gateway settings fields that changed, and `policy_version` |
 | `tenant.gateway_protection_relaxed` | `relaxed`: the gateway settings fields whose change their direction classifies as relaxing; written with the update |
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
@@ -212,12 +212,13 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Six resources are managed: every write to them records a version, a plan can
+Seven resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
 | --- | --- | --- | --- | --- |
 | `privacy` | `_` | the five switches, `entity_actions`, `placeholder_mode`, `bulk_threshold`, `response_scan` | `PUT /settings/pii` | the change records `tenant.privacy_protection_relaxed` |
+| `gateway_settings` | `_` | every gateway settings field | `PATCH /gateway-settings` | a field's direction says so (`four_eyes` turned off); a field without a direction always |
 | `teams` | team id | `name` and the three limits | `POST /teams`, `PUT /teams/{id}` | a limit is raised or removed |
 | `api_keys` | key id | `allowed_models`, `team_id` | `PATCH /api-keys/{id}` | a model is added or the list removed; the key leaves its team |
 | `deployments` | deployment id | every registration field and `enabled` | `POST`, `PUT /model-deployments` | created; enabled; `base_url` changed; `external` to `internal` |
@@ -282,6 +283,39 @@ current state (`/policy/state`) or one version's states needs, besides
 `tenant.policy_plan_applied` (`plan_id`, `risk`, `resources`, `policy_version`)
 and `tenant.policy_version_restored` (`target_version`, `plan_id`,
 `policy_version`).
+
+### Four eyes
+
+With the gateway setting `four_eyes` at `relaxing`, a change that loosens
+protection needs a second administrator. Turning it on needs at least two
+active human users whose permissions hold `plans.approve` (409
+`FOUR_EYES_UNAVAILABLE` otherwise).
+
+- A direct write to a managed resource that classifies as relaxing is refused
+  before anything is written: 409 `{"code": "CHANGE_REQUIRES_APPROVAL",
+  "relaxed": [...]}`, each entry `resource.item.field` (or `resource.item` for a
+  created or deleted item), a field listed when changing it alone would relax.
+- Applying a relaxing plan, or a restore whose plan relaxes, does not apply it:
+  the plan becomes `pending_approval` with `submitted_by` and `submitted_at`,
+  expires 72 hours later, and the call answers 202. The same transaction queues
+  one `policy.approval_requested` intent (idempotency key
+  `policy_approval:<plan_id>`: organization, plan id, risk, resources and
+  submitter, never a value), which the outbox worker sends to every enabled
+  forward target as `kind: "policy_approval_requested"`.
+- `POST /policy/plans/{id}/approve` (`plans.approve`) applies it with the stale
+  check, `approved_by` and `approved_at`; `POST .../reject` makes it `rejected`.
+  Either needs a `pending_approval` plan (409 `PLAN_STATE_CONFLICT`) and a human
+  who neither created nor submitted it (403 `APPROVER_NOT_ELIGIBLE`). An
+  optional `note` is kept on the plan as `context.decision_note`.
+- Turning `four_eyes` off is relaxing. While fewer than two users can approve,
+  an owner may still turn it off directly: the write gets a version, the audit
+  event `tenant.four_eyes_single_admin_override` and a
+  `privacy_protection_relaxed` alert naming `four_eyes`.
+
+Tightening and neutral writes and plans are unchanged, and with `four_eyes`
+`off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,
+`tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
+`risk`, `resources`).
 
 ## Audit evidence bundle
 

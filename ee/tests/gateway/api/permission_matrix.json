@@ -845,6 +845,24 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Permission required: plans.apply"
  },
+ "POST /api/v1/management/policy/plans/{plan_id}/approve": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.approve"
+ },
+ "POST /api/v1/management/policy/plans/{plan_id}/reject": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.approve"
+ },
  "POST /api/v1/management/policy/versions/{version}/restore": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",

@@ -37,7 +37,7 @@ write nor own gateway keys.
 | `incidents.manage` | Open incidents, change them and their status, record notifications | x | x | | |
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
-| `plans.approve` | Approve or reject a pending plan | x | x | | |
+| `plans.approve` | Approve or reject a pending plan ([four eyes](POLICY_DECISIONS.md#four-eyes)); never a service account, nor the plan's creator or submitter | x | x | | |
 | `requests.approve` | Decide request approvals | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
 | `config.manage` | Signing keys and file mode | x | | | |

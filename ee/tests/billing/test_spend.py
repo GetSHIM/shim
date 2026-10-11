@@ -306,9 +306,9 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     )
     user = SimpleNamespace(organization_id=uuid4())
     # execute takes the tenant lock every managed write holds; scalar reads the
-    # current policy version.
+    # current policy version, then the four-eyes switch a deletion asks for.
     session = SimpleNamespace(
-        delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(return_value=0)
+        delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(side_effect=[0, None])
     )
     monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
 

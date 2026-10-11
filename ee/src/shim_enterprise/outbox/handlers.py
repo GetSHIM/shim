@@ -31,6 +31,7 @@ BULK_DISCLOSURE = "privacy.bulk_disclosure"
 EVIDENCE_MONTHLY_READY = "evidence.monthly_ready"
 INCIDENT_DEADLINE_APPROACHING = "incident.deadline_approaching"
 INCIDENT_DEADLINE_MISSED = "incident.deadline_missed"
+POLICY_APPROVAL_REQUESTED = "policy.approval_requested"
 _DELIVERY_TIMEOUT_SECONDS = 10.0
 _COMPLIANCE_DELIVERY_PURPOSE = "compliance-forward-target-delivery"
 
@@ -73,6 +74,7 @@ def build_publisher() -> OutboxPublisher:
     publisher.register(EVIDENCE_MONTHLY_READY, announce_monthly_evidence)
     publisher.register(INCIDENT_DEADLINE_APPROACHING, announce_incident_deadline)
     publisher.register(INCIDENT_DEADLINE_MISSED, announce_incident_deadline)
+    publisher.register(POLICY_APPROVAL_REQUESTED, announce_policy_approval)
     register_analytics_handlers(publisher)
     return publisher
 
@@ -218,6 +220,30 @@ async def announce_incident_deadline(message: OutboxMessage) -> None:
         )
 
 
+async def announce_policy_approval(message: OutboxMessage) -> None:
+    from shim_enterprise.core.database import AsyncSessionLocal
+
+    payload = _tenant_payload(message, aggregate_type="policy_plan")
+    if payload.get("plan_id") != message.aggregate_id:
+        raise ValueError("policy approval notice identity mismatch")
+    async with AsyncSessionLocal.begin() as session:
+        await ComplianceForwarderService().send_tenant_alert(
+            session,
+            TenantId(message.organization_id),
+            body={
+                "source": "shim",
+                "event_type": "tenant_policy",
+                "kind": "policy_approval_requested",
+                "plan_id": message.aggregate_id,
+                "risk": payload.get("risk"),
+                "resources": payload.get("resources"),
+                "submitted_by": payload.get("submitted_by"),
+                "review": f"/api/v1/management/policy/plans/{message.aggregate_id}",
+            },
+            delivery_key=f"policy_approval:{message.aggregate_id}",
+        )
+
+
 async def deliver_compliance_event(message: OutboxMessage) -> None:
     tenant_level = message.aggregate_type == "organization"
     payload = _tenant_payload(
@@ -249,6 +275,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
             "privacy_protection_relaxed": "shim privacy protection turned off",
             "bulk_disclosure": "shim bulk disclosure in one request",
             "evidence_monthly_ready": "shim monthly evidence file ready",
+            "policy_approval_requested": "shim policy change waits for approval",
         }
         await _send_compliance_email(
             endpoint,
@@ -344,6 +371,12 @@ def _compliance_text(body: dict) -> str:
         return (
             f"shim incident {body.get('title')}: the {body.get('regime')} "
             f"notification {due.format(body.get('due_at'))}"
+        )
+    if body.get("kind") == "policy_approval_requested":
+        resources = ", ".join(map(str, body.get("resources") or []))
+        return (
+            f"shim policy plan {body.get('plan_id')} loosens {resources} and waits "
+            f"for a second administrator: {body.get('review')}"
         )
     if body.get("kind") == "evidence_monthly_ready":
         return (
