@@ -1,0 +1,1990 @@
+{
+  "format": "shim.detection.corpus",
+  "version": 1,
+  "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+  "entities": [
+    "PERSON_NAME_TR"
+  ],
+  "cases": [
+    {
+      "id": "cue-sayin-suffix",
+      "text": "Sayın Ahmet Yılmaz'ın başvurusu incelendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "cue-sayin-comma",
+      "text": "Sayın Ayşe Kaya, talebiniz alınmıştır.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kaya"
+        }
+      ]
+    },
+    {
+      "id": "cue-sn-dot",
+      "text": "Sn. Mehmet Öztürk ile görüşme yapıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Öztürk"
+        }
+      ]
+    },
+    {
+      "id": "cue-bay",
+      "text": "Bay Hakan Tezel toplantıya katılamadı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hakan Tezel"
+        }
+      ]
+    },
+    {
+      "id": "cue-bayan",
+      "text": "Bayan Zeynep Arıkan hesabını kapatmak istiyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zeynep Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "cue-hn",
+      "text": "Hn. Fatma Gökalp'e iletilmek üzere.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Gökalp"
+        }
+      ]
+    },
+    {
+      "id": "cue-lowercase-sayin",
+      "text": "sayın Kerem Bayındır kredi başvurusunda bulundu",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Kerem Bayındır"
+        }
+      ]
+    },
+    {
+      "id": "cue-capitals",
+      "text": "SAYIN MUSTAFA ÇELİK",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "MUSTAFA ÇELİK"
+        }
+      ]
+    },
+    {
+      "id": "cue-rare-names",
+      "text": "Sayın Gökberk Tunçsiper, şikayetiniz ilgili birime iletildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Gökberk Tunçsiper"
+        }
+      ]
+    },
+    {
+      "id": "cue-three-tokens",
+      "text": "Sayın Elif Nur Sezgin'in itirazı reddedildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Elif Nur Sezgin"
+        }
+      ]
+    },
+    {
+      "id": "cue-sn-no-dot",
+      "text": "Sn Burak Ilıcak'tan gelen e-posta ekte.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Burak Ilıcak"
+        }
+      ]
+    },
+    {
+      "id": "cue-mid-sentence",
+      "text": "Bu mektup Sayın Okan Karasu adına yazılmıştır.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Okan Karasu"
+        }
+      ]
+    },
+    {
+      "id": "cue-surname-alone",
+      "text": "Sayın Demir, ödemeniz gecikmiştir.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Demir"
+        }
+      ]
+    },
+    {
+      "id": "cue-before-hanim",
+      "text": "Sayın Selin Okutan Hanım'ın dosyası",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin Okutan"
+        }
+      ]
+    },
+    {
+      "id": "cue-bay-suffix",
+      "text": "Bay Yusuf Ersoy'un hesabından para çekildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Yusuf Ersoy"
+        }
+      ]
+    },
+    {
+      "id": "trail-hanim",
+      "text": "Ayşe Hanım bugün şubeye gelecek.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe"
+        }
+      ]
+    },
+    {
+      "id": "trail-bey-suffix",
+      "text": "Ahmet Bey'e dosyayı ilettim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet"
+        }
+      ]
+    },
+    {
+      "id": "trail-full-name",
+      "text": "Toplantıda Mehmet Yılmaz Bey de vardı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "trail-lowercase",
+      "text": "Fatma hanım dün aradı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma"
+        }
+      ]
+    },
+    {
+      "id": "trail-two-people",
+      "text": "Kemal Bey ile Zehra Hanım görüştü.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Kemal"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zehra"
+        }
+      ]
+    },
+    {
+      "id": "trail-hanimefendi",
+      "text": "Merhaba Selin Hanımefendi, size nasıl yardımcı olabilirim?",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin"
+        }
+      ]
+    },
+    {
+      "id": "trail-surname-bey",
+      "text": "Yılmaz Bey kredi limitini sordu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "trail-double-first",
+      "text": "Ali Rıza Bey'in hesabı bloke edildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ali Rıza"
+        }
+      ]
+    },
+    {
+      "id": "trail-hanim-suffix",
+      "text": "Canan Hanım'a teşekkür ederiz.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Canan"
+        }
+      ]
+    },
+    {
+      "id": "trail-after-thanks",
+      "text": "Teşekkürler Murat bey, iyi günler.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Murat"
+        }
+      ]
+    },
+    {
+      "id": "trail-gulay",
+      "text": "Gülay Hanım'ın talebi onaylandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Gülay"
+        }
+      ]
+    },
+    {
+      "id": "trail-sahin",
+      "text": "Şahin Bey yarın gelecek.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Şahin"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-01",
+      "text": "Ahmet Yılmaz aradı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-02",
+      "text": "Müşteri Ayşe Kaya kartını kaybettiğini bildirdi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kaya"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-03",
+      "text": "Mehmet Ali Kaya'nın kredisi onaylandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Ali Kaya"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-04",
+      "text": "Fatma Şahin ve Mustafa Çelik aynı adreste oturuyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Şahin"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mustafa Çelik"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-05",
+      "text": "Hesap sahibi Emine Yıldız.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Emine Yıldız"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-06",
+      "text": "Zeynep Demir dün şubeye geldi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zeynep Demir"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-07",
+      "text": "Hüseyin Aydın'ın borcu kapatıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hüseyin Aydın"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-08",
+      "text": "Elif Özdemir yeni bir hesap açtı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Elif Özdemir"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-09",
+      "text": "Murat Arslan ile görüşüldü.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Murat Arslan"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-10",
+      "text": "Hatice Doğan'a SMS gönderildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hatice Doğan"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-11",
+      "text": "İbrahim Kılıç havale talimatı verdi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "İbrahim Kılıç"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-12",
+      "text": "Ömer Çetin kartının limitini artırmak istiyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ömer Çetin"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-13",
+      "text": "Esra Koç'un adresi güncellendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Esra Koç"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-14",
+      "text": "Emre Kurt bugün işe başladı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Emre Kurt"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-15",
+      "text": "Merve Özkan şifresini unuttu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Merve Özkan"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-16",
+      "text": "Burak Şimşek'in hesabında şüpheli işlem var.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Burak Şimşek"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-17",
+      "text": "Büşra Polat ile Osman Korkmaz kardeştir.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Büşra Polat"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Osman Korkmaz"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-18",
+      "text": "Can Yıldırım'dan gelen dilekçe ekte.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Can Yıldırım"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-19",
+      "text": "Deniz Aksoy yurt dışına para göndermek istiyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Deniz Aksoy"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-20",
+      "text": "Umut Erdoğan kredi kartı başvurusu yaptı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Umut Erdoğan"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-21",
+      "text": "Gül Yavuz'un aidat borcu var.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Gül Yavuz"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-22",
+      "text": "Barış Acar şikayetini geri çekti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Barış Acar"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-23",
+      "text": "Kemal Aktaş'a ait kasa kiralandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Kemal Aktaş"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-24",
+      "text": "Tuğba Güler ve Serkan Yalçın evlendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Tuğba Güler"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Serkan Yalçın"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-25",
+      "text": "Selim Güneş müşteri temsilcisiyle konuştu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selim Güneş"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-26",
+      "text": "Derya Bulut'un sigortası yenilendi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Derya Bulut"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-27",
+      "text": "Volkan Keskin ödeme planı istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Volkan Keskin"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-28",
+      "text": "Canan Ünal hesap özeti talep etti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Canan Ünal"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-29",
+      "text": "Aykut Turan'a ulaşılamadı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Aykut Turan"
+        }
+      ]
+    },
+    {
+      "id": "listed-surname-30",
+      "text": "Ebru Işık ile görüşme kaydı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ebru Işık"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-01",
+      "text": "Selin Arıkan sözleşmeyi imzaladı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-02",
+      "text": "Hakan Tezel'in ödemesi gecikti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hakan Tezel"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-03",
+      "text": "Ayten Bayındır emekli maaşını sordu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayten Bayındır"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-04",
+      "text": "Cihan Okutan kartını iptal ettirdi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Cihan Okutan"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "other-surname-05",
+      "text": "Gizem Karasu'nun başvurusu eksik.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Gizem Karasu"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "other-surname-06",
+      "text": "Tolga Sezgin yeni adresini bildirdi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Tolga Sezgin"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-07",
+      "text": "Pınar Ersoy dün akşam aradı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Pınar Ersoy"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-08",
+      "text": "Melike Gökalp ile toplantı ayarlandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Melike Gökalp"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-09",
+      "text": "Onur Ilıcak'a para iadesi yapıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Onur Ilıcak"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "other-surname-10",
+      "text": "Sibel Kantarcı borç yapılandırması istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Sibel Kantarcı"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-11",
+      "text": "Mert Uyanık bugün şubeye uğradı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mert Uyanık"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "other-surname-12",
+      "text": "Coşkun Albayrak'ın kredisi kapandı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Coşkun Albayrak"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "other-surname-13",
+      "text": "Özge Tanrıverdi kart aidatına itiraz etti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Özge Tanrıverdi"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-14",
+      "text": "Kerem Yazgan hesabını dondurmak istiyor.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Kerem Yazgan"
+        }
+      ]
+    },
+    {
+      "id": "other-surname-15",
+      "text": "Seda Erginer'e e-posta atıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Seda Erginer"
+        }
+      ],
+      "known_gap": "decision: a first name that is also a word needs a cue or a listed surname",
+      "known_actual": []
+    },
+    {
+      "id": "suffix-01",
+      "text": "Mustafa Yılmaz'ın hesabı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mustafa Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "suffix-02",
+      "text": "Ayşe Kaya’ya ulaşılamadı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kaya"
+        }
+      ]
+    },
+    {
+      "id": "suffix-03",
+      "text": "Ali Demir'e havale",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ali Demir"
+        }
+      ]
+    },
+    {
+      "id": "suffix-04",
+      "text": "Hasan Şahin'den gelen talep",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hasan Şahin"
+        }
+      ]
+    },
+    {
+      "id": "suffix-05",
+      "text": "Zehra Çelik'le konuştum",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zehra Çelik"
+        }
+      ]
+    },
+    {
+      "id": "suffix-06",
+      "text": "Emine Arıkan'ın dilekçesi",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Emine Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "suffix-07",
+      "text": "Yasemin Öztürk’ün kartı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Yasemin Öztürk"
+        }
+      ]
+    },
+    {
+      "id": "suffix-08",
+      "text": "Murat Koç'tan bilgi alındı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Murat Koç"
+        }
+      ]
+    },
+    {
+      "id": "capitals-01",
+      "text": "AD SOYAD: AHMET YILMAZ",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "AHMET YILMAZ"
+        }
+      ]
+    },
+    {
+      "id": "capitals-02",
+      "text": "Müşteri: AYŞE KAYA, TCKN talep edildi",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "AYŞE KAYA"
+        }
+      ]
+    },
+    {
+      "id": "capitals-03",
+      "text": "Adı Soyadı: Mehmet ÖZTÜRK",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet ÖZTÜRK"
+        }
+      ]
+    },
+    {
+      "id": "capitals-04",
+      "text": "ALICI: FATMA ŞAHİN",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "FATMA ŞAHİN"
+        }
+      ]
+    },
+    {
+      "id": "capitals-05",
+      "text": "GÖNDEREN: MEHMET ALİ KAYA",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "MEHMET ALİ KAYA"
+        }
+      ]
+    },
+    {
+      "id": "capitals-06",
+      "text": "Hesap sahibi: ZEYNEP ARIKAN",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "ZEYNEP ARIKAN"
+        }
+      ]
+    },
+    {
+      "id": "capitals-07",
+      "text": "Kart üzerindeki isim: EMRE ÇELİK",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "EMRE ÇELİK"
+        }
+      ]
+    },
+    {
+      "id": "capitals-08",
+      "text": "Vekil: Av. Hasan YILDIZ",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hasan YILDIZ"
+        }
+      ]
+    },
+    {
+      "id": "capitals-09",
+      "text": "İMZA: ELİF DEMİR",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "ELİF DEMİR"
+        }
+      ]
+    },
+    {
+      "id": "capitals-10",
+      "text": "Lehtar: CANAN GÜNEŞ",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "CANAN GÜNEŞ"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-01",
+      "text": "Ayşe Nur Yılmaz hesap açtı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Nur Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-02",
+      "text": "Mehmet Emin Kaya'nın borcu",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Emin Kaya"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-03",
+      "text": "Ali Osman Demir ile konuşuldu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ali Osman Demir"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-04",
+      "text": "Fatma Zehra Arıkan başvurdu.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Zehra Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-05",
+      "text": "Ahmet Can Şahin kredi istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Can Şahin"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-06",
+      "text": "Hatice Kübra Çelik'e ulaşıldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hatice Kübra Çelik"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-07",
+      "text": "Mustafa Kemal Ersoy dün geldi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mustafa Kemal Ersoy"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-08",
+      "text": "Elif Su Doğan'ın velisi aradı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Elif Su Doğan"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-09",
+      "text": "Ayşe Yılmaz Kaya evlilik sonrası soyadını güncelledi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Yılmaz Kaya"
+        }
+      ]
+    },
+    {
+      "id": "middle-or-two-surnames-10",
+      "text": "Zeynep Demir Öztürk'ün hesabı",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zeynep Demir Öztürk"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-01",
+      "text": "Geçen hafta Kadıköy şubemize gelen ve uzun süredir bankamızla çalışan müşterimiz Ahmet Yılmaz, kredi kartı ekstresinde tanımadığı iki işlem olduğunu, bu işlemlerin kendisi tarafından yapılmadığını ve kartının iptal edilerek yenisinin gönderilmesini istediğini belirtti.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-02",
+      "text": "Şikayet metni: Merhaba, ben Ayşe Kaya, üç aydır aynı sorun için çağrı merkezinizi arıyorum ve her seferinde farklı bir cevap alıyorum, lütfen bu konuyu bir yöneticiye iletin.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kaya"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-03",
+      "text": "Ekteki dilekçede, Mehmet Öztürk ile eşi Fatma Öztürk'ün ortak hesabından yapılan havalelerin iptal edilmesi talep edilmektedir.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Öztürk"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Öztürk"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-04",
+      "text": "Müşteri temsilcimiz Selin Arıkan, görüşme sırasında müşterinin sesinin kaydedildiğini hatırlattı ve onay aldı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-05",
+      "text": "Dün akşam saat dokuz sularında Burak Şimşek adlı bir kişi kendisini banka çalışanı olarak tanıtarak annemi aradı ve kart bilgilerini istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Burak Şimşek"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-06",
+      "text": "Kira sözleşmesine göre ev sahibi Hüseyin Aydın, kiracı ise Elif Karasu olup, depozito iade edilmemiştir.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hüseyin Aydın"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Elif Karasu"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-07",
+      "text": "Bu e-postayı, şirketimizin muhasebe müdürü Kemal Aktaş'ın talimatıyla, geçen ayın faturalarının düzeltilmesi için gönderiyorum.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Kemal Aktaş"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-08",
+      "text": "Lütfen aşağıdaki yazıyı özetle: Sayın Okan Bayındır, 12 Mart tarihli başvurunuz değerlendirilmiş olup, istenen belgeler eksik olduğundan işleminiz durdurulmuştur.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Okan Bayındır"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-09",
+      "text": "Toplantıya Zeynep Demir, Murat Arslan ve Canan Ünal katıldı; karar oybirliğiyle alındı.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zeynep Demir"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Murat Arslan"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Canan Ünal"
+        }
+      ]
+    },
+    {
+      "id": "long-sentence-10",
+      "text": "Hasta yakını Emine Yıldız, babası Mustafa Yıldız'ın tahlil sonuçlarının hâlâ gelmediğini söyledi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Emine Yıldız"
+        },
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mustafa Yıldız"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-01",
+      "text": "Ahmet Yılmaz, TCKN 10000000146",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yılmaz"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-02",
+      "text": "Ayşe Kaya TR33 0006 1005 1978 6457 8413 26 numaralı hesaba",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kaya"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-03",
+      "text": "Alıcı: Mehmet Demir, IBAN: TR330006100519786457841326",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Demir"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-04",
+      "text": "Fatma Çelik (10000000146) adına",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Çelik"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-05",
+      "text": "Hesap sahibi Hakan Tezel, IBAN TR33 0006 1005 1978 6457 8413 26",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Hakan Tezel"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-06",
+      "text": "Zeynep Arıkan 10000000146 kimlik numarasıyla başvurdu",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Zeynep Arıkan"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-07",
+      "text": "Gönderen: AYŞE KAYA / TR33 0006 1005 1978 6457 8413 26",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "AYŞE KAYA"
+        }
+      ]
+    },
+    {
+      "id": "next-to-id-08",
+      "text": "Selin Okutan'ın TC kimlik no: 10000000146",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin Okutan"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-01",
+      "text": "Sayin Ahmet Yilmaz, basvurunuz alindi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet Yilmaz"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-02",
+      "text": "Mehmet Ozturk aradi, kartini kaybetmis.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Ozturk"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-03",
+      "text": "Ayse Kaya'nin hesabi kapatildi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayse Kaya"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-04",
+      "text": "Mustafa Celik ile gorustuk.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mustafa Celik"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-05",
+      "text": "Fatma Sahin kredi istedi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Fatma Sahin"
+        }
+      ]
+    },
+    {
+      "id": "ascii-typed-06",
+      "text": "Huseyin Dogan'a ulasilamadi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Huseyin Dogan"
+        }
+      ]
+    },
+    {
+      "id": "not-institution-01",
+      "text": "Deniz Kuvvetleri komutanı açıklama yaptı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-02",
+      "text": "Umut Sigorta poliçesi yenilendi.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-03",
+      "text": "Ziraat Bankası şubesine gittim.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-04",
+      "text": "Yıldız Teknik Üniversitesi'nde okuyor.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-05",
+      "text": "Koç Holding hisseleri yükseldi.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-06",
+      "text": "Doğan Holding yeni yatırımını duyurdu.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-07",
+      "text": "Gül Kurumsal Danışmanlık ile anlaştık.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-08",
+      "text": "Ayşe Kadın fasulyesi tarifi istiyorum.",
+      "expect": [],
+      "known_gap": "a dish named after a person reads as a first name and a capitalised word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ayşe Kadın"
+        }
+      ]
+    },
+    {
+      "id": "not-institution-09",
+      "text": "Kemal Paşa Caddesi trafiğe kapatıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-10",
+      "text": "Mehmet Akif Ersoy Üniversitesi'nden mezun oldu.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-11",
+      "text": "Fatih Sultan Mehmet Köprüsü'nde trafik var.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-12",
+      "text": "Selin Kozmetik indirim yapıyor.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-13",
+      "text": "Emre Mobilya'dan koltuk aldık.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-14",
+      "text": "Ali Usta Döner Salonu yeni şube açtı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-15",
+      "text": "Can Yayınları yeni kitabını çıkardı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-16",
+      "text": "Hürriyet Gazetesi'nde haber çıktı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-17",
+      "text": "Pınar Süt fiyatlarına zam geldi.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-18",
+      "text": "Ülker Çikolata kampanyası başladı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-19",
+      "text": "Atatürk Havalimanı kapandı.",
+      "expect": []
+    },
+    {
+      "id": "not-institution-20",
+      "text": "Sabancı Holding ve Yapı Kredi Bankası anlaştı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-01",
+      "text": "Barış görüşmeleri yeniden başladı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-02",
+      "text": "Güneş Enerjisi santrali kuruldu.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-03",
+      "text": "Umut verici gelişmeler var.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-04",
+      "text": "Deniz kenarında yürüyüş yaptık.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-05",
+      "text": "Bahar geldi, havalar ısındı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-06",
+      "text": "Can sıkıcı bir durum yaşandı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-07",
+      "text": "Özel Sektör Raporu yayımlandı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-08",
+      "text": "Yargı Paketi meclise geldi.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-09",
+      "text": "Varlık Barışı süresi uzatıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-10",
+      "text": "Ülke Raporu açıklandı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-11",
+      "text": "Kader Planı diye bir şey yok.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-12",
+      "text": "Yeşil Kart başvurusu yaptım.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-13",
+      "text": "Server Kurulumu tamamlandı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-14",
+      "text": "Sahil Yolu trafiğe kapandı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-15",
+      "text": "Hazine Bonosu faizleri düştü.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-16",
+      "text": "Kayıt Formu eksik doldurulmuş.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-17",
+      "text": "Ortak Hesap açılışı için iki imza gerekir.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-18",
+      "text": "Uygun Fiyatlı Konut projesi başladı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-19",
+      "text": "Gül Bahçesi çok güzel.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-20",
+      "text": "Yıldız Sarayı ziyarete açıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-21",
+      "text": "Evrim Teorisi dersi yarın.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-22",
+      "text": "Değer Kaybı hesaplaması yapılacak.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-23",
+      "text": "Divan Edebiyatı sınavı yarın.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-24",
+      "text": "Limon Sosu tarifi lazım.",
+      "expect": []
+    },
+    {
+      "id": "not-common-word-25",
+      "text": "Erik Ağacı budandı.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-01",
+      "text": "Turkcell Superonline faturası geldi.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-02",
+      "text": "Trendyol Express kargosu gecikti.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-03",
+      "text": "Hepsiburada Premium üyeliği iptal edildi.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-04",
+      "text": "Samsung Galaxy telefonum bozuldu.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-05",
+      "text": "Apple Pay ile ödeme yaptım.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-06",
+      "text": "Google Drive linkini gönder.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-07",
+      "text": "Microsoft Teams toplantısı ertelendi.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-08",
+      "text": "Netflix Türkiye abonelik ücreti arttı.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-09",
+      "text": "Vodafone Red tarifesine geçtim.",
+      "expect": []
+    },
+    {
+      "id": "not-brand-10",
+      "text": "Garanti Bonus kartım çalışmıyor.",
+      "expect": []
+    },
+    {
+      "id": "not-street-01",
+      "text": "Atatürk Caddesi No 12 Kadıköy",
+      "expect": []
+    },
+    {
+      "id": "not-street-02",
+      "text": "İstiklal Caddesi'nde yürüdük.",
+      "expect": []
+    },
+    {
+      "id": "not-street-03",
+      "text": "Bağdat Caddesi'nde kafe açıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-street-04",
+      "text": "Cumhuriyet Mahallesi, Gül Sokak No 5",
+      "expect": []
+    },
+    {
+      "id": "not-street-05",
+      "text": "Fevzi Çakmak Mahallesi'nde oturuyor.",
+      "expect": []
+    },
+    {
+      "id": "not-street-06",
+      "text": "Barbaros Bulvarı trafiğe kapandı.",
+      "expect": []
+    },
+    {
+      "id": "not-street-07",
+      "text": "Taksim Meydanı kalabalıktı.",
+      "expect": []
+    },
+    {
+      "id": "not-street-08",
+      "text": "Kızılay Meydanı'nda buluşalım.",
+      "expect": []
+    },
+    {
+      "id": "not-street-09",
+      "text": "Adnan Menderes Havalimanı'na indik.",
+      "expect": []
+    },
+    {
+      "id": "not-street-10",
+      "text": "Halide Edip Adıvar Mahallesi muhtarlığı",
+      "expect": []
+    },
+    {
+      "id": "not-street-11",
+      "text": "Mithatpaşa Caddesi kapalı.",
+      "expect": []
+    },
+    {
+      "id": "not-street-12",
+      "text": "Ahmet Cevdet Paşa Sokak No 3",
+      "expect": []
+    },
+    {
+      "id": "not-date-01",
+      "text": "Ocak ayında ödeme yapılacak.",
+      "expect": []
+    },
+    {
+      "id": "not-date-02",
+      "text": "Mart 2026 ekstresi geldi.",
+      "expect": []
+    },
+    {
+      "id": "not-date-03",
+      "text": "Pazartesi günü şube kapalı.",
+      "expect": []
+    },
+    {
+      "id": "not-date-04",
+      "text": "Cuma namazından sonra görüşelim.",
+      "expect": []
+    },
+    {
+      "id": "not-date-05",
+      "text": "Kasım ayı faturası yüksek.",
+      "expect": []
+    },
+    {
+      "id": "not-date-06",
+      "text": "Nisan Yağmuru şarkısını dinledim.",
+      "expect": []
+    },
+    {
+      "id": "not-date-07",
+      "text": "Çarşamba ve Perşembe günleri açığız.",
+      "expect": []
+    },
+    {
+      "id": "not-date-08",
+      "text": "Haziran Temmuz Ağustos aylarında indirim var.",
+      "expect": []
+    },
+    {
+      "id": "not-date-09",
+      "text": "Ekim 2025 tarihli fatura ekte.",
+      "expect": []
+    },
+    {
+      "id": "not-date-10",
+      "text": "Salı Pazarı kuruldu.",
+      "expect": []
+    },
+    {
+      "id": "not-date-11",
+      "text": "Bayram tatili uzatıldı.",
+      "expect": []
+    },
+    {
+      "id": "not-date-12",
+      "text": "Ramazan Bayramı'nda şubeler kapalı.",
+      "expect": []
+    },
+    {
+      "id": "not-english-01",
+      "text": "Can you check the invoice from last month?",
+      "expect": []
+    },
+    {
+      "id": "not-english-02",
+      "text": "Please send the report by Friday.",
+      "expect": []
+    },
+    {
+      "id": "not-english-03",
+      "text": "The Black Sea coast is beautiful in May.",
+      "expect": []
+    },
+    {
+      "id": "not-english-04",
+      "text": "Our New York Office opens at nine.",
+      "expect": []
+    },
+    {
+      "id": "not-english-05",
+      "text": "Will Power is a great book title.",
+      "expect": []
+    },
+    {
+      "id": "not-english-06",
+      "text": "Summarize the Annual Report for the Board.",
+      "expect": []
+    },
+    {
+      "id": "not-english-07",
+      "text": "May Day Parade starts at noon.",
+      "expect": []
+    },
+    {
+      "id": "not-english-08",
+      "text": "The Grand Bazaar is in Istanbul.",
+      "expect": []
+    },
+    {
+      "id": "not-english-09",
+      "text": "Install Python and run the Test Suite.",
+      "expect": []
+    },
+    {
+      "id": "not-english-10",
+      "text": "Dear Customer, your Account Statement is ready.",
+      "expect": []
+    },
+    {
+      "id": "not-title-01",
+      "text": "Sayın Yetkili, ekteki belgeleri incelemenizi rica ederim.",
+      "expect": []
+    },
+    {
+      "id": "not-title-02",
+      "text": "Sayın Müdürüm, izin talebimi sunarım.",
+      "expect": []
+    },
+    {
+      "id": "not-title-03",
+      "text": "Müdür Bey toplantıda.",
+      "expect": []
+    },
+    {
+      "id": "not-title-04",
+      "text": "Sayın Başkan, söz istiyorum.",
+      "expect": []
+    },
+    {
+      "id": "not-title-05",
+      "text": "Sayın Müşterimiz, kartınız gönderilmiştir.",
+      "expect": []
+    },
+    {
+      "id": "not-title-06",
+      "text": "Sayın Yolcularımız, uçağımız inişe geçmiştir.",
+      "expect": []
+    },
+    {
+      "id": "not-title-07",
+      "text": "Doktor Bey raporu yazdı.",
+      "expect": []
+    },
+    {
+      "id": "not-title-08",
+      "text": "Sayın İlgili, başvurum hakkında bilgi almak istiyorum.",
+      "expect": []
+    },
+    {
+      "id": "not-title-09",
+      "text": "Hoca Hanım derse geç kaldı.",
+      "expect": []
+    },
+    {
+      "id": "not-title-10",
+      "text": "Sayın Genel Müdür, rapor ektedir.",
+      "expect": []
+    },
+    {
+      "id": "not-title-11",
+      "text": "Avukat Bey dilekçeyi hazırladı.",
+      "expect": []
+    },
+    {
+      "id": "not-title-12",
+      "text": "Sayın Velimiz, toplantı yarın saat 14:00'te.",
+      "expect": []
+    },
+    {
+      "id": "not-other-01",
+      "text": "Teşekkürler, iyi çalışmalar.",
+      "expect": []
+    },
+    {
+      "id": "not-other-02",
+      "text": "Kredi Kartı Başvuru Formu",
+      "expect": []
+    },
+    {
+      "id": "not-other-03",
+      "text": "Hesap Özeti Talep Dilekçesi",
+      "expect": []
+    },
+    {
+      "id": "not-other-04",
+      "text": "Müşteri Hizmetleri Departmanı",
+      "expect": []
+    },
+    {
+      "id": "not-other-05",
+      "text": "Ahmet İstanbul'a taşındı.",
+      "expect": []
+    },
+    {
+      "id": "not-other-06",
+      "text": "Ayşe Ankara'da çalışıyor.",
+      "expect": []
+    },
+    {
+      "id": "not-other-07",
+      "text": "Mehmet Türkçe ve İngilizce biliyor.",
+      "expect": []
+    },
+    {
+      "id": "not-other-08",
+      "text": "Zeynep Google'da çalışıyor.",
+      "expect": []
+    },
+    {
+      "id": "not-other-09",
+      "text": "Elif Mart ayında doğdu.",
+      "expect": []
+    },
+    {
+      "id": "not-other-10",
+      "text": "Emre Pazartesi gelecek.",
+      "expect": []
+    },
+    {
+      "id": "not-other-11",
+      "text": "Kemal Almanya'dan döndü.",
+      "expect": []
+    },
+    {
+      "id": "not-other-12",
+      "text": "Fatma Instagram'da paylaştı.",
+      "expect": []
+    },
+    {
+      "id": "not-other-13",
+      "text": "Ali Veli Kırk Dokuz Elli diye sayıldı.",
+      "expect": [],
+      "known_gap": "a counting rhyme of first names reads as a first name and a capitalised word",
+      "known_actual": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ali Veli Kırk"
+        }
+      ]
+    },
+    {
+      "id": "not-other-14",
+      "text": "ABC Ltd. Şti. yetkilisi aradı.",
+      "expect": []
+    },
+    {
+      "id": "not-other-15",
+      "text": "Oda Numarası 204",
+      "expect": []
+    },
+    {
+      "id": "not-other-16",
+      "text": "TCKN: 10000000146",
+      "expect": []
+    },
+    {
+      "id": "not-other-17",
+      "text": "IBAN: TR33 0006 1005 1978 6457 8413 26",
+      "expect": []
+    },
+    {
+      "id": "not-other-18",
+      "text": "Ekteki Excel Dosyasını inceleyin.",
+      "expect": []
+    },
+    {
+      "id": "not-other-19",
+      "text": "Lütfen Kredi Notu Hesaplama Yöntemini açıkla.",
+      "expect": []
+    },
+    {
+      "id": "not-other-20",
+      "text": "Kırmızı Başlıklı Kız masalını anlat.",
+      "expect": []
+    },
+    {
+      "id": "not-other-21",
+      "text": "Türkiye Cumhuriyeti Merkez Bankası faizleri sabit tuttu.",
+      "expect": []
+    },
+    {
+      "id": "not-other-22",
+      "text": "Sigorta Poliçesi Yenileme Bildirimi",
+      "expect": []
+    },
+    {
+      "id": "not-other-23",
+      "text": "Python Kodu Çalışmıyor",
+      "expect": []
+    },
+    {
+      "id": "not-other-24",
+      "text": "Selamlar, Hayırlı Cumalar.",
+      "expect": []
+    },
+    {
+      "id": "not-other-25",
+      "text": "Yeni Yıl Kampanyası başladı.",
+      "expect": []
+    },
+    {
+      "id": "gap-first-name-alone",
+      "text": "Ahmet aradı, yarın tekrar arayacak.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Ahmet"
+        }
+      ],
+      "known_gap": "decision: a first name alone is never matched",
+      "known_actual": []
+    },
+    {
+      "id": "gap-two-first-names",
+      "text": "Mehmet Ali geldi.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Mehmet Ali"
+        }
+      ],
+      "known_gap": "decision: first names without a surname or cue are never matched",
+      "known_actual": []
+    },
+    {
+      "id": "gap-first-name-suffix",
+      "text": "Selin'e söyledim.",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "Selin"
+        }
+      ],
+      "known_gap": "decision: a first name alone is never matched",
+      "known_actual": []
+    },
+    {
+      "id": "gap-surname-first",
+      "text": "YILMAZ Ahmet",
+      "expect": [
+        {
+          "entity": "PERSON_NAME_TR",
+          "value": "YILMAZ Ahmet"
+        }
+      ],
+      "known_gap": "surname-first order is not read",
+      "known_actual": []
+    }
+  ]
+}

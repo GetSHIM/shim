@@ -71,6 +71,14 @@ request it:
   (project names, `PRJ-####`), found in every Turkish case form. The answer can
   also be scanned after it is delivered, counting personal data the request did
   not carry; it is never changed.
+  Turkish person names (`PERSON_NAME_TR`) are opt-in: `off` until an action
+  turns them on. Detection is list based, never a model: a common first name
+  with a frequent surname or another capitalised word (`Selin Arıkan`), or a cue
+  (`Sayın`, `Sn.`, `Bay`, `Hanım`, `Bey`, `Dr.`, `Prof.`, `Av.`) next to a listed
+  name; a first name alone is never matched. Measured on a held-out synthetic
+  corpus written by a different author: precision 0.992, recall 0.952. Rare
+  first names, two first names without a surname, and names written surname
+  first are missed.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request

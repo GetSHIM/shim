@@ -237,7 +237,8 @@ if scan["verdict"] == "warn":
 
 The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IBAN_CODE`, `TR_NATIONAL_ID`, `TR_VKN`, `TR_LICENSE_PLATE`, `SECRET`, `US_SSN`,
-`IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`. The
+`IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`, plus the opt-in
+`PERSON_NAME_TR` when its action is not `off`. The
 [README](../README.md#what-it-does) gives examples and known false positives.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
@@ -252,7 +253,8 @@ errors use the `{"detail": ...}` shape; text over the limit is 422.
 Mask most types, watch some, and refuse a request that carries a pasted key.
 
 1. Set `PII_ENTITY_ACTIONS` to a JSON object from entity type to action and
-   restart the gateway. A type you leave out is masked.
+   restart the gateway. A type you leave out is masked, except the opt-in
+   `PERSON_NAME_TR`, which stays `off` until you set it.
 
    | Action | What shim does |
    | --- | --- |
@@ -323,6 +325,18 @@ the model reformats it without spaces or hyphens. Only the first 1,000,000
 characters are scanned (`truncated: true` beyond); a scan that fails writes
 `"response_entities": null, "error": true`. The answer, its first token and its
 timing are unchanged.
+
+To mask Turkish person names, add `"PERSON_NAME_TR":"mask"` (or `monitor`,
+`block`). "Sayın Ahmet Yılmaz'ın başvurusu" then reaches the provider as
+"Sayın <PERSON_NAME_TR_…>'ın başvurusu", and the name is restored in the answer.
+Detection is list based (common first names, frequent surnames, cues such as
+`Sayın`, `Hanım`, `Dr.`), measured on a held-out synthetic corpus written by a
+different author: precision 0.992, recall 0.952. It does not catch a first
+name alone ("Ahmet aradı"), two first names without a surname ("Mehmet Ali
+geldi"), a rare first name without a cue, a first name that is also a word
+("Deniz", "Umut") without a cue or a listed surname, or a name written surname
+first ("YILMAZ Ahmet"). A name next to a place or institution word ("Ahmet
+Yılmaz Caddesi", "Mehmet Akif Ersoy Üniversitesi") is left alone.
 
 Notes: an unknown type or action, `mask_last4` on another type, `stable`
 without a key, an invalid bulk threshold, or a `PII_RESPONSE_SCAN` other than

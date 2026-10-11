@@ -87,6 +87,7 @@ LABEL_VALUES: Final = MappingProxyType(
                 "TR_NATIONAL_ID",
                 "TR_VKN",
                 "TR_LICENSE_PLATE",
+                "PERSON_NAME_TR",
                 "SECRET",
                 "DB_URI",
                 "FILE_PATH",
