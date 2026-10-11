@@ -3046,6 +3046,99 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "markers", [{"INSTRUCTION_OVERRIDE": 1}, {}, {"error": True}, None]
+)
+async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, markers
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(
+        action=PrivacyAction.DETECTED, pii_detected=False, injection_markers=markers
+    )
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("injection_markers") == markers
+    assert ("injection_markers" in lifecycle.lifecycle_metadata) == (
+        markers is not None
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.list_requests(**filters, limit=1, offset=0)
+    exported = await management.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].injection_markers == markers
+    assert (
+        json.loads(row["injection_markers"]) if row["injection_markers"] else None
+    ) == markers
+
+
+@pytest.mark.asyncio
 async def test_a_response_scan_updates_only_its_own_tenants_lifecycle(
     db, test_api_key
 ) -> None:

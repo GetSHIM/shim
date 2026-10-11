@@ -248,6 +248,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+| `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -262,9 +263,11 @@ the changed fields and increments `revision`; a PATCH that changes nothing
 writes no event and keeps the revision. A change the setting's direction
 classifies as relaxing also records `tenant.gateway_protection_relaxed`
 ([decision evidence](POLICY_DECISIONS.md#management-change-details));
-`response_analysis` only measures, so it is neutral. Gateways read the settings
+`response_analysis` only measures, so it is neutral; moving `injection_markers`
+down from `warn` to `count` or `off`, or from `count` to `off`, is relaxing. Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
-Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
+Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` and
+`SHIM_INJECTION_MARKERS` variables.
 
 Rolling back to an older build is safe: a stored field or analyzer name that
 build does not know is left out when it reads the settings (and logged once by

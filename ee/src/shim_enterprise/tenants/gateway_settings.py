@@ -31,6 +31,7 @@ class GatewaySettings(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     response_analysis: list[str] = []
+    injection_markers: Literal["off", "count", "warn"] = "off"
 
     @field_validator("response_analysis")
     @classmethod
@@ -42,6 +43,7 @@ class GatewaySettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     response_analysis: list[str] | None = None
+    injection_markers: Literal["off", "count", "warn"] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -88,9 +90,21 @@ def _neutral(_before: Any, _after: Any) -> Direction:
     return "neutral"
 
 
+_MARKER_LEVELS = ("off", "count", "warn")
+
+
+def _marker_direction(before: str, after: str) -> Direction:
+    return (
+        "relaxing"
+        if _MARKER_LEVELS.index(after) < _MARKER_LEVELS.index(before)
+        else "tightening"
+    )
+
+
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
     "response_analysis": _neutral,
+    "injection_markers": _marker_direction,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

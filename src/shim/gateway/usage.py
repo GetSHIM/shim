@@ -339,6 +339,11 @@ class LocalUsageLifecycle:
             "bulk_disclosure": dict(privacy.bulk_disclosure)
             if privacy and privacy.bulk_disclosure
             else None,
+            **(
+                {"injection_markers": dict(privacy.injection_markers)}
+                if privacy and privacy.injection_markers is not None
+                else {}
+            ),
             "warnings": list(prepared.warnings),
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts

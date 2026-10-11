@@ -4753,6 +4753,16 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "injection_markers": {
+            "default": "off",
+            "enum": [
+              "off",
+              "count",
+              "warn"
+            ],
+            "title": "Injection Markers",
+            "type": "string"
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -4768,6 +4778,22 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "injection_markers": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "count",
+                  "warn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Injection Markers"
+          },
           "response_analysis": {
             "anyOf": [
               {
@@ -10201,6 +10227,28 @@
             ],
             "title": "Endpoint"
           },
+          "injection_markers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
+            "title": "Injection Markers"
+          },
           "model": {
             "anyOf": [
               {
@@ -10443,7 +10491,8 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS"
                   ],
                   "type": "string"
                 },
@@ -19402,7 +19451,8 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS"
                   ],
                   "type": "string"
                 },
@@ -19741,7 +19791,8 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS"
                   ],
                   "type": "string"
                 },

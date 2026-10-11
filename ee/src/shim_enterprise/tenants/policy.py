@@ -377,6 +377,7 @@ class TenantRequestPolicyResolver:
                 response_analysis=tuple(
                     tenant_settings.gateway_settings.response_analysis
                 ),
+                injection_markers=tenant_settings.gateway_settings.injection_markers,
                 tenant_gateway_settings=tenant_settings.gateway_settings,
                 rules=tenant_settings.rules,
             )

@@ -48,6 +48,15 @@ LABEL_VALUES: Final = MappingProxyType(
             }
         ),
         "provider": frozenset({"openai", "anthropic", "google"}),
+        "marker": frozenset(
+            {
+                "INSTRUCTION_OVERRIDE",
+                "ROLE_REASSIGNMENT",
+                "SYSTEM_IMPERSONATION",
+                "SECRECY_REQUEST",
+                "HIDDEN_TEXT",
+            }
+        ),
         "model": frozenset({"gpt-*", "claude-*", "gemini-*", "other"}),
         "terminal_state": frozenset(
             {
@@ -197,6 +206,11 @@ PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "shim_privacy_bulk_disclosures_total",
     "Requests whose distinct detected values reached the bulk threshold.",
     ("provider",),
+)
+INJECTION_MARKERS_TOTAL = Counter(
+    "shim_injection_markers_total",
+    "Tool results and documents carrying a hidden-instruction marker, by marker.",
+    ("marker",),
 )
 
 

@@ -250,6 +250,11 @@ word index and pattern regexes, both built once per `RuleSet` object
 (`RuleSet.matchers`), the Turkish endings from a grammar
 (`src/shim/rules/tr_suffixes.py`); no other kind ships a matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
+With `SHIM_INJECTION_MARKERS` (enterprise: the `injection_markers` gateway
+setting) at `count` or `warn`, the privacy stage also counts instruction markers
+in tool results and documents of the raw request (`src/shim/privacy/injection.py`,
+shim-cli's patterns), on the same worker thread as the privacy scan; `warn` adds
+the `INJECTION_MARKERS` warning. It never blocks or changes the request.
 
 Anthropic token counting shares authentication, registry authorization and
 privacy transformation. It persists nonbillable enterprise audit preflight and

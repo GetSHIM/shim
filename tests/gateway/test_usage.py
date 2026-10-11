@@ -1747,3 +1747,29 @@ async def test_a_response_analysis_writes_its_own_jsonl_line() -> None:
         "request_id": "req_local",
         "results": {"probe": {"n": 1}, "versions": {"probe": "7"}},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("markers", "line"),
+    [
+        (None, None),
+        ({}, {}),
+        ({"INSTRUCTION_OVERRIDE": 2}, {"INSTRUCTION_OVERRIDE": 2}),
+        ({"error": True}, {"error": True}),
+    ],
+)
+async def test_the_jsonl_event_carries_injection_markers_only_when_scanned(
+    markers, line
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.privacy = replace(prepared.privacy, injection_markers=markers)
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert event.get("injection_markers", None) == line
+    assert ("injection_markers" in event) == (markers is not None)

@@ -60,6 +60,7 @@ class CommunitySettings(BaseSettings):
     PII_BULK_THRESHOLD: int = Field(default=50, ge=0)
     PII_RESPONSE_SCAN: Literal["off", "count"] = "off"
     SHIM_RESPONSE_ANALYSIS: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    SHIM_INJECTION_MARKERS: Literal["off", "count", "warn"] = "off"
     PRIVACY_CHAIN_TTL_SECONDS: int = Field(
         default=30 * 24 * 60 * 60,
         ge=60,

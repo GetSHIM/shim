@@ -137,6 +137,7 @@ ResponseWarning = Literal[
     "CACHE_NOT_APPLIED",
     "RULE_WARN",
     "SEMANTIC_WARN",
+    "INJECTION_MARKERS",
 ]
 
 
@@ -160,6 +161,7 @@ class PreparedInference:
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
+    injection_markers: Literal["off", "count", "warn"] = "off"
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )

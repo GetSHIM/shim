@@ -190,6 +190,8 @@ async def test_a_patch_that_changes_nothing_writes_nothing(
         {"response_analysis": ["shape", "shape"]},
         {"response_analysis": None},
         {"unknown": 1},
+        {"injection_markers": "block"},
+        {"injection_markers": None},
     ],
 )
 def test_a_patch_refuses_unknown_names_duplicates_nulls_and_fields(
@@ -254,6 +256,49 @@ def test_every_field_has_a_direction_and_changes_classify(
         SETTING_DIRECTIONS, "response_analysis", lambda _b, _a: "tightening"
     )
     assert classify_change(before, after) == ("tightening", [])
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "classified"),
+    [
+        ("off", "count", ("tightening", [])),
+        ("count", "warn", ("tightening", [])),
+        ("off", "warn", ("tightening", [])),
+        ("warn", "count", ("relaxing", ["injection_markers"])),
+        ("count", "off", ("relaxing", ["injection_markers"])),
+        ("warn", "off", ("relaxing", ["injection_markers"])),
+    ],
+)
+def test_injection_markers_relax_downwards(before, after, classified) -> None:
+    assert GatewaySettings().injection_markers == "off"
+    assert (
+        classify_change(
+            GatewaySettings(injection_markers=before),
+            GatewaySettings(injection_markers=after),
+        )
+        == classified
+    )
+
+
+@pytest.mark.asyncio
+async def test_turning_injection_markers_down_writes_the_relaxed_event(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(injection_markers="warn"), _request(), admin, db
+    )
+    view = await management.update_gateway_settings(
+        GatewaySettingsPatch(injection_markers="count"), _request(), admin, db
+    )
+
+    assert view.settings.injection_markers == "count"
+    relaxed = [
+        event["extra"]["relaxed"]
+        for event in await audit_events(test_org.id)
+        if event["endpoint"] == "tenant.gateway_protection_relaxed"
+    ]
+    assert relaxed == [["injection_markers"]]
 
 
 def test_a_stored_key_this_build_does_not_know_is_ignored_and_logged_once(

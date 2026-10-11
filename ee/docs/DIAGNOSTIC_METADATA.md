@@ -217,6 +217,15 @@ and counts by type; never a value, placeholder or prompt text. Its handler
 queues one delivery per enabled forward target (`kind: "bulk_disclosure"`), and
 none when the tenant has no target.
 
+`injection_markers` counts, per marker (`INSTRUCTION_OVERRIDE`,
+`ROLE_REASSIGNMENT`, `SYSTEM_IMPERSONATION`, `SECRECY_REQUEST`, `HIDDEN_TEXT`), the
+tool results and documents of the request that carried it, when the tenant's
+`injection_markers` gateway setting is `count` or `warn`: `{}` when none did,
+`{"error": true}` when the scan failed, and absent while the setting is `off`.
+It is written with the privacy counts, in the same transaction, and is in the
+analytics row, the request list and the last column of its CSV (as JSON) and the
+community JSONL event. Only marker ids and counts are kept, never the text.
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the

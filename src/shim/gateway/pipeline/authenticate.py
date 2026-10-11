@@ -106,6 +106,7 @@ class AuthenticateStage:
             bulk_threshold=policy.bulk_threshold,
             response_scan=policy.response_scan,
             response_analysis=policy.response_analysis,
+            injection_markers=policy.injection_markers,
             rules=policy.rules,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),

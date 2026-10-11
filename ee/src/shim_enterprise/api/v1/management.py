@@ -986,6 +986,13 @@ class RequestActivityView(BaseModel):
             "tenant's bulk threshold of distinct detected values; null otherwise."
         ),
     )
+    injection_markers: dict[str, int | bool] | None = Field(
+        default=None,
+        description=(
+            "Tool results and documents carrying each hidden-instruction marker; "
+            '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
+        ),
+    )
     response_entities: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -3740,6 +3747,7 @@ async def export_requests(
                 "response_entities",
                 "response_analysis",
                 "rule_matches",
+                "injection_markers",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -3797,6 +3805,9 @@ async def export_requests(
                     else None,
                     json.dumps(details["rule_matches"], sort_keys=True)
                     if details.get("rule_matches") is not None
+                    else None,
+                    json.dumps(details["injection_markers"], sort_keys=True)
+                    if details.get("injection_markers") is not None
                     else None,
                 )
             )

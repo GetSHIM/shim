@@ -40,6 +40,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
+    injection_markers: Literal["off", "count", "warn"] = "off"
     rules: RuleSet | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
@@ -58,6 +59,7 @@ class LocalRequestPolicyResolver:
     __slots__ = (
         "_bulk_threshold",
         "_entity_actions",
+        "_injection_markers",
         "_placeholder_key",
         "_rate_limit_rpm",
         "_rate_limit_tpm",
@@ -75,6 +77,7 @@ class LocalRequestPolicyResolver:
         bulk_threshold: int | None = None,
         response_scan: Literal["off", "count"] = "off",
         response_analysis: tuple[str, ...] = (),
+        injection_markers: Literal["off", "count", "warn"] = "off",
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -83,6 +86,7 @@ class LocalRequestPolicyResolver:
         self._bulk_threshold = bulk_threshold
         self._response_scan: Literal["off", "count"] = response_scan
         self._response_analysis = response_analysis
+        self._injection_markers: Literal["off", "count", "warn"] = injection_markers
 
     async def resolve(
         self,
@@ -114,4 +118,5 @@ class LocalRequestPolicyResolver:
             bulk_threshold=self._bulk_threshold,
             response_scan=self._response_scan,
             response_analysis=self._response_analysis,
+            injection_markers=self._injection_markers,
         )

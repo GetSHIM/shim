@@ -6,6 +6,8 @@ import asyncio
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from functools import partial
+import logging
 from typing import Any, NoReturn
 
 from fastapi import HTTPException, status
@@ -15,6 +17,7 @@ from shim.gateway.contracts.errors import ScanAnalysisError
 from shim.gateway.contracts.inference import ScanEntity, ScanPolicy, ScanVerdict
 from shim.gateway.kernel.stage import TraceValue
 from shim.observability.metrics import (
+    INJECTION_MARKERS_TOTAL,
     PRIVACY_BULK_DISCLOSURES_TOTAL,
     PRIVACY_DETECTION_TOTAL,
     PRIVACY_RESPONSE_DETECTION_TOTAL,
@@ -34,8 +37,11 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim.privacy.continuation import PrivacyContinuationStore
+from shim.privacy.injection import scan_payload
 from shim.rules.content import ContentRules, content_rules
 from shim.rules.evaluate import in_scope
+
+logger = logging.getLogger(__name__)
 
 _DEEP_PRIVACY_FIELDS = frozenset(
     {
@@ -234,7 +240,7 @@ class PrivacyStage:
         unmasked: dict[str, str] = {}
         tags = value.admission.tags if value.admission is not None else ()
         content = content_rules(value.rules, lambda rule: in_scope(rule, value, tags))
-        safe_payload, verification_map = await asyncio.to_thread(
+        scrub = partial(
             scrub_payload,
             value.payload,
             actions,
@@ -250,6 +256,24 @@ class PrivacyStage:
                 value.tenant_id,
                 value.context.started_at,
             ),
+        )
+
+        def scrub_and_scan() -> tuple[Any, dict[str, str], Mapping[str, int] | None]:
+            scrubbed = scrub()
+            if value.injection_markers == "off":
+                return *scrubbed, None
+            try:
+                # The raw request: invisible characters are gone after scrubbing.
+                return *scrubbed, scan_payload(value.payload, value.protocol)
+            except Exception as error:
+                logger.warning(
+                    "Injection marker scan failed error_type=%s", type(error).__name__
+                )
+                return *scrubbed, {"error": True}
+
+        # One thread hop for both.
+        safe_payload, verification_map, injection_markers = await asyncio.to_thread(
+            scrub_and_scan
         )
         if (
             verification_map
@@ -292,7 +316,15 @@ class PrivacyStage:
             if threshold is not None and distinct_values >= threshold
             else None,
             monitored_values=frozenset(monitored),
+            injection_markers=injection_markers,
         )
+        if injection_markers and "error" not in injection_markers:
+            for marker, count in injection_markers.items():
+                INJECTION_MARKERS_TOTAL.labels(
+                    marker=bounded_label("marker", marker)
+                ).inc(count)
+            if value.injection_markers == "warn":
+                value.warn("INJECTION_MARKERS")
         for counts in (
             privacy.pii_entities,
             privacy.monitored_entities,

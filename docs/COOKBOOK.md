@@ -15,6 +15,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
 - [Read warnings](#read-warnings)
+- [Count instructions hidden in tool results](#count-instructions-hidden-in-tool-results)
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Check structured output](#check-structured-output)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
@@ -164,7 +165,8 @@ Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
 `provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
-`bulk_disclosure`, `warnings` and `policy_verdicts`. The three count maps give values by
+`bulk_disclosure`, `warnings` and `policy_verdicts`, and `injection_markers` when
+[the marker scan](#count-instructions-hidden-in-tool-results) is on. The three count maps give values by
 entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
@@ -432,6 +434,7 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
 | `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
 | `RULE_WARN` | An enforced tenant rule with action `warn` matched (enterprise); the request went ahead unchanged. | Read the rule with your tenant admin; the request list shows which one. |
+| `INJECTION_MARKERS` | `SHIM_INJECTION_MARKERS=warn` and a tool result or document in the request carries an instruction marker; the request went ahead unchanged. | Check where the tool's text came from before the model acts on it. |
 
 shim refuses before the provider only what certainly fails. It counts the
 whitespace-separated words of the prompt text, a lower bound for the public
@@ -446,6 +449,43 @@ or a compaction block is never refused for size. Refusals use only a model's own
 catalog entry, never a longer model name matched by prefix. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
+
+## Count instructions hidden in tool results
+
+Learn when a web page, a ticket or a document your agent passed back to the model
+carries instructions of its own, without blocking or changing anything.
+
+1. Set `SHIM_INJECTION_MARKERS` to `count` or `warn` and restart the gateway. It
+   is `off` by default, and `off` scans nothing.
+2. Read `injection_markers` in the usage event: per marker, how many tool results
+   or documents in the request carried it, `{}` when none did. With `warn`, a
+   request that carries one also gets `INJECTION_MARKERS` in `X-Shim-Warnings`,
+   on JSON answers and on streams alike.
+
+```json
+{"version":4,"event":"request","request_id":"req_…","injection_markers":{"INSTRUCTION_OVERRIDE":1},"warnings":["INJECTION_MARKERS"]}
+```
+
+The markers are those shim-cli flags, in English and Turkish, typed with or
+without Turkish letters: `INSTRUCTION_OVERRIDE` ("ignore all previous
+instructions", "önceki tüm talimatları yok say"; only an order, so "kuralları yok
+saydık" is not one), `ROLE_REASSIGNMENT` ("you are now", "bundan sonra sen
+yöneticisin"), `SYSTEM_IMPERSONATION` (a `System:` or `[sistem]` line,
+`<important_instructions>`), `SECRECY_REQUEST` ("do not tell the user",
+"kullanıcıya söyleme") and `HIDDEN_TEXT` (zero-width characters, bidi controls
+and Unicode tag characters, read before anything is removed). Text under 24
+characters is skipped, and each tool result or document is read up to its first
+1,000,000 characters.
+
+What is read: Chat `tool` and `function` messages; Responses
+`function_call_output`, `custom_tool_call_output` and `mcp_call` outputs; Anthropic
+`tool_result`, `search_result` and text `document` blocks; Gemini
+`functionResponse.response`. What you type, system prompts, answers and images are
+never read: they are your own instructions. Nothing is ever blocked, rewritten or
+said to the model; a scan that fails records `{"error": true}` and the request
+goes on. The scan runs on the same worker thread as the privacy scan.
+`shim_injection_markers_total{marker}` counts the tool results and documents per
+marker. Enterprise sets it per tenant as the `injection_markers` gateway setting.
 
 ## Analyse answers after delivery
 
@@ -626,6 +666,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_time_to_first_token_seconds` (histogram, streams only) | `provider`, `model` |
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
+| `shim_injection_markers_total` | `marker` |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

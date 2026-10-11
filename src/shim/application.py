@@ -138,6 +138,7 @@ def create_community_app(
                     bulk_threshold=configured.PII_BULK_THRESHOLD or None,
                     response_scan=configured.PII_RESPONSE_SCAN,
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
+                    injection_markers=configured.SHIM_INJECTION_MARKERS,
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,

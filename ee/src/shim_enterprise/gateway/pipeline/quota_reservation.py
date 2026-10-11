@@ -588,6 +588,15 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            **(
+                                {}
+                                if prepared.privacy.injection_markers is None
+                                else {
+                                    "injection_markers": dict(
+                                        prepared.privacy.injection_markers
+                                    )
+                                }
+                            ),
                             **match_records(prepared),
                             # A keyed hash of raw prompt text is still a
                             # pseudonym of the personal data in it.

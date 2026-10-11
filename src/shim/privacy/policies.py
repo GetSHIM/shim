@@ -115,6 +115,9 @@ class PrivacyOutcome:
     monitored_entities: Mapping[str, int] = field(default_factory=dict)
     blocked_entities: Mapping[str, int] = field(default_factory=dict)
     bulk_disclosure: Mapping[str, int] | None = None
+    # Tool results and documents carrying each marker; None when the scan is off,
+    # {"error": True} when it failed.
+    injection_markers: Mapping[str, int] | None = None
     # Held for the response-side scan only; never persisted or logged.
     monitored_values: frozenset[str] = field(
         default=frozenset(), repr=False, compare=False
