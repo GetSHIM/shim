@@ -350,6 +350,15 @@
   "service_auditor": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/latency": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/model-deployments": {
   "admin": "200",
   "auditor": "200",

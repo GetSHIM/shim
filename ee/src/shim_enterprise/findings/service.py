@@ -47,6 +47,7 @@ from shim.findings import (
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.observability.analytics_projection import RequestLog
+from shim_enterprise.observability.latency import FIRST_BYTE_SQL, SWEEP_SQL
 from shim_enterprise.observability.outcomes import OUTCOMES
 from shim_enterprise.observability.model_inventory import (
     byok_request,
@@ -80,6 +81,8 @@ SOFT_REFUSALS = "gateway.soft_refusals"
 OVERSIZED_PARTS = "gateway.oversized_parts"
 DEAD_TOOLS = "gateway.dead_tools"
 CACHE_ORDER_CHURN = "gateway.cache_order_churn"
+COLD_START = "gateway.cold_start"
+QUEUEING = "gateway.queueing"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -132,6 +135,20 @@ CACHE_CHURN_MIN_PROMPT_TOKENS = 1_024
 CACHE_CHURN_MAX_CACHE_READ_SHARE = Decimal("0.5")
 EVIDENCE_DEAD_TOOLS = 20
 EVIDENCE_TOOL_SETS = 3
+# Latency of registry deployments, from the request timestamps.
+COLD_START_WINDOW_HOURS = 24
+COLD_START_LOOKBACK = timedelta(hours=24)
+COLD_START_MIN_IDLE_SECONDS = 600
+COLD_START_LATENCY_FACTOR = 5
+COLD_START_MIN_FIRST_BYTE_MS = 10_000
+COLD_START_MIN_EVENTS = 3
+QUEUEING_WINDOW_HOURS = 24
+QUEUEING_BASELINE_DAYS = 7
+QUEUEING_MIN_BASELINE_STREAMS = 50
+QUEUEING_MIN_HOUR_STREAMS = 10
+QUEUEING_FACTOR = 3
+QUEUEING_MIN_PEAK_CONCURRENCY = 4
+QUEUEING_MIN_HOURS = 2
 EVIDENCE_MARKERS = 5
 # Stored values that become evidence only in these shapes: a keyed prompt digest
 # and a refusal marker id of the analyzer's phrase list.
@@ -541,6 +558,57 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="key",
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(CACHE_ORDER_CHURN),
+    ),
+    COLD_START: RuleSpec(
+        TITLE="A deployment answers slowly after it was idle",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{cold_starts} requests to this deployment in {window_hours} hours "
+            "waited for a cold start after an idle gap; {timeouts} of them timed out.",
+            "tr": "Son {window_hours} saatte bu dağıtıma gelen {cold_starts} istek "
+            "boşta kalmanın ardından soğuk başlatmayı bekledi; {timeouts} tanesi zaman "
+            "aşımına uğradı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Keep the model loaded between requests with the model server's "
+            "keep-alive or idle-unload setting, or raise the deployment's timeout when "
+            "cold starts end in timeouts.",
+            "tr": "Model sunucusunun keep-alive ya da boşta bellekten çıkarma ayarıyla "
+            "modeli istekler arasında yüklü tutun; soğuk başlatmalar zaman aşımıyla "
+            "bitiyorsa dağıtımın zaman aşımını yükseltin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(COLD_START),
+    ),
+    QUEUEING: RuleSpec(
+        TITLE="Streams to a deployment wait in a queue at busy hours",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "In {congested_hours} hours of the last {window_hours}, streams to "
+            "this deployment were slow to start, up to {worst_ttft_p95_ms} ms for a "
+            "first byte against a usual {baseline_ttft_ms} ms, with up to "
+            "{peak_concurrency} in flight at once.",
+            "tr": "Son {window_hours} saatin {congested_hours} saatinde bu dağıtıma "
+            "gelen akışlar ilk bayt için {worst_ttft_p95_ms} ms'ye kadar bekledi; "
+            "olağan süre {baseline_ttft_ms} ms, aynı anda en çok {peak_concurrency} "
+            "istek vardı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Give the deployment more capacity, set a concurrency budget for "
+            "the target, or send long requests to their own lane. The latency read "
+            "grouped by deployment shows the hours.",
+            "tr": "Dağıtıma daha fazla kapasite verin, hedef için bir eşzamanlılık "
+            "bütçesi tanımlayın ya da uzun istekleri kendi şeridine gönderin. "
+            "Dağıtıma göre gruplanan gecikme okuması saatleri gösterir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(QUEUEING),
     ),
 }
 
@@ -1960,6 +2028,228 @@ async def _cache_order_churn(
     return detections
 
 
+# A registry deployment's requests with their idle gap (seconds since the previous
+# request of the same deployment; a lookback day earlier counts, and no previous
+# request is a gap of the whole lookback) and their first byte (TTFT for a stream,
+# provider latency for JSON). Warm requests' median first byte makes a cold start
+# relative: a gap of at least the idle threshold, and a timeout or a first byte of
+# at least max(minimum, factor x warm median).
+_DEPLOYMENT_REQUESTS = """
+    rows AS (
+        SELECT metadata ->> 'deployment_id' AS deployment_id, request_id, started_at,
+               stream, status,
+               {first_byte} AS first_byte,
+               coalesce(EXTRACT(EPOCH FROM started_at - lag(started_at) OVER (
+                   PARTITION BY metadata ->> 'deployment_id' ORDER BY started_at
+               )), :lookback_seconds) AS gap
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= CAST(:lookback AS timestamptz)
+          AND started_at <= CAST(:now AS timestamptz)
+          AND metadata ->> 'deployment_id' IS NOT NULL
+    ),
+    windowed AS (
+        SELECT * FROM rows WHERE started_at >= CAST(:start AS timestamptz)
+    ),
+    warm AS (
+        SELECT deployment_id,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS first_byte
+        FROM windowed WHERE gap < :idle_seconds AND first_byte IS NOT NULL
+        GROUP BY deployment_id
+    ),
+    classified AS (
+        SELECT windowed.*, warm.first_byte AS warm_first_byte,
+               windowed.gap >= :idle_seconds AND (
+                   windowed.status = 'timeout'
+                   OR windowed.first_byte >= greatest(
+                       :min_first_byte, :factor * coalesce(warm.first_byte, 0)
+                   )
+               ) AS cold
+        FROM windowed LEFT JOIN warm USING (deployment_id)
+    )
+"""
+_COLD_STARTS = text(
+    "WITH"
+    + _DEPLOYMENT_REQUESTS.format(first_byte=FIRST_BYTE_SQL.format(t=""))
+    + """
+    SELECT deployment_id,
+           count(*) AS cold_starts,
+           count(*) FILTER (WHERE status = 'timeout') AS timeouts,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY gap) AS gap_seconds,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY first_byte) AS cold_first_byte,
+           max(warm_first_byte) AS warm_first_byte,
+           (array_agg(request_id ORDER BY started_at))[1:20] AS request_ids
+    FROM classified
+    WHERE cold
+    GROUP BY deployment_id
+    HAVING count(*) >= :min_events
+    """
+)
+
+
+def _deployment_window(tenant_id: UUID, start: datetime, now: datetime) -> dict:
+    return {
+        "tenant_id": tenant_id,
+        "lookback": start - COLD_START_LOOKBACK,
+        "lookback_seconds": COLD_START_LOOKBACK.total_seconds(),
+        "start": start,
+        "now": now,
+        "idle_seconds": COLD_START_MIN_IDLE_SECONDS,
+        "min_first_byte": COLD_START_MIN_FIRST_BYTE_MS,
+        "factor": COLD_START_LATENCY_FACTOR,
+    }
+
+
+async def _cold_starts(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    rows = await session.execute(
+        _COLD_STARTS,
+        {
+            **_deployment_window(
+                tenant_id, now - timedelta(hours=COLD_START_WINDOW_HOURS), now
+            ),
+            "min_events": COLD_START_MIN_EVENTS,
+        },
+    )
+    return [
+        Detection(
+            rule_id=COLD_START,
+            subject_key=f"deployment:{row.deployment_id}",
+            subject={"deployment_id": row.deployment_id},
+            evidence={
+                "window_hours": COLD_START_WINDOW_HOURS,
+                "cold_starts": row.cold_starts,
+                "timeouts": row.timeouts,
+                "median_gap_seconds": round(row.gap_seconds),
+                "cold_first_byte_ms": _ms(row.cold_first_byte),
+                "warm_first_byte_ms": _ms(row.warm_first_byte),
+                "request_ids": list(row.request_ids or []),
+            },
+            impact={"cost_usd": None, "requests": row.cold_starts},
+        )
+        for row in rows
+    ]
+
+
+def _ms(value: float | None) -> int | None:
+    return None if value is None else round(value)
+
+
+# Per deployment and hour of the window: streams, their p95 TTFT without the cold
+# starts, and the most streams in flight at once; and the 7-day baseline before.
+_QUEUEING = text(
+    "WITH"
+    + _DEPLOYMENT_REQUESTS.format(first_byte=FIRST_BYTE_SQL.format(t=""))
+    + """,
+    baseline AS (
+        SELECT metadata ->> 'deployment_id' AS deployment_id,
+               percentile_cont(0.5) WITHIN GROUP (
+                   ORDER BY (metadata ->> 'ttft_ms')::float
+               ) AS ttft
+        FROM request_lifecycle
+        WHERE organization_id = :tenant_id
+          AND started_at >= CAST(:baseline_start AS timestamptz)
+          AND started_at < CAST(:start AS timestamptz)
+          AND stream AND metadata ->> 'deployment_id' IS NOT NULL
+          AND metadata ->> 'ttft_ms' IS NOT NULL
+        GROUP BY metadata ->> 'deployment_id'
+        HAVING count(*) >= :min_baseline
+    ),
+    hours AS (
+        SELECT deployment_id, date_trunc('hour', started_at AT TIME ZONE 'UTC') AS hour,
+               count(*) AS streams,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY first_byte)
+                   FILTER (WHERE NOT cold) AS ttft_p95,
+               (array_agg(request_id ORDER BY first_byte DESC NULLS LAST))[1:20]
+                   AS request_ids
+        FROM classified
+        WHERE stream AND deployment_id IN (SELECT deployment_id FROM baseline)
+        GROUP BY deployment_id, date_trunc('hour', started_at AT TIME ZONE 'UTC')
+        HAVING count(*) >= :min_hour_streams
+    ),
+    spans AS (
+        SELECT l.metadata ->> 'deployment_id' AS deployment_id,
+               l.provider_started_at AT TIME ZONE 'UTC' AS s,
+               coalesce(l.completed_at, CAST(:now AS timestamptz)) AT TIME ZONE 'UTC' AS e
+        FROM request_lifecycle l
+        WHERE l.organization_id = :tenant_id
+          AND l.started_at >= CAST(:lookback AS timestamptz)
+          AND l.started_at <= CAST(:now AS timestamptz)
+          AND l.stream AND l.provider_started_at IS NOT NULL
+          AND l.metadata ->> 'deployment_id' IN (SELECT deployment_id FROM hours)
+    ),
+    clipped AS (
+        SELECT hours.deployment_id AS grp, hours.hour AS bucket,
+               greatest(spans.s, hours.hour) AS s,
+               least(spans.e, hours.hour + interval '1 hour') AS e
+        FROM hours JOIN spans
+          ON spans.deployment_id = hours.deployment_id
+         AND spans.s < hours.hour + interval '1 hour' AND spans.e > hours.hour
+    ),"""
+    + SWEEP_SQL
+    + """
+    SELECT hours.deployment_id, hours.hour, hours.streams, hours.ttft_p95,
+           coalesce(peaks.peak, 0) AS peak, baseline.ttft AS baseline,
+           hours.request_ids
+    FROM hours
+    JOIN baseline USING (deployment_id)
+    LEFT JOIN peaks ON peaks.grp = hours.deployment_id AND peaks.bucket = hours.hour
+    WHERE hours.ttft_p95 >= :factor_queue * baseline.ttft
+      AND coalesce(peaks.peak, 0) >= :min_peak
+    ORDER BY hours.deployment_id, hours.hour
+    """
+)
+
+
+async def _queueing(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    start = now - timedelta(hours=QUEUEING_WINDOW_HOURS)
+    deployments: dict[str, list[Any]] = {}
+    for row in await session.execute(
+        _QUEUEING,
+        {
+            **_deployment_window(tenant_id, start, now),
+            "baseline_start": start - timedelta(days=QUEUEING_BASELINE_DAYS),
+            "min_baseline": QUEUEING_MIN_BASELINE_STREAMS,
+            "min_hour_streams": QUEUEING_MIN_HOUR_STREAMS,
+            "factor_queue": QUEUEING_FACTOR,
+            "min_peak": QUEUEING_MIN_PEAK_CONCURRENCY,
+        },
+    ):
+        deployments.setdefault(row.deployment_id, []).append(row)
+    return [
+        Detection(
+            rule_id=QUEUEING,
+            subject_key=f"deployment:{deployment_id}",
+            subject={"deployment_id": deployment_id},
+            evidence={
+                "window_hours": QUEUEING_WINDOW_HOURS,
+                "congested_hours": len(hours),
+                "baseline_ttft_ms": _ms(hours[0].baseline),
+                "worst_ttft_p95_ms": max(_ms(row.ttft_p95) or 0 for row in hours),
+                "peak_concurrency": max(row.peak for row in hours),
+                "hours": [
+                    {
+                        "hour": row.hour.replace(tzinfo=timezone.utc).isoformat(),
+                        "ttft_p95_ms": _ms(row.ttft_p95),
+                        "streams": row.streams,
+                        "peak_concurrency": row.peak,
+                    }
+                    for row in hours
+                ],
+                "request_ids": [
+                    value for row in hours for value in row.request_ids or ()
+                ][:EVIDENCE_REQUEST_IDS],
+            },
+            impact={"cost_usd": None, "requests": sum(row.streams for row in hours)},
+        )
+        for deployment_id, hours in sorted(deployments.items())
+        if len(hours) >= QUEUEING_MIN_HOURS
+    ]
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -1979,6 +2269,8 @@ async def evaluate_organization(
         (_oversized_parts, (OVERSIZED_PARTS,)),
         (_dead_tools, (DEAD_TOOLS,)),
         (_cache_order_churn, (CACHE_ORDER_CHURN,)),
+        (_cold_starts, (COLD_START,)),
+        (_queueing, (QUEUEING,)),
     )
     detections: list[Detection] = []
     failed: list[str] = []

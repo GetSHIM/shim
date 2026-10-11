@@ -670,6 +670,8 @@ _SUBJECTS = {
     service.OVERSIZED_PARTS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.DEAD_TOOLS: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.CACHE_ORDER_CHURN: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
+    service.COLD_START: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
+    service.QUEUEING: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
     service.IDLE_INTERNAL_DEPLOYMENT: {
         "deployment_id": "22222222-2222-2222-2222-222222222222",
         "alias": "kurum-llama",
@@ -831,6 +833,31 @@ _EVIDENCE = {
             }
         ],
         "request_ids": ["req_k"],
+    },
+    service.COLD_START: {
+        "window_hours": 24,
+        "cold_starts": 3,
+        "timeouts": 1,
+        "median_gap_seconds": 7200,
+        "cold_first_byte_ms": 15000,
+        "warm_first_byte_ms": 300,
+        "request_ids": ["req_l"],
+    },
+    service.QUEUEING: {
+        "window_hours": 24,
+        "congested_hours": 2,
+        "baseline_ttft_ms": 200,
+        "worst_ttft_p95_ms": 1000,
+        "peak_concurrency": 5,
+        "hours": [
+            {
+                "hour": "2026-10-08T10:00:00+00:00",
+                "ttft_p95_ms": 1000,
+                "streams": 10,
+                "peak_concurrency": 5,
+            }
+        ],
+        "request_ids": ["req_m"],
     },
 }
 

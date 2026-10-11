@@ -89,6 +89,18 @@ on it: [`gateway.unregistered_model`](FINDINGS.md#gatewayunregistered_model) and
 readiness report lists the same catalog model names (from a names-only read)
 as "Models in traffic outside the registry", so the two never disagree.
 
+## Cold starts and timeouts
+
+A model server that unloads an idle model loads it again on the next request,
+which then waits: sometimes seconds, sometimes past the deployment's
+`timeout_seconds` (1 to 300), when it ends as a timeout. The finding
+[`gateway.cold_start`](FINDINGS.md#gatewaycold_start) names a deployment where
+requests after a quiet spell of at least 10 minutes come back late or time out;
+[`gateway.queueing`](FINDINGS.md#gatewayqueueing) names one whose streams wait at
+busy hours. `GET /api/v1/management/latency?group_by=deployment` shows the first
+byte, queue time, output speed and peak concurrency per hour. shim does not change
+a server's keep-alive or a deployment's timeout by itself.
+
 ## Idle deployments
 
 An internal deployment that served between 1 and 299 requests in 30 days raises

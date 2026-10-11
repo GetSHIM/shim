@@ -112,6 +112,7 @@ pass, and a lowered one removes the action. Nothing already applied is undone.
 | `gateway.unregistered_model`, `gateway.byok_usage` | `observe` | none: registering needs a secret and an origin; BYOK has no tenant switch |
 | `gateway.language_drift`, `gateway.schema_errors`, `gateway.soft_refusals` | `observe` | none: the prompt, the model choice or the client |
 | `gateway.oversized_parts`, `gateway.dead_tools`, `gateway.cache_order_churn` | `observe` | none: the fix is in the client's code |
+| `gateway.cold_start`, `gateway.queueing` | `observe` | none: the model server's settings or capacity |
 | `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
 | `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
 
@@ -548,6 +549,55 @@ ids. Tool names are not repeated. Impact is the requests; no tokens or money.
 
 **Fix.** Send the tools in a fixed order, for example sorted by name, and keep the
 system prompt free of per-request values.
+
+**Resolves** after 7 days without firing.
+
+## gateway.cold_start
+
+**Checks.** For each [registered deployment](MODEL_DEPLOYMENTS.md#cold-starts-and-timeouts),
+the requests of the last 24 hours. A request's idle gap is the time since the
+deployment's previous request (requests from the day before count; none at all is
+a gap of a day). A request is a cold start when its gap is at least 600 seconds
+and it ended `timeout`, or its first byte (TTFT for a stream, the provider latency
+for JSON) is at least 10,000 ms and at least five times the median first byte of
+the deployment's warm requests (gap under 600 seconds). It fires at 3 cold starts.
+Catalog routes are never subjects. Severity low. Subject: the deployment. Max mode
+`observe`, blast radius `deployment`, risk class `reliability`.
+
+**Why.** A model server that unloads an idle model makes the next caller wait
+for it to load again, sometimes past the deployment's timeout.
+
+**Evidence and impact.** Cold starts, timeouts among them, the median gap, the
+median first byte of cold and warm requests, and up to 20 request ids. Impact is
+the cold requests.
+
+**Fix.** Keep the model loaded between requests (the model server's keep-alive or
+idle-unload setting), or raise the deployment's timeout when cold starts end in
+timeouts.
+
+**Resolves** after 7 days without firing.
+
+## gateway.queueing
+
+**Checks.** For each registered deployment with at least 50 streams in the 7 days
+before the last 24 hours, their median TTFT is the baseline. An hour of the last
+24 is congested when it has at least 10 streams, their p95 TTFT (cold starts left
+out) is at least three times the baseline, and at least 4 streams were in flight
+at once (the [latency read](COOKBOOK.md#read-latency-per-team-and-app)'s peak
+concurrency). It fires at 2 congested hours. JSON answers are not counted: their
+latency includes generation. Severity low. Subject: the deployment. Max mode
+`observe`, blast radius `deployment`, risk class `reliability`.
+
+**Why.** When more requests arrive than a deployment serves at once, they wait in
+the server's queue, and the wait shows as a late first byte at busy hours.
+
+**Evidence and impact.** The congested hours, each with its p95, stream count and
+peak concurrency; the baseline; the worst p95 and peak; up to 20 request ids.
+Impact is the streams in congested hours.
+
+**Fix.** More capacity for the deployment, a concurrency budget for the target,
+or a separate lane for long requests; the latency read grouped by deployment shows
+the hours.
 
 **Resolves** after 7 days without firing.
 

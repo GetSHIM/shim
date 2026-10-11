@@ -34,6 +34,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Why is my request expensive](#why-is-my-request-expensive)
+- [Read latency per team and app](#read-latency-per-team-and-app)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Record an incident](#record-an-incident)
@@ -969,6 +970,34 @@ history, send the relevant part of a document, and send tools in a fixed order. 
 token figure of an oversized finding is an estimate (characters over four) and
 shows no money, since the repeated prefix is often billed at the cache price. The
 rules are in [findings](FINDINGS.md#gatewayoversized_parts).
+
+## Read latency per team and app
+
+See how long each team, app, model or deployment waits, per hour or day.
+
+1. As an owner, admin or auditor, read
+   `GET /api/v1/management/latency?group_by=api_key&bucket=hour` (`group_by`:
+   `team`, `api_key`, `tag`, `model`, `deployment`; `bucket`: `hour` for at most 7
+   days, `day` for at most 31; default the last 24 hours, UTC buckets).
+2. Each group (the 20 with the most requests, `truncated` beyond) has per bucket:
+   `requests`, `streams`, `first_byte_ms` p50 and p95 for streams and for JSON,
+   `shim_queue_ms` (shim's own time before the provider call), the median
+   `output_tokens_per_second` of streams, `peak_concurrency`, `timeouts` and
+   `provider_errors`.
+3. Grouped by `model` or `deployment` over at most 48 hours, `head_of_line`
+   compares the median TTFT of short streams (prompt up to 2,000 tokens) that
+   started while a long request (20,000 tokens or more) of the same group was
+   running with those that started with none.
+
+```console
+curl 'http://localhost:8000/api/v1/management/latency?group_by=team&bucket=hour' \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: an app is an API key; apps sharing a key separate with `X-Shim-Tag` and
+`group_by=tag` (a request with two tags counts in both). Requests without a team,
+tag or deployment are one group with `id: null`. How speed and concurrency are
+derived is in [diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
 
 ## Find truncated and refused answers
 

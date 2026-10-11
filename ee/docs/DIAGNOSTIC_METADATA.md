@@ -332,6 +332,27 @@ Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
 [`gateway.truncation_rate` and `gateway.refusal_rate`
 findings](FINDINGS.md#gatewaytruncation_rate).
 
+## Latency per group
+
+`GET /api/v1/management/latency` reads the request timestamps on demand over the
+indexed `started_at` window; there is no rollup table. Its measures:
+
+- first byte: `ttft_ms` for a stream, `provider_latency_ms` for a JSON answer;
+- shim queue: `provider_started_at - started_at`, shim's admission, privacy and
+  reservation commits before the provider call;
+- output tokens per second: a stream's settled `completion_tokens` over
+  `completed_at - stream_started_at`, which includes the terminal commit, so it
+  slightly understates the provider's speed; not for estimated usage, answers with
+  reasoning, or streams under one second;
+- peak concurrency: each request's span from `provider_started_at` to
+  `completed_at` (still running: to the window's end), clipped to every bucket it
+  overlaps, swept in time order with an end before a start at the same instant;
+  a request without `provider_started_at` never reached the provider and is not
+  counted.
+
+The findings `gateway.cold_start` and `gateway.queueing` use the same first byte and
+sweep ([findings](FINDINGS.md#gatewaycold_start)).
+
 ## Responses continuation markers
 
 Enterprise writes an encrypted continuation marker to Redis for every Responses

@@ -32,6 +32,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from starlette.types import Message
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -141,6 +142,11 @@ from shim_enterprise.observability.outcomes import (
     CompletionOutcome,
     OutcomeGroup,
     OutcomeRatesReadModel,
+)
+from shim_enterprise.observability.latency import (
+    LatencyBucket,
+    LatencyGroup,
+    latency_by_group,
 )
 from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
@@ -2997,6 +3003,94 @@ class OutcomeRatesPage(BaseModel):
     groups: list[OutcomeRatesView]
     truncated: bool
     totals: OutcomeRatesView
+
+
+class LatencyPercentiles(BaseModel):
+    p50: float | None
+    p95: float | None
+
+
+class OutputSpeedView(BaseModel):
+    p50: float | None
+    count: int = Field(description="Streams the median is based on.")
+
+
+class LatencyBucketView(BaseModel):
+    start: datetime
+    requests: int
+    streams: int
+    first_byte_ms: dict[Literal["stream", "json"], LatencyPercentiles]
+    shim_queue_ms: LatencyPercentiles
+    output_tokens_per_second: OutputSpeedView
+    peak_concurrency: int
+    timeouts: int
+    provider_errors: int
+
+
+class HeadOfLineSide(BaseModel):
+    ttft_ms_p50: float | None
+    streams: int
+
+
+class HeadOfLineView(BaseModel):
+    behind_long: HeadOfLineSide
+    alone: HeadOfLineSide
+
+
+class LatencyGroupView(BaseModel):
+    id: str | None
+    name: str | None
+    requests: int
+    buckets: list[LatencyBucketView]
+    head_of_line: HeadOfLineView | None
+    head_of_line_unavailable_reason: Literal["window_over_48h", "group_by"] | None
+
+
+class LatencyView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LatencyGroup
+    bucket: LatencyBucket
+    truncated: bool
+    groups: list[LatencyGroupView]
+
+
+_LATENCY_WINDOWS = {"hour": timedelta(days=7), "day": timedelta(days=31)}
+
+
+@router.get("/latency", response_model=LatencyView)
+async def latency(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 24 hours before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LatencyGroup = Query(
+        default="api_key",
+        description="An app is an API key; apps behind one key separate by tag.",
+    ),
+    bucket: LatencyBucket = Query(default="hour"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(hours=24)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    if end_at - start_at > _LATENCY_WINDOWS[bucket]:
+        raise HTTPException(
+            status_code=422,
+            detail="hour buckets cover at most 7 days, day buckets at most 31",
+        )
+    return await latency_by_group(
+        session,
+        _tenant_id(user),
+        start=start_at,
+        end=end_at,
+        group_by=group_by,
+        bucket=bucket,
+    )
 
 
 @router.get("/outcomes", response_model=OutcomeRatesPage)

@@ -6048,6 +6048,47 @@
         "title": "HarmCategory",
         "type": "string"
       },
+      "HeadOfLineSide": {
+        "properties": {
+          "streams": {
+            "title": "Streams",
+            "type": "integer"
+          },
+          "ttft_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P50"
+          }
+        },
+        "required": [
+          "ttft_ms_p50",
+          "streams"
+        ],
+        "title": "HeadOfLineSide",
+        "type": "object"
+      },
+      "HeadOfLineView": {
+        "properties": {
+          "alone": {
+            "$ref": "#/components/schemas/HeadOfLineSide"
+          },
+          "behind_long": {
+            "$ref": "#/components/schemas/HeadOfLineSide"
+          }
+        },
+        "required": [
+          "behind_long",
+          "alone"
+        ],
+        "title": "HeadOfLineView",
+        "type": "object"
+      },
       "HttpElementLocation": {
         "description": "The location of the API key. This enum is not supported in Gemini API.",
         "enum": [
@@ -6665,6 +6706,225 @@
           }
         },
         "title": "LatLng",
+        "type": "object"
+      },
+      "LatencyBucketView": {
+        "properties": {
+          "first_byte_ms": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LatencyPercentiles"
+            },
+            "propertyNames": {
+              "enum": [
+                "stream",
+                "json"
+              ]
+            },
+            "title": "First Byte Ms",
+            "type": "object"
+          },
+          "output_tokens_per_second": {
+            "$ref": "#/components/schemas/OutputSpeedView"
+          },
+          "peak_concurrency": {
+            "title": "Peak Concurrency",
+            "type": "integer"
+          },
+          "provider_errors": {
+            "title": "Provider Errors",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "shim_queue_ms": {
+            "$ref": "#/components/schemas/LatencyPercentiles"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "streams": {
+            "title": "Streams",
+            "type": "integer"
+          },
+          "timeouts": {
+            "title": "Timeouts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "requests",
+          "streams",
+          "first_byte_ms",
+          "shim_queue_ms",
+          "output_tokens_per_second",
+          "peak_concurrency",
+          "timeouts",
+          "provider_errors"
+        ],
+        "title": "LatencyBucketView",
+        "type": "object"
+      },
+      "LatencyGroupView": {
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/LatencyBucketView"
+            },
+            "title": "Buckets",
+            "type": "array"
+          },
+          "head_of_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadOfLineView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head_of_line_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "window_over_48h",
+                  "group_by"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Of Line Unavailable Reason"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requests",
+          "buckets",
+          "head_of_line",
+          "head_of_line_unavailable_reason"
+        ],
+        "title": "LatencyGroupView",
+        "type": "object"
+      },
+      "LatencyPercentiles": {
+        "properties": {
+          "p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          }
+        },
+        "required": [
+          "p50",
+          "p95"
+        ],
+        "title": "LatencyPercentiles",
+        "type": "object"
+      },
+      "LatencyView": {
+        "properties": {
+          "bucket": {
+            "enum": [
+              "hour",
+              "day"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "group_by": {
+            "enum": [
+              "team",
+              "api_key",
+              "tag",
+              "model",
+              "deployment"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/LatencyGroupView"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "bucket",
+          "truncated",
+          "groups"
+        ],
+        "title": "LatencyView",
         "type": "object"
       },
       "Links": {
@@ -7963,6 +8223,32 @@
           "soft_refusal_rate"
         ],
         "title": "OutcomeRatesView",
+        "type": "object"
+      },
+      "OutputSpeedView": {
+        "properties": {
+          "count": {
+            "description": "Streams the median is based on.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          }
+        },
+        "required": [
+          "p50",
+          "count"
+        ],
+        "title": "OutputSpeedView",
         "type": "object"
       },
       "OversightDecision": {
@@ -18978,6 +19264,115 @@
           }
         ],
         "summary": "Update Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/latency": {
+      "get": {
+        "operationId": "latency_api_v1_management_latency_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to 24 hours before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to 24 hours before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "description": "An app is an API key; apps behind one key separate by tag.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "api_key",
+              "description": "An app is an API key; apps behind one key separate by tag.",
+              "enum": [
+                "team",
+                "api_key",
+                "tag",
+                "model",
+                "deployment"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "hour",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Bucket",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatencyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Latency",
         "tags": [
           "management"
         ]
