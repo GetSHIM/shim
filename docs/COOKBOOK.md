@@ -171,10 +171,15 @@ refused at admission or by a privacy block; other values name a failure.
 grouped by hour. `protocol` is `openai_chat`, `openai_responses`,
 `anthropic_messages`, `anthropic_count_tokens` (only a refused or failed token
 count writes a line) or `gemini`, and `stream` says whether the caller streamed.
-`provider_latency_ms` is the milliseconds from before the provider call to the
-parsed answer of a JSON request (`null` for a stream, which has `ttft_ms`);
-`answer_characters` is the answer text's length without reasoning text;
-`tool_call_names` lists the tools the answer called; `reasoning_seen` is `true`
+`provider_latency_ms` is the milliseconds of the provider call of a JSON request,
+from its start to the SDK returning the parsed answer, without credential
+resolution before it or shim's restoring of masked values after it (`null` for a
+stream, which has `ttft_ms`);
+`answer_characters` is the answer text's length without reasoning text (a stream
+also counts tool-call arguments, which a JSON answer does not, so the two differ
+for a tool call); a stream that ended early records what it had sent in
+`answer_characters` and `tool_call_names`, so compute ratios over `completed`
+lines only; `tool_call_names` lists the tools the answer called; `reasoning_seen` is `true`
 when the answer carried reasoning or reported reasoning tokens, which distort a
 tokens-per-character ratio. A refused or failed line has `null`, `null`, `[]` and
 `false`.

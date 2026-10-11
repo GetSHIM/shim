@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -163,6 +164,7 @@ class AnthropicExecution:
                     result: Any = await create(**kwargs)
                 except TypeError:
                     raise sdk_rejected_request("anthropic") from None
+            received_at = perf_counter()
         except asyncio.CancelledError:
             await circuit.release_probe()
             raise
@@ -219,6 +221,7 @@ class AnthropicExecution:
         return ProviderNonStream(
             payload=payload,
             request_id=getattr(result, "_request_id", None),
+            received_at_monotonic=received_at,
         )
 
     async def _stream(

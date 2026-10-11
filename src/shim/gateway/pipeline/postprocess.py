@@ -38,16 +38,14 @@ from shim.gateway.streaming.meter import (
     KEPT_TOOL_CALLS,
     StreamUsageSnapshot,
     answer_characters,
-    answer_markers,
+    answer_facts,
     answer_text,
     answer_texts,
     answer_tool_calls,
     cache_split,
     completion_outcome,
     native_finish_reasons,
-    reasoning_seen,
     settled_outcome,
-    tool_call_names,
 )
 from shim.gateway.usage import UsageLifecycle
 from shim.observability.metrics import (
@@ -271,13 +269,13 @@ class ResponsePostprocessor:
         )
         completed_at = datetime.now(timezone.utc)
         finish_reasons = native_finish_reasons(response.payload, provider=provider)
-        refusal, tool_call = answer_markers(response.payload)
+        facts = answer_facts(response.payload)
         characters = answer_characters(response.payload)
         outcome = completion_outcome(
             finish_reasons,
             output_characters=characters,
-            refusal=refusal,
-            tool_call=tool_call,
+            refusal=facts.refusal,
+            tool_call=facts.tool_call,
         )
         terminal = StreamFinalization(
             terminal_status=lifecycle_status,
@@ -314,8 +312,8 @@ class ResponsePostprocessor:
                     else None
                 ),
                 answer_characters=characters,
-                tool_call_names=tool_call_names(response.payload),
-                reasoning_seen=reasoning_seen(response.payload),
+                tool_call_names=facts.tool_names,
+                reasoning_seen=facts.reasoning,
             ),
             completed_at=completed_at,
             error_code=(
