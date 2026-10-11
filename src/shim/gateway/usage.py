@@ -419,6 +419,9 @@ def system_prompt_hash(prepared: PreparedInference, key: bytes) -> str | None:
         "messages": "system",
         "count_tokens": "system",
         "generate_content": "systemInstruction",
+        # Embeddings carry no instructions.
+        "embeddings": None,
+        "embed_content": None,
     }[prepared.protocol]
     if field is not None and payload.get(field) is not None:
         material[field] = payload[field]

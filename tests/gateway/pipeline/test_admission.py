@@ -1525,3 +1525,15 @@ async def test_a_deprecated_embeddings_model_is_still_warned(monkeypatch) -> Non
     result = await _inflight_stage(InFlightRegistry()).run(prepared)
 
     assert result.warnings == ["MODEL_DEPRECATED"]
+
+
+def test_the_embeddings_routes_name_their_source_endpoint() -> None:
+    chat = _prepared("x")
+    single = replace(chat, protocol="embed_content", payload={"content": {}})
+    batch = replace(chat, protocol="embed_content", payload={"requests": []})
+
+    assert [
+        replace(chat, protocol="embeddings").source_endpoint,
+        single.source_endpoint,
+        batch.source_endpoint,
+    ] == ["embeddings", "embedContent", "batchEmbedContents"]

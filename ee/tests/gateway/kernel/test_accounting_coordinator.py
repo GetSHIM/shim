@@ -3605,3 +3605,36 @@ async def test_a_shared_answer_settles_one_request_unit_without_tokens_or_spend(
         ("quota_reservation", 1, 50, Decimal("0")),
         ("quota_settlement", 1, 0, Decimal("0")),
     ], "one request unit, no tokens, no spend row"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["embeddings", "embed_content"])
+async def test_an_embeddings_request_reserves_its_quota(protocol) -> None:
+    repository = SimpleNamespace(
+        reserve_quota=AsyncMock(return_value=SimpleNamespace(replayed=False))
+    )
+    policy_loader = SimpleNamespace(
+        quota=AsyncMock(return_value=QuotaPolicySnapshot("quota-v1", None, None, None))
+    )
+    prepared = _prepared()
+    prepared.protocol = protocol
+    prepared.payload = {"model": "text-embedding-3-small", "input": "hello"}
+    prepared.source_endpoint = "embeddings"
+    prepared.context.started_at = datetime.now(timezone.utc)
+    prepared.policy = SimpleNamespace(team=None)
+
+    await DurableAccountingCoordinator(
+        repository=repository, policy_loader=policy_loader
+    ).reserve_quota(
+        prepared,
+        AdmissionState(
+            estimated_input_tokens=20,
+            maximum_output_tokens=0,
+            cost_center="untagged",
+            tags=(),
+        ),
+        SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock()),
+    )
+
+    command = repository.reserve_quota.await_args.args[1]
+    assert (command.maximum_output_tokens, command.system_prompt_hash) == (0, None)

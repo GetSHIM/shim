@@ -1948,3 +1948,14 @@ async def test_an_embeddings_answer_settles_its_prompt_and_no_completion() -> No
     assert line["estimated_cost_usd"] == str(
         compute_cost_usd("text-embedding-3-small", 7, 0, provider="openai")
     )
+
+
+@pytest.mark.parametrize("protocol", ["embeddings", "embed_content"])
+def test_an_embeddings_request_has_no_system_prompt_hash(protocol) -> None:
+    from shim.gateway.usage import system_prompt_hash
+
+    prepared = _prepared(model="text-embedding-3-small")
+    prepared.protocol = protocol
+    prepared.payload = {"model": "text-embedding-3-small", "input": "hello"}
+
+    assert system_prompt_hash(prepared, b"k" * 32) is None
