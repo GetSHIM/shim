@@ -227,6 +227,7 @@ def _create_gateway_kernel(
             if settings.AI_ACT_AUDIT_ENABLED
             else None
         ),
+        honor_trace_parent=settings.SHIM_TRACE_PARENT == "honor",
     )
 
 

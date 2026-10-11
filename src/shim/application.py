@@ -147,6 +147,7 @@ def create_community_app(
                 loop_window_seconds=configured.LOOP_WINDOW_SECONDS,
                 cost_tag_max_length=configured.COST_TAG_MAX_LENGTH,
                 usage=usage,
+                honor_trace_parent=configured.SHIM_TRACE_PARENT == "honor",
             )
         )
         try:

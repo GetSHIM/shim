@@ -250,3 +250,14 @@ def test_the_price_tier_warning_setting_is_on_or_off(value, on) -> None:
 def test_an_unknown_price_tier_warning_value_stops_the_gateway() -> None:
     with pytest.raises(ValidationError):
         CommunitySettings(_env_file=None, SHIM_PRICE_TIER_WARNING="yes")
+
+
+@pytest.mark.parametrize("value", ["ignore", "honor"])
+def test_the_trace_parent_setting_is_ignore_or_honor(value) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_TRACE_PARENT == "ignore"
+    assert (
+        CommunitySettings(_env_file=None, SHIM_TRACE_PARENT=value).SHIM_TRACE_PARENT
+        == value
+    )
+    with pytest.raises(ValidationError):
+        CommunitySettings(_env_file=None, SHIM_TRACE_PARENT="follow")

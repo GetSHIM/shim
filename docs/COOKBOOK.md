@@ -163,7 +163,7 @@ Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
 `provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
-`repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
+`repeat_chain_length`, `cost_center`, `tags`, `task_id`, `trace_id`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
 `bulk_disclosure`, `warnings` and `policy_verdicts`, and `injection_markers` when
 [the marker scan](#count-instructions-hidden-in-tool-results) is on. The three count maps give values by
@@ -643,14 +643,25 @@ Export traces, logs, error reports and metrics without exporting prompt or respo
    | `OTEL_SERVICE_NAME` | `service.name` of the spans, default `shim`. |
    | `SENTRY_DSN` | Error reports only, no performance traces. Request body, URL, query string, cookies and exception messages are stripped. |
    | `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR` or `CRITICAL`; JSON lines on stdout. |
+   | `SHIM_TRACE_PARENT` | `ignore` (default): every request starts a new trace. `honor`: a request carrying a valid W3C `traceparent` (and `tracestate`) becomes a child of the caller's span, so an agent's calls are one trace. The tracer's sampler follows the caller's sampled flag, so an unsampled caller gets no gateway spans. |
    | `SYSTEM_PROMPT_HASH_KEY` | A secret of at least 32 characters. The usage event's `system_prompt_hash` becomes an HMAC of the system and developer instructions, so a changed prompt shows as a changed hash. Unset means `null`. Another installation's key gives other hashes for the same prompt. |
 
-2. Read the cost and usage of a settled request from its span attributes:
+2. Name the agent task a request belongs to with `X-Shim-Task-Id`: up to 128 of
+   `A-Za-z0-9._:/-`, starting with a letter or digit. Another value is ignored and
+   counted in `shim_task_id_rejected_total`, never refused. Without it, the trace id
+   of a valid incoming `traceparent` is the task id. The usage event records
+   `task_id` and `trace_id` (the incoming trace id, also with `ignore`), `null` when
+   absent. Neither header is sent to the provider.
+3. Read the cost and usage of a settled request from its span attributes:
    `gen_ai.request.model` (`unpriced` for a model without a catalog price),
    `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
    `gen_ai.response.finish_reasons`, `shim.cost_usd` and `shim.usage_estimated`.
-   Span attributes come from a fixed allow-list.
-3. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the
+   Span attributes come from a fixed allow-list. The request span (`gateway.request`)
+   also carries `gen_ai.operation.name` (`chat` for Chat, Responses and Messages,
+   `generate_content` for Gemini), `gen_ai.provider.name` (`openai`, `anthropic`,
+   `gcp.gemini`) and `shim.task_id`, named as the OpenTelemetry GenAI conventions
+   at schema `https://opentelemetry.io/schemas/1.44.0`, which the tracer declares.
+4. Scrape `GET /metrics` (Prometheus text). It needs no key and is not in the
    OpenAPI document, so keep it off public networks.
 
 ```console

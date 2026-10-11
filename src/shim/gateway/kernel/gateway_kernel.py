@@ -8,6 +8,8 @@ import logging
 from typing import Any
 
 from fastapi import HTTPException
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from starlette.responses import Response, JSONResponse
 
 from shim.core.middleware import AsyncRateLimiter
@@ -36,7 +38,7 @@ from shim.observability.metrics import (
     REQUESTS_TOTAL,
     bounded_label,
 )
-from shim.observability.tracing import start_span
+from shim.observability.tracing import safe_attributes, start_span
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.rules.approval import ApprovalGate, ApprovalRequest
 from shim.rules.evaluate import record_rule_verdicts, settle_matches
@@ -47,6 +49,20 @@ from .result import PreparedInference
 
 logger = logging.getLogger(__name__)
 _PROVIDERS = frozenset({"openai", "anthropic", "google"})
+
+
+# OpenTelemetry GenAI names at schema 1.44.0 (tracing.SCHEMA_URL); a token count is no operation.
+_GENAI_OPERATIONS = {
+    "chat": "chat",
+    "responses": "chat",
+    "messages": "chat",
+    "generate_content": "generate_content",
+}
+_GENAI_PROVIDERS = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "gcp.gemini",
+}
 
 
 class GatewayKernel:
@@ -67,6 +83,7 @@ class GatewayKernel:
         prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
         | None = None,
         approval_gate: ApprovalGate | None = None,
+        honor_trace_parent: bool = False,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -86,6 +103,7 @@ class GatewayKernel:
         self.policy_resolver = policy_resolver
         self.prepare_inference = prepare_inference
         self.approval_gate = approval_gate
+        self.honor_trace_parent = honor_trace_parent
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -101,6 +119,10 @@ class GatewayKernel:
 
         with start_span(
             "gateway.request",
+            # A missing or invalid traceparent extracts an empty context: a new trace.
+            context=TraceContextTextMapPropagator().extract(invocation.headers)
+            if self.honor_trace_parent
+            else None,
             endpoint=endpoint,
             method=invocation.metadata.method,
             protocol=invocation.protocol,
@@ -209,6 +231,16 @@ class GatewayKernel:
                     )
                 await self.usage.reject(prepared)
             raise
+        assert prepared.admission is not None
+        trace.get_current_span().set_attributes(
+            safe_attributes(
+                {
+                    "gen_ai.operation.name": _GENAI_OPERATIONS.get(prepared.protocol),
+                    "gen_ai.provider.name": _GENAI_PROVIDERS[str(prepared.provider)],
+                    "shim.task_id": prepared.admission.task_id,
+                }
+            )
+        )
 
         stream_session: StreamSession | None = None
         # A reference, not a copy: the approval gate digests what entered privacy.

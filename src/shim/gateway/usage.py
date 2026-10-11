@@ -329,6 +329,8 @@ class LocalUsageLifecycle:
             ),
             "cost_center": admission.cost_center if admission is not None else None,
             "tags": list(admission.tags) if admission is not None else [],
+            "task_id": admission.task_id if admission is not None else None,
+            "trace_id": admission.trace_id if admission is not None else None,
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None
             ),

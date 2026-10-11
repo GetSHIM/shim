@@ -43,6 +43,8 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             repeat_chain_length=1,
             cost_center="risk",
             tags=("risk", "batch"),
+            task_id=None,
+            trace_id=None,
         ),
         deployment_kind="unknown",
         response_scan="off",
@@ -174,6 +176,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "repeat_chain_length",
         "cost_center",
         "tags",
+        "task_id",
+        "trace_id",
         "system_prompt_hash",
         "deployment_kind",
         "warnings",
@@ -209,6 +213,8 @@ async def test_local_usage_writes_one_exact_redacted_terminal_event() -> None:
         "reasoning_seen": False,
         "repeat_chain_length": 1,
         "cost_center": "risk",
+        "task_id": None,
+        "trace_id": None,
         "tags": ["risk", "batch"],
         "system_prompt_hash": None,
         "deployment_kind": "unknown",
@@ -1773,3 +1779,24 @@ async def test_the_jsonl_event_carries_injection_markers_only_when_scanned(
     event = json.loads(stream.getvalue())
     assert event.get("injection_markers", None) == line
     assert ("injection_markers" in event) == (markers is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_id", "trace_id"),
+    [("task-1", "0af7651916cd43dd8448eb211c80319c"), (None, None)],
+)
+async def test_the_jsonl_event_carries_the_task_and_trace_ids(
+    task_id, trace_id
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.admission.task_id = task_id
+    prepared.admission.trace_id = trace_id
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert (event["task_id"], event["trace_id"]) == (task_id, trace_id)

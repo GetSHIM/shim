@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 import unicodedata
 
 from fastapi import HTTPException
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from shim.billing.attribution import CostAttribution
 from shim.billing.pricing import DEFAULT_PRICE_BOOK, ModelPrice
@@ -23,6 +25,7 @@ from shim.gateway.kernel.result import (
 )
 from shim.gateway.kernel.stage import TraceValue
 from shim.gateway.pipeline.privacy import _is_protocol_field
+from shim.observability.metrics import TASK_ID_REJECTED_TOTAL
 from shim.rules.evaluate import in_scope, settle_matches
 from shim.rules.request_limit import request_measures
 
@@ -32,6 +35,7 @@ if TYPE_CHECKING:
 
 
 _WHITESPACE = re.compile(r"\s+")
+_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _MAX_CANDIDATES = 10_000
 # A word never shares a token with its neighbour in a whitespace-splitting tokenizer.
 _WORD = re.compile(r"[^ \t\r\n]+")
@@ -303,12 +307,15 @@ class AdmissionStage:
                 },
                 headers={"Retry-After": str(self.loop_window_seconds)},
             )
+        task_id, trace_id = _task_identity(self.invocation.headers)
         admission = AdmissionState(
             estimated_input_tokens=input_tokens,
             maximum_output_tokens=output_tokens,
             cost_center=attribution.cost_center,
             tags=attribution.tags,
             repeat_chain_length=self.loop_result.chain_length or None,
+            task_id=task_id,
+            trace_id=trace_id,
         )
         if value.protocol != "count_tokens":
             await self.usage.admit(value, admission)
@@ -377,6 +384,24 @@ def _check_catalog_limits(
             )
     if approximate_tokens + output > window:
         value.warn("CONTEXT_MAY_EXCEED")
+
+
+def _task_identity(headers: Mapping[str, str]) -> tuple[str | None, str | None]:
+    """X-Shim-Task-Id when it is one, else the incoming W3C trace id; and that trace id."""
+
+    trace_id = None
+    if "traceparent" in headers:
+        context = trace.get_current_span(
+            TraceContextTextMapPropagator().extract(
+                {"traceparent": headers["traceparent"]}
+            )
+        ).get_span_context()
+        trace_id = format(context.trace_id, "032x") if context.is_valid else None
+    task_id = (headers.get("x-shim-task-id") or "").strip()
+    if task_id and not _TASK_ID.fullmatch(task_id):
+        TASK_ID_REJECTED_TOTAL.inc()
+        task_id = ""
+    return task_id or trace_id, trace_id
 
 
 def _request_limits(

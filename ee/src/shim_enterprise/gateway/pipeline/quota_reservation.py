@@ -376,6 +376,8 @@ class DurableAccountingCoordinator:
                         maximum_output_tokens=admission.maximum_output_tokens,
                         cost_center=admission.cost_center,
                         tags=admission.tags,
+                        task_id=admission.task_id,
+                        trace_id=admission.trace_id,
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,

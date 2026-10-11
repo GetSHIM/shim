@@ -989,3 +989,50 @@ async def test_the_price_tier_warning_needs_the_switch_a_tier_and_the_size(
     admitted = await stage.run(prepared)
 
     assert ("PRICE_TIER_CROSSED" in admitted.warnings) is warned
+
+
+_TRACE = "0af7651916cd43dd8448eb211c80319c"
+_PARENT = f"00-{_TRACE}-b7ad6b7169203331-01"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "task_id", "trace_id"),
+    [
+        ({"x-shim-task-id": "t" * 128}, "t" * 128, None),
+        ({"x-shim-task-id": "t" * 129}, None, None),
+        ({"x-shim-task-id": "  task-7/step:2  "}, "task-7/step:2", None),
+        ({"x-shim-task-id": "two words"}, None, None),
+        ({"x-shim-task-id": "a@b"}, None, None),
+        ({"x-shim-task-id": "-leading"}, None, None),
+        ({"x-shim-task-id": ""}, None, None),
+        ({"traceparent": _PARENT}, _TRACE, _TRACE),
+        ({"traceparent": _PARENT.upper()}, None, None),
+        ({"traceparent": f"00-{'0' * 32}-b7ad6b7169203331-01"}, None, None),
+        ({"traceparent": f"00-{_TRACE}-{'0' * 16}-01"}, None, None),
+        ({"traceparent": f"ff-{_TRACE}-b7ad6b7169203331-01"}, None, None),
+        ({"traceparent": "garbage"}, None, None),
+        ({"traceparent": _PARENT, "x-shim-task-id": "task-1"}, "task-1", _TRACE),
+        ({"traceparent": _PARENT, "x-shim-task-id": "bad id"}, _TRACE, _TRACE),
+        ({}, None, None),
+    ],
+)
+async def test_the_task_id_comes_from_its_header_else_the_incoming_trace(
+    headers, task_id, trace_id
+) -> None:
+    from prometheus_client import REGISTRY
+
+    stage, _, _ = _limit_stage(headers)
+    rejected = REGISTRY.get_sample_value("shim_task_id_rejected_total") or 0
+
+    admitted = await stage.run(_prepared("a task"))
+
+    assert admitted.admission is not None
+    assert (admitted.admission.task_id, admitted.admission.trace_id) == (
+        task_id,
+        trace_id,
+    )
+    sent = (headers.get("x-shim-task-id") or "").strip()
+    assert (
+        REGISTRY.get_sample_value("shim_task_id_rejected_total") or 0
+    ) - rejected == (1 if sent and task_id != sent else 0)

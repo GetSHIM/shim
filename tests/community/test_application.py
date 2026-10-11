@@ -542,6 +542,39 @@ async def test_browsers_can_read_the_gateway_error_code() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_browsers_may_send_trace_context_and_a_task_id() -> None:
+    origin = "https://dashboard.example.test"
+    application = create_community_app(
+        CommunitySettings(
+            SHIM_API_KEY=GATEWAY_KEY, BACKEND_CORS_ORIGINS=[origin], _env_file=None
+        ),
+        event_stream=StringIO(),
+    )
+
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.options(
+            "/v1/chat/completions",
+            headers={
+                "origin": origin,
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "traceparent,tracestate,x-shim-task-id",
+            },
+        )
+
+    assert response.status_code == 200
+    allowed = response.headers["access-control-allow-headers"].lower()
+    assert {"traceparent", "tracestate", "x-shim-task-id"} <= {
+        name.strip() for name in allowed.split(",")
+    }
+
+
 def test_global_rate_limit_comes_from_the_setting() -> None:
     application = create_community_app(
         _settings(GLOBAL_RATE_LIMIT_PER_MINUTE=7),

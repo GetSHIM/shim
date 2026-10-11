@@ -150,6 +150,10 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
 
 Credential-bearing headers are removed before request metadata is recorded.
+Admission reads three gateway headers besides the credentials: `X-Shim-Tag`,
+`X-Shim-Task-Id` and `traceparent` (the task and trace ids of the request);
+with `SHIM_TRACE_PARENT=honor` the kernel also starts the request span as a
+child of the incoming `traceparent`/`tracestate`. None of them is forwarded.
 Inbound authorization, cookies, host headers, shim tags, and credentials are
 never forwarded wholesale.
 

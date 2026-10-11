@@ -201,6 +201,10 @@ PRIVACY_BULK_DISCLOSURES_TOTAL = Counter(
     "Requests whose distinct detected values reached the bulk threshold.",
     ("provider",),
 )
+TASK_ID_REJECTED_TOTAL = Counter(
+    "shim_task_id_rejected_total",
+    "X-Shim-Task-Id values that were not task ids and were ignored.",
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

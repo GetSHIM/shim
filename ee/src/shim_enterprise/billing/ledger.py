@@ -198,6 +198,8 @@ class QuotaReservationCommand:
     policy: QuotaPolicySnapshot
     cost_center: str = "untagged"
     tags: tuple[str, ...] = ()
+    task_id: str | None = None
+    trace_id: str | None = None
     team: str | None = None
     stream: bool = False
     repeat_chain_length: int | None = None
@@ -358,6 +360,8 @@ class DurableAccountingRepository:
                     "quota_policy_version": command.policy.version,
                     "cost_center": command.cost_center,
                     "tags": list(command.tags),
+                    "task_id": command.task_id,
+                    "trace_id": command.trace_id,
                     "team": command.team,
                     "team_id": team_id,
                     "repeat_chain_length": command.repeat_chain_length,

@@ -117,6 +117,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         admission=SimpleNamespace(
             estimated_input_tokens=20,
             maximum_output_tokens=30,
+            task_id=None,
+            trace_id=None,
         ),
         payload={"messages": []},
         privacy=PrivacyOutcome(
@@ -3459,3 +3461,40 @@ async def test_a_failed_response_analysis_record_is_logged_and_dropped(caplog) -
 
     assert "Response analysis record failed type=ConnectionError" in caplog.text
     assert "private-host" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_id", "trace_id"),
+    [("task-42", "0af7651916cd43dd8448eb211c80319c"), (None, None)],
+)
+async def test_the_reservation_records_the_task_and_trace_ids(
+    db, test_api_key, task_id, trace_id
+) -> None:
+    started_at = datetime.now(timezone.utc)
+    request_id = f"req_{uuid4().hex}"
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=test_api_key.organization_id,
+            api_key_id=test_api_key.id,
+            request_id=request_id,
+            requested_model="gpt-5.6-luna",
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+            task_id=task_id,
+            trace_id=trace_id,
+        ),
+    )
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == request_id)
+        )
+    ).scalar_one()
+    metadata = lifecycle.lifecycle_metadata
+    assert (metadata["task_id"], metadata["trace_id"]) == (task_id, trace_id)

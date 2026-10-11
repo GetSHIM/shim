@@ -1892,3 +1892,109 @@ async def test_the_restore_verdict_says_whether_this_caller_got_placeholders(
     assert response.status_code == 200 and _TCKN not in calls[0].content.decode()
     assert verdicts.get("privacy.restore") == verdict
     assert (_TCKN in answer) is (text != "no personal data" and not withheld)
+
+
+_CALLER_TRACE = "0af7651916cd43dd8448eb211c80319c"
+_CALLER_SPAN = "b7ad6b7169203331"
+
+
+@pytest.fixture
+def recorded_spans(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    import shim.observability.tracing as tracing_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", provider.get_tracer)
+    yield exporter
+    provider.shutdown()
+
+
+async def _traced_chat(setting: str, traceparent: str, *, stream: bool):
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if stream:
+            return httpx.Response(
+                200,
+                text=_MARKED_STREAMS["/v1/chat/completions"],
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None, SHIM_API_KEY=_GATEWAY_KEY, SHIM_TRACE_PARENT=setting
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {_GATEWAY_KEY}",
+                        "x-provider-key": "provider-secret",
+                        "traceparent": traceparent,
+                        "tracestate": "vendor=1",
+                        "x-shim-task-id": "task-42",
+                    },
+                    json={
+                        "model": "gpt-5-nano",
+                        "stream": stream,
+                        "messages": [{"role": "user", "content": "trace me"}],
+                    },
+                )
+                await response.aread()
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    return response, calls, line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("setting", "header", "joined"),
+    [
+        ("honor", f"00-{_CALLER_TRACE}-{_CALLER_SPAN}-01", True),
+        ("ignore", f"00-{_CALLER_TRACE}-{_CALLER_SPAN}-01", False),
+        ("honor", f"00-{_CALLER_TRACE.upper()}-{_CALLER_SPAN}-01", False),
+    ],
+)
+async def test_the_request_span_joins_the_callers_trace_only_when_honored(
+    recorded_spans, setting, header, joined, stream
+) -> None:
+    response, calls, line = await _traced_chat(setting, header, stream=stream)
+
+    spans = recorded_spans.get_finished_spans()
+    [request] = [span for span in spans if span.name == "gateway.request"]
+    trace_ids = {format(span.context.trace_id, "032x") for span in spans}
+    assert response.status_code == 200 and len(calls) == 1
+    assert not {"traceparent", "tracestate"} & set(calls[0].headers)
+    assert (format(request.context.trace_id, "032x") == _CALLER_TRACE) is joined
+    assert len(trace_ids) == 1, "stage and stream spans share the request's trace"
+    if joined:
+        assert request.parent is not None
+        assert format(request.parent.span_id, "016x") == _CALLER_SPAN
+    if stream:
+        assert any(span.name == "gateway.stream" for span in spans)
+    attributes = request.attributes or {}
+    assert attributes["gen_ai.operation.name"] == "chat"
+    assert attributes["gen_ai.provider.name"] == "openai"
+    assert attributes["shim.task_id"] == "task-42"
+    valid = header == header.lower()
+    assert (line["task_id"], line["trace_id"]) == (
+        "task-42",
+        _CALLER_TRACE if valid else None,
+    )

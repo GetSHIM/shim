@@ -173,6 +173,8 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
     prepared = SimpleNamespace(
         stream=False,
         protocol="chat",
+        provider="openai",
+        admission=SimpleNamespace(task_id=None),
         privacy=PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
         policy_verdicts=[],
         payload={},

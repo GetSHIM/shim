@@ -127,6 +127,8 @@ class AdmissionState:
     cost_center: str
     tags: tuple[str, ...]
     repeat_chain_length: int | None = None
+    task_id: str | None = None
+    trace_id: str | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.

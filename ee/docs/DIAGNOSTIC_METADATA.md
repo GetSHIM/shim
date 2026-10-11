@@ -233,6 +233,11 @@ transaction, and absent for callers no grant concerns. It is in the analytics ro
 the request list and the CSV's last column (as JSON). Counts only, never a value or
 a placeholder.
 
+`task_id` and `trace_id` are written at reservation: `task_id` is the request's
+`X-Shim-Task-Id` (up to 128 characters), else the trace id of a valid incoming
+`traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
+the lifecycle metadata only; reads and filters by task come with the task view.
+
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
 `count`. The scan runs after the answer is sent, so the field is written to the
