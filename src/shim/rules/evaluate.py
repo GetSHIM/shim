@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
 from itertools import islice
 import json
+import re
 from typing import TYPE_CHECKING, Literal
 
 from shim.observability.metrics import RULE_MATCHES_TOTAL, bounded_label
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
 
 MAX_RECORDED_MATCHES = 32
+# A dated snapshot id belongs to the model it is dated from.
+_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 Outcome = Literal["allow", "mask", "deny", "error"]
 
 
@@ -34,12 +37,20 @@ def in_scope(
     checks: tuple[tuple[tuple[str, ...], str | None], ...] = (
         (scope.api_key_ids, key_id),
         (scope.team_ids, prepared.policy.team_id),
-        (scope.models, prepared.model),
         (scope.deployment_kinds, kind),
         (scope.endpoints, prepared.protocol),
     )
-    return all(not allowed or value in allowed for allowed, value in checks) and (
-        not scope.tags or not set(scope.tags).isdisjoint(tags)
+    # The model the request reaches, never the alias the caller named.
+    model = prepared.pricing_model.casefold()
+    return (
+        all(not allowed or value in allowed for allowed, value in checks)
+        and (not scope.tags or not set(scope.tags).isdisjoint(tags))
+        and (
+            not scope.models
+            or not {model, _DATE_SUFFIX.sub("", model)}.isdisjoint(
+                entry.casefold() for entry in scope.models
+            )
+        )
     )
 
 

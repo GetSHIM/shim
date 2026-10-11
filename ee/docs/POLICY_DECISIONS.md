@@ -89,7 +89,9 @@ whole, with the revision it was read at (a stale one answers 409
 `RULE_SET_REVISION_CONFLICT`). Each rule has an `id`, a `kind`, an `action`, a
 `state` (`monitor` or `enforced`), a `scope` (API keys, teams, tags, models,
 deployment kinds, endpoints; an empty list means every one) and a kind-specific
-`match`. A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
+`match`. A `models` entry is compared with the model the request reaches, never
+the registry alias the caller named, case-insensitively, and covers that model's
+dated snapshots (`gpt-5-mini` covers `gpt-5-mini-2025-08-07`, not `gpt-5`). A new rule starts in `monitor`. The `term`, `pattern`, `record_set`,
 `destination` and `request_limit` kinds are available; `GET /rules` lists the others with
 `available: false` and the reason.
 
@@ -121,7 +123,9 @@ Protocol identifiers are not searched, and a term in one never refuses a request
 
 A `destination` rule names 1 to 32 built-in entity types (`match.entity_types`) and
 needs at least one scope list (422 `RULE_SCOPE_REQUIRED` without one), typically
-`deployment_kinds: ["external"]`. A target is `internal` or `external` as its
+`deployment_kinds: ["external"]`. A `block` rule also needs a list the server
+decides (keys, teams, models or deployment kinds): tags and the endpoint are the
+caller's choice, so a block scoped by them alone is refused with the same code. A target is `internal` or `external` as its
 [deployment](MODEL_DEPLOYMENTS.md) says; a catalog route and every Gemini request
 are `unknown`, which a scope listing `external` matches. For a request in the rule's
 scope, the privacy stage looks for every type the rule names, also when the base

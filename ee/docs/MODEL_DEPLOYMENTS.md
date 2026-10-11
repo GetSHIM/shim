@@ -36,6 +36,8 @@ let an `internal` target see a data type an `external` one may not, so changing 
 existing deployment from `external` to `internal` is a relaxation: it records
 `tenant.privacy_protection_relaxed` with `relaxed: ["deployment_kind.<deployment id>"]`
 and alerts the tenant's forward targets, beside the update's own before and after.
+Moving an `internal` deployment to another `base_url` relaxes the same way, as
+`base_url.<deployment id>`, whether or not the operator lists internal origins.
 The reverse, and creating an `internal` deployment, write no relaxation. The
 operator can also set `MODEL_DEPLOYMENT_INTERNAL_ORIGINS`, a JSON list of origins in
 the same format as `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` (empty by default, which keeps

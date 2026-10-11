@@ -69,6 +69,17 @@ def test_a_destination_rule_stores_its_types() -> None:
             "rules[0].match.label",
         ),
         ({"action": "require_approval"}, "RULE_ACTION_UNAVAILABLE", "rules[0].action"),
+        # The caller chooses its tags and endpoint, so they alone cannot keep data in.
+        (
+            {"action": "block", "scope": {"tags": ["cloud"]}},
+            "RULE_SCOPE_REQUIRED",
+            "rules[0].scope",
+        ),
+        (
+            {"action": "block", "scope": {"tags": ["x"], "endpoints": ["chat"]}},
+            "RULE_SCOPE_REQUIRED",
+            "rules[0].scope",
+        ),
     ],
 )
 def test_a_destination_rule_is_refused_when_malformed(values, code, path) -> None:
@@ -76,6 +87,23 @@ def test_a_destination_rule_is_refused_when_malformed(values, code, path) -> Non
         _rules(_rule(**values))
 
     assert (refused.value.code, refused.value.path) == (code, path)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"tags": ["cloud"], "deployment_kinds": ["external"]},
+        {"models": ["gpt-5"]},
+        {"team_ids": ["22222222-2222-2222-2222-222222222222"]},
+        {"api_key_ids": ["11111111-1111-1111-1111-111111111111"]},
+    ],
+)
+def test_a_destination_block_needs_a_scope_the_server_decides(scope) -> None:
+    assert _rules(_rule(action="block", scope=scope))
+
+
+def test_a_tag_scoped_destination_mask_stays_allowed() -> None:
+    assert _rules(_rule(scope={"tags": ["cloud"]}))
 
 
 def _rule_object(action: str, state: str = "enforced"):
@@ -129,6 +157,7 @@ def test_an_external_scope_matches_unclassified_targets(kind, matched) -> None:
         api_key_id=UUID("11111111-1111-1111-1111-111111111111"),
         policy=SimpleNamespace(team_id=None),
         model="gpt-5-nano",
+        pricing_model="gpt-5-nano",
         deployment_kind=kind,
         protocol="chat",
     )

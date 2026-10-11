@@ -25,6 +25,7 @@ def _prepared(**values) -> SimpleNamespace:
             "api_key_id": KEY,
             "policy": SimpleNamespace(team_id=TEAM),
             "model": "gpt-5-mini",
+            "pricing_model": "gpt-5-mini",
             "deployment_kind": "unknown",
             "protocol": "chat",
             "rules": None,
@@ -75,6 +76,31 @@ def _rule(rule_id: str = "r", **values) -> Rule:
 )
 def test_every_non_empty_scope_list_must_hold_the_request(scope, expected) -> None:
     assert in_scope(_rule(scope=scope), _prepared(), ["risk"]) is expected
+
+
+@pytest.mark.parametrize(
+    ("model", "resolved", "scope", "expected"),
+    [
+        # A registry alias is what the caller names; the scope sees the model it reaches.
+        ("cloud-llm", "gpt-5-mini", ["gpt-5-mini"], True),
+        ("cloud-llm", "gpt-5-mini", ["cloud-llm"], False),
+        ("gpt-5-mini-2025-08-07", "gpt-5-mini-2025-08-07", ["gpt-5-mini"], True),
+        (
+            "claude-sonnet-4-5-20250929",
+            "claude-sonnet-4-5-20250929",
+            ["Claude-Sonnet-4-5"],
+            True,
+        ),
+        ("gpt-5-mini-2025-08-07", "gpt-5-mini-2025-08-07", ["gpt-5"], False),
+        ("gpt-5-mini", "gpt-5-mini", ["gpt-5-mini-2025-08-07"], False),
+    ],
+)
+def test_a_model_scope_holds_the_resolved_model_and_its_dated_ids(
+    model, resolved, scope, expected
+) -> None:
+    prepared = _prepared(model=model, pricing_model=resolved)
+
+    assert in_scope(_rule(scope={"models": scope}), prepared, []) is expected
 
 
 def test_an_unknown_deployment_kind_counts_as_external_only() -> None:

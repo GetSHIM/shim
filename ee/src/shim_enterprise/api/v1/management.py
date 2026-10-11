@@ -6944,12 +6944,16 @@ class _DeploymentResource:
             item_id,
             details={**details, **version_detail(policy_version)},
         )
-        # Destination rules let an internal target see what an external one may not.
-        if before is not None and (
-            before["deployment_kind"],
-            after["deployment_kind"],
-        ) == ("external", "internal"):
-            relaxed = [f"deployment_kind.{item_id}"]
+        # Destination rules let an internal target see what an external one may not,
+        # so becoming internal, or an internal target moving, relaxes them.
+        relaxed = [
+            f"{field}.{item_id}"
+            for field in ("deployment_kind", "base_url")
+            if before is not None
+            and after["deployment_kind"] == "internal"
+            and before[field] != after[field]
+        ]
+        if relaxed:
             event_id = await _audit(
                 session,
                 actor,

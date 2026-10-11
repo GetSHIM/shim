@@ -1411,6 +1411,53 @@ async def test_relabelling_internal_relaxes_and_follows_the_operator_list(
     )
 
 
+@pytest.mark.asyncio
+async def test_moving_an_internal_deployment_relaxes_without_an_operator_list(
+    db, test_api_key, test_user_with_org, origins
+):
+    from fastapi import FastAPI
+    from shim_enterprise.api.enterprise_deps import get_current_user
+    from shim_enterprise.api.v1.management import router
+    from shim_enterprise.core.database import get_db
+
+    rows = await _deployments(db, test_api_key)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = lambda: test_user_with_org
+    app.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    payload = {
+        "alias": "moved",
+        "provider": "openai",
+        "upstream_model": "custom-v1",
+        "base_url": "https://a.internal/v1",
+        "provider_secret_id": str(rows[0].provider_secret_id),
+        "deployment_kind": "internal",
+        "declared_version": "sha256:v1",
+        "owner": "Platform",
+    }
+    moved = {**payload, "base_url": "https://b.internal/v1"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        created = await client.post("/model-deployments", json=payload)
+        url = f"/model-deployments/{created.json()['id']}"
+        assert (await client.put(url, json=moved)).status_code == 200
+        external = {**payload, "deployment_kind": "external"}
+        assert (await client.put(url, json=external)).status_code == 200
+    relaxed = [
+        event.payload["extra"]["relaxed"]
+        for event in await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == test_api_key.organization_id
+            )
+        )
+        if event.payload.get("endpoint") == "tenant.privacy_protection_relaxed"
+    ]
+    # An internal target moved elsewhere sees what only an internal one may.
+    assert relaxed == [[f"base_url.{created.json()['id']}"]]
+
+
 _AZURE_BASE = "https://bank.openai.azure.com/openai/v1"
 
 

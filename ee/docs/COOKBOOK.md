@@ -377,7 +377,8 @@ revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
 `RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
-does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope) or
+does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope, or a `block`
+scoped only by tags and endpoints) or
 `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
 413. Every change records `tenant.rules_updated` with ids, kinds and counts,
 never a term; weakening an enforced rule also records
