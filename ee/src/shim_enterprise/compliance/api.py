@@ -15,7 +15,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
+from shim_enterprise.api.enterprise_deps import (
+    ADMIN_REQUIRED,
+    READER_REQUIRED,
+    require,
+)
 from shim_enterprise.compliance.adapters import (
     ProviderConfigError,
     UnknownProviderError,
@@ -289,7 +293,9 @@ async def _delete_secret_best_effort(
 )
 async def create_connector(
     payload: ConnectorCreate,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> ConnectorRead:
     tenant_id = _tenant_id(current_user)
@@ -348,7 +354,7 @@ async def create_connector(
 
 @router.get("/connectors", response_model=list[ConnectorRead])
 async def list_connectors(
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ConnectorRead]:
     tenant_id = _tenant_id(current_user)
@@ -365,7 +371,7 @@ async def list_connectors(
 @router.get("/connectors/{connector_id}", response_model=ConnectorRead)
 async def get_connector(
     connector_id: UUID,
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ConnectorRead:
     connector = await _load_connector(session, _tenant_id(current_user), connector_id)
@@ -409,7 +415,9 @@ async def _stream_health(
 async def update_connector(
     connector_id: UUID,
     payload: ConnectorUpdate,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> ConnectorRead:
     connector = await _load_connector(
@@ -448,7 +456,9 @@ async def update_connector(
 )
 async def delete_connector(
     connector_id: UUID,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     tenant_id = _tenant_id(current_user)
@@ -489,7 +499,9 @@ async def delete_connector(
 async def run_connector(
     connector_id: UUID,
     request: Request,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> RunResult:
     connector = await _load_connector(session, _tenant_id(current_user), connector_id)
@@ -533,7 +545,7 @@ async def list_findings(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> FindingPage:
     statement = _finding_scope(_tenant_id(current_user), connector_id)
@@ -587,7 +599,7 @@ async def _group_counts(
 @router.get("/findings/summary", response_model=FindingSummary)
 async def findings_summary(
     connector_id: UUID | None = Query(default=None),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> FindingSummary:
     tenant_id = _tenant_id(current_user)
@@ -761,7 +773,9 @@ async def _load_target(
 async def create_forward_target(
     payload: ForwardTargetCreate,
     connector_id: UUID | None = Query(default=None),
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
@@ -816,7 +830,7 @@ async def create_forward_target(
 @router.get("/forward-targets", response_model=list[ForwardTargetRead])
 async def list_forward_targets(
     connector_id: UUID | None = Query(default=None),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ForwardTargetRead]:
     tenant_id = _tenant_id(current_user)
@@ -835,7 +849,9 @@ async def list_forward_targets(
 async def update_forward_target(
     target_id: UUID,
     payload: ForwardTargetUpdate,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> ForwardTargetRead:
     tenant_id = _tenant_id(current_user)
@@ -932,7 +948,9 @@ async def update_forward_target(
 )
 async def delete_forward_target(
     target_id: UUID,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> None:
     tenant_id = _tenant_id(current_user)
@@ -1005,7 +1023,7 @@ async def _cancel_forward_deliveries(
 )
 async def generate_kvkk_report(
     payload: ReportRequest,
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     tenant_id = _tenant_id(current_user)

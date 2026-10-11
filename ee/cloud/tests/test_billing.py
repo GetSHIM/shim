@@ -19,12 +19,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from standardwebhooks import Webhook
 
+from ee.tests.gateway.api.test_permission_matrix import management_routes
+from ee.tests.tenants.test_permissions import unguarded_routes
 from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
 from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.permissions import ANY_USER_ROUTES
 from shim_enterprise.tenants.plans import activate_organization_plan
 from shim_enterprise.tenants.service import create_api_key
 from shim_enterprise.billing.ledger import (
@@ -221,6 +224,15 @@ async def test_disabled_billing_has_no_capabilities_or_commerce_intents(
         await _delete_workspace(
             session_factory, (organization_id, other_organization_id)
         )
+
+
+def test_every_cloud_route_asks_for_a_permission_or_is_listed() -> None:
+    app = application_module.create_cloud_app(_config())
+
+    assert unguarded_routes(app) == []
+    assert set(ANY_USER_ROUTES) <= {
+        (method, path) for method, path, _ in management_routes(app.routes)
+    }
 
 
 @pytest.mark.asyncio

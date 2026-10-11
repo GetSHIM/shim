@@ -1,7 +1,7 @@
 # Gateway findings
 
 A finding is the gateway's conclusion about one subject (an API key, a
-deployment alias or a model): what was checked, how serious it is, the evidence,
+deployment or a model): what was checked, how serious it is, the evidence,
 the impact and the fix. Findings are derived from request records shim already
 keeps (`request_lifecycle` and the spend ledger); no prompt or answer text is read.
 
@@ -11,19 +11,39 @@ is unchanged.
 
 ## Shape
 
-Each finding has `rule_id` and `rule_version`, a `subject` (for example
-`{"api_key_id": "…"}`), `title`, a one-sentence `summary`, `severity_id` and
-`status_id` with OCSF values, `first_seen_at`, `last_seen_at`, `occurrences`
-(how many evaluations found it), `evidence` (the measured numbers and up to 20
-request ids), `impact` (`cost_usd` and `requests`, or `null`) and `remediation`
-(`text`, `reversible`, `doc`).
+The API returns every finding in the published
+[Finding v1 schema](../../docs/FINDINGS_SCHEMA.md)
+([JSON Schema](../../docs/schemas/finding-v1.json)): `rule_id` and `rule_version`,
+`title`, `summary` in English and Turkish, `severity`, `status` and
+`status_detail`, `subject` (`key`, `deployment` or `model` with its id),
+`window` (first and last time seen), `occurrences`, `evidence` (up to 40 request
+references), `measurements` (the measured numbers), `impact` (`requests`, `usd`,
+`risk_class`), `remediation` (`mode`, which stays `observe` for now, `max_mode`,
+`reversible`, `blast_radius`, the fix `text`), `playbook` (the rule's section
+below), and `resolved_at` and `resolved_by` once resolved. v0.3.0 answered in a
+shape of its own; [what changed](../../docs/FINDINGS_SCHEMA.md#what-changes-for-existing-apps).
+A row this build cannot render (a rule it does not have, a measurement its
+template lacks, a subject of a later kind) is served with its stored English
+title and summary, the tenant as its subject and no evidence or measurements,
+and logged by id; a list or an export never fails on it.
 
-| `severity_id` | Meaning | | `status_id` | Meaning |
+Stored evidence that is not a plain number reaches the API under fixed names
+only. Repeat `classes` become `repeats_after_timeout`, `repeats_after_error`,
+`repeats_after_success` and `repeats_pending`. Requests per provider become
+`requests_openai`, `requests_anthropic` and `requests_google`; any other
+provider counts toward `requests_other`. The first 10 stored `pairs` lead
+`evidence`, each as the repeat's request followed by the request it repeats, and
+the rule's other request ids follow. `pairs` counts the pairs shown and
+`pairs_omitted` the linked repeats left out. A pair's class and gap, the models
+of `gateway.byok_usage` and any other word stay in the stored row: a finding
+carries no free text beyond its templates.
+
+| Stored `severity_id` | `severity` | | Stored `status_id` | `status` / `status_detail` |
 | --- | --- | --- | --- | --- |
-| 1 | informational | | 1 | new |
-| 2 | low | | 2 | in progress |
-| 3 | medium | | 3 | suppressed |
-| 4 | high | | 4 | resolved |
+| 1 | informational | | 1 | open / new |
+| 2 | low | | 2 | open / in_progress |
+| 3 | medium | | 3 | dismissed / suppressed |
+| 4 | high | | 4 | resolved / resolved |
 | 5 | critical | | | |
 
 There is at most one open finding (any status but resolved) per organization,
@@ -34,11 +54,15 @@ rule and subject.
 The reconciliation worker evaluates every rule for every organization that is
 not archived, once at start and then every `FINDINGS_EVALUATION_INTERVAL_SECONDS`
 (default 900, from 60 to 86,400). Each organization is one short transaction; a
-failure is logged with its type and the next organization still runs.
+failure is logged with its type and the next organization still runs. Inside it
+each rule runs in its own savepoint: a rule that fails is rolled back alone and
+logged with its rule ids, the other rules still write their findings, and the
+failed rule's open findings are not resolved by the 7-day rule on that pass.
 
 - A rule that fires creates a finding, or updates the open one: `last_seen_at`,
-  `occurrences`, `summary`, `evidence` and `impact`. A suppressed finding stays
-  suppressed while it keeps firing.
+  `occurrences`, `summary`, `evidence`, `impact`, `rule_version` and
+  `remediation`, so an open finding of an earlier rule version moves to the new
+  one in place. A suppressed finding stays suppressed while it keeps firing.
 - `occurrences` counts evaluations that fired, not incidents. A rule looks back
   over a window longer than the evaluation interval, so one incident is counted
   once per evaluation that still sees it: at the default interval of 15
@@ -55,9 +79,9 @@ cannot change them.
 
 | Route | Who | What |
 | --- | --- | --- |
-| `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`new`, `in_progress`, `suppressed`, `resolved`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
-| `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding |
-| `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": "in_progress" \| "suppressed" \| "resolved" \| "new"}`; recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
+| `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`open`, `dismissed`, `resolved`, or the workflow states `new`, `in_progress`, `suppressed`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
+| `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding (Finding v1) |
+| `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": ...}` with the same values as the filter (`open` keeps an open finding's state and reopens a closed one as `new`, `dismissed` is `suppressed`); recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
 | `GET /api/v1/management/findings/export` | Owner, admin, auditor | NDJSON, one OCSF Detection Finding per line, with the same filters; at most 10,000 (422 beyond) |
 
 Each export line is an OCSF 1.3.0 Detection Finding: `class_uid` 2004,
@@ -67,15 +91,48 @@ or its status changed) or 3 (closed: resolved), `type_uid` 200401, 200402 or
 otherwise the last time it was seen), `severity_id`, `status_id`,
 `metadata.version` `1.3.0`, `metadata.product` `{"name": "shim", "vendor_name":
 "shim"}`, and `finding_info` with `uid`, `title`, `desc` (the summary),
-`first_seen_time` and `last_seen_time`. The rule, subject, occurrences,
-evidence, impact and remediation are under `unmapped`.
+`first_seen_time` and `last_seen_time`. `unmapped` holds `schema_version` (`"1"`),
+`summary_tr`, `rule_id`, `rule_version`, `occurrences`, and `subject`,
+`evidence`, `measurements`, `impact` and `remediation` in their Finding v1
+shapes. The list and detail routes return `{"items": [Finding], "total",
+"limit", "offset"}` and a Finding; the PATCH answer is the updated Finding.
+
+## Linked repeats
+
+A repeat is linked to the request it repeats when both came from the same API
+key with the same `repeat_digest` ([diagnostic metadata](DIAGNOSTIC_METADATA.md))
+and it started at most 900 seconds after the previous one. The link window covers
+the pinned OpenAI and Anthropic SDKs' 600-second timeout plus backoff, so a retry
+after a client timeout is linked even though it falls outside the 300-second
+loop window; a client whose timeout is longer than 900 seconds is not linked.
+The loop window, its counting and its 429 are unchanged. Nothing is written to
+request records: links are computed when the rules run.
+
+Each linked repeat has a class from how the previous request ended:
+
+| Previous request | Class |
+| --- | --- |
+| `client_disconnected`, `timeout` | `after_timeout` |
+| `provider_error`, `failed`, `rejected`, `internal_error`, `cancelled` | `after_error` |
+| `completed` | `after_success` |
+| still running | `pending` (left out of impact, classed again on a later pass) |
+
+Requests without a digest (written before the digest existed, without prompt
+material, or with personal data, whose digest is cleared) are never linked; the
+rules count them through `repeat_chain_length` as before. For repeat spend, such
+a request is not counted when the key's previous digest-less request carries a
+`repeat_chain_length` one lower, started within 900 seconds and was refunded:
+an SDK retry after a 503 is not waste with personal data either. Repeated identical requests sent on purpose, such as an evaluation
+batch, look the same: suppress the finding when the pattern is intended.
 
 ## gateway.retry_storm
 
 **Checks.** For each API key, the four fixed 15-minute buckets of the last hour,
-aligned to the quarter hour in UTC (the current one included). It fires when
-one bucket holds at least 20 requests with `repeat_chain_length` of 2 or more.
-Severity medium.
+aligned to the quarter hour in UTC (the current one included). A request counts
+when it is a [linked repeat](#linked-repeats), or, when it has no repeat digest,
+when its `repeat_chain_length` is 2 or more. It fires when one bucket holds at
+least 20 of them. Severity medium. Rule version 2. Max mode `suggest`,
+blast radius `key`, risk class `cost`.
 
 **Why.** A client that resends the same request quickly is usually retrying
 without backoff. Every repeat is a billable provider call, and a storm can
@@ -83,31 +140,43 @@ trip provider rate limits for the whole tenant.
 
 **Evidence and impact.** The bucket start, the repeated request count, the
 threshold, how many of the key's requests in that bucket ended
-`client_disconnected` or `timeout` (`abandoned_requests`), and up to 20 request
-ids. Impact is the known cost and the count of the repeated requests.
-`repeat_chain_length` counts identical content in the loop window; it is not
-proof that a client retried ([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
+`client_disconnected` or `timeout` (`abandoned_requests`), up to 20 request
+ids, `classes` (linked repeats per class) and up to 20 `pairs`
+(`{"repeat", "previous", "class", "gap_seconds"}`), served as `repeats_<class>`,
+`pairs`, `pairs_omitted` and pair references ([shape](#shape)). Impact is the known cost and
+the count of the repeated requests. `repeat_chain_length` counts identical
+content in the loop window; it is not proof that a client retried
+([diagnostic metadata](DIAGNOSTIC_METADATA.md)).
 
-**Fix.** Make the client back off: honour `Retry-After`, add jittered
-exponential backoff and cap retries. When abandoned requests co-occur, the
-client's timeout is shorter than the model's answer time; raise it instead of
-retrying.
+**Fix.** Follows the class most of the bucket's linked repeats belong to:
+`after_timeout`, raise the client's timeout or ask for fewer output tokens;
+`after_error`, honour `Retry-After`, lower `max_retries` and back off;
+`after_success`, deduplicate the request in the app. Without linked repeats:
+make the client back off (`Retry-After`, jittered exponential backoff, capped
+retries), and raise its timeout when abandoned requests co-occur.
 
 **Resolves** after 7 days without a firing bucket.
 
 ## gateway.repeat_spend
 
-**Checks.** For each API key, month to date (UTC), the known cost of requests
-with `repeat_chain_length` of 2 or more. It fires when that cost is at least
-1 USD and at least 10 percent of the key's known spend. Unpriced requests count
-toward neither. Severity medium.
+**Checks.** For each API key, month to date (UTC), the known cost of
+[linked repeats](#linked-repeats) whose previous request was billed (it has a
+spend settlement), plus, for requests without a repeat digest, the cost of
+those with `repeat_chain_length` of 2 or more that did not follow a refunded
+request (see [linked repeats](#linked-repeats)). It fires when that cost is at
+least 1 USD and at least 10 percent of the key's known spend. Unpriced requests
+count toward neither. Severity medium. Rule version 2. Max mode `suggest`,
+blast radius `key`, risk class `cost`.
 
 **Why.** Repeated identical requests that cost a tenth of a key's spend are
-money spent twice for the same answer.
+money spent twice for the same answer. A repeat of a request that failed and
+was refunded did not double the bill, so it is not counted as waste.
 
 **Evidence and impact.** The period start, the repeated cost, the known spend,
-their share, the repeated request count and up to 20 request ids. Impact is
-the repeated cost and count.
+their share, the repeated request count, up to 20 request ids, `classes`,
+`billed_repeats`, `unbilled_repeats` (repeats of refunded or unbilled requests,
+never in the impact) and up to 20 `pairs`, served as for
+[`gateway.retry_storm`](#gatewayretry_storm). Impact is the repeated cost and count.
 
 **Fix.** Retry only on retryable errors, deduplicate in the client, or cache
 answers the client asks for again.
@@ -118,8 +187,11 @@ with fewer repeats.
 ## gateway.unused_deployment
 
 **Checks.** Enabled [registered deployments](MODEL_DEPLOYMENTS.md) created at
-least 30 days ago that had no request with their alias as the model in the last
-30 days. Severity low.
+least 30 days ago that served no request in the last 30 days. A request belongs
+to a deployment by the `deployment_id` it recorded, so a renamed alias keeps its
+traffic; requests written before deployment ids were recorded count by their
+model name equal to the alias. Severity low. Rule version 2. Max mode `auto`,
+blast radius `deployment`, risk class `cost`.
 
 **Why.** An unused deployment keeps a stored credential and an approved
 destination alive for nobody.
@@ -131,12 +203,95 @@ destination alive for nobody.
 **Resolves** 7 days after the deployment receives a request again or is
 disabled or deleted.
 
+## gateway.idle_internal_deployment
+
+**Checks.** Enabled deployments of kind `internal` created at least 30 days ago
+that served between 1 and 299 requests in the last 30 days (about ten a day),
+attributed as for `gateway.unused_deployment`. Zero requests is
+`gateway.unused_deployment`, so the two never fire together. External
+deployments are never subjects: they hold no hardware of the tenant. Severity
+low. Subject: the deployment id and alias. Max mode `suggest`, blast radius
+`deployment`, risk class `cost`.
+
+**Why.** An internal model that serves a trickle of requests still holds its
+servers and accelerators.
+
+**Evidence and impact.** The requests in the window, the threshold, active days
+(distinct UTC dates with traffic), the last request time, distinct API keys, up
+to 20 request ids and `hardware_cost: "not recorded"`. Impact is the request
+count; its cost stays `null` until a hardware cost is recorded for the
+deployment.
+
+**Fix.** Disable the deployment or move its few callers to another deployment;
+it can be enabled again in one write.
+
+**Resolves** 7 days after it stops firing: the deployment is disabled, gets
+busier, or has no traffic at all.
+
+## gateway.unregistered_model
+
+**Checks.** Only for organizations with at least one enabled
+[registered deployment](MODEL_DEPLOYMENTS.md): a tenant without a registry
+routes by catalog on purpose. For each provider and model, the requests of the
+last 7 days that reached the provider's public endpoint (`deployment_kind:
+unknown`, after spend reservation). It fires at 5 or more. Severity medium.
+Subject: `{"provider", "model"}`. Max mode `observe`, blast radius `model`, risk
+class `privacy`. The model is the price-book entry the requested
+name matched, as the gateway matched it (a dated snapshot counts under its
+family entry), `model not specified` for a Responses request that named none,
+and `other` for a name the current price book no longer matches. The requested
+name itself is caller text and never becomes a key.
+
+**Why.** Once a tenant keeps a registry, model use outside it is use nobody
+listed: the answer to "is your model list complete" is no.
+
+**Evidence and impact.** The requests, the threshold, distinct API keys and up
+to 10 key ids, distinct teams, first and last request, up to 20 request ids and
+how many requests carried their own provider key. Impact is the requests and
+their settled cost.
+
+**Fix.** Register the model as a deployment, or limit the keys that use it with
+`allowed_models`; an operator can make the registry mandatory with
+`MODEL_DEPLOYMENT_REQUIRED=true`. A tenant that uses the catalog on purpose
+suppresses the finding.
+
+**Resolves** after 7 days without firing.
+
+## gateway.byok_usage
+
+**Checks.** For each API key, the requests of the last 7 days that carried their
+own provider key (`x-provider-key`), counted only for providers the tenant
+stores a key for: a tenant that never stored one uses its own keys as its only
+mode. The request's spend verdict says so (`spend.provider_monthly` with policy
+version `spend:ephemeral-byok:unlimited:v1`). It fires at 5 or more. Severity
+medium. Subject: the API key. Max mode `observe`, blast radius `key`, risk class
+`cost`.
+
+**Why.** Such a request skips the stored key's monthly spend limit and the
+managed secret.
+
+**Evidence and impact.** Requests per provider, up to 10 models (named as in
+[`gateway.unregistered_model`](#gatewayunregistered_model)), up to 20
+request ids, the settled cost and a note that these requests skipped the spend
+limit and the stored key. Nothing derived from the caller's provider key is
+recorded. The API serves the requests as `requests_<provider>` and leaves the
+model names in the stored row ([shape](#shape)). Impact is the requests and
+their settled cost.
+
+**Fix.** Give the app the managed key path (no `x-provider-key`), or route it
+through a registry deployment, whose stored secret always wins. To refuse such
+keys outright, turn `allow_customer_provider_keys` off
+([cookbook](COOKBOOK.md#refuse-provider-keys-sent-in-requests)).
+
+**Resolves** after 7 days without firing.
+
 ## gateway.answer_quality
 
 **Checks.** For each model (the provider model, or the requested model when the
 provider did not name one), requests started in the last 24 hours. It fires
 when at least 50 of them have a `completion_outcome` and either `truncated` is
-at least 5 percent of those, or `empty` plus `refused` is. Severity low.
+at least 5 percent of those, or `empty` plus `refused` is. Severity low. Max
+mode `observe`, blast radius `model`, risk class `quality`.
 
 **Why.** A model that truncates or refuses one answer in twenty is costing
 retries and user trust; the cause is usually an output limit or a prompt.
@@ -151,3 +306,60 @@ answers; for empty or refused answers, review the prompt and the model choice.
 whether the rate changed with a prompt.
 
 **Resolves** after 7 days below the threshold.
+
+## gateway.truncation_rate
+
+**Checks.** For each API key, the requests started in the last 24 hours that
+have a `completion_outcome`. It fires when there are at least 50 of them and
+`truncated` is at least 5 percent. Severity low. Subject: the API key. Max mode
+`observe`, blast radius `key`, risk class `quality`.
+
+**Why.** An app whose answers stop at the output limit usually sends too low a
+max output tokens value, or uses a model whose output limit is shorter than the
+answers it asks for.
+
+**Evidence and impact.** The answered and truncated counts, the rate and the
+threshold, up to five models with their own counts, and up to 20 truncated
+request ids. Impact is the truncated request count; no money.
+
+**Fix.** Raise the max output tokens the app sends, or check the model's output
+limit. `GET /api/v1/management/requests?completion_outcome=truncated&api_key_id=…`
+lists the requests.
+
+**Resolves** after 7 days below the threshold.
+
+## gateway.refusal_rate
+
+**Checks.** The same window, minimum and subject as `gateway.truncation_rate`.
+It fires when `refused` plus `filtered` plus `empty` is at least 5 percent of
+the answered requests. Severity low. Max mode `observe`, blast radius `key`,
+risk class `quality`. Text refusals found by the refusal
+analyzer are not counted: `completion_outcome` records the provider's own
+signal only.
+
+**Why.** Each of the three has a different cause and fix:
+
+- `filtered`: the provider's content filter stopped the prompt or the answer;
+  read the request and the provider's filter settings.
+- `refused`: the model returned a refusal field; the prompt asks for something
+  the model declines, so rephrase it or choose another model.
+- `empty`: the answer had no text; often a tool-only turn the app does not
+  expect, or an output limit spent on reasoning tokens.
+
+**Evidence and impact.** The `refused`, `filtered` and `empty` counts, the
+rate and the threshold, up to five models with their counts, and up to 20
+request ids. Impact is the count of those requests; no money.
+
+**Fix.** Read the requests with `completion_outcome=refused`, `filtered` or
+`empty` and this `api_key_id` and apply the fix for their class.
+
+**Resolves** after 7 days below the threshold.
+
+### Model rates and key rates
+
+`gateway.answer_quality` asks whether a model is bad: it groups by model across
+every key. The two rules above ask whether one app is configured badly: they
+group by API key across models. The same traffic can raise both; they are
+separate findings with separate subjects. `GET /api/v1/management/outcomes`
+reads the same counts for any window, per model, key or team
+([diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates)).

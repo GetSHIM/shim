@@ -25,6 +25,11 @@ from shim.gateway.contracts.ids import ApiKeyId, UserId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim_enterprise.services.gateway.enterprise import EnterpriseGatewayService
 from shim_enterprise.tenants.models import ApiKey, User
+from shim_enterprise.tenants.permissions import (
+    READ_PERMISSIONS,
+    Permission,
+    user_permissions,
+)
 from shim_enterprise.tenants.service import (
     API_KEY_PREFIX,
     SERVICE_ACCOUNT_KEY_PREFIX,
@@ -290,24 +295,40 @@ async def get_invite_user(
     return user
 
 
+ADMIN_REQUIRED = "Organization admin required"
+READER_REQUIRED = "Organization reader required"
+OWNER_REQUIRED = "Organization owner required"
+_READ_ONLY_POSTS = frozenset(
+    {
+        ("POST", "/api/v1/compliance/audit/verify"),
+        ("POST", "/api/v1/compliance/reports/audit"),
+        ("POST", "/api/v1/compliance/reports/kvkk"),
+        ("POST", "/api/v1/compliance/reports/readiness"),
+    }
+)
+
+
+def _refuse_read_only_write(
+    request: Request, permissions: frozenset[Permission]
+) -> None:
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and (request.method, request.url.path) not in _READ_ONLY_POSTS
+        and permissions <= READ_PERMISSIONS
+    ):
+        raise HTTPException(403, "Auditor access is read-only")
+
+
 async def get_current_user(
     request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     session: AsyncSession = Depends(get_db),
 ) -> User:
     user = await get_invite_user(request, bearer, session)
-    if (
-        user.role == "auditor"
-        and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and (request.method, request.url.path)
-        not in {
-            ("POST", "/api/v1/compliance/audit/verify"),
-            ("POST", "/api/v1/compliance/reports/audit"),
-            ("POST", "/api/v1/compliance/reports/kvkk"),
-            ("POST", "/api/v1/compliance/reports/readiness"),
-        }
-    ):
-        raise HTTPException(403, "Auditor access is read-only")
+    # A custom role's own and team-scoped writes stay; its organization writes
+    # are refused by the route guard below.
+    if user.custom_role_id is None:
+        _refuse_read_only_write(request, await user_permissions(session, user))
     if not user.is_active:
         logger.warning("Rejected deactivated user")
         raise HTTPException(
@@ -318,19 +339,38 @@ async def get_current_user(
     return user
 
 
+def require(*permissions: Permission, legacy_detail: str | None = None):
+    """A route guard that answers 403 unless the caller holds one of the permissions."""
+
+    async def guard(
+        request: Request,
+        user: User = Depends(get_current_user),
+        session: AsyncSession = Depends(get_db),
+    ) -> User:
+        granted = await user_permissions(session, user)
+        _refuse_read_only_write(request, granted)
+        if not set(permissions) & granted:
+            raise HTTPException(
+                403, legacy_detail or f"Permission required: {' or '.join(permissions)}"
+            )
+        return user
+
+    return guard
+
+
 async def get_org_admin(user: User = Depends(get_current_user)) -> User:
     if user.role not in {"owner", "admin"}:
-        raise HTTPException(status_code=403, detail="Organization admin required")
+        raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
     return user
 
 
 async def get_org_reader(user: User = Depends(get_current_user)) -> User:
     if user.role not in ORGANIZATION_READERS:
-        raise HTTPException(status_code=403, detail="Organization reader required")
+        raise HTTPException(status_code=403, detail=READER_REQUIRED)
     return user
 
 
 async def get_org_owner(user: User = Depends(get_current_user)) -> User:
     if user.role != "owner":
-        raise HTTPException(status_code=403, detail="Organization owner required")
+        raise HTTPException(status_code=403, detail=OWNER_REQUIRED)
     return user

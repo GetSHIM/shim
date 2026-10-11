@@ -15,6 +15,7 @@ from shim.gateway.contracts.ids import TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.local_auth import LOCAL_API_KEY_ID, LOCAL_TENANT_ID
 from shim.privacy.policies import EntityAction, effective_pii_config
+from shim.rules.model import RuleSet
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class RequestPolicyContext:
     tier: str
     cost_center: str | None = None
     team: str | None = None
+    team_id: str | None = None
 
 
 class ResolvedRequestPolicy(FrozenContractModel):
@@ -37,6 +39,10 @@ class ResolvedRequestPolicy(FrozenContractModel):
     placeholder_key: SecretBytes | None = None
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
+    response_analysis: tuple[str, ...] = ()
+    rules: RuleSet | None = None
+    # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
+    tenant_gateway_settings: object | None = None
 
 
 class RequestPolicyResolver(Protocol):
@@ -55,6 +61,7 @@ class LocalRequestPolicyResolver:
         "_placeholder_key",
         "_rate_limit_rpm",
         "_rate_limit_tpm",
+        "_response_analysis",
         "_response_scan",
     )
 
@@ -67,6 +74,7 @@ class LocalRequestPolicyResolver:
         placeholder_key: SecretBytes | None = None,
         bulk_threshold: int | None = None,
         response_scan: Literal["off", "count"] = "off",
+        response_analysis: tuple[str, ...] = (),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -74,6 +82,7 @@ class LocalRequestPolicyResolver:
         self._placeholder_key = placeholder_key
         self._bulk_threshold = bulk_threshold
         self._response_scan: Literal["off", "count"] = response_scan
+        self._response_analysis = response_analysis
 
     async def resolve(
         self,
@@ -104,4 +113,5 @@ class LocalRequestPolicyResolver:
             placeholder_key=self._placeholder_key,
             bulk_threshold=self._bulk_threshold,
             response_scan=self._response_scan,
+            response_analysis=self._response_analysis,
         )

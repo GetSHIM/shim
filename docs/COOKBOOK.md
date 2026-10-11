@@ -15,6 +15,8 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Choose what happens to each data type](#choose-what-happens-to-each-data-type)
 - [Read errors and retry](#read-errors-and-retry)
 - [Read warnings](#read-warnings)
+- [Analyse answers after delivery](#analyse-answers-after-delivery)
+- [Check structured output](#check-structured-output)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -49,7 +51,9 @@ To send the provider key per request instead, add
 `default_headers={"x-provider-key": os.environ["OPENAI_API_KEY"]}` to the client.
 
 Notes: the model must be in shim's price catalog, which `GET /v1/models` lists;
-any other model gets 400 `MODEL_NOT_PRICED`. With no provider key at all the
+any other model gets 400 `MODEL_NOT_PRICED`. A model id is at most 200 letters,
+digits, `.`, `_`, `:` and `-`; any other id is refused the same way, and the usage
+event records it as `unsupported`, never the id itself. With no provider key at all the
 answer is 503 `PROVIDER_NOT_CONFIGURED`, and an empty `x-provider-key` is 400
 `INVALID_PROVIDER_CREDENTIAL`. `background=true` Responses requests are rejected.
 
@@ -153,10 +157,11 @@ docker run --rm -p 8000:8000 -e SHIM_API_KEY=a-key-of-at-least-16-chars \
 jq -cR 'fromjson? | select(.version == 4 and .event == "request") | {cost_center, tags, model, estimated_cost_usd}' shim-usage.log
 ```
 
-Each event has `version`, `event` (`request`), `request_id`, `provider`,
-`model`, `outcome`,
+Each event has `version`, `event` (`request`), `request_id`, `ts`, `protocol`,
+`stream`, `provider`, `model`, `outcome`,
 `shim_latency_ms`, `prompt_tokens`, `completion_tokens`, `estimated_cost_usd`,
 `estimated`, `provider_finish_reasons`, `completion_outcome`, `ttft_ms`,
+`provider_latency_ms`, `answer_characters`, `tool_call_names`, `reasoning_seen`,
 `repeat_chain_length`, `cost_center`, `tags`, `system_prompt_hash`,
 `deployment_kind`, `privacy_counts`, `monitored_entities`, `blocked_entities`,
 `bulk_disclosure`, `warnings` and `policy_verdicts`. The three count maps give values by
@@ -164,6 +169,22 @@ entity type: masked, sent unchanged under `monitor`, and refused under `block`;
 each is `{}` when empty. `bulk_disclosure` is `null` unless the request reached
 the bulk threshold (see [Choose what happens to each data type](#choose-what-happens-to-each-data-type)). `outcome` is `completed` for a finished request and `rejected` for one
 refused at admission or by a privacy block; other values name a failure.
+`ts` is the request's start in UTC (`2026-10-08T09:15:02.123Z`), so events can be
+grouped by hour. `protocol` is `openai_chat`, `openai_responses`,
+`anthropic_messages`, `anthropic_count_tokens` (only a refused or failed token
+count writes a line) or `gemini`, and `stream` says whether the caller streamed.
+`provider_latency_ms` is the milliseconds of the provider call of a JSON request,
+from its start to the SDK returning the parsed answer, without credential
+resolution before it or shim's restoring of masked values after it (`null` for a
+stream, which has `ttft_ms`);
+`answer_characters` is the answer text's length without reasoning text (a stream
+also counts tool-call arguments, which a JSON answer does not, so the two differ
+for a tool call); a stream that ended early records what it had sent in
+`answer_characters` and `tool_call_names`, so compute ratios over `completed`
+lines only; `tool_call_names` lists the tools the answer called; `reasoning_seen` is `true`
+when the answer carried reasoning or reported reasoning tokens, which distort a
+tokens-per-character ratio. A refused or failed line has `null`, `null`, `[]` and
+`false`.
 
 Notes: `estimated_cost_usd` is a decimal string that can use exponent form
 (`6.5E-7`), so parse it as a decimal; it is `null` for a model without a catalog
@@ -364,8 +385,12 @@ except openai.APIStatusError as error:
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
 | Body over `MAX_REQUEST_BODY_SIZE` (default 32,000,000 bytes) | 413 `REQUEST_TOO_LARGE` | none |
 | A detected type whose action is `block` | 400 `SECRET_BLOCKED` (`SECRET`, `DB_URI`) or `PII_BLOCKED` | none: remove the value the message names |
+| An enforced tenant rule blocks (enterprise) | 400 `RULE_BLOCKED`; `X-Shim-Rule-Id` and `error.param` name the rule | none: change the request or ask the tenant admin |
+| An enforced tenant rule needs approval (enterprise) | 403 `APPROVAL_REQUIRED`, `X-Shim-Approval-Id`; `APPROVAL_REJECTED` once refused, `APPROVAL_QUEUE_FULL` without an id | `x-should-retry: false`: after approval, send the same request with `X-Shim-Approval-Id` |
+| The approval store cannot be reached (enterprise) | 503 `APPROVAL_UNAVAILABLE` | `Retry-After: 5` |
 | The input certainly does not fit the model's context window or input limit | 400 `MODEL_CONTEXT_EXCEEDED` | none: shorten the input or lower the output limit |
 | The catalog says the model lacks tools, structured output or an input modality the request uses | 400 `MODEL_CAPABILITY_UNSUPPORTED` | none: remove what the message names or change model |
+| The model is not in the catalog, or its id is longer than 200 characters or has a character other than letters, digits, `.`, `_`, `:` and `-` | 400 `MODEL_NOT_PRICED`; enterprise, 403 `MODEL_NOT_REGISTERED` | none: use a model `GET /v1/models` lists |
 
 In OpenAI-shaped bodies, `error.param` names which limit refused: `requests`,
 `tokens` or `repeated_requests`.
@@ -406,6 +431,7 @@ Learn when a request costs more than it seems, or may not fit, without being ref
 | `CONTEXT_MAY_EXCEED` | The request's approximate size (bytes / 4, plus the output limit where it counts against the window) is above the context window of the model's own catalog entry, but not certainly. | Count tokens (`/v1/messages/count_tokens`, which is never refused) or shorten the input. |
 | `LARGE_CONTEXT_PRICE` | The settled input is above the model's large-context price threshold; the whole request is priced at the higher tier. | Keep the input under the threshold the catalog lists. |
 | `CACHE_NOT_APPLIED` | An Anthropic request had `cache_control` but the usage shows no cache write and no cache read; Anthropic returns no error for this. | Make the cached prefix longer than the model's minimum cacheable length. |
+| `RULE_WARN` | An enforced tenant rule with action `warn` matched (enterprise); the request went ahead unchanged. | Read the rule with your tenant admin; the request list shows which one. |
 
 shim refuses before the provider only what certainly fails. It counts the
 whitespace-separated words of the prompt text, a lower bound for the public
@@ -420,6 +446,100 @@ or a compaction block is never refused for size. Refusals use only a model's own
 catalog entry, never a longer model name matched by prefix. A capability is
 refused only when the catalog says the model lacks it; an unknown capability is
 never refused, and an OpenAI file part is never refused as a PDF.
+
+## Analyse answers after delivery
+
+Have named analyzers read each completed answer after it reached the caller and
+record what they measured, never what was written.
+
+1. Set `SHIM_RESPONSE_ANALYSIS` to a comma-separated list (or a JSON list) of
+   analyzer names and restart the gateway. It is empty by default, and an empty
+   list keeps nothing and adds no work.
+2. Read the `response_analysis` line written after each completed request's
+   `request` line (and after its `response_privacy` line when the scan is on):
+
+```json
+{"version":4,"event":"response_analysis","request_id":"req_…","results":{"<name>":{…},"versions":{"<name>":"1"}}}
+```
+
+Analyzers run in the order shim defines, after the last byte of a JSON answer or
+after a stream ended, in one background task shared with
+`PII_RESPONSE_SCAN=count`; the answer, its first token and its timing are
+unchanged. They see the masked request and up to 1,000,000 characters of the
+answer text and its tool calls. The answer text is the same for a JSON answer
+and a stream: the text the model wrote, without refusal fields, reasoning,
+Gemini thought parts or tool-call arguments, which come as separate calls. An
+analyzer that reads the answer (`language`, `schema`, `refusal`) does not run
+for a request that carried personal data, that is any detected value, masked or
+monitored: nothing derived from such an answer is recorded. `shape` reads only
+the masked request and still runs. The answer is extracted and, for a stream,
+kept only while an analyzer that reads it runs. Results hold counts, labels,
+ids, protocol field names and JSON pointers, never request or answer text and
+never a restored value. An analyzer that fails, or returns anything but a JSON object, records
+`{"error": true}`. A result larger than 4,096 characters keeps its counts and
+digests and records its lists as `null`; one still larger records
+`{"error": true, "reason": "too_large"}`. The others still run either way. A run
+checks a one-second budget before each analyzer, and one it no longer starts
+records `{"error": true, "reason": "timeout"}`. A request that failed or was
+refused gets no analysis.
+
+Notes: an unknown name stops the gateway at start-up with the setting and the
+name in the message; a repeated name is dropped. Analysis has a worker thread of
+its own with room for 64 pending requests; a request beyond that is not
+analysed. The response scan has its own thread and the same bound; a scan it
+cannot take writes `"response_entities": null, "error": true`.
+`shim_response_analysis_total{analyzer, result}` counts the runs as `ok`,
+`none`, `error` or `dropped`.
+
+| Analyzer | What it records |
+| --- | --- |
+| `shape` | What the request is made of, to find oversized parts, tools no one calls and tool order that defeats the provider's prompt cache. Sizes are characters of the request as the provider saw it: where an entity type masks, a detected value counts as its placeholder; under `monitor` or `off` the value counts as written. `message_count`, `system_chars`, `history_chars` (every turn before the final one, tool results included, so an agent loop measures the same in every protocol), `last_user_chars`, `largest_part_chars`, `tool_result_count`, `tool_result_chars`, `largest_tool_result_chars`, `tool_count`, `tool_definition_chars` (the compact JSON of `tools`), `tools_offered` (names in the order sent; built-in tools as `builtin:<type>`; a name is kept only as 1 to 64 of `A-Za-z0-9_.:-`, others are dropped and counted in `tool_names_dropped`), `tools_called_in_history` (calls replayed in the request), `tools_order_digest` and `tools_set_digest` (16 hex characters of sha256 over the names in order, and sorted: the same set in a new order changes only the first), `image_count`, `document_count` (images and documents inside tool results too; a text document's characters count as text), `largest_image` (`bytes`, `width`, `height` of the largest inline image, read from its header; a data URL that is not base64 counts its characters) and `truncated`. Tool names are recorded in clear; tool definitions are never stored. At most 128 tool names, 20,000 parts and 64 levels of nesting are read; beyond them `truncated` is true. A request offering many long tool names can exceed the 4,096-character result bound; then `tools_offered` and `tools_called_in_history` are `null` and the counts and digests stay. |
+| `language` | Whether the last user question and the answer are Turkish or English, to spot a Turkish question answered in English: `request` and `answer`, each `tr`, `en`, `other` or `unknown`, `answer_mixed`, and `request_words` and `answer_words`. A word and letter heuristic, no model: Turkish letters (`ğ`, `ı`, `ş` count most) and about 200 Turkish and 180 English function words, matched with and without Turkish letters, so `cok guzel, yardim eder misin` is Turkish. The first 4,000 characters are read, without code blocks, inline code, URLs, e-mail addresses and placeholders. Fewer than 3 words or 12 letters is `unknown`; text mostly in other scripts, or in another Latin language, is `other`. English needs at least 2 English function words and at least a fifth of the words, so a long Dutch or Italian text with a few English-looking words stays `other`; Turkish needs a Turkish letter or 2 Turkish function words. When only one side qualifies, that side is the label; when both do, the larger, mixed when the smaller scores at least 0.3 of it. The answer is `unknown` when the request asked for JSON output or the answer has no text. It knows Turkish and English only: Azerbaijani can read as Turkish, two Turkish names in a short English sentence can mark it mixed, and a short ASCII-typed Turkish sentence with no listed word (`Hesabima neden para yatmadi bilmiyorum`) is `other`. |
+| `schema` | Whether the answer, or each tool call, matches the schema the request asked for; see [Check structured output](#check-structured-output). |
+| `refusal` | Whether a complete answer refuses in words, for answers a provider ended normally: `soft_refusal` and the `marker` id (`tr.yardimci_olamam`, `en.cant_help`, ...). It reads the first 200 characters of answers up to 1,500 characters, Turkish with or without its letters, for seven groups of phrases (`yardımcı olamam`, `bu isteği yerine getiremem`, `I can't help with`, `I'm sorry, but I can't`, ...). A phrase counts only as whole words (`yapamamanız` is not `yapamam`). It does not count after an open quote on its line (an odd number of `"` or of `'` that are not apostrophes), when followed within 60 characters by `but here`, `so here`, `instead`, `bunun yerine` or `ama`/`ancak` with an offer (`şu`, `şunu`, `şunları`), or when reported speech follows it directly (`diye`, `dedi`, `dediğim`), so a quoted refusal or a partial answer is not one. A refusal discussed without quote marks is still counted: a known gap. It runs only when `completion_outcome` is `complete`; a provider's own refusal stays `refused` there, and this result never changes that field. |
+
+## Check structured output
+
+Learn how often answers and tool calls miss the format your app asked for,
+including on providers and local models that do not enforce it.
+
+1. Add `schema` to `SHIM_RESPONSE_ANALYSIS` and restart the gateway.
+2. Read `response_analysis.schema` in the `response_analysis` line: `expected`
+   (`json_schema`, `json_object`, `tool_args` or `none`), `valid` (`true`,
+   `false`, or `null` when it could not be decided), `error_path` (a JSON
+   Pointer into the answer, `/count` or `/tool_calls/1/count`), `error_keyword`
+   (`type`, `required`, `enum`, `parse`, `unknown_tool`, ...), `error_tool`,
+   `unsupported` and `unsupported_keywords`, `strict` (whether the provider was
+   asked to enforce the schema itself) and `reason`.
+
+What is read: OpenAI `response_format` and Responses `text.format`
+(`json_schema` or `json_object`), Anthropic `output_config.format` and
+`output_format`, Gemini `responseJsonSchema`, `responseSchema` (OpenAPI types)
+and `responseMimeType: application/json` (another type, such as `text/x.enum`,
+is not JSON and is not checked), and each offered tool's parameters, Chat's
+legacy `functions` included. With tool calls in the answer, every call is
+checked against its tool; a call to a tool that was not offered is
+`unknown_tool`, with `error_tool` set only when the name is one a provider
+would accept, and a built-in tool's call is skipped. A detected value inside an
+`enum` or `const` (e-mail addresses) is restored before the check, as the
+answer was; property names and `required` entries stay masked.
+
+shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
+`const`, `properties`, `required`, `additionalProperties`, `minProperties`,
+`maxProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `uniqueItems`,
+`minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
+`exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf` and `$ref` within
+the document. Any other keyword, `pattern` included, is listed in
+`unsupported_keywords` (a keyword outside JSON Schema's own vocabulary is
+listed as `unknown`, so no schema text is recorded) and makes `valid` `null` instead of guessing; `pattern`
+is never run, so a tenant's expression cannot stall the gateway. `valid` is
+`null` with a `reason` when the answer was truncated (`truncated`), refused,
+filtered or empty, when the answer or the schema is too large (`too_large`),
+when nesting or `$ref` chains pass 32 levels (`depth`) or 10,000 values
+(`nodes`), and when the schema itself is broken (`bad_schema`). The answer is
+never changed, retried or refused; the check runs after it was delivered.
+`error_path` names schema properties and array indices only, never a value or
+an unexpected key (that path ends in `/*`).
 
 ## Stream long generations and read usage
 
@@ -496,13 +616,16 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | --- | --- |
 | `requests_total` | `endpoint`, `status`, `tenant_tier` |
 | `provider_requests_total` | `provider`, `model`, `status` |
-| `provider_latency_ms` (histogram) | `provider`, `model` |
+| `provider_latency_ms` (histogram, buckets up to 600,000 ms) | `provider`, `model` |
 | `stream_terminal_state_total` | `terminal_state` |
 | `privacy_detection_total` | `entity_type` |
 | `shim_privacy_bulk_disclosures_total` | `provider` |
 | `shim_privacy_response_detection_total` | `entity_type` |
 | `shim_completion_outcomes_total` | `provider`, `outcome` |
 | `shim_local_usage_dropped_total` | `reason` |
+| `shim_time_to_first_token_seconds` (histogram, streams only) | `provider`, `model` |
+| `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
+| `shim_response_analysis_total` | `analyzer`, `result` |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

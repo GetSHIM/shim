@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Response,
+    status,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -65,14 +74,33 @@ from shim_enterprise.ai_act.verify import (
     verify_anchors,
     verify_chain,
 )
-from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
-from shim_enterprise.api.v1.management import _require_entitlement
+from shim_enterprise.api.enterprise_deps import (
+    ADMIN_REQUIRED,
+    READER_REQUIRED,
+    require,
+)
+from shim_enterprise.api.v1.management import (
+    _only,
+    _require_entitlement,
+    _uuids,
+    _validated,
+)
 from shim_enterprise.compliance.models import MonthlyEvidenceFile
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim_enterprise.policy.plans import (
+    Impact,
+    Risk,
+    State,
+    lock_tenant,
+    no_impact,
+    record_managed_write,
+    version_detail,
+)
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.permissions import Permission
 
 
 router = APIRouter(prefix="/compliance", tags=["ai-act-control-plane"])
@@ -173,7 +201,7 @@ async def _tenant_policy(
 async def compliance_overview(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> OverviewResponse:
     if start is not None and end is not None and start > end:
@@ -197,7 +225,7 @@ async def privacy_card(
         description="Local calendar day; yesterday in tz when omitted.",
     ),
     tz: str = Query(default="Europe/Istanbul", max_length=64),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> PrivacyCard:
     try:
@@ -237,7 +265,7 @@ async def list_audit_logs(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> AuditLogPage:
     if start is not None and end is not None and start > end:
@@ -284,7 +312,7 @@ async def list_audit_logs(
 async def export_audit_bundle(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     start = _aware(start) if start is not None else None
@@ -327,7 +355,7 @@ async def export_audit_bundle(
 
 @router.get("/evidence/monthly", response_model=list[MonthlyEvidenceRead])
 async def list_monthly_evidence(
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[MonthlyEvidenceRead]:
     # The listing never loads the files themselves.
@@ -357,7 +385,7 @@ async def list_monthly_evidence(
 async def download_monthly_evidence(
     period: str = Path(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$"),
     kind: Literal["monthly", "monthly_partial"] = Query(default="monthly"),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     stored = await session.scalar(
@@ -393,7 +421,7 @@ async def download_monthly_evidence(
 async def verify_audit_chain(
     start: datetime | None = Query(default=None, alias="from"),
     end: datetime | None = Query(default=None, alias="to"),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> VerifyResult:
     start = _aware(start) if start is not None else None
@@ -439,7 +467,7 @@ async def verify_audit_chain(
 )
 async def generate_audit_report_endpoint(
     payload: AuditReportRequest,
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     requested = list(dict.fromkeys(payload.frameworks))
@@ -492,7 +520,7 @@ async def generate_audit_report_endpoint(
     response_model=list[ReadinessDeclarationRead],
 )
 async def list_readiness_declarations(
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[ReadinessDeclaration]:
     return list(
@@ -514,7 +542,9 @@ async def list_readiness_declarations(
 async def declare_readiness_control(
     control_id: str,
     payload: ReadinessDeclarationInput,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> ReadinessDeclaration:
     if load_mapping().control(control_id) is None:
@@ -578,7 +608,7 @@ async def declare_readiness_control(
 )
 async def generate_readiness_report_endpoint(
     payload: ReadinessReportRequest,
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     tenant_id = await _tenant_for_write(session, current_user)
@@ -613,37 +643,34 @@ async def generate_readiness_report_endpoint(
 )
 async def create_oversight_policy(
     payload: OversightPolicyCreate,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> OversightPolicyRead:
-    _validate_policy_trigger(payload.trigger)
-    tenant_id = await _tenant_for_write(session, current_user)
-    policy = OversightPolicy(
-        organization_id=tenant_id,
-        name=payload.name,
-        enabled=payload.enabled,
-        mode="flag",
-        trigger=payload.trigger,
-        ttl_seconds=payload.ttl_seconds or settings.OVERSIGHT_DEFAULT_TTL_SECONDS,
-        default_on_timeout=payload.default_on_timeout,
+    after = await OVERSIGHT_POLICIES.validate(
+        session, current_user, None, None, payload.model_dump()
     )
-    session.add(policy)
-    await session.flush()
-    await _audit(
+    tenant_id, item = await _tenant_for_write(session, current_user), str(uuid4())
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.oversight_policy_created",
-        str(policy.id),
-        details=change_details(None, _policy_facts(policy)),
-    )
+        tenant_id,
+        [(OVERSIGHT_POLICIES, item, None, after)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session, current_user, tenant_id, item, None, after, policy_version=version
+        )
     await session.commit()
+    policy = await _tenant_policy(session, tenant_id, UUID(item))
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
 
 
 @router.get("/oversight/policies", response_model=list[OversightPolicyRead])
 async def list_oversight_policies(
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[OversightPolicyRead]:
     if current_user.organization_id is None:
@@ -665,26 +692,40 @@ async def list_oversight_policies(
 async def update_oversight_policy(
     policy_id: UUID,
     payload: OversightPolicyUpdate,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> OversightPolicyRead:
     tenant_id = current_user.organization_id
     if tenant_id is None:
         raise HTTPException(status_code=404, detail="Oversight policy not found.")
+    await lock_tenant(session, tenant_id)
     policy = await _tenant_policy(session, tenant_id, policy_id)
-    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
-    if "trigger" in updates:
-        _validate_policy_trigger(updates["trigger"])
     before = _policy_facts(policy)
-    for field, value in updates.items():
-        setattr(policy, field, value)
-    await _audit(
+    after = await OVERSIGHT_POLICIES.validate(
         session,
         current_user,
-        "compliance.oversight_policy_updated",
-        str(policy.id),
-        details=change_details(before, _policy_facts(policy)),
+        str(policy_id),
+        before,
+        payload.model_dump(exclude_unset=True),
     )
+    async with record_managed_write(
+        session,
+        current_user,
+        tenant_id,
+        [(OVERSIGHT_POLICIES, str(policy_id), before, after)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session,
+            current_user,
+            tenant_id,
+            str(policy_id),
+            before,
+            after,
+            policy_version=version,
+        )
     await session.commit()
     await session.refresh(policy)
     return OversightPolicyRead.model_validate(policy)
@@ -696,21 +737,32 @@ async def update_oversight_policy(
 )
 async def delete_oversight_policy(
     policy_id: UUID,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     tenant_id = current_user.organization_id
     if tenant_id is None:
         raise HTTPException(status_code=404, detail="Oversight policy not found.")
-    policy = await _tenant_policy(session, tenant_id, policy_id)
-    await _audit(
+    await lock_tenant(session, tenant_id)
+    before = _policy_facts(await _tenant_policy(session, tenant_id, policy_id))
+    async with record_managed_write(
         session,
         current_user,
-        "compliance.oversight_policy_deleted",
-        str(policy.id),
-        details=change_details(_policy_facts(policy), None),
-    )
-    await session.delete(policy)
+        tenant_id,
+        [(OVERSIGHT_POLICIES, str(policy_id), before, None)],
+        source="api",
+    ) as version:
+        await OVERSIGHT_POLICIES.apply(
+            session,
+            current_user,
+            tenant_id,
+            str(policy_id),
+            before,
+            None,
+            policy_version=version,
+        )
     await session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -722,7 +774,7 @@ async def list_oversight_requests(
         alias="status",
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    current_user: User = Depends(get_org_reader),
+    current_user: User = Depends(require("audit.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> list[OversightRequestRead]:
     tenant_id = current_user.organization_id
@@ -748,7 +800,9 @@ async def list_oversight_requests(
 async def decide_oversight_request(
     request_id: UUID,
     payload: OversightDecision,
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> OversightRequestRead:
     tenant_id = await _tenant_for_write(session, current_user)
@@ -778,7 +832,9 @@ async def decide_oversight_request(
 
 @router.post("/oversight/evaluate")
 async def trigger_oversight_evaluation(
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, int]:
     tenant_id = await _tenant_for_write(session, current_user)
@@ -798,7 +854,9 @@ async def trigger_oversight_evaluation(
 @router.post("/audit/anchor", response_model=AnchorResult)
 async def trigger_anchor(
     anchor_date: date | None = Query(default=None),
-    current_user: User = Depends(get_org_admin),
+    current_user: User = Depends(
+        require("compliance.manage", legacy_detail=ADMIN_REQUIRED)
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> AnchorResult:
     today = datetime.now(timezone.utc).date()
@@ -833,3 +891,125 @@ async def trigger_anchor(
         row_count=anchor.row_count,
         external_ref=anchor.external_ref,
     )
+
+
+_POLICY_FIELDS = (
+    "name",
+    "enabled",
+    "mode",
+    "trigger",
+    "ttl_seconds",
+    "default_on_timeout",
+)
+
+
+class _OversightPolicyResource:
+    name = "oversight_policies"
+    permission: Permission = "compliance.manage"
+    creatable = True
+    deletable = True
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        statement = select(OversightPolicy).where(
+            OversightPolicy.organization_id == organization_id
+        )
+        if item_ids is not None:
+            statement = statement.where(OversightPolicy.id.in_(_uuids(item_ids)))
+        return {
+            str(policy.id): _policy_facts(policy)
+            for policy in await session.scalars(statement)
+        }
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, _POLICY_FIELDS)
+        if before is None:
+            created = _validated(OversightPolicyCreate, proposed)
+            _validate_policy_trigger(created.trigger)
+            return {
+                **created.model_dump(include=set(_POLICY_FIELDS)),
+                "ttl_seconds": created.ttl_seconds
+                or settings.OVERSIGHT_DEFAULT_TTL_SECONDS,
+            }
+        updates = _validated(OversightPolicyUpdate, proposed).model_dump(
+            exclude_unset=True, exclude_none=True
+        )
+        if "trigger" in updates:
+            _validate_policy_trigger(updates["trigger"])
+        return {**before, **updates}
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        if before is None:
+            assert after is not None
+            policy = OversightPolicy(
+                id=UUID(item_id), organization_id=organization_id, **after
+            )
+            session.add(policy)
+            await session.flush()
+            action = "compliance.oversight_policy_created"
+        else:
+            policy = await _tenant_policy(session, organization_id, UUID(item_id))
+            if after is None:
+                action = "compliance.oversight_policy_deleted"
+            else:
+                for field, value in after.items():
+                    setattr(policy, field, value)
+                action = "compliance.oversight_policy_updated"
+        await _audit(
+            session,
+            actor,
+            action,
+            item_id,
+            details={
+                **change_details(
+                    before, None if after is None else _policy_facts(policy)
+                ),
+                **version_detail(policy_version),
+            },
+        )
+        if after is None:
+            await session.delete(policy)
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        if after is None or (
+            before is not None and before["enabled"] and not after["enabled"]
+        ):
+            return "relaxing"
+        if after["enabled"] and (before is None or not before["enabled"]):
+            return "tightening"
+        return "neutral"
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days, "review queue runs after the request")
+
+
+OVERSIGHT_POLICIES = _OversightPolicyResource()

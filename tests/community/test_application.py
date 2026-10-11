@@ -256,6 +256,61 @@ async def test_community_chat_stream_preserves_native_sse_and_finalizes_once() -
 
 
 @pytest.mark.asyncio
+async def test_a_model_id_that_is_not_id_shaped_is_refused_and_never_recorded() -> None:
+    models = [
+        "gpt-5.6-luna-" + "x" * 13_000,
+        f"gpt-5.6-luna-{EMAIL}",
+        "gpt-5.6-luna-alice smith",
+        "gpt-5.6-luna-\nx",
+    ]
+    attempts: list[httpx.Request] = []
+    events = StringIO()
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: (
+                attempts.append(request)
+                or httpx.Response(200, json=_completion("unexpected"))
+            )
+        )
+    )
+    application = create_community_app(
+        _settings(), http_client=upstream, event_stream=events
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            responses = [
+                await gateway_http.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {GATEWAY_KEY}",
+                        "x-provider-key": PROVIDER_KEY,
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                )
+                for model in models
+            ]
+    await upstream.aclose()
+
+    assert [response.status_code for response in responses] == [400] * len(models)
+    assert {response.json()["error"]["code"] for response in responses} == {
+        "MODEL_NOT_PRICED"
+    }
+    assert attempts == []
+    recorded = events.getvalue()
+    assert [json.loads(line)["model"] for line in recorded.splitlines()] == [
+        "unsupported"
+    ] * len(models)
+    assert "xxxxxxxx" not in recorded and EMAIL not in recorded
+    assert "alice smith" not in recorded
+
+
+@pytest.mark.asyncio
 async def test_community_lifespan_closes_only_its_owned_http_client() -> None:
     external = httpx.AsyncClient()
     external_application = create_community_app(

@@ -52,7 +52,9 @@ request it:
   `token budget` stays prose), Turkish (`şifre:`, `parolanız:`) included. A
   digit run counts as a phone number unless something marks it as another kind
   of number: an order, invoice, timestamp or amount word in front of it, a
-  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`). A ten-digit
+  decimal, or an id it is glued to (`claude-sonnet-4-5-20250929`); a number
+  written with a space, a bracket or a `+` is a phone number even there
+  (`musteri-0532 123 45 67`, `user-+905321234567`). A ten-digit
   number that passes the Turkish tax-number checksum, about one in ten does,
   counts as a tax number under the same rule, unless a tax word (`vergi`,
   `VKN`, `tax`) is in front of it. A number that passes the Luhn check is
@@ -65,8 +67,10 @@ request it:
   default), `monitor` (sent unchanged and counted), `block` (the request is
   refused with 400 before any provider call, naming the type, never the
   value) or `off` (not looked for). Community sets them in `PII_ENTITY_ACTIONS`;
-  enterprise per tenant. The answer can also be scanned after it is delivered,
-  counting personal data the request did not carry; it is never changed.
+  enterprise per tenant, which can also add its own words and code shapes
+  (project names, `PRJ-####`), found in every Turkish case form. The answer can
+  also be scanned after it is delivered, counting personal data the request did
+  not carry; it is never changed.
 - **Decides admission.** Requests-per-minute and tokens-per-minute limits, a
   model allow-list taken from the checked-in price catalog, and repeat-loop
   detection. Tokens per minute are counted as approximate tokens (request
@@ -193,8 +197,8 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
 - shim validates the routing, privacy and admission fields of a provider
   payload. The rest of the provider's JSON passes through unvalidated.
 - `background=true` Responses requests are not supported.
-- Stored audit evidence, retained records, roles and budgets are enterprise
-  features. Community keeps no request history.
+- Stored audit evidence, retained records, roles, budgets and tenant rules are
+  enterprise features. Community keeps no request history.
 - SDK compatibility is pinned to `openai==2.53.0`, `anthropic==0.121.0` and
   `google-genai==2.16.0`. A new provider SDK does not arrive automatically.
 - Community mode needs no PostgreSQL, Redis or Supabase, and runs no workers.
@@ -206,6 +210,8 @@ For customer-operated enterprise installations, see [deployment and recovery](ee
   retries, streaming, observability, and shim behind
   [LiteLLM](docs/COOKBOOK.md#put-shim-behind-litellm) or
   [Portkey](docs/COOKBOOK.md#put-shim-behind-portkey)
+- [Finding schema](docs/FINDINGS_SCHEMA.md): every finding shim produces follows
+  one published, versioned JSON Schema
 - [Enterprise cookbook](ee/docs/COOKBOOK.md): teams, budgets, privacy settings,
   audit export, KVKK report, model deployments
 - [Developer guide](DEVELOPER_GUIDE.md)

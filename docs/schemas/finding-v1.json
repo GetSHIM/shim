@@ -1,0 +1,458 @@
+{
+  "$defs": {
+    "FindingEvidence": {
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9_.:/-]{1,200}(?![\\s\\S])",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "request",
+            "ledger_row",
+            "audit_row",
+            "finding",
+            "policy_version",
+            "cli_session"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "FindingEvidence",
+      "type": "object"
+    },
+    "FindingImpact": {
+      "properties": {
+        "requests": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requests"
+        },
+        "risk_class": {
+          "anyOf": [
+            {
+              "enum": [
+                "privacy",
+                "cost",
+                "reliability",
+                "quality"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Risk Class"
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Tokens"
+        },
+        "usd": {
+          "anyOf": [
+            {
+              "pattern": "^\\d+(\\.\\d+)?(?![\\s\\S])",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Usd"
+        }
+      },
+      "required": [
+        "requests",
+        "tokens",
+        "usd",
+        "risk_class"
+      ],
+      "title": "FindingImpact",
+      "type": "object"
+    },
+    "FindingRemediation": {
+      "anyOf": [
+        {
+          "properties": {
+            "max_mode": {
+              "const": "auto"
+            }
+          }
+        },
+        {
+          "properties": {
+            "max_mode": {
+              "const": "suggest"
+            },
+            "mode": {
+              "enum": [
+                "observe",
+                "suggest"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "observe"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Action"
+        },
+        "blast_radius": {
+          "enum": [
+            "key",
+            "team",
+            "deployment",
+            "model",
+            "tenant",
+            "app"
+          ],
+          "title": "Blast Radius",
+          "type": "string"
+        },
+        "max_mode": {
+          "enum": [
+            "observe",
+            "suggest",
+            "auto"
+          ],
+          "title": "Max Mode",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "observe",
+            "suggest",
+            "auto"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "proof_after": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Proof After"
+        },
+        "reversible": {
+          "title": "Reversible",
+          "type": "boolean"
+        },
+        "text": {
+          "$ref": "#/$defs/FindingText"
+        }
+      },
+      "required": [
+        "mode",
+        "max_mode",
+        "action",
+        "reversible",
+        "blast_radius",
+        "proof_after",
+        "text"
+      ],
+      "title": "FindingRemediation",
+      "type": "object"
+    },
+    "FindingSubject": {
+      "properties": {
+        "id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "key",
+            "team",
+            "deployment",
+            "model",
+            "tenant",
+            "app"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "FindingSubject",
+      "type": "object"
+    },
+    "FindingText": {
+      "properties": {
+        "en": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "En",
+          "type": "string"
+        },
+        "tr": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Tr",
+          "type": "string"
+        }
+      },
+      "required": [
+        "en",
+        "tr"
+      ],
+      "title": "FindingText",
+      "type": "object"
+    },
+    "FindingWindow": {
+      "properties": {
+        "end": {
+          "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "FindingWindow",
+      "type": "object"
+    }
+  },
+  "$id": "https://raw.githubusercontent.com/GetSHIM/shim/main/docs/schemas/finding-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Evidence references, never contains, a value: title, summary and text come from rule templates.",
+  "properties": {
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/FindingEvidence"
+      },
+      "maxItems": 50,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "id": {
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
+      "title": "Id",
+      "type": "string"
+    },
+    "impact": {
+      "$ref": "#/$defs/FindingImpact"
+    },
+    "measurements": {
+      "additionalProperties": false,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}(?![\\s\\S])": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "title": "Measurements",
+      "type": "object"
+    },
+    "occurrences": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Occurrences"
+    },
+    "playbook": {
+      "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+(?![\\s\\S])",
+      "title": "Playbook",
+      "type": "string"
+    },
+    "remediation": {
+      "$ref": "#/$defs/FindingRemediation"
+    },
+    "resolved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved At"
+    },
+    "resolved_by": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved By"
+    },
+    "rule_id": {
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+(?![\\s\\S])",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "rule_version": {
+      "minimum": 1,
+      "title": "Rule Version",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "informational",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "gateway",
+        "litellm",
+        "shim-cli"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "open",
+        "resolved",
+        "dismissed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "status_detail": {
+      "anyOf": [
+        {
+          "enum": [
+            "new",
+            "in_progress",
+            "suppressed",
+            "resolved"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Status Detail"
+    },
+    "subject": {
+      "$ref": "#/$defs/FindingSubject"
+    },
+    "summary": {
+      "$ref": "#/$defs/FindingText"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "window": {
+      "$ref": "#/$defs/FindingWindow"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "source",
+    "rule_id",
+    "rule_version",
+    "title",
+    "summary",
+    "severity",
+    "status",
+    "status_detail",
+    "subject",
+    "window",
+    "occurrences",
+    "evidence",
+    "measurements",
+    "impact",
+    "remediation",
+    "playbook"
+  ],
+  "title": "Finding",
+  "type": "object"
+}

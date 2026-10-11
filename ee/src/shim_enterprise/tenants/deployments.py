@@ -26,6 +26,7 @@ from shim.api.v1.chat import model_record
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
+from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
 
 logger = logging.getLogger(__name__)
@@ -372,7 +373,7 @@ class DeploymentResolver:
                 },
             )
         key, owner = row
-        if owner.role == "auditor" or (
+        if owner.role not in KEY_OWNER_ROLES or (
             key.expires_at is not None and key.expires_at <= datetime.now(timezone.utc)
         ):
             raise HTTPException(

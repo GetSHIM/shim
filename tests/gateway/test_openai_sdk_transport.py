@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from io import StringIO
 import json
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -22,6 +23,7 @@ from shim.gateway.kernel.result import InferenceTiming, ProviderTarget
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
+    ProviderExecutionStage,
     ProviderNonStream,
     ProviderStream,
 )
@@ -1658,3 +1660,155 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_answers_are_byte_identical_with_an_analyzer_on_and_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shim.core.community_config as community_config
+    import shim.gateway.pipeline.postprocess as postprocess
+
+    class Probe:
+        name = "probe"
+        version = "1"
+        reads_answer = True
+
+        def analyze(self, ctx):
+            return {"answer_characters": len(ctx.answer_text)}
+
+    monkeypatch.setattr(community_config, "ANALYZERS", (Probe(),))
+    monkeypatch.setattr(community_config, "ANALYZER_NAMES", frozenset({"probe"}))
+    monkeypatch.setattr(postprocess, "ANALYZERS", (Probe(),))
+    completion = {
+        "id": "chat_analysis",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-5.6-luna",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+    }
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if not json.loads(request.content).get("stream"):
+            return httpx.Response(200, json=completion)
+        chunk = {
+            **completion,
+            "object": "chat.completion.chunk",
+            "choices": [
+                {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+            ],
+        }
+        return httpx.Response(
+            200,
+            text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    bodies: dict[str, list[bytes]] = {}
+    lines: dict[str, list[dict]] = {}
+    for analysis in ("", "probe"):
+        events = StringIO()
+        outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        application = create_community_app(
+            CommunitySettings(
+                OPENAI_BASE_URL="https://upstream.test/v1",
+                BACKEND_CORS_ORIGINS=[],
+                SHIM_RESPONSE_ANALYSIS=analysis,
+                _env_file=None,
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with (
+            application.router.lifespan_context(application),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=application),
+                base_url="http://127.0.0.1",
+            ) as client,
+        ):
+            bodies[analysis] = [
+                (
+                    await client.post(
+                        "/v1/chat/completions",
+                        headers={"x-provider-key": "sk-provider"},
+                        json={
+                            "model": "gpt-5.6-luna",
+                            "stream": stream,
+                            "messages": [{"role": "user", "content": content}],
+                        },
+                    )
+                ).content
+                for stream, content in (
+                    (False, "hello"),
+                    (True, "hello"),
+                    # Carries personal data, so nothing reads its answer.
+                    (False, "write to ayse.yilmaz@example.com"),
+                )
+            ]
+        await outbound.aclose()
+        lines[analysis] = [json.loads(line) for line in events.getvalue().splitlines()]
+
+    assert bodies[""] == bodies["probe"]
+    assert [line["event"] for line in lines[""]] == ["request"] * 3
+    assert sorted(line["event"] for line in lines["probe"]) == [
+        "request",
+        "request",
+        "request",
+        "response_analysis",
+        "response_analysis",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_latency_is_the_provider_call_not_the_work_around_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://upstream.test/v1")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=_response("resp_timed"))
+
+    async def slow(*args: object, **kwargs: object) -> None:
+        await asyncio.sleep(0.4)
+
+    class SlowCredentials(EnvironmentProviderCredentialResolver):
+        async def resolve(self, *args: object, **kwargs: object) -> str | None:
+            await slow()
+            return await super().resolve(*args, **kwargs)
+
+    chain_store = SimpleNamespace(save=slow)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        execution = _execution(http, chain_store)
+        execution.credential_resolver = SlowCredentials("openai", {})
+        stage = ProviderExecutionStage(
+            SimpleNamespace(
+                provider="openai",
+                db=object(),
+                provider_credential=EphemeralProviderCredential("openai", "sk-a"),
+            ),
+            execution,
+            SimpleNamespace(mark_provider_started=slow),
+        )
+
+        started = perf_counter()
+        result = await stage.run(
+            _prepared(
+                {"model": "gpt-5.6-luna", "input": "hi"},
+                tenant="11111111-1111-1111-1111-111111111111",
+            )
+        )
+        total = perf_counter() - started
+
+    assert isinstance(result, ProviderNonStream)
+    assert result.latency_ms is not None
+    # Credential resolution, the provider-start commit and the chain save (0.4 s each)
+    # sit outside the provider call, however loaded the machine is.
+    assert 50 <= result.latency_ms <= (total - 1.2) * 1_000

@@ -61,6 +61,42 @@ placeholder with `pricing_resolution=unknown`, and usage reports carry
 completeness counters. A monetary provider limit rejects unpriced inference
 instead of treating it as free. Token and request quotas still apply.
 
+## The inventory
+
+`GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and
+auditors; default the last 30 days, at most 31) puts the registry and the
+traffic side by side. It is built from the gateway's own request records, not
+kept by hand:
+
+- one `registry` item per registered deployment, enabled or not, with its
+  requests in the window (by the deployment id each request recorded, or for
+  older rows by the alias), first and last request, distinct API keys and teams,
+  and `byok_requests` (requests that carried their own provider key);
+- one `catalog` item per provider and model that requests reached through the
+  provider's public endpoint (`deployment_kind: unknown`) after spend
+  reservation, with the same counts and `registered: false`. The model is the
+  price-book entry the requested name matched (a dated snapshot counts under its
+  family entry), `model not specified` for a Responses request that named no
+  model, and `other` for a name the current price book no longer matches: the
+  requested name is caller text of any length and is never an item's key.
+
+Registry items come first, then catalog items, each by requests; at most 500
+items, `truncated: true` beyond, plus totals. What the inventory cannot show:
+the names of unknown models that were refused (caller-controlled text is never
+recorded), and servers that receive no traffic through shim. Two findings act
+on it: [`gateway.unregistered_model`](FINDINGS.md#gatewayunregistered_model) and
+[`gateway.byok_usage`](FINDINGS.md#gatewaybyok_usage). The ISO/IEC 42001
+readiness report lists the same catalog model names (from a names-only read)
+as "Models in traffic outside the registry", so the two never disagree.
+
+## Idle deployments
+
+An internal deployment that served between 1 and 299 requests in 30 days raises
+the low-severity finding `gateway.idle_internal_deployment`; one with no
+requests raises `gateway.unused_deployment`. Traffic is attributed by the
+deployment id each request records, so renaming an alias keeps its history. See
+[findings](FINDINGS.md#gatewayidle_internal_deployment).
+
 ## Verified compatibility
 
 `uv run --locked python -m pytest -q ee/tests/tenants/test_deployments.py`

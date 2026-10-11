@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from shim.billing.pricing import (
     DEFAULT_PRICE_BOOK,
@@ -18,6 +18,7 @@ from shim.billing.pricing import (
     ModelPrice,
     compute_cost_usd,
 )
+from shim.gateway.pipeline.analysis import TOOL_NAME, AnalysisToolCall
 from shim.gateway.streaming.sse import data_payload, pop_event
 
 
@@ -57,6 +58,11 @@ class StreamUsageSnapshot:
     completion_outcome: CompletionOutcome | None = None
     # Present only when the provider reported the cache split and usage is actual.
     cache_split: CacheSplit | None = None
+    # JSON only: the provider call alone, from its start to the parsed response; streams carry ttft_ms.
+    provider_latency_ms: int | None = None
+    answer_characters: int | None = None
+    tool_call_names: tuple[str, ...] = ()
+    reasoning_seen: bool = False
 
 
 class StreamMeter:
@@ -78,7 +84,8 @@ class StreamMeter:
         started_at_monotonic: float | None = None,
         monotonic_clock: Callable[[], float] = perf_counter,
         unpriced: bool = False,
-        answer_text_limit: int = 0,
+        keep_scan_text: bool = False,
+        keep_answer: bool = False,
         price: ModelPrice | None = None,
     ) -> None:
         if prompt_tokens_estimated < 0:
@@ -97,14 +104,25 @@ class StreamMeter:
         self.cache_split: CacheSplit | None = None
         self.emitted_output_characters = 0
         self.emitted_answer_characters = 0
-        # Answer text is kept only for the opt-in response scan, up to this many characters.
-        self.answer_text_limit = answer_text_limit
+        # Kept only for the after-answer pass: every emitted fragment but reasoning for
+        # the response scan, the answer text and tool calls for analyzers that read them.
+        self.keep_scan_text = keep_scan_text
+        self.scan_text: list[str] = []
+        self._scan_text_characters = 0
+        self.keep_answer = keep_answer
         self.answer_text: list[str] = []
+        self.answer_truncated = False
         self._answer_text_characters = 0
+        # Per call: its first name, then its argument fragments.
+        self._tool_calls: dict[tuple[object, ...], tuple[list[str], list[str]]] = {}
+        self._tool_argument_characters = 0
+        self._tool_arguments_full = False
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
         self.tool_call_seen = False
+        self.tool_names: set[str] = set()
+        self.reasoning_seen = False
         self.started_at_monotonic = started_at_monotonic
         self._monotonic_clock = monotonic_clock
         self.ttft_ms: float | None = None
@@ -209,6 +227,9 @@ class StreamMeter:
                 tool_call=self.tool_call_seen,
             ),
             cache_split=split,
+            answer_characters=self.emitted_answer_characters,
+            tool_call_names=tuple(sorted(self.tool_names)),
+            reasoning_seen=self.reasoning_seen,
         )
 
     def _observe_sse_event(self, event_text: str) -> None:
@@ -242,21 +263,34 @@ class StreamMeter:
         self.provider_finish_reasons.update(
             native_finish_reasons(payload, provider=self.provider) or {}
         )
-        refusal, tool_call = answer_markers(payload, event_type=payload_type)
-        self.refusal_seen |= refusal
-        self.tool_call_seen |= tool_call
-        fragments = self._output_delta_fragments(payload_type, payload)
-        output_characters = sum(len(fragment) for fragment in fragments)
+        facts = answer_facts(payload, event_type=payload_type)
+        self.refusal_seen |= facts.refusal
+        self.tool_call_seen |= facts.tool_call
+        self.reasoning_seen |= facts.reasoning
+        for name in facts.tool_names:
+            if len(self.tool_names) < 64:
+                self.tool_names.add(name)
+        text, other = self._output_delta_fragments(payload_type, payload)
+        output_characters = sum(map(len, text)) + sum(map(len, other))
         reasoning_characters = _reasoning_characters(payload_type, payload)
         self.emitted_output_characters += output_characters
         self.emitted_answer_characters += output_characters - reasoning_characters
-        if not reasoning_characters:
-            for fragment in fragments:
-                room = self.answer_text_limit - self._answer_text_characters
-                if room <= 0:
-                    break
-                self.answer_text.append(fragment[:room])
-                self._answer_text_characters += min(len(fragment), room)
+        if self.keep_scan_text and not reasoning_characters:
+            # One character past the bound, so the response scan can still report truncation.
+            self._scan_text_characters += _keep(
+                self.scan_text,
+                [*text, *other],
+                KEPT_ANSWER_CHARACTERS + 1 - self._scan_text_characters,
+            )
+        if self.keep_answer:
+            kept = _keep(
+                self.answer_text,
+                text,
+                KEPT_ANSWER_CHARACTERS - self._answer_text_characters,
+            )
+            self._answer_text_characters += kept
+            self.answer_truncated |= kept < sum(map(len, text))
+            self._keep_tool_calls(payload_type, payload)
         if (
             self.ttft_ms is None
             and self.started_at_monotonic is not None
@@ -268,6 +302,35 @@ class StreamMeter:
             self.ttft_ms = max(
                 0.0, (self._monotonic_clock() - self.started_at_monotonic) * 1_000
             )
+
+    def _keep_tool_calls(self, event_type: str, payload: dict[str, Any]) -> None:
+        for key, name, fragment in _tool_call_fragments(
+            event_type, payload, len(self._tool_calls)
+        ):
+            call = self._tool_calls.get(key)
+            if call is None:
+                if len(self._tool_calls) >= KEPT_TOOL_CALLS:
+                    self.answer_truncated = True
+                    continue
+                call = self._tool_calls[key] = ([], [])
+            if name and not call[0]:
+                call[0].append(name)
+            if fragment and not self._tool_arguments_full:
+                if (
+                    self._tool_argument_characters + len(fragment)
+                    > KEPT_ANSWER_CHARACTERS
+                ):
+                    # Nothing more is kept, so every kept call is a clean prefix.
+                    self.answer_truncated = self._tool_arguments_full = True
+                    continue
+                call[1].append(fragment)
+                self._tool_argument_characters += len(fragment)
+
+    def kept_tool_calls(self) -> tuple[AnalysisToolCall, ...]:
+        return tuple(
+            AnalysisToolCall(name="".join(name)[:64], arguments="".join(arguments))
+            for name, arguments in self._tool_calls.values()
+        )
 
     def _capture_response_model(self, payload: dict[str, Any]) -> None:
         candidates = [payload]
@@ -408,8 +471,11 @@ class StreamMeter:
     def _output_delta_fragments(
         event_type: str,
         payload: dict[str, Any],
-    ) -> list[str]:
-        fragments: list[str] = []
+    ) -> tuple[list[str], list[str]]:
+        """One SSE event's output: the answer text, then refusals, tool arguments and reasoning."""
+
+        text: list[str] = []
+        other: list[str] = []
         choices = payload.get("choices")
         if isinstance(choices, list):
             for choice in choices:
@@ -418,15 +484,15 @@ class StreamMeter:
                 delta = choice.get("delta")
                 if not isinstance(delta, dict):
                     continue
-                for field in ("content", "refusal"):
-                    content = delta.get(field)
-                    if isinstance(content, str):
-                        fragments.append(content)
+                if isinstance(delta.get("content"), str):
+                    text.append(delta["content"])
+                if isinstance(delta.get("refusal"), str):
+                    other.append(delta["refusal"])
                 function_call = delta.get("function_call")
                 if isinstance(function_call, dict) and isinstance(
                     function_call.get("arguments"), str
                 ):
-                    fragments.append(function_call["arguments"])
+                    other.append(function_call["arguments"])
                 tool_calls = delta.get("tool_calls")
                 if isinstance(tool_calls, list):
                     for call in tool_calls:
@@ -436,18 +502,18 @@ class StreamMeter:
                         if isinstance(function, dict) and isinstance(
                             function.get("arguments"), str
                         ):
-                            fragments.append(function["arguments"])
+                            other.append(function["arguments"])
 
         delta = payload.get("delta")
         if isinstance(delta, str) and any(
             delta_type in event_type for delta_type in _TEXT_RESPONSE_DELTA_TYPES
         ):
-            fragments.append(delta)
+            (text if "output_text" in event_type else other).append(delta)
         elif isinstance(delta, dict):
             for key in ("text", "partial_json", "arguments", "thinking", "content"):
                 value = delta.get(key)
                 if isinstance(value, str):
-                    fragments.append(value)
+                    (text if key == "text" else other).append(value)
 
         candidates = payload.get("candidates")
         if isinstance(candidates, list):
@@ -461,8 +527,13 @@ class StreamMeter:
                 if not isinstance(parts, list):
                     continue
                 for part in parts:
-                    fragments.extend(_google_content_strings(part))
-        return fragments
+                    answer = (
+                        isinstance(part, dict)
+                        and isinstance(part.get("text"), str)
+                        and part.get("thought") is not True
+                    )
+                    (text if answer else other).extend(_google_content_strings(part))
+        return text, other
 
     def _all_google_candidates_finished(self, payload: dict[str, Any]) -> bool:
         candidates = payload.get("candidates")
@@ -765,28 +836,48 @@ def settled_outcome(
     return outcome if completed or outcome == "filtered" else None
 
 
-def answer_markers(
-    payload: Mapping[str, Any], *, event_type: str = ""
-) -> tuple[bool, bool]:
-    """Whether a JSON answer or one SSE event carries a refusal or a tool call."""
+class AnswerFacts(NamedTuple):
+    refusal: bool
+    tool_call: bool
+    # Model-supplied and already PII-restored, so only the character set providers allow is kept.
+    tool_names: tuple[str, ...]
+    reasoning: bool
+
+
+_REASONING_TYPES = frozenset(
+    {"reasoning", "thinking", "redacted_thinking", "thinking_delta"}
+)
+
+
+def answer_facts(payload: Mapping[str, Any], *, event_type: str = "") -> AnswerFacts:
+    """One walk over a JSON answer or one SSE event: refusal, tool calls with their names, reasoning.
+
+    A built-in tool call without a name is named by its type.
+    """
 
     refusal = event_type.startswith("response.refusal")
+    reasoning = event_type.startswith("response.reasoning")
     tool_call = False
+    called: list[object] = []
     containers = [payload]
-    for key in ("response", "message", "item", "part", "content_block"):
+    for key in ("response", "message", "item", "part", "content_block", "delta"):
         value = payload.get(key)
         if isinstance(value, Mapping):
             containers.append(value)
     for container in containers:
         items = [container]
         for key in ("output", "content"):
-            value = container.get(key)
-            if isinstance(value, list):
-                items.extend(item for item in value if isinstance(item, Mapping))
+            items.extend(_mappings(container.get(key)))
         for item in items:
             kind = item.get("type")
             refusal |= kind == "refusal"
-            tool_call |= isinstance(kind, str) and kind.endswith(("_call", "tool_use"))
+            reasoning |= kind in _REASONING_TYPES
+            if isinstance(kind, str) and kind.endswith(("_call", "tool_use")):
+                tool_call = True
+                if kind in ("tool_use", "server_tool_use"):
+                    called.append(item.get("name"))
+                elif kind.endswith("_call"):
+                    called.append(item.get("name") or kind)
             parts = item.get("content")
             if item is not container and isinstance(parts, list):
                 refusal |= any(
@@ -796,19 +887,260 @@ def answer_markers(
         for choice in _mappings(container.get("choices")):
             for field in ("delta", "message"):
                 value = choice.get(field)
-                if isinstance(value, Mapping):
-                    refusal |= bool(value.get("refusal"))
-                    tool_call |= bool(
-                        value.get("tool_calls") or value.get("function_call")
-                    )
+                if not isinstance(value, Mapping):
+                    continue
+                refusal |= bool(value.get("refusal"))
+                reasoning |= bool(value.get("reasoning_content"))
+                function_call = value.get("function_call")
+                tool_call |= bool(value.get("tool_calls") or function_call)
+                for call in [
+                    *(c.get("function") for c in _mappings(value.get("tool_calls"))),
+                    function_call,
+                ]:
+                    if isinstance(call, Mapping):
+                        called.append(call.get("name"))
         for candidate in _mappings(container.get("candidates")):
             content = candidate.get("content")
-            parts = content.get("parts") if isinstance(content, Mapping) else None
-            tool_call |= any(
-                isinstance(part, Mapping) and "functionCall" in part
-                for part in parts or ()
+            for part in _mappings(
+                content.get("parts") if isinstance(content, Mapping) else None
+            ):
+                reasoning |= part.get("thought") is True
+                if "functionCall" in part:
+                    tool_call = True
+                    call = part["functionCall"]
+                    if isinstance(call, Mapping):
+                        called.append(call.get("name"))
+        if not reasoning:
+            for usage in (container.get("usage"), container.get("usageMetadata")):
+                if not isinstance(usage, Mapping):
+                    continue
+                counts = [usage.get("thoughtsTokenCount")] + [
+                    details.get("reasoning_tokens")
+                    for details in (
+                        usage.get("completion_tokens_details"),
+                        usage.get("output_tokens_details"),
+                    )
+                    if isinstance(details, Mapping)
+                ]
+                reasoning |= any(
+                    (StreamMeter._nonnegative_int(count) or 0) > 0 for count in counts
+                )
+    return AnswerFacts(
+        refusal,
+        tool_call,
+        tuple(
+            sorted(
+                {
+                    name
+                    for name in called
+                    if isinstance(name, str) and TOOL_NAME.fullmatch(name)
+                }
+            )[:64]
+        ),
+        reasoning,
+    )
+
+
+def answer_markers(
+    payload: Mapping[str, Any], *, event_type: str = ""
+) -> tuple[bool, bool]:
+    """Whether a JSON answer or one SSE event carries a refusal or a tool call."""
+
+    facts = answer_facts(payload, event_type=event_type)
+    return facts.refusal, facts.tool_call
+
+
+def tool_call_names(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    return answer_facts(payload).tool_names
+
+
+def reasoning_seen(payload: Mapping[str, Any], *, event_type: str = "") -> bool:
+    return answer_facts(payload, event_type=event_type).reasoning
+
+
+KEPT_ANSWER_CHARACTERS = 1_000_000
+KEPT_TOOL_CALLS = 64
+
+
+def _keep(kept: list[str], fragments: list[str], room: int) -> int:
+    """Append what fits in ``room`` characters; the characters appended."""
+
+    appended = 0
+    for fragment in fragments:
+        if appended >= room:
+            break
+        kept.append(fragment[: room - appended])
+        appended += min(len(fragment), room - appended)
+    return appended
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _tool_call_fragments(
+    event_type: str, payload: Mapping[str, Any], gemini_calls: int
+) -> list[tuple[tuple[object, ...], str | None, str | None]]:
+    """(call key, name, argument fragment) of one SSE event, per protocol."""
+
+    found: list[tuple[tuple[object, ...], str | None, str | None]] = []
+    for position, choice in enumerate(_mappings(payload.get("choices"))):
+        delta = choice.get("delta")
+        if not isinstance(delta, Mapping):
+            continue
+        index = choice.get("index", position)
+        for call in _mappings(delta.get("tool_calls")):
+            function = call.get("function")
+            function = function if isinstance(function, Mapping) else {}
+            found.append(
+                (
+                    ("chat", index, call.get("index")),
+                    function.get("name"),
+                    function.get("arguments"),
+                )
             )
-    return refusal, tool_call
+        legacy = delta.get("function_call")
+        if isinstance(legacy, Mapping):
+            found.append(
+                (
+                    ("chat", index, "function_call"),
+                    legacy.get("name"),
+                    legacy.get("arguments"),
+                )
+            )
+    item = payload.get("item")
+    if (
+        event_type == "response.output_item.added"
+        and isinstance(item, Mapping)
+        and item.get("type") in ("function_call", "custom_tool_call")
+    ):
+        found.append(
+            (
+                ("responses", payload.get("output_index")),
+                item.get("name"),
+                item.get("arguments") or item.get("input"),
+            )
+        )
+    if event_type in (
+        "response.function_call_arguments.delta",
+        "response.custom_tool_call_input.delta",
+    ):
+        found.append(
+            (("responses", payload.get("output_index")), None, payload.get("delta"))
+        )
+    block = payload.get("content_block")
+    if (
+        event_type == "content_block_start"
+        and isinstance(block, Mapping)
+        and block.get("type") == "tool_use"
+    ):
+        found.append((("anthropic", payload.get("index")), block.get("name"), None))
+    delta = payload.get("delta")
+    if isinstance(delta, Mapping) and delta.get("type") == "input_json_delta":
+        found.append(
+            (("anthropic", payload.get("index")), None, delta.get("partial_json"))
+        )
+    for candidate in _mappings(payload.get("candidates")):
+        content = candidate.get("content")
+        for part in _mappings(
+            content.get("parts") if isinstance(content, Mapping) else None
+        ):
+            call = part.get("functionCall")
+            if isinstance(call, Mapping):
+                found.append(
+                    (
+                        ("gemini", gemini_calls + len(found)),
+                        call.get("name"),
+                        _compact_json(call.get("args", {})),
+                    )
+                )
+    return [
+        (
+            key,
+            name if isinstance(name, str) else None,
+            fragment if isinstance(fragment, str) else None,
+        )
+        for key, name, fragment in found
+    ]
+
+
+def answer_text(payload: Mapping[str, Any]) -> str:
+    """The answer text of one JSON response for the after-answer pass; refusals and reasoning are not."""
+
+    choices = [
+        message["content"]
+        for choice in _mappings(payload.get("choices"))
+        if isinstance(message := choice.get("message"), Mapping)
+        and isinstance(message.get("content"), str)
+    ]
+    candidates = [
+        "".join(
+            part["text"]
+            for part in _mappings(content.get("parts"))
+            if isinstance(part.get("text"), str) and part.get("thought") is not True
+        )
+        for candidate in _mappings(payload.get("candidates"))
+        if isinstance(content := candidate.get("content"), Mapping)
+    ]
+    single = "".join(
+        [
+            part["text"]
+            for item in _mappings(payload.get("output"))
+            if item.get("type") == "message"
+            for part in _mappings(item.get("content"))
+            if part.get("type") == "output_text" and isinstance(part.get("text"), str)
+        ]
+        + [
+            block["text"]
+            for block in _mappings(payload.get("content"))
+            if block.get("type") == "text" and isinstance(block.get("text"), str)
+        ]
+    )
+    return "\n".join([*choices, *candidates, *([single] if single else [])])
+
+
+def answer_tool_calls(payload: Mapping[str, Any]) -> tuple[AnalysisToolCall, ...]:
+    """The tool calls of one JSON response, at most 64; arguments as JSON text."""
+
+    calls: list[tuple[object, object]] = []
+    for choice in _mappings(payload.get("choices")):
+        message = choice.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        functions = [
+            call.get("function") for call in _mappings(message.get("tool_calls"))
+        ] + [message.get("function_call")]
+        calls += [
+            (function.get("name"), function.get("arguments"))
+            for function in functions
+            if isinstance(function, Mapping)
+        ]
+    calls += [
+        (item.get("name"), item.get("arguments", item.get("input")))
+        for item in _mappings(payload.get("output"))
+        if item.get("type") in ("function_call", "custom_tool_call")
+    ]
+    calls += [
+        (block.get("name"), _compact_json(block.get("input", {})))
+        for block in _mappings(payload.get("content"))
+        if block.get("type") == "tool_use"
+    ]
+    for candidate in _mappings(payload.get("candidates")):
+        content = candidate.get("content")
+        calls += [
+            (call.get("name"), _compact_json(call.get("args", {})))
+            for part in _mappings(
+                content.get("parts") if isinstance(content, Mapping) else None
+            )
+            if isinstance(call := part.get("functionCall"), Mapping)
+        ]
+    return tuple(
+        AnalysisToolCall(
+            name=name[:64] if isinstance(name, str) else "",
+            arguments=arguments if isinstance(arguments, str) else "",
+        )
+        for name, arguments in calls[:KEPT_TOOL_CALLS]
+    )
 
 
 def answer_characters(payload: Mapping[str, Any]) -> int:

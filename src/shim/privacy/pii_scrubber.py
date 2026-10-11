@@ -8,6 +8,7 @@ import re
 import secrets
 import unicodedata
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, get_args
@@ -16,6 +17,8 @@ from presidio_analyzer import RecognizerResult
 
 from shim.privacy.policies import EntityAction
 from shim.privacy.presidio_analyzer import PresidioAnalyzer
+from shim.rules.content import ContentHit, ContentRules, first_fit
+from shim.rules.model import ACTION_RANK
 
 
 _INVISIBLE = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
@@ -142,7 +145,9 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     for character, span in zip(decoded, spans):
-        if not _INVISIBLE.fullmatch(character):
+        # A lower-cased İ is i and a combining dot (JavaScript and Python lower()).
+        dotted_i = character == "\u0307" and visible_characters[-1:] == ["i"]
+        if not dotted_i and not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
     visible_text = "".join(visible_characters)
@@ -171,7 +176,7 @@ class PIIScrubberService:
         text: str,
         actions: Mapping[str, EntityAction],
     ) -> list[dict[str, Any]]:
-        detections = self._source_detections(text, actions)
+        detections, _ = self._source_detections(text, actions)
         return [
             {
                 "type": item.entity_type,
@@ -192,15 +197,27 @@ class PIIScrubberService:
         placeholders_by_value: dict[str, str] | None = None,
         unmasked: dict[str, str] | None = None,
         placeholder_key: bytes | None = None,
+        content: ContentRules | None = None,
     ) -> tuple[str, dict[str, str]]:
-        """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type)."""
+        """Mask `mask` detections; record `monitor`/`block` ones in `unmasked` (value to type).
+
+        Tenant rule matches are recorded on `content`, never in `unmasked`.
+        """
         if not isinstance(text, str):
             raise TypeError("PII input must be text")
-        if all(action == "off" for action in actions.values()):
+        if content is None and all(action == "off" for action in actions.values()):
             return text, {}
-        detections = self._source_detections(text, actions)
-        if not detections:
+        detections, hits = self._source_detections(text, actions, content)
+        if not detections and not hits:
             return text, {}
+        placeholders, marks = _settle(detections, hits, actions)
+        for item in marks:
+            value = text[item.start : item.end]
+            if isinstance(item, ContentHit):
+                assert content is not None
+                content.count(item, value)
+            elif unmasked is not None:
+                unmasked[value] = item.entity_type
         if placeholders_by_value is None:
             placeholders_by_value = {
                 value: placeholder
@@ -209,31 +226,27 @@ class PIIScrubberService:
         verification_map: dict[str, str] = {}
         scrubbed: list[str] = []
         cursor = 0
-        for item in detections:
+        for item in placeholders:
             value = text[item.start : item.end]
-            action = actions[item.entity_type]
-            if action not in {"mask", "mask_last4"}:
-                if unmasked is not None:
-                    unmasked[value] = item.entity_type
-                continue
+            entity_type = item.entity_type
             placeholder = placeholders_by_value.get(value)
             if placeholder is None:
-                tail = _tail(item.entity_type, value) if action == "mask_last4" else ""
+                tail = _tail(entity_type, value) if item.action == "mask_last4" else ""
                 if placeholder_key:
                     digest = hmac.new(
                         placeholder_key,
-                        f"{item.entity_type}\x1f{value}".encode(),
+                        f"{entity_type}\x1f{value}".encode(),
                         sha256,
                     ).hexdigest()
-                    placeholder = f"<{item.entity_type}_{digest[:32]}{tail}>"
+                    placeholder = f"<{entity_type}_{digest[:32]}{tail}>"
                 else:
-                    placeholder = self._placeholder(item.entity_type, tail)
+                    placeholder = self._placeholder(entity_type, tail)
                 # A placeholder held by another value falls back to a random one.
                 while (
                     placeholder in (known_placeholders or {})
                     or placeholder in verification_map
                 ):
-                    placeholder = self._placeholder(item.entity_type, tail)
+                    placeholder = self._placeholder(entity_type, tail)
                 placeholders_by_value[value] = placeholder
             verification_map[placeholder] = value
             scrubbed.append(text[cursor : item.start])
@@ -280,7 +293,8 @@ class PIIScrubberService:
         self,
         text: str,
         actions: Mapping[str, EntityAction],
-    ) -> list[RecognizerResult]:
+        content: ContentRules | None = None,
+    ) -> tuple[list[RecognizerResult], list[ContentHit]]:
         if len(text) > MAX_ANALYZABLE_TEXT_LENGTH:
             raise PIIInputTooLarge
         prepared, spans = _preprocess_with_spans(text)
@@ -299,7 +313,14 @@ class PIIScrubberService:
                     score=item.score,
                 )
             )
-        return self._non_overlapping(mapped, actions)
+        detections = self._non_overlapping(mapped, actions)
+        if content is None:
+            return detections, []
+        # Rule matches run on the same preprocessed text as the built-in detectors.
+        return detections, [
+            ContentHit(spans[hit.start][0], spans[hit.end - 1][1], hit.rules)
+            for hit in content.search(prepared)
+        ]
 
     @staticmethod
     def _deduplicate(items: Iterable[RecognizerResult]) -> list[RecognizerResult]:
@@ -367,6 +388,89 @@ class PIIScrubberService:
     @staticmethod
     def _placeholder(entity_type: str, tail: str = "") -> str:
         return f"<{entity_type}_{secrets.token_hex(16)}{tail}>"
+
+
+_MASKING = frozenset({"mask", "mask_last4"})
+
+
+@dataclass(slots=True)
+class _Placeholder:
+    start: int
+    end: int
+    entity_type: str
+    action: EntityAction
+    # The rule spans it masks, or None for a built-in value.
+    hits: list[ContentHit] | None
+
+
+def _settle(
+    detections: list[RecognizerResult],
+    hits: list[ContentHit],
+    actions: Mapping[str, EntityAction],
+) -> tuple[list[_Placeholder], list[RecognizerResult | ContentHit]]:
+    """What gets a placeholder, and which detections count.
+
+    Text: every built-in mask stays; a rule mask that overlaps other masks joins them
+    into one placeholder, typed by the built-in value or else by the longest rule span.
+    Counting: the strongest enforced action wins an overlap, then a built-in value,
+    then the longer span; a rule span that holds a placeholder always counts, so a
+    block or a hold never hides a mask and a mask never hides a block.
+    """
+
+    placeholders = [
+        _Placeholder(item.start, item.end, item.entity_type, action, None)
+        for item in detections
+        if (action := actions[item.entity_type]) in _MASKING
+    ]
+    for hit in sorted(hits, key=lambda hit: (hit.start - hit.end, hit.start)):
+        label = hit.label
+        if label is None:
+            continue
+        touching = [p for p in placeholders if p.start < hit.end and hit.start < p.end]
+        if not touching:
+            placeholders.append(_Placeholder(hit.start, hit.end, label, "mask", [hit]))
+            continue
+        # Built-in values come first in the list, then rule spans longest first.
+        kept, *joined = touching
+        kept.start = min(hit.start, *(p.start for p in touching))
+        kept.end = max(hit.end, *(p.end for p in touching))
+        # A joined value shows no last four characters.
+        kept.action = "mask"
+        for other in joined:
+            placeholders.remove(other)
+            if kept.hits is not None and other.hits is not None:
+                kept.hits += other.hits
+        if kept.hits is not None:
+            kept.hits.append(hit)
+    masking = {id(hit) for p in placeholders for hit in p.hits or ()}
+
+    def strength(item: RecognizerResult | ContentHit) -> int:
+        if isinstance(item, ContentHit):
+            return item.strength
+        action = actions[item.entity_type]
+        return ACTION_RANK[
+            "block"
+            if action == "block"
+            else "mask"
+            if action in _MASKING
+            else "monitor"
+        ]
+
+    counted = first_fit(
+        [*detections, *hits],
+        key=lambda item: (
+            -strength(item),
+            isinstance(item, ContentHit),
+            item.start - item.end,
+            item.start,
+        ),
+        keep=lambda item: id(item) in masking,
+    )
+    return sorted(placeholders, key=lambda p: p.start), [
+        item
+        for item in counted
+        if isinstance(item, ContentHit) or actions[item.entity_type] not in _MASKING
+    ]
 
 
 def placeholder_period_key(root_key: bytes, tenant_id: object, at: datetime) -> bytes:

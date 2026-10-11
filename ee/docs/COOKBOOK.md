@@ -15,6 +15,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Attribute spend to teams](#attribute-spend-to-teams)
 - [Alert on a budget](#alert-on-a-budget)
 - [Change the privacy settings](#change-the-privacy-settings)
+- [Change the gateway settings](#change-the-gateway-settings)
+- [Write a tenant rule](#write-a-tenant-rule)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
 - [Send tenant alerts](#send-tenant-alerts)
 - [Refuse provider keys sent in requests](#refuse-provider-keys-sent-in-requests)
@@ -22,8 +24,13 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
+- [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Find truncated and refused answers](#find-truncated-and-refused-answers)
+- [Is our model list complete?](#is-our-model-list-complete)
+- [Record an incident](#record-an-incident)
 - [Collect the monthly evidence file](#collect-the-monthly-evidence-file)
 - [Prepare for ISO/IEC 42001](#prepare-for-isoiec-42001)
 
@@ -226,6 +233,122 @@ one delivery to every enabled [forward target](#send-tenant-alerts) of the
 tenant; turning it back on records only the update. Event details and the
 forwarded body are in [decision evidence](POLICY_DECISIONS.md#management-change-details).
 
+## Change the gateway settings
+
+Turn the gateway's own switches on or off for your tenant. Every switch is off by
+default; privacy switches stay under [privacy settings](#change-the-privacy-settings).
+
+1. Read them with `GET /api/v1/management/gateway-settings` (`settings.read`:
+   every built-in role): `settings` with every field, `revision` (0 until the first change),
+   `updated_at`, `updated_by`, `available_analyzers`, and `unavailable`, which
+   names a field that is "off, needs X" because an optional part is missing.
+2. Send only what you change in `PATCH /api/v1/management/gateway-settings`
+   (`settings.write`: owner or admin). The answer is the same body as the GET.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"response_analysis": []}'
+```
+
+Notes: an unknown or repeated analyzer name, `null` for a field, or a field
+that does not exist is 422. Names are stored in the order the analyzers run. A
+change records `tenant.gateway_settings_updated` with the before and after of
+the changed fields and increments `revision`; a PATCH that changes nothing
+writes no event and keeps the revision. A change the setting's direction
+classifies as relaxing also records `tenant.gateway_protection_relaxed`
+([decision evidence](POLICY_DECISIONS.md#management-change-details));
+`response_analysis` only measures, so it is neutral. Gateways read the settings
+from a cache that lives at most 300 seconds; a change clears it at once.
+Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
+
+Rolling back to an older build is safe: a stored field or analyzer name that
+build does not know is left out when it reads the settings (and logged once by
+name), and a PATCH writes only the fields it names, so the newer build finds its
+settings again after the rollback ends.
+
+## Write a tenant rule
+
+Keep your own words and codes out of prompts: project names, product codes,
+customer lists. One set per tenant, replaced whole, beside the privacy
+settings. Two kinds are available: `term` (a word list) and `pattern` (code
+shapes); the others are listed as unavailable until their release.
+
+1. Read the set with `GET /api/v1/management/rules` (`rules.read`: owner, admin
+   or auditor):
+   `revision` (0 until the first change), `rules`, `unavailable_rules`,
+   `updated_by`, `updated_at`, `limits`, and `kinds`, where each kind says
+   whether it is `available`, its `actions`, and why not when it is not.
+   `unavailable_rules` holds stored rules this release cannot run, written by a
+   later one: a `PUT` keeps them and cannot reuse their ids
+   ([what they do](POLICY_DECISIONS.md#tenant-rules)).
+2. Send the whole set back with `PUT /api/v1/management/rules` (`rules.write`:
+   owner or admin), with the `revision` you read. The answer is the same body as the GET,
+   at the next revision.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/rules \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"revision": 0, "rules": []}'
+```
+
+Two rules, a term list and a project-code template:
+
+```json
+{"revision": 0, "rules": [
+  {"id": "project_names", "name": "Project code names", "kind": "term",
+   "action": "mask", "state": "monitor",
+   "match": {"terms": ["Atlas", "İzmir Proje"]}},
+  {"id": "project_codes", "name": "Project codes", "kind": "pattern",
+   "action": "block", "state": "monitor", "scope": {"models": ["gpt-5-nano"]},
+   "match": {"templates": ["PRJ-####"]}}
+]}
+```
+
+| Kind | `match` | What it finds |
+| --- | --- | --- |
+| `term` | `terms` (up to 200 per rule, 2,000 per set, 3 to 128 characters each, with a letter or a digit), `label` (default `TERM`), `suffixes` (`tr`, the default, or `none`) | Each term between word edges: a space or punctuation, an underscore, a letter next to a digit, or a lower-case letter before a capital (`atlas_rapor.xlsx`, `Atlas2024`, `AtlasProje`). Letter case does not matter, and neither do Turkish marks: `İ`, `I`, `ı` and `i` are one letter and `ş ç ğ ö ü` match `s c g o u`, so `Şişli Kule` finds `SISLI KULE` and `İzmir Proje` finds `ızmir  proje`; every dash is a hyphen (`e–Devlet`). Two terms that differ only so are one term. With `suffixes: "tr"` a term also finds its Turkish forms: after an apostrophe any ending (`Atlas'ın`, `Atlas’ta`); without one the plural, possessive, case, equative, `-ki` and `-dIr` endings in any chain (`Atlasın`, `ATLASIN`, `Atlasımızın`, `Atlaslarındaki`, `Atlastır`, `Atlasça`, `Kulemiz`). A three-character term takes an ending without an apostrophe only as an acronym in capitals (`BKMnin`). Only the term is masked; the ending stays: `Atlasın` reaches the provider as `<TERM_…>ın`. |
+| `pattern` | `templates` (up to 32 per rule, 64 per set, 64 characters each), `regexes` (up to 32 per rule, 64 per set, 256 characters each), `label` (default `PATTERN`), `ignore_case` (default `true`) | A template is literal text where `#` is one digit, `@` one letter and `\` makes the next character literal, between word boundaries; a hyphen takes any dash: `PRJ-####` finds `PRJ-1234`, `prj-1234` and `PRJ–1234`, not `PRJ-12345` or `XPRJ-1234`. A regex takes Python `re` syntax and, like a template, ignores letter case unless `ignore_case` is `false` (the flag covers the whole pattern; `(?-i:...)` turns it off for one part). Refused with 422 `RULE_PATTERN_UNSAFE`: syntax only the `regex` module knows (`\p{L}`), a backreference or a conditional group, a repeat of varying length inside another repeat (`(a+)+`, `(\d{2,})*x`; `(\d{3}-)+` is fine), or a pattern that runs slowly on a test input, checked with the same case setting. |
+
+Not matched: consonant softening (`kitap`, `kitabı`), derivations (`Atlasçılık`,
+`Kuleli`, `Kulesiz`), compounds (`Kuledibi`), misspellings, a term inside a longer
+word (`XAtlas`, `Atlasian`) or number (`PRJ-2024-0012` for `PRJ-2024-001`), a
+short term with an ending but no apostrophe unless written as an acronym (`Ata`
+does not find `Atalar`), and a masking term inside a
+value a built-in type masks (`atlas@example.com` stays an e-mail address; a
+`block` or `require_approval` term there still acts). Tool
+names, ids and other protocol identifiers are not searched. The `label` names
+the placeholder, `<LABEL_…>`, which the provider sees: keep it generic.
+
+An enforced `mask` replaces the value with a placeholder that the answer gets
+back; `block` refuses the request with 400 `RULE_BLOCKED` before any provider
+call; `warn` adds `RULE_WARN`; `monitor`, or any rule in `state: "monitor"`, only
+counts. Overlapping matches follow the
+[overlap rule](POLICY_DECISIONS.md#tenant-rules). While an enforced `mask`,
+`block` or `require_approval` rule applies to a request, images and files in it
+are refused, since they cannot be searched.
+
+Monitor first: a new rule must start in `state: "monitor"`, where a match is
+recorded as `RULE_WOULD_<ACTION>` and changes nothing. Filter the request list
+with `GET /api/v1/management/requests?rule_id=project_names` to see what it
+would have done, then send the set again with `"state": "enforced"`.
+
+Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
+revision; read again and resend. A refused set is 422 with `code` and the
+`path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
+`RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
+`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+does not have) or `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
+413. Every change records `tenant.rules_updated` with ids, kinds and counts,
+never a term; weakening an enforced rule also records
+`tenant.privacy_protection_relaxed` and alerts your forward targets
+([decision evidence](POLICY_DECISIONS.md#tenant-rules)). Gateways pick up a new
+revision at once.
+
 ## Read the daily privacy card
 
 See what shim caught on one day: personal data masked, watched or refused, pasted
@@ -386,11 +509,14 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/kvkk \
   -o kvkk_exposure.pdf
 ```
 
-Notes: a tenant-wide PDF, one without `connector_id`, adds a "Gateway
-detections" section: per entity type, its KVKK category and the sum over
-requests started in the window of the distinct values the gateway detected and
-masked in each. A connector-scoped report and every CSV hold compliance
-connector findings only. More than 10,000 findings answers 422. Details are in
+Notes: the PDF is in Turkish and names the organization as
+`Kurum: <name> (<id>)`. A tenant-wide report, one without `connector_id`, adds
+the gateway's counts per entity type: masked, monitored, blocked and seen in
+answers. The CSV ends with `source` and `count`: connector findings have
+`source` `connector`, and a tenant-wide CSV adds one `gateway_masked`,
+`gateway_monitored`, `gateway_blocked` or `gateway_response` row per entity type
+and action. Filter on `source` if a spreadsheet expects connector rows only.
+More than 10,000 findings answers 422. Details are in
 [decision evidence](POLICY_DECISIONS.md#kvkk-exposure-report).
 
 ## Register a private model deployment
@@ -511,6 +637,95 @@ Notes:
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
 
+## Give someone exactly the access they need
+
+Let a finance colleague read billing without seeing privacy settings or holding
+gateway keys.
+
+1. As the owner, create a role with the permissions it needs:
+   `POST /api/v1/management/roles` with `slug`, `name` and `permissions`
+   ([the permission table](team-access.md#permissions)). It needs a plan with
+   team access.
+2. Give it to a member: `PATCH /api/v1/management/team/members/{member_id}` with
+   `{"role": "member", "custom_role_id": "<role id>"}`.
+3. The member's `GET /api/v1/management/auth/me` now lists exactly the role's
+   `permissions`.
+
+```console
+ROLE_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/roles \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"slug": "billing-viewer", "name": "Billing viewer", "permissions": ["usage.read"]}' | jq -r .id)
+
+curl -X PATCH "http://localhost:8000/api/v1/management/team/members/$MEMBER_ID" \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"role\": \"member\", \"custom_role_id\": \"$ROLE_ID\"}"
+```
+
+Notes:
+
+- A role without `keys.own` cannot go to someone who holds an active gateway
+  key: the PATCH answers 409 `ROLE_HOLDERS_HAVE_KEYS`. Revoke the keys first.
+- Owner-only permissions (`roles.manage`, `config.manage`), `keys.manage` and
+  the ones that open content or decide approvals cannot be part of a custom
+  role (422).
+- `"custom_role_id": null` takes the role away; deleting a role someone holds
+  answers 409. With OIDC, map groups to roles with `OIDC_GROUP_CUSTOM_ROLE_MAP`
+  instead ([on-prem identity](ON_PREM_IDENTITY.md)).
+- Details are in [team access](team-access.md#custom-roles).
+
+## Plan, apply and undo a change
+
+See what a policy change would have affected before it takes effect, apply it in
+one step, and take it back in one step.
+
+1. Create a plan (`plans.create`, owners and admins, plus the permission each
+   change's own route asks for):
+   `POST /api/v1/management/policy/plans` with up to 100 `changes`. A change is
+   `{"resource", "item", "set": {...}}` to update, `"item": null` to create, or
+   `{"resource", "item", "delete": true}`. The answer lists each change's
+   `before`, `after`, `risk` and `impact` over the last `window_days` (default 7,
+   at most 31).
+2. Apply it (`plans.apply`): `POST /api/v1/management/policy/plans/{id}/apply`.
+   A 409 `PLAN_STALE` names the items someone changed since the plan was made;
+   create a new plan.
+3. Undo: `POST /api/v1/management/policy/versions/{version}/restore` with an
+   optional `reason`; restoring `current - 1` undoes the last change. Send the
+   `expected_version` you read to get 409 `POLICY_VERSION_CHANGED` instead of
+   undoing a change someone made since. Read the
+   versions with `GET /api/v1/management/policy/versions` and the current state
+   with `GET /api/v1/management/policy/state` (owners, admins and auditors).
+
+```console
+PLAN_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/policy/plans \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "watch e-mail before masking it",
+       "changes": [{"resource": "privacy", "item": "_",
+                    "set": {"entity_actions": {"EMAIL_ADDRESS": "monitor"}}}]}' | jq -r .id)
+
+curl -X POST "http://localhost:8000/api/v1/management/policy/plans/$PLAN_ID/apply" \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/policy/versions/4/restore \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "back to masking"}'
+```
+
+Notes:
+
+- Every write to privacy settings, teams, key model and team policies,
+  deployments, budgets and oversight policies records a version, whether it came
+  through a plan or not, so a tenant that never plans can still undo.
+- A plan expires after 7 days; an expired, applied or rolled-back plan answers
+  409 `PLAN_STATE_CONFLICT` on apply. The body is at most 256 KB.
+- A restore cannot bring back a revoked key or delete a team, and a re-created
+  budget has no notification targets: those are listed in `not_restored`, as is
+  an item its own route would now refuse (a deleted provider secret, for
+  example); everything else is restored. A
+  deployment registered after the version is disabled instead of deleted
+  (`approximated`).
+- The resources, what counts as relaxing and the audit details are in
+  [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
 ## See what changed after a prompt change
 
 Compare how answers ended before and after your system prompt changed.
@@ -559,6 +774,92 @@ Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
 
+## Find truncated and refused answers
+
+See which apps get cut-off or refused answers, then open those requests.
+
+1. As an owner, admin or auditor, read the rates per app:
+   `GET /api/v1/management/outcomes?group_by=api_key` (or `model`, `team`;
+   default the last 7 days, at most 31). Each group has `truncation_rate` and
+   `refusal_rate` (refused, filtered or empty).
+2. Open the requests behind a rate:
+   `GET /api/v1/management/requests?completion_outcome=truncated&api_key_id=…`.
+   `refused`, `filtered`, `empty`, `complete` and `none` (no recorded outcome)
+   work the same, in the CSV export too. The summary's `outcome_counts` count
+   every class under the filters you set.
+
+```console
+curl 'http://localhost:8000/api/v1/management/outcomes?group_by=api_key' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.groups[] | {name, settled, truncation_rate, refusal_rate}'
+```
+
+Notes: a key with 50 or more answers in 24 hours and either rate at 5 percent
+or more raises `gateway.truncation_rate` or `gateway.refusal_rate`
+([findings](FINDINGS.md#gatewaytruncation_rate)). The classes are the
+provider's own signals; text refusals ("yardımcı olamam") are counted only in
+`soft_refusal_rate`, and only when the tenant enabled the refusal analyzer; the
+`soft_refusal` request filter matches only answers it read. Details are in
+[diagnostic metadata](DIAGNOSTIC_METADATA.md#outcome-filters-counts-and-rates).
+
+## Is our model list complete?
+
+Compare the registry with what the gateway actually served.
+
+1. As an owner, admin or auditor, read
+   `GET /api/v1/management/model-inventory?start=…&end=…` (default the last 30
+   days, at most 31).
+2. `registry` items are your registered deployments with their traffic;
+   `catalog` items (`registered: false`) are models requests reached through a
+   provider's public endpoint. `byok_requests` counts requests that brought their
+   own provider key.
+
+```console
+curl 'http://localhost:8000/api/v1/management/model-inventory' \
+  -H "Authorization: Bearer $USER_TOKEN" | jq '.items[] | {route, alias, model, requests, byok_requests}'
+```
+
+Notes: once a registry exists, catalog models with 5 or more requests in 7 days
+raise `gateway.unregistered_model`, and keys sending their own provider key past
+a stored one raise `gateway.byok_usage` ([findings](FINDINGS.md)). Refused
+unknown model names and servers that never see traffic through shim are not in
+the inventory. Details are in [model deployments](MODEL_DEPLOYMENTS.md#the-inventory).
+
+## Record an incident
+
+Keep one record per incident, with its owner, its evidence and the KVKK 72-hour
+clock.
+
+1. As an owner or admin, open it with what you know, linking the requests or
+   findings involved: `POST /api/v1/compliance/incidents`. Keep personal data
+   out of the title and description; it belongs in `breach`.
+2. If personal data may have been exposed, set `is_suspected_breach: true`: the
+   `kvkk_board` row gets a deadline 72 hours after `aware_at`, and
+   `kvkk_data_subjects` a row without one. Add `gdpr_authority` with
+   `PUT .../notifications/gdpr_authority` when GDPR applies.
+3. Read `GET /api/v1/compliance/incidents/{id}`: `evidence_summary` lists the
+   entity types and KVKK categories of the linked requests.
+4. Record each stage you send:
+   `POST .../notifications/kvkk_board/submissions` with the form or case number.
+5. Move the status as work goes on, and close it at the end.
+
+```console
+curl -X POST http://localhost:8000/api/v1/compliance/incidents \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "TCKN sent to a provider", "severity_id": 4, "is_suspected_breach": true,
+       "aware_at": "2026-10-10T09:00:00Z", "links": {"request_ids": ["req_…"]}}'
+
+curl -X POST http://localhost:8000/api/v1/compliance/incidents/$INCIDENT/notifications/kvkk_board/submissions \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reference": "KVKK-2026-0042", "fields_sent": ["data_categories", "approx_subjects"]}'
+```
+
+Notes: forward targets get a reminder 24 hours before a deadline and another
+once it passes without a submission. A submission after the deadline needs
+`late_reason`. shim files nothing with a regulator, and the deadlines are for
+your counsel to confirm. Auditors read and export
+(`GET /api/v1/compliance/incidents/export`, OCSF Incident Finding). Details are
+in [incidents](INCIDENTS.md).
+
 ## Collect the monthly evidence file
 
 Hand an auditor last month's gateway evidence without generating anything by hand.
@@ -589,6 +890,9 @@ Notes:
   `python ee/scripts/generate_monthly_evidence.py --organization <uuid> --period <current YYYY-MM>`
   in the enterprise image, then downloads it with `?kind=monthly_partial`. Each
   kind and month is written once; the script refuses a second run.
+- The file is in Turkish. Section 7, "Kim neye erişti", answers who read or
+  exported evidence (audited actions by user id and current role) and which API
+  keys and teams called which models.
 - What the file contains and does not contain is in
   [decision evidence](POLICY_DECISIONS.md#monthly-evidence-file).
 
@@ -617,10 +921,20 @@ curl -X POST http://localhost:8000/api/v1/compliance/reports/readiness \
   -o iso42001_readiness.csv
 ```
 
+3. Read the gap list: every control whose status is `gap` or `partial`, gaps
+   first, each with what is missing and the next steps. A step marked "in shim"
+   points at the feature that produces the missing evidence; the others are for
+   your organization, and shim does not check the documents they produce.
+   Declare a control once your organization has done its steps.
+
 Notes: the CSV starts with the cover sentences, one per row, and a blank row;
 then come the columns `control_id`, `title`, `source` (`measured`, `input` or
-`declared`), `evidence_present`, `evidence`, `rule`, `declaration` and `note`.
-The PDF holds the same 38 rows, with text over 900 characters cut and marked
-"(truncated, see CSV)". The report is not an audit or a certification.
+`declared`), `evidence_present`, `evidence`, `rule`, `declaration`, `note`,
+`status` (`ready`, `partial` or `gap`) and `next_steps` (empty for a ready
+control, otherwise the steps joined with ` | `, each prefixed `in_shim: ` or
+`organization: `). The PDF holds the same 38 rows with a status column, then
+the gap list, with text over 900 characters cut and marked
+"(truncated, see CSV)". The report is not an audit or a certification and
+carries no score.
 Sources, rules and the numbering caveat are in
 [decision evidence](POLICY_DECISIONS.md#isoiec-42001-readiness-report).

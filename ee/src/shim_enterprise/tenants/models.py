@@ -121,6 +121,16 @@ class User(Base, TimestampMixin):
             "kind = 'human' OR role IN ('admin', 'auditor')",
             name="ck_users_service_role",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "custom_role_id"],
+            ["organization_roles.organization_id", "organization_roles.id"],
+            name="fk_users_tenant_custom_role",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "custom_role_id IS NULL OR (role = 'member' AND kind = 'human')",
+            name="ck_users_custom_role_member",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -145,6 +155,7 @@ class User(Base, TimestampMixin):
     kind: Mapped[str] = mapped_column(
         String(16), nullable=False, default="human", server_default="human"
     )
+    custom_role_id: Mapped[UUID | None] = mapped_column(SqlUUID(as_uuid=True))
 
     organization: Mapped[Organization] = relationship(back_populates="users")
     api_keys: Mapped[list[ApiKey]] = relationship(
@@ -152,6 +163,38 @@ class User(Base, TimestampMixin):
         cascade="all, delete-orphan",
         foreign_keys="[ApiKey.user_id]",
     )
+
+
+class OrganizationRole(Base, TimestampMixin):
+    """A tenant-defined permission set held by organization members."""
+
+    __tablename__ = "organization_roles"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "slug", name="uq_organization_roles_tenant_slug"
+        ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_organization_roles_tenant_id"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_roles_organization_id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    slug: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    permissions: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64))
 
 
 class ServiceAccountCredential(Base):
@@ -449,6 +492,41 @@ class OrganizationPIIConfig(Base, TimestampMixin):
     )
 
     organization: Mapped[Organization] = relationship(back_populates="pii_config")
+
+
+class OrganizationGatewaySettings(Base, TimestampMixin):
+    """Tenant gateway switches; no row means every switch at its off default."""
+
+    __tablename__ = "organization_gateway_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "revision >= 0", name="ck_organization_gateway_settings_revision"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_gateway_settings_organization_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        SqlUUID(as_uuid=True),
+        ForeignKey(
+            "users.id",
+            name="fk_organization_gateway_settings_updated_by",
+            ondelete="SET NULL",
+        ),
+    )
 
 
 class ProviderSecret(Base, TimestampMixin):

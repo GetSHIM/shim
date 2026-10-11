@@ -43,6 +43,8 @@ class ProviderNonStream:
     payload: dict[str, Any]
     request_id: str | None
     latency_ms: float | None = None
+    # Set by the provider call when the response arrives, before any restore work.
+    received_at_monotonic: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +88,13 @@ class ProviderExecutionStage:
             _observe_provider(value, "provider_error", started_at)
             raise
         if isinstance(output, ProviderNonStream):
-            return replace(output, latency_ms=(perf_counter() - started_at) * 1_000)
+            # The provider call alone: from the provider-start mark to the response arriving.
+            if provider_started_at is None or output.received_at_monotonic is None:
+                return output
+            return replace(
+                output,
+                latency_ms=(output.received_at_monotonic - provider_started_at) * 1_000,
+            )
         return replace(output, started_at_monotonic=provider_started_at)
 
     def trace_metadata(
@@ -124,7 +132,7 @@ ERROR_HINTS = {
     "INVALID_REQUEST": "Correct the request as the message says; sending it again unchanged fails again.",
     "REQUEST_TOO_LARGE": "Send a smaller request body.",
     "MODEL_NOT_FOUND": "List the available models with GET /v1/models.",
-    "MODEL_NOT_PRICED": "Use a model listed by GET /v1/models.",
+    "MODEL_NOT_PRICED": "Use a model listed by GET /v1/models. A model id is at most 200 letters, digits, '.', '_', ':' and '-'.",
     "MODEL_CONTEXT_EXCEEDED": "Shorten the input or lower the output limit; this model's context window cannot hold the request.",
     "MODEL_CAPABILITY_UNSUPPORTED": "Remove the feature the message names or use a model that supports it.",
     "PROVIDER_NOT_ALLOWED": "Use a provider your tenant policy allows, or ask an administrator to allow this one.",
@@ -133,6 +141,11 @@ ERROR_HINTS = {
     "PRIVACY_POLICY_BLOCKED": "Remove the content the privacy policy blocks, or ask an administrator to change the policy.",
     "SECRET_BLOCKED": "Remove the credential from the request; the privacy policy refuses to send it.",
     "PII_BLOCKED": "Remove the personal data the message names, or ask an administrator to change the policy.",
+    "RULE_BLOCKED": "A tenant rule blocked this request; the rule id is in X-Shim-Rule-Id. Ask the tenant admin.",
+    "APPROVAL_REQUIRED": "Ask an administrator to approve the id in X-Shim-Approval-Id, then send the same request again with that header.",
+    "APPROVAL_REJECTED": "An administrator rejected this request; change it or ask why.",
+    "APPROVAL_QUEUE_FULL": "Too many requests are waiting for approval; ask an administrator to decide them.",
+    "APPROVAL_UNAVAILABLE": "Retry later; the approval store could not be reached.",
     "PRIVACY_STATE_UNAVAILABLE": "Start a new conversation; the privacy state this one refers to is gone.",
     "PROVIDER_NOT_CONFIGURED": "Configure a provider key on the gateway or send one in x-provider-key.",
     "PROVIDER_RATE_LIMITED": "The provider's quota for your provider key is spent; wait for retry-after or raise that quota.",
@@ -141,7 +154,7 @@ ERROR_HINTS = {
     "PROVIDER_TIMEOUT": "Retry, stream the response, or ask for fewer output tokens.",
     "INTERNAL_ERROR": "Retry later, and quote X-Shim-Request-Id if it persists.",
     "MODEL_NOT_ALLOWED": "Use a model this key may call, or ask an administrator to enable it.",
-    "MODEL_NOT_REGISTERED": "Use a model registered for your tenant, listed by GET /v1/models.",
+    "MODEL_NOT_REGISTERED": "Use a model registered for your tenant, listed by GET /v1/models. A model id is at most 200 letters, digits, '.', '_', ':' and '-'.",
     "DEPLOYMENT_NOT_APPROVED": "Ask the gateway operator to approve the deployment's destination.",
     "DEPLOYMENT_UNHEALTHY": "Wait the number of seconds in Retry-After, or use another model.",
     "MODEL_PRICE_UNKNOWN": "Use a priced model, or ask an administrator to price this deployment.",

@@ -203,6 +203,8 @@ class QuotaReservationCommand:
     repeat_chain_length: int | None = None
     system_prompt_hash: str | None = None
     deployment_kind: Literal["internal", "external", "unknown"] = "unknown"
+    deployment_id: str | None = None
+    repeat_digest: str | None = None
     audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
     policy_verdicts: tuple[dict[str, Any], ...] = ()
 
@@ -271,6 +273,10 @@ class FinalizationCommand:
     provider_finish_reasons: dict[str, str] | None = None
     completion_outcome: str | None = None
     ttft_ms: float | None = None
+    provider_latency_ms: int | None = None
+    answer_characters: int | None = None
+    tool_call_names: tuple[str, ...] = ()
+    reasoning_seen: bool = False
     cached_input_tokens: int | None = None
     warnings: tuple[str, ...] = ()
     shim_latency_ms: int | None = None
@@ -357,6 +363,8 @@ class DurableAccountingRepository:
                     "repeat_chain_length": command.repeat_chain_length,
                     "system_prompt_hash": command.system_prompt_hash,
                     "deployment_kind": command.deployment_kind,
+                    "deployment_id": command.deployment_id,
+                    "repeat_digest": command.repeat_digest,
                     "audit_policy_mode": command.audit_policy_mode,
                     "policy_verdicts": list(command.policy_verdicts),
                 },
@@ -618,6 +626,17 @@ class DurableAccountingRepository:
                 "cached_input_tokens": command.cached_input_tokens,
                 "warnings": list(command.warnings),
                 "shim_latency_ms": command.shim_latency_ms,
+                # Only a settled answer carries a snapshot; refunds record none of these.
+                **(
+                    {
+                        "provider_latency_ms": command.provider_latency_ms,
+                        "answer_characters": command.answer_characters,
+                        "tool_call_names": list(command.tool_call_names),
+                        "reasoning_seen": command.reasoning_seen,
+                    }
+                    if command.quota_action is TerminalAction.SETTLE
+                    else {}
+                ),
             }
         if command.policy_verdicts is not None and not all_replayed:
             lifecycle.lifecycle_metadata = {

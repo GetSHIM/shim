@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -156,6 +157,7 @@ class OpenAIExecution:
                     result = await create(**kwargs)
                 except TypeError:
                     raise sdk_rejected_request("openai") from None
+            received_at = perf_counter()
         except asyncio.CancelledError:
             await circuit.release_probe()
             raise
@@ -233,6 +235,7 @@ class OpenAIExecution:
         return ProviderNonStream(
             payload=restored,
             request_id=getattr(result, "_request_id", None),
+            received_at_monotonic=received_at,
         )
 
     async def _responses_stream(

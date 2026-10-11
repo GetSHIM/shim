@@ -11,8 +11,14 @@ provider attempt rule are unchanged.
 | `repeat_chain_length` | Number of matching request-content observations in the configured tenant repeat window, including this request (`1` for the first observation). | `null` when the detector has no observation, including Redis unavailability. |
 | `shim_latency_ms` | Integer milliseconds spent processing inside shim, excluding provider waits and generation; measured with a monotonic clock up to the terminal accounting handoff. Includes invocation preprocessing and response transformation; excludes provider SDK awaits, raw stream awaits, client suspension and transport close. Terminal persistence after the snapshot is outside the measurement. Provider-free scans use the same snapshot boundary. | `null` when unmeasured, including historical rows and recovery after process loss; measured zero remains zero. |
 | `ttft_ms` | Floating-point milliseconds from the provider-start callback, after its durable marker commits, to the first nonempty text, refusal, thinking, code, tool arguments, or supported media content observed after restoration. Uses a monotonic clock. | `null` for JSON responses, missing start time, or streams without supported content. |
+| `provider_latency_ms` | Integer milliseconds of a JSON answer, from the instant the provider call starts (after credential resolution, circuit acquisition and the enterprise provider-start commit, the same instant a stream's clock starts) until the SDK has returned the parsed response. It covers the provider's time to first byte and generation, the transfer and the SDK's parse. It excludes shim's restoring of masked values and the Responses chain-store save, which follow it. | `null` for streams (they carry `ttft_ms`) and for rows written before it existed; not recorded for failed and rejected requests. |
+| `answer_characters` | Characters of answer text, the number `completion_outcome` reads. Over JSON: text and refusal fields, without OpenAI reasoning items or Anthropic thinking blocks, and without tool-call arguments for OpenAI chat, Responses and Anthropic. Over SSE: the same, plus the tool-call argument fragments as they arrive (Anthropic thinking and OpenAI reasoning deltas are subtracted). The same tool-calling answer therefore counts fewer characters over JSON than over SSE. Gemini is the same on both paths: every text-bearing part counts, including `thought` parts, function-call `args`, code and code output. A stream that ended early (`client_disconnected`, `timeout`, `provider_error`) records what was emitted before it ended, and so does `tool_call_names`; a ratio over `answer_characters` should keep rows with a non-null `completion_outcome` and `estimated` false. | Not recorded for failed and rejected requests. |
+| `tool_call_names` | Sorted, unique tool names the answer called, at most 64 of them. A name is kept only if it is 1 to 64 characters of `A-Za-z0-9_.:-` (what the providers allow); any other, such as a hallucinated name carrying text, is dropped, not truncated. Sources: chat `tool_calls[].function.name` and `function_call.name`; Responses output items whose type ends in `_call` (`name`, else the type, such as `web_search_call`); Anthropic `tool_use` and `server_tool_use`; Gemini `functionCall.name`. | `[]` when the answer called none; not recorded for failed and rejected requests. |
+| `reasoning_seen` | `true` when the answer carried reasoning (a Responses `reasoning` item or `response.reasoning*` event, an Anthropic `thinking` or `redacted_thinking` block, a Gemini `thought: true` part, a chat `reasoning_content` field) or reported reasoning tokens above 0 (`reasoning_tokens`, `thoughtsTokenCount`). Token-per-character ratios that include reasoning output are distorted. | `false` when none was seen; not recorded for failed and rejected requests. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
+| `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
+| `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
 first class that matches, in this order, wins, including across several choices
@@ -35,6 +41,16 @@ counted, except a provider block, which is `filtered`); community records it in 
 it in lifecycle metadata, the analytics projection, the request list and its
 CSV export.
 
+A model can also refuse in words and end normally ("Üzgünüm, bu konuda
+yardımcı olamam" with `stop`): that answer stays `complete`, because
+`completion_outcome` records native signals only and its metric and rate rules
+depend on that. The opt-in `refusal` analyzer records such answers separately,
+as `response_analysis.refusal`: `soft_refusal` and the `marker` id, never the
+text. It reads only `complete` answers, by a versioned Turkish and English
+phrase list, and is a heuristic; the
+[community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery) says
+what it looks for.
+
 The repeat count is a content-match observation, **not evidence of a retry**.
 Its existing matching algorithm selects prompt fields plus provider/model,
 sorts JSON keys, applies NFKC normalization, and collapses whitespace. The
@@ -42,14 +58,47 @@ window and any process/Redis state loss affect comparability. A denied request
 that never acquires a durable lifecycle has no diagnostic projection; its
 policy-decision event owns denial evidence.
 
+`repeat_digest` links a repeat to the request it repeats even when it arrives
+after the loop window, for example a retry after the SDK's 600-second timeout,
+which starts a new `repeat_chain_length` at 1. It is
+`HMAC-SHA256(key, "<tenant id>:<detector digest>")` with
+`key = HMAC-SHA256(COMPLIANCE_HASH_SALT or SECRET_KEY, "shim-repeat-digest-v1")`,
+so two tenants sending the same prompt get different values. The key falls back
+to `SECRET_KEY` when `COMPLIANCE_HASH_SALT` is unset. It is computed even when
+Redis is unavailable.
+
+The repeat material is the prompt-bearing fields plus the provider, protocol and
+model alias, normalized. Tools, sampling parameters and `prompt` are not in it,
+so two requests that differ only there share a value; renaming a model alias
+changes the material and breaks the link.
+
+The value carries no version prefix. After `COMPLIANCE_HASH_SALT` (or the
+`SECRET_KEY` fallback) is rotated, old and new values cannot be told apart and
+do not link.
+
+The digest is written at reservation, before privacy runs. When privacy detects
+PII, whether it is scrubbed, monitored or blocked, the same update that records
+`pii_detected` sets `repeat_digest` to `null`: a keyed hash of raw prompt text is
+still a pseudonym of the personal data in it. Requests with PII therefore cannot
+be linked as repeats. `deployment_id` is unaffected.
+
+The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
+metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
+`LOOP_WINDOW_SECONDS`.
+
+`deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
+`request_lifecycle.metadata` and not in the analytics row, the request list, its
+CSV or the audit completion. Community JSONL does not carry them.
+
 TTFT is gateway observation time, not the model's internal computation time or
 the client's first-byte time. It excludes request admission and input privacy
 processing, includes upstream wait and output restoration, and does not count
 headers, SSE comments/heartbeats, roles, empty deltas, usage, or terminal events.
 Supported media events are OpenAI audio deltas and partial images, and Gemini
 inline media. Media contributes to TTFT without being counted as text tokens.
-Customer APIs and CSV exports expose only `shim_latency_ms`, which measures
-shim processing. Legacy full-cycle `latency_ms` remains internal persisted
+Customer APIs and CSV exports expose `shim_latency_ms`, which measures
+shim processing, and `provider_latency_ms`, which measures the provider call of a
+JSON answer. Legacy full-cycle `latency_ms` remains internal persisted
 evidence, including immutable signed audit records; it is not a product latency
 metric and is not exposed in request or audit API views.
 Overview and request summaries expose `p95_completed_shim_latency_ms`, computed
@@ -118,7 +167,8 @@ A new digest is a new prompt version. `GET /api/v1/management/prompt-versions`
 (`start` and `end`, default the last 7 days, at most 31; optional `api_key_id`
 and `model`, a case-insensitive substring) by digest. Each item has
 `system_prompt_hash`, `first_seen` and `last_seen` within the window,
-`requests`, up to 10 `api_keys` and `models`, `outcomes` (the counts of each
+`requests`, up to 10 `api_keys` and `models` (a Responses request that named no
+model shows as `model not specified`), `outcomes` (the counts of each
 `completion_outcome`), `failed` (requests that ended `provider_error`,
 `timeout`, `internal_error` or `failed`) and `p95_shim_latency_ms` over completed
 requests. Requests without a digest form one item with
@@ -131,7 +181,9 @@ not `hmac-sha256:v1:` and 64 lowercase hex characters answers 422.
 
 Request fields enter `request_lifecycle.metadata` during quota reservation.
 Completion facts, TTFT and shim processing time join them in the terminal
-accounting transaction,
+accounting transaction, and so do `provider_latency_ms`, `answer_characters`,
+`tool_call_names` and `reasoning_seen` when the request settled with an answer
+(a refund writes none of the four),
 before audit/analytics outbox intent is constructed. Terminal replay preserves
 the first committed observations. Analytics delivery copies them into
 `request_logs.details` with the existing tenant/request idempotency constraint.
@@ -139,8 +191,10 @@ No table or column migration is needed for these existing JSONB fields.
 
 `GET /api/v1/management/requests` exposes the optional fields on each
 request; `/requests/export` includes the same fields in CSV (unknown values
-are empty cells, and finish-reason maps are JSON). Both expose only the shim
-latency measurement. Audit completion `extra`
+are empty cells, and finish-reason maps are JSON). `answer_characters`,
+`tool_call_names` and `reasoning_seen` stay in the lifecycle metadata only; the
+list and CSV carry `provider_latency_ms` (the column after `ttft_ms`, which shifts every
+later CSV column one place right: read the export by header name, not by position). Audit completion `extra`
 carries the same fields. Historical rows and
 old outbox messages read as null without invented backfills.
 
@@ -179,7 +233,104 @@ with `system_prompt_hash` set only when `SYSTEM_PROMPT_HASH_KEY` is configured
 (null otherwise, and for a request without system instructions). It also carries `cost_center` (the
 first valid `X-Shim-Tag` value, or `untagged`) and `tags` (the valid header
 tags); an event written before admission, such as a rejection, has
-`cost_center: null` and `tags: []`.
+`cost_center: null` and `tags: []`. Every request line also carries `ts` (the
+request's start, UTC ISO 8601 with milliseconds and `Z`), `protocol`
+(`openai_chat`, `openai_responses`, `anthropic_messages`,
+`anthropic_count_tokens`, which only rejected and failed token counts write, or
+`gemini`), `stream`, and the four answer facts above; a rejected or failed line
+has `provider_latency_ms: null`, `answer_characters: null`, `tool_call_names: []`
+and `reasoning_seen: false`.
+
+`response_analysis` holds the results of the after-answer analyzers the tenant
+turned on in its [gateway settings](COOKBOOK.md#change-the-gateway-settings),
+by analyzer name, plus `versions` (each analyzer's version), for example
+`{"shape": {...}, "versions": {"shape": "1"}}`. An analyzer that raised or
+returned anything but a JSON object is `{"error": true}`; one whose result would
+exceed 4,096 characters of compact JSON keeps its counts and digests with its
+lists as `null`, or, still too large, is `{"error": true, "reason": "too_large"}`;
+one the run's one-second budget no longer started is
+`{"error": true, "reason": "timeout"}`; one with nothing to record is left out,
+and when none recorded anything the key is absent. Results are counts,
+labels, ids, protocol field names and JSON pointers, never text from the request
+or the answer. An analyzer that reads the answer (`language`, `schema`,
+`refusal`) does not run for a request that carried personal data (any detected
+value, masked or monitored), so nothing derived from such an answer is stored;
+`shape` reads only the masked request and still runs. The pass runs only for
+completed requests, after the answer was delivered, in the same task as the response scan, and writes the key into the
+lifecycle metadata in its own short transaction; a failed write is logged by
+type and dropped. The request list reads it from the lifecycle row and the CSV
+writes it as compact JSON with sorted keys. The community JSONL writes one more
+line per request, `event: "response_analysis"`, with the same object as
+`results`. Analysis has its own worker thread with room for 64 pending
+requests; a request beyond that is not analysed and the key stays absent.
+`shim_response_analysis_total{analyzer, result}` counts each run as `ok`,
+`none`, `error` or `dropped`.
+
+`response_analysis.shape` records what a request was made of: turn, history,
+system and tool-result sizes, the tools it offered by name and in order, the
+tool calls it replayed, the order and set digests of the offered names, and
+image and document counts with the largest inline image's size. Sizes count the
+request as the provider saw it: a value of a type that masks counts as its
+placeholder, one under `monitor` or `off` as written. Tool names are stored in
+clear, which is what the switch is for, and only as 1 to 64 of
+`A-Za-z0-9_.:-` (others are counted in `tool_names_dropped`); tool definitions are never
+stored or hashed. The keys are listed in the
+[community cookbook](../../docs/COOKBOOK.md#analyse-answers-after-delivery).
+
+`response_analysis.language` labels the last user question and the answer
+`tr`, `en`, `other` or `unknown`, with `answer_mixed` and the two word counts.
+It is a heuristic for Turkish and English only and records no word or score;
+how it decides is in the same cookbook section.
+
+`response_analysis.schema` says whether the answer or each tool call matched
+the schema the request asked for: `expected`, `valid` (`null` when undecided),
+the JSON Pointer and keyword of the first failure, the tool name for a tool
+call, the unsupported keywords met, `strict` and a `reason` when it was not
+checked. It holds schema property names and indices, never a value. The subset
+and the reasons are in the community
+[cookbook](../../docs/COOKBOOK.md#check-structured-output).
+
+`rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
+matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
+when the rule's evaluation failed), blocks first and then by id, at most 32;
+`rule_matches_truncated` says whether more matched. Both are written with the
+privacy facts, so a refused request has them too. They are `[]` and `false`
+when a rule matcher ran and nothing matched, and absent when none ran: no
+rules, no rule in scope for the request, or only rules this release cannot
+run (those show as a `rule.<id>` verdict). A match is ids and counts, never the matched text. The request list and
+its CSV (compact JSON) show it, the community JSONL event carries it, and
+`GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
+rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+
+## Outcome filters, counts and rates
+
+`/requests` and `/requests/export` accept two optional filters:
+
+- `completion_outcome`: `complete`, `truncated`, `empty`, `refused`,
+  `filtered`, or `none` for a request without a recorded outcome (failed,
+  rejected and historical rows). Any other value is 422.
+- `soft_refusal`: `true` or `false`, matched against
+  `response_analysis.refusal.soft_refusal` on the request's lifecycle row. The
+  refusal analyzer writes that field only when the tenant enabled it, so an
+  answer it never read matches neither value.
+
+Both combine with every other filter, and a member still sees only their own
+keys. The list summary carries `outcome_counts` (`complete`, `truncated`,
+`empty`, `refused`, `filtered`, `none`) under the active filters; they sum to
+`requests`.
+
+`GET /api/v1/management/outcomes?start&end&group_by=model|api_key|team` (owner,
+admin, auditor; window default the last 7 days, at most 31) counts the requests
+with a `completion_outcome` per requested model, API key (with its name) or team
+(`team_id`, with its name; requests without a team are one group with a null
+`group`). Each group has `settled` and the five outcome counts,
+`truncation_rate` (truncated / settled) and `refusal_rate` ((refused + filtered
++ empty) / settled), and `analysed`, `soft_refused` and `soft_refusal_rate` for
+answers the refusal analyzer read. A rate is null when its denominator is 0.
+Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
+`totals` covers every group. The rates per API key also drive the
+[`gateway.truncation_rate` and `gateway.refusal_rate`
+findings](FINDINGS.md#gatewaytruncation_rate).
 
 ## Responses continuation markers
 
@@ -217,7 +368,7 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`), `[]` when none. It is in the lifecycle metadata at
+`CACHE_NOT_APPLIED`, `RULE_WARN`), `[]` when none. It is in the lifecycle metadata at
 finalization, the analytics row, the request list and its CSV (comma-separated),
 and the community JSONL event. `GET /api/v1/management/requests?warning=<code>`
 and the export filter on one code. Rows written before it existed read as null.

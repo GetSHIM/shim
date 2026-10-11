@@ -1,5 +1,6 @@
 """Tenant-scoped team access and identity-provider membership synchronization."""
 
+from typing import Any, TypeIs
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -8,8 +9,25 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.tenants.models import Organization, Team, TeamMembership, User
+from shim_enterprise.tenants.permissions import user_permissions
 
 ORGANIZATION_READERS = frozenset({"owner", "admin", "auditor"})
+
+
+def plausible_email(email: Any) -> TypeIs[str]:
+    """Basic syntax only: the IdP vouched for it, and on-prem domains like `.local`
+    are not globally deliverable.
+    Shared by OIDC sign-in and team invites. 320 is the `users.email` column width."""
+    if not isinstance(email, str) or len(email.casefold()) > 320:
+        return False
+    local, at, domain = email.partition("@")
+    return bool(
+        at
+        and local
+        and domain
+        and "@" not in domain
+        and all(c.isprintable() and not c.isspace() for c in email)
+    )
 
 
 def member_team_ids(user: User, *, administer: bool = False):
@@ -22,10 +40,22 @@ def member_team_ids(user: User, *, administer: bool = False):
     return statement
 
 
+async def may_hold_team_key(session: AsyncSession, owner: User, team_id: UUID) -> bool:
+    """The gateway's rule: owners and admins hold keys on any team, others on their own."""
+    return owner.role in {"owner", "admin"} or (
+        await session.scalar(
+            member_team_ids(owner).where(TeamMembership.team_id == team_id)
+        )
+        is not None
+    )
+
+
 async def require_team(
     session: AsyncSession, user: User, team_id: UUID, *, administer: bool = False
 ) -> Team:
+    permissions = await user_permissions(session, user)
     if administer:
+        # Team authority is a membership, not a permission; auditors stay read-only.
         if user.role == "auditor":
             raise HTTPException(
                 status_code=403, detail="Auditors have read-only access"
@@ -39,7 +69,7 @@ async def require_team(
     statement = select(Team).where(
         Team.organization_id == user.organization_id, Team.id == team_id
     )
-    if user.role not in ORGANIZATION_READERS:
+    if ("teams.manage" if administer else "usage.read") not in permissions:
         statement = statement.where(
             Team.id.in_(member_team_ids(user, administer=administer))
         )

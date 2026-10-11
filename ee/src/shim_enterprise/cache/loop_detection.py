@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import hashlib
 import logging
 
@@ -19,6 +20,19 @@ if ttl < 0 then
 end
 return value
 """
+
+# Carries the digest to the quota reservation in the same task without a core contract.
+_REPEAT_DIGEST: ContextVar[tuple[str, str] | None] = ContextVar(
+    "_REPEAT_DIGEST", default=None
+)
+
+
+def take_repeat_digest(organization_id: str) -> str | None:
+    stored = _REPEAT_DIGEST.get()
+    _REPEAT_DIGEST.set(None)
+    if stored is None or stored[0] != organization_id:
+        return None
+    return stored[1]
 
 
 class LoopDetectionService:
@@ -40,8 +54,10 @@ class LoopDetectionService:
         if limit < 2 or window_seconds < 1:
             raise ValueError("repeat window bounds are invalid")
         if not prompt:
+            _REPEAT_DIGEST.set(None)
             return LoopDetectionResult("SAFE", 0)
         digest = hashlib.sha256(prompt.encode()).hexdigest()
+        _REPEAT_DIGEST.set((organization_id, digest))
         key = f"loop:{organization_id}:{digest}"
         redis = self.cache.redis
         if redis is None:

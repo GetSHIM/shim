@@ -1,0 +1,2620 @@
+{
+ "format": "shim.schema.corpus",
+ "version": 1,
+ "cases": [
+  {
+   "id": "type-string-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "string"
+   },
+   "instance": "x",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-number-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "number"
+   },
+   "instance": 1.5,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-integer-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "integer"
+   },
+   "instance": 3,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-boolean-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "boolean"
+   },
+   "instance": true,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-null-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "null"
+   },
+   "instance": null,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-array-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "array"
+   },
+   "instance": [],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-object-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object"
+   },
+   "instance": {},
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-string-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "string"
+   },
+   "instance": 1,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-integer-float-whole",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "integer"
+   },
+   "instance": 1.0,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-integer-float-part",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "integer"
+   },
+   "instance": 1.5,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-integer-bool",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "integer"
+   },
+   "instance": true,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-number-bool",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "number"
+   },
+   "instance": false,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-boolean-int",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "boolean"
+   },
+   "instance": 1,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-list-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "instance": null,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-list-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "instance": 0,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "type-number-int",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "number"
+   },
+   "instance": 7,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     "a",
+     "b"
+    ]
+   },
+   "instance": "b",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     "a",
+     "b"
+    ]
+   },
+   "instance": "c",
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "enum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-int-float",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     1,
+     2
+    ]
+   },
+   "instance": 1.0,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-bool-int",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     1
+    ]
+   },
+   "instance": true,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "enum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-null",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     null,
+     "x"
+    ]
+   },
+   "instance": null,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "enum-object",
+   "dialect": "json_schema",
+   "schema": {
+    "enum": [
+     {
+      "a": 1
+     }
+    ]
+   },
+   "instance": {
+    "a": 1.0
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "const-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "const": "fixed"
+   },
+   "instance": "fixed",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "const-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "const": "fixed"
+   },
+   "instance": "other",
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "const",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "const-true-vs-1",
+   "dialect": "json_schema",
+   "schema": {
+    "const": true
+   },
+   "instance": 1,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "const",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "const-array",
+   "dialect": "json_schema",
+   "schema": {
+    "const": [
+     1,
+     "a"
+    ]
+   },
+   "instance": [
+    1,
+    "a"
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "status": "ok",
+    "count": 3,
+    "items": [
+     "a"
+    ]
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-wrong-type",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "status": "ok",
+    "count": "three",
+    "items": [
+     "a"
+    ]
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/count",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-missing",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "status": "ok",
+    "items": []
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/count",
+    "error_keyword": "required",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-extra",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "status": "ok",
+    "count": 1,
+    "items": [],
+    "secret": "x"
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/*",
+    "error_keyword": "additionalProperties",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-item-type",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "status": "ok",
+    "count": 1,
+    "items": [
+     "a",
+     2
+    ]
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/items/1",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-property-order",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "count": {
+      "type": "integer"
+     },
+     "items": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "count": "x",
+    "status": 5,
+    "items": []
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/status",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-additional-schema-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "integer"
+    }
+   },
+   "instance": {
+    "a": 1,
+    "b": 2
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-additional-schema-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "integer"
+    }
+   },
+   "instance": {
+    "a": 1,
+    "b": "x"
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/*",
+    "error_keyword": "additionalProperties",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-additional-true",
+   "dialect": "json_schema",
+   "schema": {
+    "additionalProperties": true
+   },
+   "instance": {
+    "anything": [
+     1
+    ]
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-min-properties-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "minProperties": 2
+   },
+   "instance": {
+    "a": 1,
+    "b": 2
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-min-properties-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "minProperties": 2
+   },
+   "instance": {
+    "a": 1
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "minProperties",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-max-properties-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "maxProperties": 1
+   },
+   "instance": {
+    "a": 1
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-max-properties-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "maxProperties": 1
+   },
+   "instance": {
+    "a": 1,
+    "b": 2
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "maxProperties",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-keyword-on-string",
+   "dialect": "json_schema",
+   "schema": {
+    "required": [
+     "a"
+    ],
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "instance": "not an object",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "object-nested-path",
+   "dialect": "json_schema",
+   "schema": {
+    "properties": {
+     "a": {
+      "properties": {
+       "b/c": {
+        "properties": {
+         "d~e": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "instance": {
+    "a": {
+     "b/c": {
+      "d~e": 1
+     }
+    }
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/a/b~1c/d~0e",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-items-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "items": {
+     "type": "integer"
+    }
+   },
+   "instance": [
+    1,
+    2,
+    3
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-items-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "items": {
+     "type": "integer"
+    }
+   },
+   "instance": [
+    1,
+    "2"
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "/1",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-prefix-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "prefixItems": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": [
+    "a",
+    1,
+    null
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-prefix-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "prefixItems": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": [
+    "a",
+    "b"
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "/1",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-prefix-then-items",
+   "dialect": "json_schema",
+   "schema": {
+    "prefixItems": [
+     {
+      "type": "string"
+     }
+    ],
+    "items": {
+     "type": "integer"
+    }
+   },
+   "instance": [
+    "a",
+    1,
+    "x"
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "/2",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-draft7-list-items",
+   "dialect": "json_schema",
+   "schema": {
+    "items": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": [
+    "a",
+    2,
+    {}
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-draft7-list-items-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "items": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": [
+    1
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "/0",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-min-items-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "minItems": 2
+   },
+   "instance": [
+    1,
+    2
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-min-items-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "minItems": 2
+   },
+   "instance": [
+    1
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "minItems",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-max-items-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "maxItems": 0
+   },
+   "instance": [],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-max-items-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "maxItems": 1
+   },
+   "instance": [
+    1,
+    2
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "maxItems",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-unique-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "uniqueItems": true
+   },
+   "instance": [
+    1,
+    "1",
+    true
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-unique-int-float",
+   "dialect": "json_schema",
+   "schema": {
+    "uniqueItems": true
+   },
+   "instance": [
+    1,
+    1.0
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "uniqueItems",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-unique-true-1",
+   "dialect": "json_schema",
+   "schema": {
+    "uniqueItems": true
+   },
+   "instance": [
+    true,
+    1
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-unique-objects",
+   "dialect": "json_schema",
+   "schema": {
+    "uniqueItems": true
+   },
+   "instance": [
+    {
+     "a": 1
+    },
+    {
+     "a": 1
+    }
+   ],
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "uniqueItems",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "array-unique-false",
+   "dialect": "json_schema",
+   "schema": {
+    "uniqueItems": false
+   },
+   "instance": [
+    1,
+    1
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-min-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "minLength": 3
+   },
+   "instance": "abc",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-min-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "minLength": 3
+   },
+   "instance": "ab",
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "minLength",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-max-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "maxLength": 5
+   },
+   "instance": "ışık!",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-max-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "maxLength": 4
+   },
+   "instance": "ışık!",
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "maxLength",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-emoji-code-points",
+   "dialect": "json_schema",
+   "schema": {
+    "maxLength": 2
+   },
+   "instance": "😀😀",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-turkish-length",
+   "dialect": "json_schema",
+   "schema": {
+    "minLength": 6,
+    "maxLength": 6
+   },
+   "instance": "Şişli!",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "string-length-on-number",
+   "dialect": "json_schema",
+   "schema": {
+    "maxLength": 1
+   },
+   "instance": 12345,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-minimum-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "minimum": 1
+   },
+   "instance": 1,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-minimum-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "minimum": 1
+   },
+   "instance": 0.999,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "minimum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-maximum-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "maximum": 10
+   },
+   "instance": 10,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-maximum-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "maximum": 10
+   },
+   "instance": 10.5,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "maximum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-exclusive-min-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "exclusiveMinimum": 0
+   },
+   "instance": 0,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "exclusiveMinimum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-exclusive-min-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "exclusiveMinimum": 0
+   },
+   "instance": 0.001,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-exclusive-max-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "exclusiveMaximum": 5
+   },
+   "instance": 5,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "exclusiveMaximum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-exclusive-max-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "exclusiveMaximum": 5
+   },
+   "instance": 4,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-multiple-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "multipleOf": 0.1
+   },
+   "instance": 0.3,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-multiple-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "multipleOf": 0.1
+   },
+   "instance": 0.35,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "multipleOf",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-multiple-int",
+   "dialect": "json_schema",
+   "schema": {
+    "multipleOf": 3
+   },
+   "instance": 9,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-multiple-int-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "multipleOf": 3
+   },
+   "instance": 10,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "multipleOf",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-minimum-on-string",
+   "dialect": "json_schema",
+   "schema": {
+    "minimum": 5
+   },
+   "instance": "abc",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "number-draft4-boolean-exclusive",
+   "dialect": "json_schema",
+   "schema": {
+    "maximum": 5,
+    "exclusiveMaximum": true
+   },
+   "instance": 3,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "exclusiveMaximum"
+    ]
+   }
+  },
+  {
+   "id": "allof-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "allOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "minimum": 1
+     }
+    ]
+   },
+   "instance": 2,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "allof-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "allOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "minimum": 1
+     }
+    ]
+   },
+   "instance": 0,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "minimum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "anyof-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": 3,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "anyof-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": 3.5,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "anyOf",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "anyof-unknown-branch",
+   "dialect": "json_schema",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "pattern": "^a"
+     }
+    ]
+   },
+   "instance": "abc",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "pattern"
+    ]
+   }
+  },
+  {
+   "id": "anyof-true-beats-unknown",
+   "dialect": "json_schema",
+   "schema": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "pattern": "^a"
+     }
+    ]
+   },
+   "instance": "abc",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "pattern"
+    ]
+   }
+  },
+  {
+   "id": "oneof-one",
+   "dialect": "json_schema",
+   "schema": {
+    "oneOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": "a",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "oneof-two",
+   "dialect": "json_schema",
+   "schema": {
+    "oneOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": 3,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "oneOf",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "oneof-none",
+   "dialect": "json_schema",
+   "schema": {
+    "oneOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "integer"
+     }
+    ]
+   },
+   "instance": null,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "oneOf",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "oneof-unknown",
+   "dialect": "json_schema",
+   "schema": {
+    "oneOf": [
+     {
+      "type": "string"
+     },
+     {
+      "pattern": "x"
+     }
+    ]
+   },
+   "instance": "x",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "pattern"
+    ]
+   }
+  },
+  {
+   "id": "oneof-none-and-unknown",
+   "dialect": "json_schema",
+   "schema": {
+    "oneOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "pattern": "x"
+     }
+    ]
+   },
+   "instance": "x",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "pattern"
+    ]
+   }
+  },
+  {
+   "id": "ref-defs",
+   "dialect": "json_schema",
+   "schema": {
+    "$defs": {
+     "name": {
+      "type": "string"
+     }
+    },
+    "properties": {
+     "a": {
+      "$ref": "#/$defs/name"
+     }
+    }
+   },
+   "instance": {
+    "a": 1
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/a",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-definitions",
+   "dialect": "json_schema",
+   "schema": {
+    "definitions": {
+     "n": {
+      "type": "integer"
+     }
+    },
+    "items": {
+     "$ref": "#/definitions/n"
+    }
+   },
+   "instance": [
+    1,
+    2
+   ],
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-root",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "child": {
+      "$ref": "#"
+     }
+    }
+   },
+   "instance": {
+    "child": {
+     "child": {}
+    }
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-tree-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "$defs": {
+     "node": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "type": "integer"
+       },
+       "children": {
+        "type": "array",
+        "items": {
+         "$ref": "#/$defs/node"
+        }
+       }
+      },
+      "required": [
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "$ref": "#/$defs/node"
+   },
+   "instance": {
+    "value": 1,
+    "children": [
+     {
+      "value": 2,
+      "children": []
+     },
+     {
+      "value": 3
+     }
+    ]
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-tree-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "$defs": {
+     "node": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "type": "integer"
+       },
+       "children": {
+        "type": "array",
+        "items": {
+         "$ref": "#/$defs/node"
+        }
+       }
+      },
+      "required": [
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "$ref": "#/$defs/node"
+   },
+   "instance": {
+    "value": 1,
+    "children": [
+     {
+      "value": 2
+     },
+     {
+      "value": "x"
+     }
+    ]
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/children/1/value",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-pointer-escape",
+   "dialect": "json_schema",
+   "schema": {
+    "$defs": {
+     "a/b": {
+      "type": "string"
+     }
+    },
+    "$ref": "#/$defs/a~1b"
+   },
+   "instance": "s",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-unresolved",
+   "dialect": "json_schema",
+   "schema": {
+    "$ref": "#/$defs/missing"
+   },
+   "instance": 1,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "ref-remote",
+   "dialect": "json_schema",
+   "schema": {
+    "$ref": "https://example.com/schema.json"
+   },
+   "instance": 1,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "$ref"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-pattern",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "string",
+    "pattern": "^[a-z]+$"
+   },
+   "instance": "abc",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "pattern"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-patternProperties",
+   "dialect": "json_schema",
+   "schema": {
+    "patternProperties": {
+     "^x": {
+      "type": "string"
+     }
+    }
+   },
+   "instance": {
+    "x1": "a"
+   },
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "patternProperties"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-propertyNames",
+   "dialect": "json_schema",
+   "schema": {
+    "propertyNames": {
+     "maxLength": 3
+    }
+   },
+   "instance": {
+    "abc": 1
+   },
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "propertyNames"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-not",
+   "dialect": "json_schema",
+   "schema": {
+    "not": {
+     "type": "string"
+    }
+   },
+   "instance": 1,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "not"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-if",
+   "dialect": "json_schema",
+   "schema": {
+    "if": {
+     "type": "string"
+    },
+    "then": {
+     "minLength": 1
+    }
+   },
+   "instance": "a",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "if",
+     "then"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-dependentRequired",
+   "dialect": "json_schema",
+   "schema": {
+    "dependentRequired": {
+     "a": [
+      "b"
+     ]
+    }
+   },
+   "instance": {
+    "a": 1
+   },
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "dependentRequired"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-contains",
+   "dialect": "json_schema",
+   "schema": {
+    "contains": {
+     "type": "integer"
+    }
+   },
+   "instance": [
+    1
+   ],
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "contains"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-unevaluatedProperties",
+   "dialect": "json_schema",
+   "schema": {
+    "unevaluatedProperties": false
+   },
+   "instance": {
+    "a": 1
+   },
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "unevaluatedProperties"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-dynamicRef",
+   "dialect": "json_schema",
+   "schema": {
+    "$dynamicRef": "#node"
+   },
+   "instance": {},
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "$dynamicRef"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-x-vendor",
+   "dialect": "json_schema",
+   "schema": {
+    "x-vendor": 1,
+    "type": "string"
+   },
+   "instance": "a",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "unknown"
+    ]
+   }
+  },
+  {
+   "id": "unsupported-but-invalid-first",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "string",
+    "pattern": "^a"
+   },
+   "instance": 5,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "annotations-ignored",
+   "dialect": "json_schema",
+   "schema": {
+    "title": "t",
+    "description": "d",
+    "default": 1,
+    "examples": [
+     1
+    ],
+    "$comment": "c",
+    "deprecated": true,
+    "readOnly": true,
+    "writeOnly": false,
+    "format": "email",
+    "contentEncoding": "base64",
+    "contentMediaType": "text/plain",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "urn:x",
+    "type": "string"
+   },
+   "instance": "not-an-email",
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "boolean-schema-true",
+   "dialect": "json_schema",
+   "schema": true,
+   "instance": {
+    "any": "thing"
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "boolean-schema-false",
+   "dialect": "json_schema",
+   "schema": false,
+   "instance": 1,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "false",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "bad-schema-type",
+   "dialect": "json_schema",
+   "schema": "not a schema",
+   "instance": 1,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "bad-schema-minimum-string",
+   "dialect": "json_schema",
+   "schema": {
+    "minimum": "five"
+   },
+   "instance": 3,
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "openapi-ok",
+   "dialect": "openapi",
+   "schema": {
+    "type": "OBJECT",
+    "properties": {
+     "status": {
+      "type": "STRING"
+     },
+     "count": {
+      "type": "INTEGER"
+     },
+     "items": {
+      "type": "ARRAY",
+      "items": {
+       "type": "STRING"
+      }
+     },
+     "note": {
+      "type": "STRING",
+      "nullable": true
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "propertyOrdering": [
+     "status",
+     "count",
+     "items"
+    ]
+   },
+   "instance": {
+    "status": "ok",
+    "count": 3,
+    "items": [],
+    "note": null
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "openapi-bad",
+   "dialect": "openapi",
+   "schema": {
+    "type": "OBJECT",
+    "properties": {
+     "status": {
+      "type": "STRING"
+     },
+     "count": {
+      "type": "INTEGER"
+     },
+     "items": {
+      "type": "ARRAY",
+      "items": {
+       "type": "STRING"
+      }
+     },
+     "note": {
+      "type": "STRING",
+      "nullable": true
+     }
+    },
+    "required": [
+     "status",
+     "count",
+     "items"
+    ],
+    "propertyOrdering": [
+     "status",
+     "count",
+     "items"
+    ]
+   },
+   "instance": {
+    "status": "ok",
+    "count": "three",
+    "items": []
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/count",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "openapi-nullable-off",
+   "dialect": "openapi",
+   "schema": {
+    "type": "STRING"
+   },
+   "instance": null,
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "openapi-example-ignored",
+   "dialect": "openapi",
+   "schema": {
+    "type": "INTEGER",
+    "example": 3
+   },
+   "instance": 4,
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "json-schema-uppercase-type",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "STRING"
+   },
+   "instance": "a",
+   "expect": {
+    "valid": false,
+    "error_path": "",
+    "error_keyword": "type",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "json-schema-nullable-unsupported",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "string",
+    "nullable": true
+   },
+   "instance": "a",
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": [
+     "nullable"
+    ]
+   }
+  },
+  {
+   "id": "provider-openai-strict-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "city": {
+      "type": "string"
+     },
+     "days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 14
+     },
+     "units": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "enum": [
+       "metric",
+       "imperial",
+       null
+      ]
+     }
+    },
+    "required": [
+     "city",
+     "days",
+     "units"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "city": "İzmir",
+    "days": 3,
+    "units": null
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "provider-openai-strict-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "city": {
+      "type": "string"
+     },
+     "days": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 14
+     },
+     "units": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "enum": [
+       "metric",
+       "imperial",
+       null
+      ]
+     }
+    },
+    "required": [
+     "city",
+     "days",
+     "units"
+    ],
+    "additionalProperties": false
+   },
+   "instance": {
+    "city": "İzmir",
+    "days": 30,
+    "units": "metric"
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/days",
+    "error_keyword": "maximum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "provider-anthropic-input-ok",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Search text"
+     },
+     "limit": {
+      "type": "integer",
+      "default": 5
+     }
+    },
+    "required": [
+     "query"
+    ]
+   },
+   "instance": {
+    "query": "faiz oranı"
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "provider-anthropic-input-bad",
+   "dialect": "json_schema",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Search text"
+     },
+     "limit": {
+      "type": "integer",
+      "default": 5
+     }
+    },
+    "required": [
+     "query"
+    ]
+   },
+   "instance": {
+    "limit": 5
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/query",
+    "error_keyword": "required",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "provider-gemini-ok",
+   "dialect": "openapi",
+   "schema": {
+    "type": "OBJECT",
+    "properties": {
+     "sentiment": {
+      "type": "STRING",
+      "enum": [
+       "olumlu",
+       "olumsuz",
+       "nötr"
+      ]
+     },
+     "score": {
+      "type": "NUMBER"
+     }
+    },
+    "required": [
+     "sentiment"
+    ]
+   },
+   "instance": {
+    "sentiment": "nötr",
+    "score": 0.5
+   },
+   "expect": {
+    "valid": true,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  },
+  {
+   "id": "provider-gemini-bad",
+   "dialect": "openapi",
+   "schema": {
+    "type": "OBJECT",
+    "properties": {
+     "sentiment": {
+      "type": "STRING",
+      "enum": [
+       "olumlu",
+       "olumsuz",
+       "nötr"
+      ]
+     },
+     "score": {
+      "type": "NUMBER"
+     }
+    },
+    "required": [
+     "sentiment"
+    ]
+   },
+   "instance": {
+    "sentiment": "neutral"
+   },
+   "expect": {
+    "valid": false,
+    "error_path": "/sentiment",
+    "error_keyword": "enum",
+    "unsupported": []
+   }
+  },
+  {
+   "id": "bound-depth-33",
+   "dialect": "json_schema",
+   "schema": {
+    "$ref": "#/$defs/n",
+    "$defs": {
+     "n": {
+      "type": "object",
+      "properties": {
+       "n": {
+        "$ref": "#/$defs/n"
+       }
+      }
+     }
+    }
+   },
+   "instance": {
+    "n": {
+     "n": {
+      "n": {
+       "n": {
+        "n": {
+         "n": {
+          "n": {
+           "n": {
+            "n": {
+             "n": {
+              "n": {
+               "n": {
+                "n": {
+                 "n": {
+                  "n": {
+                   "n": {
+                    "n": {
+                     "n": {
+                      "n": {
+                       "n": {
+                        "n": {
+                         "n": {
+                          "n": {
+                           "n": {
+                            "n": {
+                             "n": {
+                              "n": {
+                               "n": {
+                                "n": {
+                                 "n": {
+                                  "n": {
+                                   "n": {
+                                    "n": {}
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "expect": {
+    "valid": null,
+    "error_path": null,
+    "error_keyword": null,
+    "unsupported": []
+   }
+  }
+ ]
+}

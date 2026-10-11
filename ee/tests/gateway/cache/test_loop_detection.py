@@ -1,9 +1,13 @@
+import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shim_enterprise.cache.loop_detection import LoopDetectionService
+from shim_enterprise.cache.loop_detection import (
+    LoopDetectionService,
+    take_repeat_digest,
+)
 from shim_enterprise.cache.redis_index import CacheService
 
 
@@ -83,3 +87,62 @@ async def test_repeat_window_fails_open_on_backend_error() -> None:
 
     assert result.status == "SAFE"
     assert result.chain_length == 0
+
+
+@pytest.mark.asyncio
+async def test_the_digest_is_kept_for_its_organization_and_taken_once() -> None:
+    redis = SimpleNamespace(eval=AsyncMock(return_value=1))
+    detector = LoopDetectionService(SimpleNamespace(redis=redis))
+
+    await detector.check_exact_repeat(
+        "tenant-1", "normalized prompt", limit=4, window_seconds=300
+    )
+
+    digest = take_repeat_digest("tenant-1")
+    assert digest == hashlib.sha256(b"normalized prompt").hexdigest()
+    assert redis.eval.await_args.args[2] == f"loop:tenant-1:{digest}"
+    assert take_repeat_digest("tenant-1") is None
+
+
+@pytest.mark.asyncio
+async def test_another_organization_takes_nothing_and_still_resets() -> None:
+    detector = LoopDetectionService(
+        SimpleNamespace(redis=SimpleNamespace(eval=AsyncMock(return_value=1)))
+    )
+
+    await detector.check_exact_repeat(
+        "tenant-1", "normalized prompt", limit=4, window_seconds=300
+    )
+
+    assert take_repeat_digest("tenant-2") is None
+    assert take_repeat_digest("tenant-1") is None
+
+
+@pytest.mark.asyncio
+async def test_an_empty_prompt_keeps_no_digest() -> None:
+    detector = LoopDetectionService(
+        SimpleNamespace(redis=SimpleNamespace(eval=AsyncMock(return_value=1)))
+    )
+    await detector.check_exact_repeat(
+        "tenant-1", "earlier prompt", limit=4, window_seconds=300
+    )
+
+    await detector.check_exact_repeat("tenant-1", "", limit=4, window_seconds=300)
+
+    assert take_repeat_digest("tenant-1") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "redis", [None, SimpleNamespace(eval=AsyncMock(side_effect=ConnectionError))]
+)
+async def test_the_digest_survives_a_redis_outage(redis) -> None:
+    detector = LoopDetectionService(SimpleNamespace(redis=redis))
+
+    await detector.check_exact_repeat(
+        "tenant-1", "normalized prompt", limit=4, window_seconds=300
+    )
+
+    assert take_repeat_digest("tenant-1") == (
+        hashlib.sha256(b"normalized prompt").hexdigest()
+    )
