@@ -3634,14 +3634,291 @@
         "title": "FileSearch",
         "type": "object"
       },
+      "Finding": {
+        "description": "Evidence references, never contains, a value: title, summary and text come from rule templates.",
+        "properties": {
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/FindingEvidence"
+            },
+            "maxItems": 50,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
+            "title": "Id",
+            "type": "string"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/FindingImpact"
+          },
+          "measurements": {
+            "additionalProperties": false,
+            "maxProperties": 32,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}(?![\\s\\S])": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            },
+            "title": "Measurements",
+            "type": "object"
+          },
+          "occurrences": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurrences"
+          },
+          "playbook": {
+            "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+(?![\\s\\S])",
+            "title": "Playbook",
+            "type": "string"
+          },
+          "remediation": {
+            "$ref": "#/components/schemas/FindingRemediation"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "rule_id": {
+            "maxLength": 96,
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+(?![\\s\\S])",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "minimum": 1.0,
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "informational",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "gateway",
+              "litellm",
+              "shim-cli"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "resolved",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_detail": {
+            "anyOf": [
+              {
+                "enum": [
+                  "new",
+                  "in_progress",
+                  "suppressed",
+                  "resolved"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Detail"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/FindingSubject"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/FindingText"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/FindingWindow"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "source",
+          "rule_id",
+          "rule_version",
+          "title",
+          "summary",
+          "severity",
+          "status",
+          "status_detail",
+          "subject",
+          "window",
+          "occurrences",
+          "evidence",
+          "measurements",
+          "impact",
+          "remediation",
+          "playbook"
+        ],
+        "title": "Finding",
+        "type": "object"
+      },
+      "FindingEvidence": {
+        "properties": {
+          "id": {
+            "pattern": "^[A-Za-z0-9_.:/-]{1,200}(?![\\s\\S])",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "request",
+              "ledger_row",
+              "audit_row",
+              "finding",
+              "policy_version",
+              "cli_session"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "FindingEvidence",
+        "type": "object"
+      },
+      "FindingImpact": {
+        "properties": {
+          "requests": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests"
+          },
+          "risk_class": {
+            "anyOf": [
+              {
+                "enum": [
+                  "privacy",
+                  "cost",
+                  "reliability",
+                  "quality"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Class"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "pattern": "^\\d+(\\.\\d+)?(?![\\s\\S])",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "requests",
+          "tokens",
+          "usd",
+          "risk_class"
+        ],
+        "title": "FindingImpact",
+        "type": "object"
+      },
       "FindingPatch": {
         "properties": {
           "status": {
             "enum": [
+              "open",
+              "dismissed",
+              "resolved",
               "new",
               "in_progress",
-              "suppressed",
-              "resolved"
+              "suppressed"
             ],
             "title": "Status",
             "type": "string"
@@ -3778,6 +4055,139 @@
         "title": "FindingRead",
         "type": "object"
       },
+      "FindingRemediation": {
+        "anyOf": [
+          {
+            "properties": {
+              "max_mode": {
+                "const": "auto"
+              }
+            }
+          },
+          {
+            "properties": {
+              "max_mode": {
+                "const": "suggest"
+              },
+              "mode": {
+                "enum": [
+                  "observe",
+                  "suggest"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "mode": {
+                "const": "observe"
+              }
+            }
+          }
+        ],
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "blast_radius": {
+            "enum": [
+              "key",
+              "team",
+              "deployment",
+              "model",
+              "tenant",
+              "app"
+            ],
+            "title": "Blast Radius",
+            "type": "string"
+          },
+          "max_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Max Mode",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "proof_after": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof After"
+          },
+          "reversible": {
+            "title": "Reversible",
+            "type": "boolean"
+          },
+          "text": {
+            "$ref": "#/components/schemas/FindingText"
+          }
+        },
+        "required": [
+          "mode",
+          "max_mode",
+          "action",
+          "reversible",
+          "blast_radius",
+          "proof_after",
+          "text"
+        ],
+        "title": "FindingRemediation",
+        "type": "object"
+      },
+      "FindingSubject": {
+        "properties": {
+          "id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "key",
+              "team",
+              "deployment",
+              "model",
+              "tenant",
+              "app"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "FindingSubject",
+        "type": "object"
+      },
       "FindingSummary": {
         "properties": {
           "by_entity_type": {
@@ -3823,138 +4233,48 @@
         "title": "FindingSummary",
         "type": "object"
       },
-      "FindingView": {
+      "FindingText": {
         "properties": {
-          "evidence": {
-            "additionalProperties": true,
-            "title": "Evidence",
-            "type": "object"
-          },
-          "first_seen_at": {
-            "format": "date-time",
-            "title": "First Seen At",
+          "en": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "En",
             "type": "string"
           },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "impact": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Impact"
-          },
-          "last_seen_at": {
-            "format": "date-time",
-            "title": "Last Seen At",
-            "type": "string"
-          },
-          "occurrences": {
-            "title": "Occurrences",
-            "type": "integer"
-          },
-          "remediation": {
-            "additionalProperties": true,
-            "title": "Remediation",
-            "type": "object"
-          },
-          "resolved_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolved At"
-          },
-          "resolved_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resolved By"
-          },
-          "rule_id": {
-            "title": "Rule Id",
-            "type": "string"
-          },
-          "rule_version": {
-            "title": "Rule Version",
-            "type": "integer"
-          },
-          "severity_id": {
-            "title": "Severity Id",
-            "type": "integer"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "new",
-              "in_progress",
-              "suppressed",
-              "resolved"
-            ],
-            "readOnly": true,
-            "title": "Status",
-            "type": "string"
-          },
-          "status_id": {
-            "title": "Status Id",
-            "type": "integer"
-          },
-          "subject": {
-            "additionalProperties": true,
-            "title": "Subject",
-            "type": "object"
-          },
-          "summary": {
-            "title": "Summary",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
+          "tr": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Tr",
             "type": "string"
           }
         },
         "required": [
-          "id",
-          "source",
-          "rule_id",
-          "rule_version",
-          "subject",
-          "title",
-          "summary",
-          "severity_id",
-          "status_id",
-          "first_seen_at",
-          "last_seen_at",
-          "occurrences",
-          "evidence",
-          "impact",
-          "remediation",
-          "resolved_at",
-          "resolved_by",
-          "status"
+          "en",
+          "tr"
         ],
-        "title": "FindingView",
+        "title": "FindingText",
+        "type": "object"
+      },
+      "FindingWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "FindingWindow",
         "type": "object"
       },
       "ForwardTargetCreate": {
@@ -4582,6 +4902,103 @@
         ],
         "title": "FunctionResponseScheduling",
         "type": "string"
+      },
+      "GatewaySettings": {
+        "description": "The effective settings; a later PRD adds a field here, never a column.",
+        "properties": {
+          "response_analysis": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Response Analysis",
+            "type": "array"
+          }
+        },
+        "title": "GatewaySettings",
+        "type": "object"
+      },
+      "GatewaySettingsPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "response_analysis": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Analysis"
+          }
+        },
+        "title": "GatewaySettingsPatch",
+        "type": "object"
+      },
+      "GatewaySettingsView": {
+        "properties": {
+          "available_analyzers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Analyzers",
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/GatewaySettings"
+          },
+          "unavailable": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Per field, why it is \"off, needs X\"; empty when everything is available.",
+            "title": "Unavailable",
+            "type": "object"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "settings",
+          "revision",
+          "updated_at",
+          "updated_by",
+          "available_analyzers",
+          "unavailable"
+        ],
+        "title": "GatewaySettingsView",
+        "type": "object"
       },
       "GenerateContentRequest": {
         "additionalProperties": false,
@@ -10053,6 +10470,19 @@
             ],
             "title": "Provider Finish Reasons"
           },
+          "provider_latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "JSON answers: milliseconds from before the provider call to the parsed answer; null for streams and older rows.",
+            "title": "Provider Latency Ms"
+          },
           "repeat_chain_length": {
             "anyOf": [
               {
@@ -10069,6 +10499,19 @@
             "title": "Request Id",
             "type": "string"
           },
+          "response_analysis": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Results of the after-answer analyzers by name, with their versions; null when no analyzer ran or the pass has not finished.",
+            "title": "Response Analysis"
+          },
           "response_entities": {
             "anyOf": [
               {
@@ -10083,6 +10526,33 @@
             ],
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
+          },
+          "rule_matches": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tenant rules that matched, by id, kind, action, state and count; [] when the rule set was evaluated and nothing matched, null without rules.",
+            "title": "Rule Matches"
+          },
+          "rule_matches_truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Matches Truncated"
           },
           "shim_latency_ms": {
             "anyOf": [
@@ -10165,7 +10635,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -10451,6 +10923,291 @@
           }
         },
         "title": "RetrievalConfig",
+        "type": "object"
+      },
+      "Rule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "monitor",
+              "warn",
+              "mask",
+              "block",
+              "require_approval",
+              "set",
+              "route"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9_]{0,47}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "term",
+              "pattern",
+              "record_set",
+              "destination",
+              "request_limit",
+              "parameter_pin",
+              "route"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "match": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Match",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/RuleScope",
+            "default": {
+              "api_key_ids": [],
+              "deployment_kinds": [],
+              "endpoints": [],
+              "models": [],
+              "tags": [],
+              "team_ids": []
+            }
+          },
+          "state": {
+            "enum": [
+              "monitor",
+              "enforced"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "action",
+          "state"
+        ],
+        "title": "Rule",
+        "type": "object"
+      },
+      "RuleKindView": {
+        "properties": {
+          "actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "available",
+          "actions",
+          "unavailable_reason"
+        ],
+        "title": "RuleKindView",
+        "type": "object"
+      },
+      "RuleScope": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "deployment_kinds": {
+            "default": [],
+            "items": {
+              "enum": [
+                "internal",
+                "external"
+              ],
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Deployment Kinds",
+            "type": "array"
+          },
+          "endpoints": {
+            "default": [],
+            "items": {
+              "enum": [
+                "chat",
+                "responses",
+                "messages",
+                "count_tokens",
+                "generate_content"
+              ],
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Endpoints",
+            "type": "array"
+          },
+          "models": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Models",
+            "type": "array"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Tags",
+            "type": "array"
+          },
+          "team_ids": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Team Ids",
+            "type": "array"
+          }
+        },
+        "title": "RuleScope",
+        "type": "object"
+      },
+      "RuleSetPut": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "description": "The revision this set was read at.",
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "rules"
+        ],
+        "title": "RuleSetPut",
+        "type": "object"
+      },
+      "RuleSetView": {
+        "properties": {
+          "kinds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RuleKindView"
+            },
+            "title": "Kinds",
+            "type": "object"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "title": "Limits",
+            "type": "object"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "unavailable_rules": {
+            "description": "Stored rules this release cannot run, as stored. A PUT keeps them; an enforced one refuses the requests in its scope with RULE_BLOCKED.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Unavailable Rules",
+            "type": "array"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "revision",
+          "rules",
+          "unavailable_rules",
+          "updated_by",
+          "updated_at",
+          "limits",
+          "kinds"
+        ],
+        "title": "RuleSetView",
         "type": "object"
       },
       "RunResult": {
@@ -13645,7 +14402,7 @@
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/FindingView"
+              "$ref": "#/components/schemas/Finding"
             },
             "title": "Items",
             "type": "array"
@@ -17249,10 +18006,12 @@
               "anyOf": [
                 {
                   "enum": [
+                    "open",
+                    "dismissed",
+                    "resolved",
                     "new",
                     "in_progress",
-                    "suppressed",
-                    "resolved"
+                    "suppressed"
                   ],
                   "type": "string"
                 },
@@ -17368,10 +18127,12 @@
               "anyOf": [
                 {
                   "enum": [
+                    "open",
+                    "dismissed",
+                    "resolved",
                     "new",
                     "in_progress",
-                    "suppressed",
-                    "resolved"
+                    "suppressed"
                   ],
                   "type": "string"
                 },
@@ -17468,7 +18229,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FindingView"
+                  "$ref": "#/components/schemas/Finding"
                 }
               }
             },
@@ -17524,7 +18285,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FindingView"
+                  "$ref": "#/components/schemas/Finding"
                 }
               }
             },
@@ -17547,6 +18308,76 @@
           }
         ],
         "summary": "Update Finding",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/gateway-settings": {
+      "get": {
+        "operationId": "get_gateway_settings_api_v1_management_gateway_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewaySettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      },
+      "patch": {
+        "operationId": "update_gateway_settings_api_v1_management_gateway_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GatewaySettingsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewaySettingsView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Gateway Settings",
         "tags": [
           "management"
         ]
@@ -18933,7 +19764,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -18960,6 +19793,25 @@
                 }
               ],
               "title": "System Prompt Hash"
+            }
+          },
+          {
+            "description": "Only requests a tenant rule with this id matched.",
+            "in": "query",
+            "name": "rule_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests a tenant rule with this id matched.",
+              "title": "Rule Id"
             }
           },
           {
@@ -19251,7 +20103,9 @@
                     "CONTEXT_MAY_EXCEED",
                     "MODEL_DEPRECATED",
                     "LARGE_CONTEXT_PRICE",
-                    "CACHE_NOT_APPLIED"
+                    "CACHE_NOT_APPLIED",
+                    "RULE_WARN",
+                    "SEMANTIC_WARN"
                   ],
                   "type": "string"
                 },
@@ -19278,6 +20132,25 @@
                 }
               ],
               "title": "System Prompt Hash"
+            }
+          },
+          {
+            "description": "Only requests a tenant rule with this id matched.",
+            "in": "query",
+            "name": "rule_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_]{0,47}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests a tenant rule with this id matched.",
+              "title": "Rule Id"
             }
           },
           {
@@ -19533,6 +20406,76 @@
           }
         ],
         "summary": "Update Custom Role",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/rules": {
+      "get": {
+        "operationId": "get_rules_api_v1_management_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Rules",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "replace_rules_api_v1_management_rules_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleSetPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace Rules",
         "tags": [
           "management"
         ]
