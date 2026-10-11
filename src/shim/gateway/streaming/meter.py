@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import hashlib
 import math
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -19,7 +18,7 @@ from shim.billing.pricing import (
     ModelPrice,
     compute_cost_usd,
 )
-from shim.gateway.pipeline.analysis import AnalysisToolCall
+from shim.gateway.pipeline.analysis import TOOL_NAME, AnalysisToolCall
 from shim.gateway.streaming.sse import data_payload, pop_event
 
 
@@ -85,6 +84,7 @@ class StreamMeter:
         started_at_monotonic: float | None = None,
         monotonic_clock: Callable[[], float] = perf_counter,
         unpriced: bool = False,
+        keep_scan_text: bool = False,
         keep_answer: bool = False,
         price: ModelPrice | None = None,
     ) -> None:
@@ -104,7 +104,11 @@ class StreamMeter:
         self.cache_split: CacheSplit | None = None
         self.emitted_output_characters = 0
         self.emitted_answer_characters = 0
-        # The answer is kept only for the after-answer pass (response scan, analyzers).
+        # Kept only for the after-answer pass: every emitted fragment but reasoning for
+        # the response scan, the answer text and tool calls for analyzers that read them.
+        self.keep_scan_text = keep_scan_text
+        self.scan_text: list[str] = []
+        self._scan_text_characters = 0
         self.keep_answer = keep_answer
         self.answer_text: list[str] = []
         self.answer_truncated = False
@@ -112,6 +116,7 @@ class StreamMeter:
         # Per call: its first name, then its argument fragments.
         self._tool_calls: dict[tuple[object, ...], tuple[list[str], list[str]]] = {}
         self._tool_argument_characters = 0
+        self._tool_arguments_full = False
         self.terminal_hint: StreamTerminalHint | None = None
         self.provider_finish_reasons: dict[str, str] = {}
         self.refusal_seen = False
@@ -265,23 +270,26 @@ class StreamMeter:
         for name in facts.tool_names:
             if len(self.tool_names) < 64:
                 self.tool_names.add(name)
-        fragments = self._output_delta_fragments(payload_type, payload)
-        output_characters = sum(len(fragment) for fragment in fragments)
+        text, other = self._output_delta_fragments(payload_type, payload)
+        output_characters = sum(map(len, text)) + sum(map(len, other))
         reasoning_characters = _reasoning_characters(payload_type, payload)
         self.emitted_output_characters += output_characters
         self.emitted_answer_characters += output_characters - reasoning_characters
-        if self.keep_answer and not reasoning_characters:
-            for fragment in fragments:
-                # One character past the bound, so the response scan can still report truncation.
-                room = KEPT_ANSWER_CHARACTERS + 1 - self._answer_text_characters
-                if room <= 0:
-                    break
-                self.answer_text.append(fragment[:room])
-                self._answer_text_characters += min(len(fragment), room)
-            self.answer_truncated |= (
-                self._answer_text_characters > KEPT_ANSWER_CHARACTERS
+        if self.keep_scan_text and not reasoning_characters:
+            # One character past the bound, so the response scan can still report truncation.
+            self._scan_text_characters += _keep(
+                self.scan_text,
+                [*text, *other],
+                KEPT_ANSWER_CHARACTERS + 1 - self._scan_text_characters,
             )
         if self.keep_answer:
+            kept = _keep(
+                self.answer_text,
+                text,
+                KEPT_ANSWER_CHARACTERS - self._answer_text_characters,
+            )
+            self._answer_text_characters += kept
+            self.answer_truncated |= kept < sum(map(len, text))
             self._keep_tool_calls(payload_type, payload)
         if (
             self.ttft_ms is None
@@ -307,12 +315,13 @@ class StreamMeter:
                 call = self._tool_calls[key] = ([], [])
             if name and not call[0]:
                 call[0].append(name)
-            if fragment:
+            if fragment and not self._tool_arguments_full:
                 if (
                     self._tool_argument_characters + len(fragment)
                     > KEPT_ANSWER_CHARACTERS
                 ):
-                    self.answer_truncated = True
+                    # Nothing more is kept, so every kept call is a clean prefix.
+                    self.answer_truncated = self._tool_arguments_full = True
                     continue
                 call[1].append(fragment)
                 self._tool_argument_characters += len(fragment)
@@ -462,8 +471,11 @@ class StreamMeter:
     def _output_delta_fragments(
         event_type: str,
         payload: dict[str, Any],
-    ) -> list[str]:
-        fragments: list[str] = []
+    ) -> tuple[list[str], list[str]]:
+        """One SSE event's output: the answer text, then refusals, tool arguments and reasoning."""
+
+        text: list[str] = []
+        other: list[str] = []
         choices = payload.get("choices")
         if isinstance(choices, list):
             for choice in choices:
@@ -472,15 +484,15 @@ class StreamMeter:
                 delta = choice.get("delta")
                 if not isinstance(delta, dict):
                     continue
-                for field in ("content", "refusal"):
-                    content = delta.get(field)
-                    if isinstance(content, str):
-                        fragments.append(content)
+                if isinstance(delta.get("content"), str):
+                    text.append(delta["content"])
+                if isinstance(delta.get("refusal"), str):
+                    other.append(delta["refusal"])
                 function_call = delta.get("function_call")
                 if isinstance(function_call, dict) and isinstance(
                     function_call.get("arguments"), str
                 ):
-                    fragments.append(function_call["arguments"])
+                    other.append(function_call["arguments"])
                 tool_calls = delta.get("tool_calls")
                 if isinstance(tool_calls, list):
                     for call in tool_calls:
@@ -490,18 +502,18 @@ class StreamMeter:
                         if isinstance(function, dict) and isinstance(
                             function.get("arguments"), str
                         ):
-                            fragments.append(function["arguments"])
+                            other.append(function["arguments"])
 
         delta = payload.get("delta")
         if isinstance(delta, str) and any(
             delta_type in event_type for delta_type in _TEXT_RESPONSE_DELTA_TYPES
         ):
-            fragments.append(delta)
+            (text if "output_text" in event_type else other).append(delta)
         elif isinstance(delta, dict):
             for key in ("text", "partial_json", "arguments", "thinking", "content"):
                 value = delta.get(key)
                 if isinstance(value, str):
-                    fragments.append(value)
+                    (text if key == "text" else other).append(value)
 
         candidates = payload.get("candidates")
         if isinstance(candidates, list):
@@ -515,8 +527,13 @@ class StreamMeter:
                 if not isinstance(parts, list):
                     continue
                 for part in parts:
-                    fragments.extend(_google_content_strings(part))
-        return fragments
+                    answer = (
+                        isinstance(part, dict)
+                        and isinstance(part.get("text"), str)
+                        and part.get("thought") is not True
+                    )
+                    (text if answer else other).extend(_google_content_strings(part))
+        return text, other
 
     def _all_google_candidates_finished(self, payload: dict[str, Any]) -> bool:
         candidates = payload.get("candidates")
@@ -827,7 +844,6 @@ class AnswerFacts(NamedTuple):
     reasoning: bool
 
 
-_TOOL_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _REASONING_TYPES = frozenset(
     {"reasoning", "thinking", "redacted_thinking", "thinking_delta"}
 )
@@ -917,7 +933,7 @@ def answer_facts(payload: Mapping[str, Any], *, event_type: str = "") -> AnswerF
                 {
                     name
                     for name in called
-                    if isinstance(name, str) and _TOOL_NAME.fullmatch(name)
+                    if isinstance(name, str) and TOOL_NAME.fullmatch(name)
                 }
             )[:64]
         ),
@@ -944,6 +960,18 @@ def reasoning_seen(payload: Mapping[str, Any], *, event_type: str = "") -> bool:
 
 KEPT_ANSWER_CHARACTERS = 1_000_000
 KEPT_TOOL_CALLS = 64
+
+
+def _keep(kept: list[str], fragments: list[str], room: int) -> int:
+    """Append what fits in ``room`` characters; the characters appended."""
+
+    appended = 0
+    for fragment in fragments:
+        if appended >= room:
+            break
+        kept.append(fragment[: room - appended])
+        appended += min(len(fragment), room - appended)
+    return appended
 
 
 def _compact_json(value: object) -> str:
@@ -1037,7 +1065,7 @@ def _tool_call_fragments(
 
 
 def answer_text(payload: Mapping[str, Any]) -> str:
-    """The answer text of one JSON response for the after-answer pass; refusals are not answer text."""
+    """The answer text of one JSON response for the after-answer pass; refusals and reasoning are not."""
 
     choices = [
         message["content"]
@@ -1049,7 +1077,7 @@ def answer_text(payload: Mapping[str, Any]) -> str:
         "".join(
             part["text"]
             for part in _mappings(content.get("parts"))
-            if isinstance(part.get("text"), str)
+            if isinstance(part.get("text"), str) and part.get("thought") is not True
         )
         for candidate in _mappings(payload.get("candidates"))
         if isinstance(content := candidate.get("content"), Mapping)

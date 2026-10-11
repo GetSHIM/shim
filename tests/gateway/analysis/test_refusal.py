@@ -51,8 +51,10 @@ def test_the_result_holds_the_marker_id_only() -> None:
 
 def test_normalising_the_start() -> None:
     assert normalise("  \n> ## **“Üzgünüm”**, BU KONUDA __YARDIMCI__ OLAMAM") == (
-        'uzgunum", bu konuda yardimci olamam'
+        '"uzgunum", bu konuda yardimci olamam'
     )
+    assert normalise("“Bu konuda yardımcı olamam.”") == "bu konuda yardimci olamam."
+    assert normalise("Ｉ ｃａｎ’ｔ\n  ｈｅｌｐ") == "i can't\nhelp"
     assert normalise("I’M SORRY, BUT I CAN’T") == "i'm sorry, but i can't"
     assert normalise("İZMİR IŞIK") == "izmir isik"
     assert len(normalise("x" * 1_000)) == 400
@@ -85,30 +87,42 @@ def test_an_exception_phrase_counts_within_60_characters_after_the_match() -> No
     assert soft_refusal(after(59)) == "en.cant_help"
 
 
-def test_a_phrase_directly_after_a_quote_is_not_a_refusal() -> None:
+def test_a_phrase_after_an_open_quote_on_its_line_is_not_a_refusal() -> None:
     assert soft_refusal("He wrote: 'I can't help with that' and left.") is None
+    assert soft_refusal('He wrote: "Sorry, I can\'t help with that"') is None
     assert soft_refusal("He wrote: I can't help with that.") == "en.cant_help"
+    assert soft_refusal("That's it: I can't help with that.") == "en.cant_help"
+    assert soft_refusal('He wrote "no".\nI can\'t help with that.') == "en.cant_help"
+
+
+def test_a_phrase_is_a_whole_word_run() -> None:
+    assert soft_refusal("Bunu yapamamanız durumunda yazın.") is None
+    assert soft_refusal("Yardımcı olamam. Diyet planı için...") == "tr.yardimci_olamam"
 
 
 def test_the_first_marker_in_table_order_wins() -> None:
     assert (
         soft_refusal("I'm sorry, but I can't help with that request.") == "en.cant_help"
     )
-    assert soft_refusal("I'm sorry, but I can't do that.") == "en.sorry_but"
+    assert soft_refusal("I'm sorry, but I can't share it.") == "en.sorry_but"
 
 
-def test_the_markers_load_with_unique_ids_and_normalised_phrases() -> None:
+def test_every_phrase_alone_loads_as_its_own_marker() -> None:
     data = json.loads(
-        files("shim.gateway.analyzers").joinpath("refusal-v1.json").read_text("utf-8")
+        files("shim.gateway.analyzers")
+        .joinpath(f"refusal-v{RefusalAnalyzer.version}.json")
+        .read_text("utf-8")
     )
     ids = [marker["id"] for marker in data["markers"]]
+    phrases = [phrase for marker in data["markers"] for phrase in marker["phrases"]]
 
     assert len(ids) == len(set(ids)) and all(
         marker_id.startswith(("tr.", "en.")) for marker_id in ids
     )
+    assert len({normalise(phrase) for phrase in phrases}) == len(phrases)
     for marker in data["markers"]:
         for phrase in marker["phrases"]:
-            assert soft_refusal(phrase) == marker["id"] or soft_refusal(phrase) in ids
+            assert soft_refusal(phrase) == marker["id"], phrase
 
 
 def test_the_analyzer_is_registered_after_schema() -> None:

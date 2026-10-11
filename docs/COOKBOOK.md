@@ -452,7 +452,8 @@ record what they measured, never what was written.
 1. Set `SHIM_RESPONSE_ANALYSIS` to a comma-separated list (or a JSON list) of
    analyzer names and restart the gateway. It is empty by default, and an empty
    list keeps nothing and adds no work.
-2. Read a third JSONL line for each completed request:
+2. Read the `response_analysis` line written after each completed request's
+   `request` line (and after its `response_privacy` line when the scan is on):
 
 ```json
 {"version":4,"event":"response_analysis","request_id":"req_…","results":{"<name>":{…},"versions":{"<name>":"1"}}}
@@ -462,22 +463,37 @@ Analyzers run in the order shim defines, after the last byte of a JSON answer or
 after a stream ended, in one background task shared with
 `PII_RESPONSE_SCAN=count`; the answer, its first token and its timing are
 unchanged. They see the masked request and up to 1,000,000 characters of the
-answer and its tool calls. Results hold counts, labels, ids, protocol field
-names and JSON pointers, never request or answer text and never a restored
-value. An analyzer that fails records `{"error": true}`, and a result larger
-than 4,096 characters records `{"error": true, "reason": "too_large"}`; the
-others still run. A request that failed or was refused gets no analysis.
+answer text and its tool calls. The answer text is the same for a JSON answer
+and a stream: the text the model wrote, without refusal fields, reasoning,
+Gemini thought parts or tool-call arguments, which come as separate calls. An
+analyzer that reads the answer (`language`, `schema`, `refusal`) does not run
+for a request that carried personal data, that is any detected value, masked or
+monitored: nothing derived from such an answer is recorded. `shape` reads only
+the masked request and still runs. The answer is extracted and, for a stream,
+kept only while an analyzer that reads it runs. Results hold counts, labels,
+ids, protocol field names and JSON pointers, never request or answer text and
+never a restored value. An analyzer that fails, or returns anything but a JSON object, records
+`{"error": true}`. A result larger than 4,096 characters keeps its counts and
+digests and records its lists as `null`; one still larger records
+`{"error": true, "reason": "too_large"}`. The others still run either way. A run
+checks a one-second budget before each analyzer, and one it no longer starts
+records `{"error": true, "reason": "timeout"}`. A request that failed or was
+refused gets no analysis.
 
 Notes: an unknown name stops the gateway at start-up with the setting and the
-name in the message; a repeated name is dropped.
-`shim_response_analysis_total{analyzer, result}` counts the runs.
+name in the message; a repeated name is dropped. Analysis has a worker thread of
+its own with room for 64 pending requests; a request beyond that is not
+analysed. The response scan has its own thread and the same bound; a scan it
+cannot take writes `"response_entities": null, "error": true`.
+`shim_response_analysis_total{analyzer, result}` counts the runs as `ok`,
+`none`, `error` or `dropped`.
 
 | Analyzer | What it records |
 | --- | --- |
-| `shape` | What the request is made of, to find oversized parts, tools no one calls and tool order that defeats the provider's prompt cache. Sizes are characters of the masked request, so a detected value counts as its placeholder: `message_count`, `system_chars`, `history_chars` (turns before the last user turn, tool results included), `last_user_chars`, `largest_part_chars`, `tool_result_count`, `tool_result_chars`, `largest_tool_result_chars`, `tool_count`, `tool_definition_chars` (the compact JSON of `tools`), `tools_offered` (names in the order sent; built-in tools as `builtin:<type>`), `tools_called_in_history` (calls replayed in the request), `tools_order_digest` and `tools_set_digest` (16 hex characters of sha256 over the names in order, and sorted: the same set in a new order changes only the first), `image_count`, `document_count`, `largest_image` (`bytes`, `width`, `height` of the largest inline image, read from its header) and `truncated`. Tool names are recorded in clear; tool definitions are never stored. At most 128 tool names of 64 characters each, 20,000 parts and 64 levels of nesting are read; beyond them `truncated` is true. A request offering many long tool names can exceed the 4,096-character result bound and record `too_large`. |
-| `language` | Whether the last user question and the answer are Turkish or English, to spot a Turkish question answered in English: `request` and `answer`, each `tr`, `en`, `other` or `unknown`, `answer_mixed`, and `request_words` and `answer_words`. A word and letter heuristic, no model: Turkish letters (`ğ`, `ı`, `ş` count most) and about 200 Turkish and 180 English function words, matched with and without Turkish letters, so `cok guzel, yardim eder misin` is Turkish. Code blocks, inline code, URLs, e-mail addresses and placeholders are removed first and the first 4,000 characters read. Fewer than 3 words or 12 letters is `unknown`; text mostly in other scripts, or in another Latin language, is `other`. The answer is `unknown` when the request asked for JSON output or the answer has no text. It knows Turkish and English only: Azerbaijani can read as Turkish, and two Turkish names in a short English sentence can mark it mixed. |
+| `shape` | What the request is made of, to find oversized parts, tools no one calls and tool order that defeats the provider's prompt cache. Sizes are characters of the request as the provider saw it: where an entity type masks, a detected value counts as its placeholder; under `monitor` or `off` the value counts as written. `message_count`, `system_chars`, `history_chars` (every turn before the final one, tool results included, so an agent loop measures the same in every protocol), `last_user_chars`, `largest_part_chars`, `tool_result_count`, `tool_result_chars`, `largest_tool_result_chars`, `tool_count`, `tool_definition_chars` (the compact JSON of `tools`), `tools_offered` (names in the order sent; built-in tools as `builtin:<type>`; a name is kept only as 1 to 64 of `A-Za-z0-9_.:-`, others are dropped and counted in `tool_names_dropped`), `tools_called_in_history` (calls replayed in the request), `tools_order_digest` and `tools_set_digest` (16 hex characters of sha256 over the names in order, and sorted: the same set in a new order changes only the first), `image_count`, `document_count` (images and documents inside tool results too; a text document's characters count as text), `largest_image` (`bytes`, `width`, `height` of the largest inline image, read from its header; a data URL that is not base64 counts its characters) and `truncated`. Tool names are recorded in clear; tool definitions are never stored. At most 128 tool names, 20,000 parts and 64 levels of nesting are read; beyond them `truncated` is true. A request offering many long tool names can exceed the 4,096-character result bound; then `tools_offered` and `tools_called_in_history` are `null` and the counts and digests stay. |
+| `language` | Whether the last user question and the answer are Turkish or English, to spot a Turkish question answered in English: `request` and `answer`, each `tr`, `en`, `other` or `unknown`, `answer_mixed`, and `request_words` and `answer_words`. A word and letter heuristic, no model: Turkish letters (`ğ`, `ı`, `ş` count most) and about 200 Turkish and 180 English function words, matched with and without Turkish letters, so `cok guzel, yardim eder misin` is Turkish. The first 4,000 characters are read, without code blocks, inline code, URLs, e-mail addresses and placeholders. Fewer than 3 words or 12 letters is `unknown`; text mostly in other scripts, or in another Latin language, is `other`. English needs at least 2 English function words and at least a fifth of the words, so a long Dutch or Italian text with a few English-looking words stays `other`; Turkish needs a Turkish letter or 2 Turkish function words. When only one side qualifies, that side is the label; when both do, the larger, mixed when the smaller scores at least 0.3 of it. The answer is `unknown` when the request asked for JSON output or the answer has no text. It knows Turkish and English only: Azerbaijani can read as Turkish, two Turkish names in a short English sentence can mark it mixed, and a short ASCII-typed Turkish sentence with no listed word (`Hesabima neden para yatmadi bilmiyorum`) is `other`. |
 | `schema` | Whether the answer, or each tool call, matches the schema the request asked for; see [Check structured output](#check-structured-output). |
-| `refusal` | Whether a complete answer refuses in words, for answers a provider ended normally: `soft_refusal` and the `marker` id (`tr.yardimci_olamam`, `en.cant_help`, ...). It reads the first 200 characters of answers up to 1,500 characters, Turkish with or without its letters, for seven groups of phrases (`yardımcı olamam`, `bu isteği yerine getiremem`, `I can't help with`, `I'm sorry, but I can't`, ...). A phrase right after a quote mark, or followed within 60 characters by `but here`, `instead`, `ama şu`, `bunun yerine`, `diye` or a similar exception, does not count, so a quoted refusal or a partial answer is not one. It runs only when `completion_outcome` is `complete`; a provider's own refusal stays `refused` there, and this result never changes that field. |
+| `refusal` | Whether a complete answer refuses in words, for answers a provider ended normally: `soft_refusal` and the `marker` id (`tr.yardimci_olamam`, `en.cant_help`, ...). It reads the first 200 characters of answers up to 1,500 characters, Turkish with or without its letters, for seven groups of phrases (`yardımcı olamam`, `bu isteği yerine getiremem`, `I can't help with`, `I'm sorry, but I can't`, ...). A phrase counts only as whole words (`yapamamanız` is not `yapamam`). It does not count after an open quote on its line (an odd number of `"` or of `'` that are not apostrophes), when followed within 60 characters by `but here`, `so here`, `instead`, `bunun yerine` or `ama`/`ancak` with an offer (`şu`, `şunu`, `şunları`), or when reported speech follows it directly (`diye`, `dedi`, `dediğim`), so a quoted refusal or a partial answer is not one. A refusal discussed without quote marks is still counted: a known gap. It runs only when `completion_outcome` is `complete`; a provider's own refusal stays `refused` there, and this result never changes that field. |
 
 ## Check structured output
 
@@ -496,11 +512,14 @@ including on providers and local models that do not enforce it.
 What is read: OpenAI `response_format` and Responses `text.format`
 (`json_schema` or `json_object`), Anthropic `output_config.format` and
 `output_format`, Gemini `responseJsonSchema`, `responseSchema` (OpenAPI types)
-and `responseMimeType: application/json`, and each offered tool's parameters.
-With tool calls in the answer, every call is checked against its tool; a call
-to a tool that was not offered is `unknown_tool`, a built-in tool's call is
-skipped. A detected value inside the schema (an `enum` of e-mail addresses) is
-restored before the check, as the answer was.
+and `responseMimeType: application/json` (another type, such as `text/x.enum`,
+is not JSON and is not checked), and each offered tool's parameters, Chat's
+legacy `functions` included. With tool calls in the answer, every call is
+checked against its tool; a call to a tool that was not offered is
+`unknown_tool`, with `error_tool` set only when the name is one a provider
+would accept, and a built-in tool's call is skipped. A detected value inside an
+`enum` or `const` (e-mail addresses) is restored before the check, as the
+answer was; property names and `required` entries stay masked.
 
 shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
 `const`, `properties`, `required`, `additionalProperties`, `minProperties`,
@@ -508,7 +527,8 @@ shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
 `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
 `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf` and `$ref` within
 the document. Any other keyword, `pattern` included, is listed in
-`unsupported_keywords` and makes `valid` `null` instead of guessing; `pattern`
+`unsupported_keywords` (a keyword outside JSON Schema's own vocabulary is
+listed as `unknown`, so no schema text is recorded) and makes `valid` `null` instead of guessing; `pattern`
 is never run, so a tenant's expression cannot stall the gateway. `valid` is
 `null` with a `reason` when the answer was truncated (`truncated`), refused,
 filtered or empty, when the answer or the schema is too large (`too_large`),

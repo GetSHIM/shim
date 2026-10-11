@@ -1132,7 +1132,7 @@ def test_a_plain_stream_snapshot_has_no_names_and_no_reasoning() -> None:
                     },
                 ]
             },
-            "thoughtone\ntwo",
+            "one\ntwo",
             (AnalysisToolCall("lookup", '{"a":1}'),),
         ),
     ],
@@ -1190,7 +1190,7 @@ def test_a_kept_chat_stream_has_its_text_and_parallel_calls_by_index() -> None:
         call(0, arguments=":1}"),
     )
 
-    assert "".join(stream_meter.answer_text) == 'hello{"x"{"a":2}:1}'
+    assert "".join(stream_meter.answer_text) == "hello"
     assert stream_meter.kept_tool_calls() == (
         AnalysisToolCall("lookup", '{"a":1}'),
         AnalysisToolCall("book", '{"x":2}'),
@@ -1307,6 +1307,175 @@ def test_a_kept_gemini_stream_keeps_whole_calls() -> None:
     )
 
 
+def test_a_kept_gemini_stream_leaves_out_thought_parts() -> None:
+    stream_meter = _kept(
+        "google",
+        {"candidates": [{"content": {"parts": [{"text": "plan", "thought": True}]}}]},
+        {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]},
+    )
+
+    assert "".join(stream_meter.answer_text) == "answer"
+
+
+_PARITY = [
+    (
+        "openai",
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "hello",
+                        "refusal": None,
+                        "tool_calls": [
+                            {"function": {"name": "lookup", "arguments": '{"a":1}'}}
+                        ],
+                    }
+                }
+            ]
+        },
+        [
+            {"choices": [{"delta": {"content": "hel"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"a":1}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "lo"}}]},
+        ],
+    ),
+    (
+        "openai",
+        {
+            "output": [
+                {"type": "reasoning", "summary": [{"text": "plan"}]},
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "hello"}],
+                },
+                {"type": "function_call", "name": "lookup", "arguments": '{"a":1}'},
+            ]
+        },
+        [
+            {"type": "response.reasoning_summary_text.delta", "delta": "plan"},
+            {"type": "response.output_text.delta", "output_index": 1, "delta": "hello"},
+            {
+                "type": "response.output_item.added",
+                "output_index": 2,
+                "item": {"type": "function_call", "name": "lookup", "arguments": ""},
+            },
+            {
+                "type": "response.function_call_arguments.delta",
+                "output_index": 2,
+                "delta": '{"a":1}',
+            },
+        ],
+    ),
+    (
+        "anthropic",
+        {
+            "content": [
+                {"type": "thinking", "thinking": "plan"},
+                {"type": "text", "text": "hello"},
+                {"type": "tool_use", "name": "lookup", "input": {"a": 1}},
+            ]
+        },
+        [
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "plan"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "hello"},
+            },
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {"type": "tool_use", "name": "lookup", "input": {}},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": '{"a":1}'},
+            },
+        ],
+    ),
+    (
+        "google",
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "plan", "thought": True},
+                            {"text": "hello"},
+                            {"functionCall": {"name": "lookup", "args": {"a": 1}}},
+                        ]
+                    }
+                }
+            ]
+        },
+        [
+            {
+                "candidates": [
+                    {"content": {"parts": [{"text": "plan", "thought": True}]}}
+                ]
+            },
+            {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]},
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "lookup", "args": {"a": 1}}}
+                            ]
+                        }
+                    }
+                ]
+            },
+        ],
+    ),
+]
+
+
+@pytest.mark.parametrize(("provider", "payload", "events"), _PARITY)
+def test_a_stream_keeps_the_same_answer_text_and_calls_as_its_json_answer(
+    provider, payload, events
+) -> None:
+    stream_meter = _kept(provider, *events)
+
+    assert "".join(stream_meter.answer_text) == answer_text(payload) == "hello"
+    assert stream_meter.kept_tool_calls() == answer_tool_calls(payload)
+
+
+def test_the_scan_keeps_every_emitted_fragment_and_tracks_no_tool_calls() -> None:
+    stream_meter = StreamMeter(
+        provider="openai",
+        requested_model="gpt-5.6-luna",
+        prompt_tokens_estimated=5,
+        keep_scan_text=True,
+    )
+    stream_meter.observe_sse(_sse(*_PARITY[0][2]))
+
+    assert "".join(stream_meter.scan_text) == 'hel{"a":1}lo'
+    assert stream_meter.answer_text == []
+    assert stream_meter.kept_tool_calls() == ()
+
+
 def test_kept_calls_and_arguments_are_bounded() -> None:
     many = _kept(
         "openai",
@@ -1360,15 +1529,48 @@ def test_kept_calls_and_arguments_are_bounded() -> None:
     )
 
 
-def test_kept_text_is_bounded_with_one_character_for_the_scan() -> None:
+def test_kept_arguments_stop_at_the_first_overflow_and_never_have_holes() -> None:
+    def arguments(index: int, text: str, name: str | None = None) -> dict:
+        function = {"arguments": text} | ({"name": name} if name else {})
+        return {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": index, "function": function}]}}
+            ]
+        }
+
     stream_meter = _kept(
         "openai",
-        {"choices": [{"delta": {"content": "a" * 999_999}}]},
-        {"choices": [{"delta": {"content": "bbb"}}]},
+        arguments(0, "x" * 600_000, "first"),
+        arguments(0, "y" * 600_000),
+        arguments(0, "z"),
+        arguments(1, "w", "second"),
     )
 
-    assert len("".join(stream_meter.answer_text)) == 1_000_001
+    assert stream_meter.kept_tool_calls() == (
+        AnalysisToolCall("first", "x" * 600_000),
+        AnalysisToolCall("second", ""),
+    )
     assert stream_meter.answer_truncated is True
+
+
+def test_kept_text_is_bounded_with_one_character_more_for_the_scan() -> None:
+    stream_meter = StreamMeter(
+        provider="openai",
+        requested_model="gpt-5.6-luna",
+        prompt_tokens_estimated=5,
+        keep_scan_text=True,
+        keep_answer=True,
+    )
+    stream_meter.observe_sse(
+        _sse(
+            {"choices": [{"delta": {"content": "a" * 999_999}}]},
+            {"choices": [{"delta": {"content": "bbb"}}]},
+        )
+    )
+
+    assert len("".join(stream_meter.answer_text)) == 1_000_000
+    assert stream_meter.answer_truncated is True
+    assert len("".join(stream_meter.scan_text)) == 1_000_001
 
 
 def test_nothing_is_kept_without_keep_answer() -> None:
@@ -1393,5 +1595,5 @@ def test_nothing_is_kept_without_keep_answer() -> None:
         )
     )
 
-    assert stream_meter.answer_text == []
+    assert stream_meter.answer_text == stream_meter.scan_text == []
     assert stream_meter.kept_tool_calls() == ()

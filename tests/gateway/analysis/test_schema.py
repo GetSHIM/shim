@@ -446,6 +446,140 @@ def test_language_still_labels_json_answers_unknown() -> None:
     assert result["answer"] == "unknown"
 
 
+def test_only_enum_and_const_strings_are_restored() -> None:
+    masked = "<PERSON_aaaaaaaa>"
+    payload = {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        masked: {"type": "string"},
+                        "contact": {"const": masked},
+                    },
+                    "required": [masked],
+                }
+            },
+        }
+    }
+
+    result = SchemaAnalyzer().analyze(
+        _context(
+            payload,
+            answer='{"contact":"Alice Real"}',
+            restore=lambda text: text.replace(masked, "Alice Real"),
+        )
+    )
+
+    assert (result["valid"], result["error_keyword"]) == (False, "required")
+    assert result["error_path"] == "/" + masked
+    assert "Alice" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    ("name", "recorded"),
+    [("missing", "missing"), ("alice@example.com 4111 1111 1111 1111", None)],
+)
+def test_an_unknown_tool_is_named_only_when_providers_would_allow_the_name(
+    name, recorded
+) -> None:
+    result = SchemaAnalyzer().analyze(
+        _context(_TOOLS, answer="", calls=(AnalysisToolCall(name, OK),))
+    )
+
+    assert (result["error_keyword"], result["error_tool"]) == ("unknown_tool", recorded)
+
+
+def test_a_gemini_enum_or_text_answer_is_not_read_as_json() -> None:
+    payload = {
+        "generationConfig": {
+            "responseMimeType": "text/x.enum",
+            "responseSchema": {"type": "STRING", "enum": ["POSITIVE", "NEGATIVE"]},
+        }
+    }
+
+    result = SchemaAnalyzer().analyze(_context(payload, "generate_content", "POSITIVE"))
+
+    assert requested_output(payload, "generate_content") is None
+    assert (result["expected"], result["valid"]) == ("none", None)
+
+
+def test_legacy_functions_are_offered_tools() -> None:
+    payload = {"functions": [{"name": "lookup", "parameters": SCHEMA}]}
+
+    result = SchemaAnalyzer().analyze(
+        _context(payload, answer="", calls=(AnalysisToolCall("lookup", WRONG),))
+    )
+
+    assert (result["valid"], result["error_path"]) == (False, "/tool_calls/0/count")
+    odd = SchemaAnalyzer().analyze(
+        _context(
+            {"functions": 5}, answer="", calls=(AnalysisToolCall("lookup", WRONG),)
+        )
+    )
+    assert odd["error_keyword"] == "unknown_tool"
+
+
+def test_a_stream_call_without_a_name_is_not_checked() -> None:
+    payload = {"tools": [{"type": "custom", "custom": {"name": "grammar"}}]}
+
+    result = SchemaAnalyzer().analyze(
+        _context(payload, answer="", calls=(AnalysisToolCall("", "raw text"),))
+    )
+
+    assert (result["valid"], result["error_keyword"]) == (None, None)
+
+
+def test_strict_is_reported_on_a_failing_tool_call() -> None:
+    def run(arguments: str) -> dict:
+        return SchemaAnalyzer().analyze(
+            _context(_TOOLS, answer="", calls=(AnalysisToolCall("lookup", arguments),))
+        )
+
+    assert run(WRONG)["strict"] is True
+    assert run('{"status"')["strict"] is True
+
+
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+def test_null_parameters_are_an_empty_schema(protocol) -> None:
+    tool = (
+        {"type": "function", "function": {"name": "ping", "parameters": None}}
+        if protocol == "chat"
+        else {"type": "function", "name": "ping", "parameters": None}
+    )
+
+    result = SchemaAnalyzer().analyze(
+        _context(
+            {"tools": [tool]}, protocol, "", calls=(AnalysisToolCall("ping", "{}"),)
+        )
+    )
+
+    assert (result["valid"], result["reason"]) == (True, None)
+
+
+def test_a_degenerate_answer_or_schema_never_raises() -> None:
+    deep_schema: dict = {"type": "string"}
+    for _ in range(5_000):
+        deep_schema = {"anyOf": [deep_schema]}
+
+    answer = SchemaAnalyzer().analyze(_context(_chat_schema(), answer="[" * 100_000))
+    schema = SchemaAnalyzer().analyze(
+        _context(
+            {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"schema": deep_schema},
+                }
+            },
+            answer='"x"',
+        )
+    )
+
+    assert (answer["valid"], answer["error_keyword"]) == (False, "parse")
+    assert (schema["valid"], schema["reason"]) == (None, "depth")
+
+
 def test_the_analyzer_is_registered_after_language() -> None:
     names = [analyzer.name for analyzer in ANALYZERS]
 

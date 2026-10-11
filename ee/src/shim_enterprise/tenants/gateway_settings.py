@@ -13,7 +13,7 @@ from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 logger = logging.getLogger(__name__)
 
 Direction = Literal["tightening", "relaxing", "neutral"]
-_logged_unknown_keys: set[str] = set()
+_logged_unknown: set[tuple[str, str]] = set()
 
 
 def _known_analyzers(value: list[str]) -> list[str]:
@@ -59,12 +59,28 @@ class GatewaySettingsPatch(BaseModel):
 
 
 def stored_settings(value: Mapping[str, Any]) -> GatewaySettings:
-    """Read a stored row; a key this build does not know is ignored, an invalid value raises."""
+    """Read a stored row as this build knows it; a value of the wrong shape raises.
 
-    for key in sorted(set(value) - set(GatewaySettings.model_fields)):
-        if key not in _logged_unknown_keys:
-            _logged_unknown_keys.add(key)
-            logger.warning("Unknown stored gateway setting ignored name=%s", key)
+    A key, or an analyzer name, that only another build knows is left out and logged
+    once, so rolling back to an older build keeps every tenant working.
+    """
+
+    unknown = {("key", key) for key in set(value) - set(GatewaySettings.model_fields)}
+    names = value.get("response_analysis")
+    if isinstance(names, list):
+        retired = {
+            name
+            for name in names
+            if isinstance(name, str) and name not in ANALYZER_NAMES
+        }
+        unknown |= {("analyzer", name) for name in retired}
+        value = {
+            **value,
+            "response_analysis": [name for name in names if name not in retired],
+        }
+    for kind, name in sorted(unknown - _logged_unknown):
+        _logged_unknown.add((kind, name))
+        logger.warning("Unknown stored gateway %s ignored name=%s", kind, name)
     return GatewaySettings.model_validate(value)
 
 

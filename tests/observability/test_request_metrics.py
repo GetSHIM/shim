@@ -136,6 +136,7 @@ def _stream_prepared() -> SimpleNamespace:
         payload={},
         response_scan="off",
         response_analysis=(),
+        privacy=None,
         request_id="req_metrics",
         warnings=[],
         timing=InferenceTiming(),

@@ -156,8 +156,7 @@
       "id": "tr-26",
       "text": "musteri temsilcisine baglanmak istiyorum lutfen",
       "expect": "tr",
-      "mixed": false,
-      "known_gap": "ASCII-folded Turkish with one function word and no Turkish letter does not qualify."
+      "mixed": false
     },
     {
       "id": "tr-27",
@@ -703,6 +702,122 @@
       "text": "👍 👍",
       "expect": "unknown",
       "mixed": false
+    },
+    {
+      "id": "tr-41",
+      "text": "Sifremi unuttum ne yapmaliyim",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-42",
+      "text": "Kargo ne zaman gelir",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-43",
+      "text": "Faturami odemek istiyorum nasil yapabilirim",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-44",
+      "text": "Merhaba, kredi karti basvurumun durumunu ogrenmek istiyorum. Ne zaman sonuclanir?",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-held-01",
+      "text": "Hesabima neden para yatmadi bilmiyorum",
+      "expect": "tr",
+      "mixed": false,
+      "known_gap": "ASCII-typed Turkish with no listed word or Turkish letter; held out, written before the lists were extended."
+    },
+    {
+      "id": "tr-held-02",
+      "text": "Kartim kayboldu hemen iptal etmek istiyorum",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-held-03",
+      "text": "Bu ay faturam neden bu kadar yuksek geldi",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-held-04",
+      "text": "Siparisimi iptal edebilir misiniz lutfen",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "tr-held-05",
+      "text": "Uygulamaya giris yapamiyorum sifre hatasi veriyor",
+      "expect": "tr",
+      "mixed": false,
+      "known_gap": "ASCII-typed Turkish with no listed word or Turkish letter; held out, written before the lists were extended."
+    },
+    {
+      "id": "tr-held-06",
+      "text": "Kredi kartimin limitini artirmak icin ne yapmaliyim",
+      "expect": "tr",
+      "mixed": false
+    },
+    {
+      "id": "en-41",
+      "text": "Thanks for reaching out. We have received your request and one of our specialists is reviewing it now. You will get an answer by email within two working days, and you can follow the status of the case in your account at any time. If anything is unclear in the meantime, just reply to this message and we will be happy to help.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "en-42",
+      "text": "Run the migration first, then restart the worker so that it picks up the new schema; otherwise the queue will keep the old jobs until they expire.",
+      "expect": "en",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-11",
+      "text": "Wir müssen für die Prüfung lernen, weil in der Schule so viele Übungen möglich sind",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-12",
+      "text": "Wir haben Ihre Anfrage erhalten und werden sie so schnell wie möglich bearbeiten. In der Zwischenzeit können Sie den Status Ihrer Bestellung jederzeit in Ihrem Kundenkonto einsehen. Falls Sie weitere Fragen haben, wenden Sie sich bitte an unseren Kundendienst, der Ihnen gerne weiterhilft. Wir danken Ihnen für Ihre Geduld und Ihr Vertrauen in unser Unternehmen und wünschen Ihnen einen schönen Tag.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-13",
+      "text": "Bedankt voor uw bericht. Wij hebben uw aanvraag in goede orde ontvangen en een van onze medewerkers neemt zo snel mogelijk contact met u op. Het kan zijn dat wij aanvullende informatie nodig hebben om uw vraag te beantwoorden. In dat geval sturen wij u een e-mail met een overzicht van de documenten die wij nog missen. Wij streven ernaar om binnen vijf werkdagen te reageren.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-14",
+      "text": "Gentile cliente, la ringraziamo per averci contattato. Abbiamo ricevuto la sua richiesta e la stiamo esaminando con attenzione. Il nostro team di assistenza la contatterà entro due giorni lavorativi per fornirle tutte le informazioni necessarie. Nel frattempo, può controllare lo stato della sua pratica accedendo alla sua area personale sul nostro sito. Per qualsiasi altra domanda non esiti a scriverci.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-15",
+      "text": "Olá, obrigado pelo seu contato. Recebemos o seu pedido e ele está sendo analisado pela nossa equipe. Assim que tivermos uma resposta, enviaremos uma mensagem para o endereço de e-mail cadastrado na sua conta. Caso precise de ajuda urgente, você pode ligar para a nossa central de atendimento, que funciona todos os dias do ano, das oito da manhã às dez da noite.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "other-latin-16",
+      "text": "Bonjour, nous avons bien reçu votre demande et nous vous remercions de votre confiance. Un conseiller va étudier votre dossier dans les plus brefs délais et vous recontactera par téléphone ou par courriel. En attendant, vous pouvez suivre l'avancement de votre demande depuis votre espace client. N'hésitez pas à nous contacter si vous avez d'autres questions.",
+      "expect": "other",
+      "mixed": false
+    },
+    {
+      "id": "mixed-11",
+      "text": "Müşteri şikayetini aldım, but I need more details about the order before I can reply.",
+      "expect": "en",
+      "mixed": true
     }
   ]
 }

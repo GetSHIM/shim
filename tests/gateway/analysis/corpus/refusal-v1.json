@@ -205,7 +205,7 @@
   {
    "id": "en-16",
    "text": "I'm sorry, but I can't do that.",
-   "expect": "en.sorry_but"
+   "expect": "en.cant_comply"
   },
   {
    "id": "en-17",
@@ -230,7 +230,7 @@
   {
    "id": "en-21",
    "text": "I'M SORRY, BUT I CAN'T DO THAT.",
-   "expect": "en.sorry_but"
+   "expect": "en.cant_comply"
   },
   {
    "id": "en-22",
@@ -445,12 +445,121 @@
   {
    "id": "negative-39",
    "text": "def refuse():\n    return \"I'm sorry, but I can't\"\n",
-   "expect": null,
-   "known_gap": "A shorter phrase inside a quoted refusal is not directly preceded by the quote."
+   "expect": null
   },
   {
    "id": "negative-40",
    "text": "Okay.",
+   "expect": null
+  },
+  {
+   "id": "tr-26",
+   "text": "Üzgünüm, bu konuda yardımcı olamam. Diyet planı için bir diyetisyene danışmanızı öneririm.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-27",
+   "text": "Yardımcı olamam. Bunu dediğim için üzgünüm.",
+   "expect": "tr.yardimci_olamam"
+  },
+  {
+   "id": "tr-28",
+   "text": "Bunu yapamıyorum, üzgünüm.",
+   "expect": "tr.yapamam"
+  },
+  {
+   "id": "tr-29",
+   "text": "Maalesef bu isteği yerine getiremiyorum.",
+   "expect": "tr.yerine_getiremem"
+  },
+  {
+   "id": "tr-30",
+   "text": "Üzgünüm, bu bilgiyi paylaşamıyorum.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "tr-31",
+   "text": "Bu konuda bilgi veremiyorum.",
+   "expect": "tr.veremem"
+  },
+  {
+   "id": "en-26",
+   "text": "I can't help you with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-27",
+   "text": "I'm unable to assist with this request.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-28",
+   "text": "I'm not able to assist with that.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-29",
+   "text": "Sorry, I can't help.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "en-30",
+   "text": "I won't help with that.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-31",
+   "text": "I can't fulfill that request.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-32",
+   "text": "I can't do that.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-33",
+   "text": "I must decline this request.",
+   "expect": "en.cant_comply"
+  },
+  {
+   "id": "en-34",
+   "text": "I can't help with that. Here is why: the request asks for someone's password.",
+   "expect": "en.cant_help"
+  },
+  {
+   "id": "negative-41",
+   "text": "Bunu yapamamanız durumunda destek ekibine yazın.",
+   "expect": null
+  },
+  {
+   "id": "negative-42",
+   "text": "Eğer bunu yapamamışsanız, ayarlar sayfasından tekrar deneyin.",
+   "expect": null
+  },
+  {
+   "id": "negative-43",
+   "text": "msg = \"Sorry, I can't help with that\"",
+   "expect": null
+  },
+  {
+   "id": "negative-44",
+   "text": "Müşteriye “Üzgünüm, bu konuda yardımcı olamam” yazılmış; bu şablonu değiştirelim.",
+   "expect": null
+  },
+  {
+   "id": "negative-45",
+   "text": "I can't provide that much detail, but roughly 40% of users leave in the first month.",
+   "expect": null
+  },
+  {
+   "id": "negative-46",
+   "text": "Bu konuda yardımcı olamam ama şunu önerebilirim: resmi kaynaklara bakın.",
+   "expect": null
+  },
+  {
+   "id": "negative-47",
+   "text": "I can't help but notice the loop never ends; move the counter inside it.",
    "expect": null
   }
  ]

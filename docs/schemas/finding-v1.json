@@ -1,56 +1,9 @@
 {
   "$defs": {
-    "Action": {
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "pattern": "^[a-z][a-z0-9_.]{0,63}$",
-          "title": "Kind",
-          "type": "string"
-        },
-        "params": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "maxProperties": 16,
-          "title": "Params",
-          "type": "object"
-        }
-      },
-      "required": [
-        "kind",
-        "params"
-      ],
-      "title": "Action",
-      "type": "object"
-    },
-    "EvidenceRef": {
-      "additionalProperties": false,
+    "FindingEvidence": {
       "properties": {
         "id": {
-          "pattern": "^[A-Za-z0-9_.:/-]{1,200}$",
+          "pattern": "^[A-Za-z0-9_.:/-]{1,200}(?![\\s\\S])",
           "title": "Id",
           "type": "string"
         },
@@ -71,11 +24,10 @@
         "kind",
         "id"
       ],
-      "title": "EvidenceRef",
+      "title": "FindingEvidence",
       "type": "object"
     },
-    "Impact": {
-      "additionalProperties": false,
+    "FindingImpact": {
       "properties": {
         "requests": {
           "anyOf": [
@@ -121,7 +73,7 @@
         "usd": {
           "anyOf": [
             {
-              "pattern": "^\\d+(\\.\\d+)?$",
+              "pattern": "^\\d+(\\.\\d+)?(?![\\s\\S])",
               "type": "string"
             },
             {
@@ -137,80 +89,51 @@
         "usd",
         "risk_class"
       ],
-      "title": "Impact",
+      "title": "FindingImpact",
       "type": "object"
     },
-    "ProofAfter": {
-      "additionalProperties": false,
-      "properties": {
-        "baseline": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
+    "FindingRemediation": {
+      "anyOf": [
+        {
+          "properties": {
+            "max_mode": {
+              "const": "auto"
             }
-          ],
-          "title": "Baseline"
+          }
         },
-        "comparison": {
-          "enum": [
-            "lte",
-            "gte"
-          ],
-          "title": "Comparison",
-          "type": "string"
-        },
-        "metric": {
-          "maxLength": 200,
-          "minLength": 1,
-          "title": "Metric",
-          "type": "string"
-        },
-        "threshold": {
-          "anyOf": [
-            {
-              "type": "integer"
+        {
+          "properties": {
+            "max_mode": {
+              "const": "suggest"
             },
-            {
-              "type": "number"
+            "mode": {
+              "enum": [
+                "observe",
+                "suggest"
+              ]
             }
-          ],
-          "title": "Threshold"
+          }
         },
-        "window_hours": {
-          "maximum": 720,
-          "minimum": 1,
-          "title": "Window Hours",
-          "type": "integer"
+        {
+          "properties": {
+            "mode": {
+              "const": "observe"
+            }
+          }
         }
-      },
-      "required": [
-        "metric",
-        "window_hours",
-        "baseline",
-        "threshold",
-        "comparison"
       ],
-      "title": "ProofAfter",
-      "type": "object"
-    },
-    "Remediation": {
-      "additionalProperties": false,
       "properties": {
         "action": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Action"
+              "additionalProperties": true,
+              "type": "object"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "title": "Action"
         },
         "blast_radius": {
           "enum": [
@@ -245,19 +168,21 @@
         "proof_after": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ProofAfter"
+              "additionalProperties": true,
+              "type": "object"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "title": "Proof After"
         },
         "reversible": {
           "title": "Reversible",
           "type": "boolean"
         },
         "text": {
-          "$ref": "#/$defs/Text"
+          "$ref": "#/$defs/FindingText"
         }
       },
       "required": [
@@ -269,11 +194,10 @@
         "proof_after",
         "text"
       ],
-      "title": "Remediation",
+      "title": "FindingRemediation",
       "type": "object"
     },
-    "Subject": {
-      "additionalProperties": false,
+    "FindingSubject": {
       "properties": {
         "id": {
           "maxLength": 200,
@@ -298,11 +222,10 @@
         "kind",
         "id"
       ],
-      "title": "Subject",
+      "title": "FindingSubject",
       "type": "object"
     },
-    "Text": {
-      "additionalProperties": false,
+    "FindingText": {
       "properties": {
         "en": {
           "maxLength": 500,
@@ -321,19 +244,20 @@
         "en",
         "tr"
       ],
-      "title": "Text",
+      "title": "FindingText",
       "type": "object"
     },
-    "Window": {
-      "additionalProperties": false,
+    "FindingWindow": {
       "properties": {
         "end": {
           "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
           "title": "End",
           "type": "string"
         },
         "start": {
           "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
           "title": "Start",
           "type": "string"
         }
@@ -342,35 +266,35 @@
         "start",
         "end"
       ],
-      "title": "Window",
+      "title": "FindingWindow",
       "type": "object"
     }
   },
   "$id": "https://raw.githubusercontent.com/GetSHIM/shim/main/docs/schemas/finding-v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "description": "Evidence references, never contains, a value: title, summary and text come from rule templates.",
   "properties": {
     "evidence": {
       "items": {
-        "$ref": "#/$defs/EvidenceRef"
+        "$ref": "#/$defs/FindingEvidence"
       },
       "maxItems": 50,
       "title": "Evidence",
       "type": "array"
     },
     "id": {
-      "pattern": "^[A-Za-z0-9_.:-]{1,128}$",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
       "title": "Id",
       "type": "string"
     },
     "impact": {
-      "$ref": "#/$defs/Impact"
+      "$ref": "#/$defs/FindingImpact"
     },
     "measurements": {
+      "additionalProperties": false,
       "maxProperties": 32,
       "patternProperties": {
-        "^[a-z][a-z0-9_]{0,63}$": {
+        "^[a-z][a-z0-9_]{0,63}(?![\\s\\S])": {
           "anyOf": [
             {
               "type": "integer"
@@ -397,16 +321,43 @@
       "title": "Occurrences"
     },
     "playbook": {
-      "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+$",
+      "pattern": "^[A-Za-z0-9_./-]+\\.md#[a-z0-9_-]+(?![\\s\\S])",
       "title": "Playbook",
       "type": "string"
     },
     "remediation": {
-      "$ref": "#/$defs/Remediation"
+      "$ref": "#/$defs/FindingRemediation"
+    },
+    "resolved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "pattern": "(?:Z|\\+00:00)(?![\\s\\S])",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved At"
+    },
+    "resolved_by": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}(?![\\s\\S])",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved By"
     },
     "rule_id": {
       "maxLength": 96,
-      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+(?![\\s\\S])",
       "title": "Rule Id",
       "type": "string"
     },
@@ -467,10 +418,10 @@
       "title": "Status Detail"
     },
     "subject": {
-      "$ref": "#/$defs/Subject"
+      "$ref": "#/$defs/FindingSubject"
     },
     "summary": {
-      "$ref": "#/$defs/Text"
+      "$ref": "#/$defs/FindingText"
     },
     "title": {
       "maxLength": 200,
@@ -479,7 +430,7 @@
       "type": "string"
     },
     "window": {
-      "$ref": "#/$defs/Window"
+      "$ref": "#/$defs/FindingWindow"
     }
   },
   "required": [

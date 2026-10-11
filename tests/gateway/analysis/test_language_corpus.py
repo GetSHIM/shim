@@ -21,6 +21,7 @@ def test_the_corpus_is_well_formed() -> None:
     ids = [case["id"] for case in CASES]
 
     assert (CORPUS["format"], CORPUS["version"]) == ("shim.language.corpus", 1)
+    assert all(case["id"].rsplit("-", 1)[1].isdigit() for case in CASES)
     assert len(ids) == len(set(ids))
     assert all(case["expect"] in {"tr", "en", "other", "unknown"} for case in CASES)
 
@@ -38,11 +39,23 @@ def test_corpus_case(case: dict[str, Any]) -> None:
         assert actual == expected, f"{case['id']}: expected {expected}, actual {actual}"
 
 
-def test_counts_per_label() -> None:
+def test_every_group_meets_its_minimum() -> None:
     counts = Counter(
-        (case["expect"], case["mixed"]) for case in CASES if "known_gap" not in case
+        case["id"].rsplit("-", 1)[0].removesuffix("-held")
+        for case in CASES
+        if "known_gap" not in case
     )
     gaps = sum("known_gap" in case for case in CASES)
 
     print(f"language corpus: {len(CASES)} cases, {gaps} known gaps, {dict(counts)}")
-    assert counts[("tr", False)] >= 30 and counts[("en", False)] >= 30
+    minimums = {
+        "tr": 40,
+        "en": 40,
+        "mixed": 10,
+        "other-latin": 10,
+        "non-latin": 8,
+        "short": 8,
+    }
+    assert {group: counts[group] for group in minimums} == {
+        group: max(counts[group], minimum) for group, minimum in minimums.items()
+    }

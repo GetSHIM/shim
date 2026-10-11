@@ -7,8 +7,9 @@ import struct
 import pytest
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
+from shim.api.v1.gemini import GenerateContentRequest
 from shim.gateway.analyzers.shape import MAX_TOOLS, ShapeAnalyzer, shape
-from shim.gateway.pipeline.analysis import AnalysisContext
+from shim.gateway.pipeline.analysis import AnalysisContext, run_analyzers
 
 
 def _b64(data: bytes) -> str:
@@ -123,6 +124,7 @@ def test_chat_counts_every_key() -> None:
         "tools_called_in_history": ["lookup"],
         "tools_order_digest": sha256("\x1f".join(names).encode()).hexdigest()[:16],
         "tools_set_digest": sha256("\x1f".join(names).encode()).hexdigest()[:16],
+        "tool_names_dropped": 0,
         "image_count": 2,
         "document_count": 1,
         "largest_image": {"bytes": len(_png(3, 2)), "width": 3, "height": 2},
@@ -272,7 +274,8 @@ def test_anthropic_system_blocks_tool_results_and_media() -> None:
         "width": 5,
         "height": 7,
     }
-    assert (result["image_count"], result["document_count"]) == (1, 1)
+    # The image inside the tool result counts too.
+    assert (result["image_count"], result["document_count"]) == (2, 1)
 
 
 def test_gemini_parts_and_builtin_tools() -> None:
@@ -356,14 +359,15 @@ def test_the_order_digest_follows_order_and_the_set_digest_does_not() -> None:
 def test_tools_and_names_are_bounded() -> None:
     tools = [
         {"type": "function", "function": {"name": f"t{index}"}}
-        for index in range(MAX_TOOLS + 1)
+        for index in range(MAX_TOOLS + 2)
     ]
     tools[0]["function"]["name"] = "n" * 65
 
     result = shape({"messages": [], "tools": tools}, "chat")
 
-    assert result["tool_count"] == 129 and len(result["tools_offered"]) == 128
-    assert result["tools_offered"][0] == "n" * 64 and result["truncated"] is True
+    assert result["tool_count"] == 130 and len(result["tools_offered"]) == 128
+    assert "n" * 64 not in result["tools_offered"] and result["truncated"] is True
+    assert result["tool_names_dropped"] == 1
 
 
 def test_nesting_and_part_counts_are_bounded() -> None:
@@ -485,3 +489,274 @@ def test_the_analyzer_is_registered_and_never_reads_the_answer() -> None:
     assert "shape" in ANALYZER_NAMES
     assert any(isinstance(analyzer, ShapeAnalyzer) for analyzer in ANALYZERS)
     assert ShapeAnalyzer().analyze(context)["last_user_chars"] == 2
+
+
+def test_a_gemini_inline_image_is_read_through_the_request_model() -> None:
+    # Bytes whose base64 carries + and /, which the model re-encodes as - and _.
+    image = _png(640, 480) + b"\xfb\xff\xfe" * 40 + b"\xff\xff"
+    request = GenerateContentRequest.model_validate(
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"inlineData": {"mimeType": "image/png", "data": _b64(image)}}
+                    ],
+                }
+            ]
+        }
+    )
+    payload = request.model_dump(mode="json", exclude_none=True, by_alias=True)
+
+    result = shape(payload, "generate_content")
+
+    assert result["largest_image"] == {"bytes": len(image), "width": 640, "height": 480}
+
+
+def _ctx(payload: dict, protocol: str) -> AnalysisContext:
+    return AnalysisContext(
+        request_id="req",
+        protocol=protocol,
+        model="gpt-5-nano",
+        payload=payload,
+        answer_text="",
+        answer_truncated=False,
+        tool_calls=(),
+        completion_outcome="complete",
+        restore=lambda text: text,
+    )
+
+
+def test_over_the_result_budget_names_go_and_counts_and_digests_stay() -> None:
+    tools = [
+        {"type": "function", "function": {"name": f"lookup_customer_record_{index:03}"}}
+        for index in range(128)
+    ]
+    calls = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": f"lookup_customer_record_{index:03}"}}
+            ],
+        }
+        for index in range(20)
+    ]
+
+    results = run_analyzers(
+        [ShapeAnalyzer()], _ctx({"messages": calls, "tools": tools}, "chat")
+    )
+
+    assert results is not None
+    result = results["shape"]
+    assert result["tools_offered"] is result["tools_called_in_history"] is None
+    assert result["tool_count"] == 128 and result["message_count"] == 20
+    assert len(result["tools_order_digest"]) == len(result["tools_set_digest"]) == 16
+
+
+def test_hostile_tool_names_and_types_are_dropped_never_stringified() -> None:
+    hostile = "ali@example.com 10000000146"
+    chat = shape(
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"function": {"name": hostile}},
+                        {"function": {"name": "ok_call"}},
+                    ],
+                    "function_call": {"name": {"k": "secret text"}},
+                },
+                {"role": "assistant", "tool_calls": 5},
+            ],
+            "tools": [
+                {"type": hostile},
+                {"type": {"a": "secret text"}},
+                {"type": "function", "function": {"name": hostile}},
+                {"type": "function", "function": {"name": {"k": "secret text"}}},
+                {"type": "function", "function": {}},
+                {"type": "web_search"},
+                {"type": "function", "function": {"name": "lookup"}},
+            ],
+        },
+        "chat",
+    )
+    gemini = shape(
+        {
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {"name": {"k": "secret text"}},
+                        {},
+                        {"name": "lookup"},
+                    ]
+                },
+                {hostile: {}},
+            ],
+        },
+        "generate_content",
+    )
+
+    assert chat["tools_offered"] == ["builtin:web_search", "lookup"]
+    assert chat["tools_called_in_history"] == ["ok_call"]
+    assert (chat["tool_count"], chat["tool_names_dropped"]) == (7, 7)
+    assert gemini["tools_offered"] == ["lookup"]
+    assert (gemini["tool_count"], gemini["tool_names_dropped"]) == (4, 3)
+    for result in (chat, gemini):
+        assert "secret" not in repr(result) and "example.com" not in repr(result)
+
+
+def test_history_is_everything_before_the_final_turn_in_every_protocol() -> None:
+    chat = shape(
+        {
+            "messages": [
+                {"role": "system", "content": "S"},
+                {"role": "user", "content": "U" * 20},
+                {
+                    "role": "assistant",
+                    "content": "A" * 10,
+                    "tool_calls": [{"function": {"name": "lookup"}}],
+                },
+                {"role": "tool", "content": "R" * 100},
+                {
+                    "role": "assistant",
+                    "content": "B" * 10,
+                    "tool_calls": [{"function": {"name": "lookup"}}],
+                },
+                {"role": "tool", "content": "T" * 100},
+            ]
+        },
+        "chat",
+    )
+
+    def turn(role: str, *blocks: dict) -> dict:
+        return {"role": role, "content": list(blocks)}
+
+    messages = shape(
+        {
+            "system": "S",
+            "messages": [
+                turn("user", {"type": "text", "text": "U" * 20}),
+                turn(
+                    "assistant",
+                    {"type": "text", "text": "A" * 10},
+                    {"type": "tool_use", "name": "lookup", "input": {}},
+                ),
+                turn("user", {"type": "tool_result", "content": "R" * 100}),
+                turn(
+                    "assistant",
+                    {"type": "text", "text": "B" * 10},
+                    {"type": "tool_use", "name": "lookup", "input": {}},
+                ),
+                turn("user", {"type": "tool_result", "content": "T" * 100}),
+            ],
+        },
+        "messages",
+    )
+
+    assert chat["history_chars"] == messages["history_chars"] == 20 + 10 + 100 + 10
+
+
+def test_images_in_tool_results_and_text_documents_count() -> None:
+    png = _b64(_png(4, 4))
+    anthropic = shape(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "content": [
+                                {"type": "text", "text": "shot"},
+                                {
+                                    "type": "image",
+                                    "source": {"type": "base64", "data": png},
+                                },
+                            ],
+                        },
+                        {
+                            "type": "document",
+                            "source": {"type": "text", "data": "D" * 30},
+                        },
+                    ],
+                }
+            ]
+        },
+        "messages",
+    )
+    responses = shape(
+        {
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "output": [
+                        {"type": "input_text", "text": "shot"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64," + png,
+                        },
+                    ],
+                }
+            ]
+        },
+        "responses",
+    )
+    gemini = shape(
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "f",
+                                "response": {"output": "shot"},
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "mimeType": "image/png",
+                                            "data": png,
+                                        }
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                }
+            ]
+        },
+        "generate_content",
+    )
+
+    for result in (anthropic, responses, gemini):
+        assert result["image_count"] == 1
+        assert result["largest_image"] == {
+            "bytes": len(_png(4, 4)),
+            "width": 4,
+            "height": 4,
+        }
+        assert result["tool_result_chars"] == 4
+    assert anthropic["document_count"] == 1 and anthropic["largest_part_chars"] == 30
+
+
+def test_a_plain_data_url_image_counts_its_characters() -> None:
+    svg = "data:image/svg+xml,%3Csvg%20xmlns%3D%22x%22%2F%3E"
+
+    result = shape(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": svg}}],
+                }
+            ]
+        },
+        "chat",
+    )
+
+    assert result["largest_image"] == {
+        "bytes": len(svg.partition(",")[2]),
+        "width": None,
+        "height": None,
+    }

@@ -13,8 +13,12 @@ from shim.gateway.pipeline.analysis import AnalysisContext
 
 Label = Literal["tr", "en", "other", "unknown"]
 
+# A change to the word lists after release is a new file and a new version.
+VERSION = "1"
 _DATA = json.loads(
-    files("shim.gateway.analyzers").joinpath("language-v1.json").read_text("utf-8")
+    files("shim.gateway.analyzers")
+    .joinpath(f"language-v{VERSION}.json")
+    .read_text("utf-8")
 )
 _ASCII_FOLD = str.maketrans(
     {
@@ -35,7 +39,7 @@ _CLEAN = re.compile(
     r"```.*?(?:```|\Z)"  # fenced code, closed or running to the end
     r"|`[^`\n]*`"  # inline code
     r"|\b(?:https?://|www\.)\S+"  # URLs
-    r"|\S+@\S+"  # e-mail-like tokens
+    r"|(?<!\S)[^\s@]{1,64}@[^\s@]{1,64}"  # e-mail-like tokens; bounded, from a token's start
     r"|<\s*[A-Z][A-Z0-9_]*_[0-9a-f]{8,32}(?:~[0-9A-Z]{4})?\s*>",  # placeholders
     re.DOTALL,
 )
@@ -46,13 +50,13 @@ def _turkish_lower(word: str) -> str:
     return word.replace("İ", "i").replace("I", "ı").lower()
 
 
-def _fold(word: str) -> str:
+def fold(word: str) -> str:
     return _turkish_lower(word).translate(_ASCII_FOLD)
 
 
-_TR_WORDS = frozenset(_fold(word) for word in _DATA["tr_function_words"])
+_TR_WORDS = frozenset(fold(word) for word in _DATA["tr_function_words"])
 _EN_WORDS = frozenset(_DATA["en_function_words"])
-_TR_SUFFIXES = tuple(_fold(suffix) for suffix in _DATA["tr_suffixes"])
+_TR_SUFFIXES = tuple(fold(suffix) for suffix in _DATA["tr_suffixes"])
 
 
 def _latin(character: str) -> bool:
@@ -62,7 +66,8 @@ def _latin(character: str) -> bool:
 def label(text: str) -> tuple[Label, bool, int]:
     """The label, whether the text is mixed, and its word count."""
 
-    words = _WORD.findall(_CLEAN.sub(" ", text)[: _DATA["max_characters"]])
+    # Cut first: the cleaning pattern then reads a bounded window, whatever the text.
+    words = _WORD.findall(_CLEAN.sub(" ", text[: _DATA["max_characters"]]))
     letters = sum(len(word) for word in words)
     if len(words) < _DATA["min_words"] or letters < _DATA["min_letters"]:
         return "unknown", False, len(words)
@@ -71,7 +76,7 @@ def label(text: str) -> tuple[Label, bool, int]:
     turkish = english = 0.0
     strong = turkish_hits = 0
     for word in words:
-        folded = _fold(word)
+        folded = fold(word)
         if _STRONG.intersection(word):
             turkish += _DATA["strong_letter_score"]
             strong += 1
@@ -87,22 +92,15 @@ def label(text: str) -> tuple[Label, bool, int]:
             english += 1
     qualify = _DATA["qualify_score"]
     tr_ok = turkish >= qualify and (strong > 0 or turkish_hits >= 2)
-    en_ok = english >= qualify
-    larger: Label = "tr" if turkish > english else "en"
-    small, large = sorted((turkish, english))
-    if tr_ok and en_ok and small >= _DATA["mixed_ratio"] * large:
-        return larger, True, len(words)
-    if tr_ok and turkish >= _DATA["dominance"] * english:
-        return "tr", False, len(words)
-    if en_ok and english >= _DATA["dominance"] * turkish:
-        return "en", False, len(words)
-    if not tr_ok and not en_ok:
-        return "other", False, len(words)
-    return larger, False, len(words)
-
-
-def _asks_for_json(payload: dict[str, Any], protocol: str) -> bool:
-    return requested_output(payload, protocol) is not None
+    # A share, not only a count: a long Dutch or Italian text has a few English words too.
+    en_ok = english >= max(qualify, _DATA["en_min_share"] * len(words))
+    if tr_ok and en_ok:
+        small, large = sorted((turkish, english))
+        larger: Label = "tr" if turkish > english else "en"
+        return larger, small >= _DATA["mixed_ratio"] * large, len(words)
+    if tr_ok or en_ok:
+        return "tr" if tr_ok else "en", False, len(words)
+    return "other", False, len(words)
 
 
 def _text(content: Any, kinds: frozenset[str]) -> str:
@@ -156,11 +154,12 @@ class LanguageAnalyzer:
     """Labels the last user question and the answer: tr, en, other or unknown."""
 
     name = "language"
-    version = "1"
+    version = VERSION
+    reads_answer = True
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any]:
         request, _, request_words = label(request_text(ctx.payload, ctx.protocol))
-        if not ctx.answer_text or _asks_for_json(ctx.payload, ctx.protocol):
+        if not ctx.answer_text or requested_output(ctx.payload, ctx.protocol):
             answer, mixed, answer_words = "unknown", False, 0
         else:
             answer, mixed, answer_words = label(ctx.answer_text)

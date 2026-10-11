@@ -11,15 +11,16 @@ import json
 import struct
 from typing import Any
 
-from shim.gateway.pipeline.analysis import AnalysisContext
+from shim.gateway.pipeline.analysis import TOOL_NAME, AnalysisContext
 
 MAX_PARTS = 20_000
 MAX_DEPTH = 64
 MAX_TOOLS = 128
-MAX_NAME = 64
 # Base64 read for an image's dimensions: 64 KiB, a whole number of quanta.
 _HEADER_BASE64 = 65_536
+_STANDARD_BASE64 = str.maketrans("-_", "+/")
 _SYSTEM_ROLES = frozenset({"system", "developer"})
+_TEXT_KINDS = frozenset({"text", "input_text", "output_text"})
 
 
 def _image_size(data: bytes) -> tuple[int | None, int | None]:
@@ -66,20 +67,21 @@ class _Walk:
     largest_part: int = 0
     tool_results: list[int] = field(default_factory=list)
     called: set[str] = field(default_factory=set)
+    dropped: int = 0
     images: int = 0
     documents: int = 0
     largest_image: dict[str, Any] | None = None
 
-    def part(self, _item: Any = None) -> bool:
+    def part(self, _item: Any) -> bool:
         self.parts += 1
         if self.parts > MAX_PARTS:
             self.truncated = True
         return not self.truncated
 
     def items(self, values: Any) -> Any:
-        """The values the part budget still allows; the walk stops at the first refused."""
+        """The values of a list the part budget still allows; the walk stops at the first refused."""
 
-        return takewhile(self.part, values)
+        return takewhile(self.part, values if isinstance(values, list) else [])
 
     def chars(self, value: Any, depth: int = 0) -> int:
         """Text characters in a value, nested lists and objects included, within the bounds."""
@@ -91,9 +93,7 @@ class _Walk:
             return len(value)
         if isinstance(value, dict):
             value = list(value.values())
-        if isinstance(value, list):
-            return sum(self.chars(item, depth + 1) for item in self.items(value))
-        return 0
+        return sum(self.chars(item, depth + 1) for item in self.items(value))
 
     def text(self, value: str) -> int:
         self.largest_part = max(self.largest_part, len(value))
@@ -104,58 +104,57 @@ class _Walk:
         self.largest_part = max(self.largest_part, size)
         return size
 
-    def call(self, name: Any) -> None:
-        if isinstance(name, str):
-            self.called.add(name[:MAX_NAME])
+    def name(self, value: Any) -> str | None:
+        """A tool name as providers allow it; anything else is dropped and counted."""
 
-    def image(self, encoded: Any = None) -> None:
-        """An image part; `encoded` is its inline base64, None for a reference."""
+        if isinstance(value, str) and TOOL_NAME.fullmatch(value):
+            return value
+        self.dropped += 1
+        return None
+
+    def call(self, value: Any) -> None:
+        if (name := self.name(value)) is not None:
+            self.called.add(name)
+
+    def image(self, data: Any = None, encoded: bool = True) -> None:
+        """An image part: its inline data, base64 unless a data URL says otherwise."""
 
         self.images += 1
-        if not isinstance(encoded, str):
+        if not isinstance(data, str):
             return
-        padding = len(encoded) - len(encoded.rstrip("="))
-        size = len(encoded) * 3 // 4 - padding
+        size = (
+            len(data) * 3 // 4 - (2 if data.endswith("==") else data.endswith("="))
+            if encoded
+            else len(data)
+        )
         if self.largest_image is not None and size <= self.largest_image["bytes"]:
             return
-        head = encoded[: _HEADER_BASE64 - _HEADER_BASE64 % 4]
-        try:
-            width, height = _image_size(
-                base64.b64decode(head[: len(head) - len(head) % 4])
-            )
-        except (binascii.Error, ValueError, struct.error):
-            width = height = None
+        width = height = None
+        if encoded:
+            # A model dump re-encodes inline bytes as URL-safe base64.
+            head = data[:_HEADER_BASE64].translate(_STANDARD_BASE64)
+            try:
+                width, height = _image_size(
+                    base64.b64decode(head[: len(head) - len(head) % 4])
+                )
+            except (binascii.Error, ValueError, struct.error):
+                pass
         self.largest_image = {"bytes": size, "width": width, "height": height}
 
 
-def _data_url(value: Any) -> str | None:
-    if isinstance(value, str) and value.startswith("data:"):
-        return value.partition("base64,")[2]
-    return None
+def _data_url(value: Any) -> tuple[str | None, bool]:
+    """The data of a data: URL and whether it is base64; None for a reference."""
+
+    if not (isinstance(value, str) and value.startswith("data:")):
+        return None, True
+    header, _, data = value.partition(",")
+    return data, header.endswith(";base64")
 
 
 def _content(walk: _Walk, content: Any, part) -> int:
     if isinstance(content, str):
         return walk.text(content)
-    if isinstance(content, list):
-        return sum(part(walk, item) for item in walk.items(content))
-    return 0
-
-
-def _blocks_text(walk: _Walk, content: Any) -> int:
-    """A tool result: a string, or the text of its text blocks."""
-
-    if isinstance(content, str):
-        return walk.text(content)
-    if isinstance(content, list):
-        return sum(
-            walk.text(item["text"])
-            for item in walk.items(content)
-            if isinstance(item, dict)
-            and item.get("type") in {"text", "input_text", "output_text"}
-            and isinstance(item.get("text"), str)
-        )
-    return 0
+    return sum(part(walk, item) for item in walk.items(content))
 
 
 def _openai_part(walk: _Walk, part: Any) -> int:
@@ -164,15 +163,13 @@ def _openai_part(walk: _Walk, part: Any) -> int:
     if not isinstance(part, dict):
         return 0
     kind = part.get("type")
-    if kind in {"text", "input_text", "output_text"} and isinstance(
-        part.get("text"), str
-    ):
+    if kind in _TEXT_KINDS and isinstance(part.get("text"), str):
         return walk.text(part["text"])
     if kind == "image_url":
         image = part.get("image_url")
-        walk.image(_data_url(image.get("url") if isinstance(image, dict) else image))
+        walk.image(*_data_url(image.get("url") if isinstance(image, dict) else image))
     elif kind == "input_image":
-        walk.image(_data_url(part.get("image_url")))
+        walk.image(*_data_url(part.get("image_url")))
     elif kind in {"file", "input_file"}:
         walk.documents += 1
     return 0
@@ -180,16 +177,16 @@ def _openai_part(walk: _Walk, part: Any) -> int:
 
 def _chat(walk: _Walk, payload: dict[str, Any]) -> tuple[list[tuple[str, int]], int]:
     turns = []
-    for message in walk.items(payload.get("messages") or []):
+    for message in walk.items(payload.get("messages")):
         if not isinstance(message, dict):
             continue
         role = str(message.get("role"))
         size = _content(walk, message.get("content"), _openai_part)
         if role == "tool":
             walk.tool_result(size)
-        for call in message.get("tool_calls") or []:
+        for call in walk.items(message.get("tool_calls")):
             if isinstance(call, dict):
-                named = call.get("function") or call.get("custom") or {}
+                named = call.get("function") or call.get("custom")
                 walk.call(named.get("name") if isinstance(named, dict) else None)
         if isinstance(message.get("function_call"), dict):
             walk.call(message["function_call"].get("name"))
@@ -206,20 +203,19 @@ def _responses(
     if isinstance(items, str):
         return [("user", walk.text(items))], system
     turns = []
-    for item in walk.items(items if isinstance(items, list) else []):
+    for item in walk.items(items):
         if not isinstance(item, dict):
             continue
         kind = item.get("type", "message")
         if kind in {"function_call_output", "custom_tool_call_output"}:
-            output = item.get("output")
-            turns.append(("tool", walk.tool_result(_blocks_text(walk, output))))
-        elif kind in {"function_call", "custom_tool_call"}:
-            walk.call(item.get("name"))
-            turns.append(("assistant", 0))
+            size = _content(walk, item.get("output"), _openai_part)
+            turns.append(("tool", walk.tool_result(size)))
         elif kind == "message":
             role = str(item.get("role"))
             turns.append((role, _content(walk, item.get("content"), _openai_part)))
         else:
+            if kind in {"function_call", "custom_tool_call"}:
+                walk.call(item.get("name"))
             turns.append(("assistant", 0))
     return turns, system
 
@@ -231,20 +227,18 @@ def _anthropic_block(walk: _Walk, block: Any) -> int:
     if kind == "text" and isinstance(block.get("text"), str):
         return walk.text(block["text"])
     if kind == "tool_result":
-        return walk.tool_result(_blocks_text(walk, block.get("content")))
+        return walk.tool_result(_content(walk, block.get("content"), _anthropic_block))
     if kind in {"tool_use", "server_tool_use"}:
         walk.call(block.get("name"))
-    elif kind in {"image", "document"}:
-        source = block.get("source")
-        inline = (
-            source.get("data")
-            if isinstance(source, dict) and source.get("type") == "base64"
-            else None
-        )
-        if kind == "image":
-            walk.image(inline)
-        else:
-            walk.documents += 1
+        return 0
+    source = block.get("source")
+    source = source if isinstance(source, dict) else {}
+    if kind == "image":
+        walk.image(source.get("data") if source.get("type") == "base64" else None)
+    elif kind == "document":
+        walk.documents += 1
+        if source.get("type") == "text" and isinstance(source.get("data"), str):
+            return walk.text(source["data"])
     return 0
 
 
@@ -257,7 +251,7 @@ def _messages(
             str(message.get("role")),
             _content(walk, message.get("content"), _anthropic_block),
         )
-        for message in walk.items(payload.get("messages") or [])
+        for message in walk.items(payload.get("messages"))
         if isinstance(message, dict)
     ]
     return turns, system
@@ -268,10 +262,11 @@ def _gemini_part(walk: _Walk, part: Any) -> int:
         return 0
     if isinstance(part.get("text"), str):
         return walk.text(part["text"])
-    if "functionResponse" in part:
-        response = part["functionResponse"]
+    response = part.get("functionResponse")
+    if isinstance(response, dict):
         return walk.tool_result(
-            walk.chars(response.get("response")) if isinstance(response, dict) else 0
+            walk.chars(response.get("response"))
+            + _content(walk, response.get("parts"), _gemini_part)
         )
     if isinstance(part.get("functionCall"), dict):
         walk.call(part["functionCall"].get("name"))
@@ -299,14 +294,16 @@ def _generate_content(
             str(content.get("role", "user")),
             _content(walk, content.get("parts"), _gemini_part),
         )
-        for content in walk.items(payload.get("contents") or [])
+        for content in walk.items(payload.get("contents"))
         if isinstance(content, dict)
     ]
     return turns, system
 
 
-def _offered(protocol: str, tools: list[Any]) -> list[str]:
-    names = []
+def _offered(walk: _Walk, protocol: str, tools: list[Any]) -> list[str | None]:
+    """Each offered tool's name, None where it was dropped; a built-in as builtin:<type>."""
+
+    names: list[str | None] = []
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -314,21 +311,30 @@ def _offered(protocol: str, tools: list[Any]) -> list[str]:
             for key, value in tool.items():
                 if key == "functionDeclarations" and isinstance(value, list):
                     names.extend(
-                        str(item.get("name"))
+                        walk.name(item.get("name"))
                         for item in value
                         if isinstance(item, dict)
                     )
                 else:
-                    names.append(f"builtin:{key}")
+                    names.append(_builtin(walk, key))
             continue
         named = (
-            tool.get("function") or tool.get("custom") if protocol == "chat" else tool
+            tool.get("function", tool.get("custom"))
+            if protocol == "chat"
+            else tool
+            if "name" in tool
+            else None
         )
-        if isinstance(named, dict) and isinstance(named.get("name"), str):
-            names.append(named["name"])
-        else:
-            names.append(f"builtin:{tool.get('type')}")
+        names.append(
+            walk.name(named.get("name"))
+            if isinstance(named, dict)
+            else _builtin(walk, tool.get("type"))
+        )
     return names
+
+
+def _builtin(walk: _Walk, kind: Any) -> str | None:
+    return None if (name := walk.name(kind)) is None else f"builtin:{name}"
 
 
 _WALKS = {
@@ -351,23 +357,23 @@ def shape(payload: dict[str, Any], protocol: str) -> dict[str, Any] | None:
     turns, system = walk_turns(walk, payload)
     system += sum(size for role, size in turns if role in _SYSTEM_ROLES)
     users = [index for index, (role, _) in enumerate(turns) if role == "user"]
-    last_user = users[-1] if users else len(turns)
     tools = payload.get("tools")
     tools = tools if isinstance(tools, list) else []
-    offered = _offered(protocol, tools)
-    if len(offered) > MAX_TOOLS:
-        walk.truncated = True
-    recorded = [name[:MAX_NAME] for name in offered[:MAX_TOOLS]]
+    offered = _offered(walk, protocol, tools)
+    named = [name for name in offered if name is not None]
     called = sorted(walk.called)
-    if len(called) > MAX_TOOLS:
+    if len(named) > MAX_TOOLS or len(called) > MAX_TOOLS:
         walk.truncated = True
+    recorded = named[:MAX_TOOLS]
     return {
         "message_count": len(turns),
         "system_chars": system,
+        # Everything before the final turn, so an agent loop ending in tool results
+        # measures the same in every protocol.
         "history_chars": sum(
-            size for role, size in turns[:last_user] if role not in _SYSTEM_ROLES
+            size for role, size in turns[:-1] if role not in _SYSTEM_ROLES
         ),
-        "last_user_chars": turns[last_user][1] if users else 0,
+        "last_user_chars": turns[users[-1]][1] if users else 0,
         "largest_part_chars": walk.largest_part,
         "tool_result_count": len(walk.tool_results),
         "tool_result_chars": sum(walk.tool_results),
@@ -382,6 +388,7 @@ def shape(payload: dict[str, Any], protocol: str) -> dict[str, Any] | None:
         "tools_called_in_history": called[:MAX_TOOLS],
         "tools_order_digest": _digest(recorded),
         "tools_set_digest": _digest(sorted(recorded)),
+        "tool_names_dropped": walk.dropped,
         "image_count": walk.images,
         "document_count": walk.documents,
         "largest_image": walk.largest_image,
@@ -394,6 +401,7 @@ class ShapeAnalyzer:
 
     name = "shape"
     version = "1"
+    reads_answer = False
 
     def analyze(self, ctx: AnalysisContext) -> dict[str, Any] | None:
         return shape(ctx.payload, ctx.protocol)

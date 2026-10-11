@@ -261,6 +261,11 @@ classifies as relaxing also records `tenant.gateway_protection_relaxed`
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS` variable.
 
+Rolling back to an older build is safe: a stored field or analyzer name that
+build does not know is left out when it reads the settings (and logged once by
+name), and a PATCH writes only the fields it names, so the newer build finds its
+settings again after the rollback ends.
+
 ## Write a tenant rule
 
 Keep your own words and codes out of prompts: project names, product codes,

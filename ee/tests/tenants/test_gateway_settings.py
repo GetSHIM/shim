@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from fastapi import FastAPI
+import httpx
 from pydantic import ValidationError
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 import shim_enterprise.tenants.gateway_settings as gateway_settings
 import shim_enterprise.tenants.policy as policy_module
+import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.api.enterprise_deps import get_org_admin, get_org_reader
 from shim_enterprise.api.v1 import management
+from shim_enterprise.api.v1.router import management_router
+from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_DIRECTIONS,
     GatewaySettings,
@@ -339,3 +348,147 @@ async def test_one_tenants_patch_leaves_another_tenant_alone(
 
     untouched = await management.get_gateway_settings(stranger, db)
     assert (untouched.revision, untouched.settings) == (0, GatewaySettings())
+
+
+@pytest.mark.asyncio
+async def test_members_and_auditors_cannot_write_and_members_cannot_read(
+    db, test_org, registry
+) -> None:
+    user = await _admin(db, test_org.id)
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+    statuses = {}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        for role in ("member", "auditor", "admin"):
+            user.role = role
+            statuses[role] = (
+                (await client.get("/api/v1/management/gateway-settings")).status_code,
+                (
+                    await client.patch(
+                        "/api/v1/management/gateway-settings",
+                        json={"response_analysis": ["shape"]},
+                    )
+                ).status_code,
+            )
+
+    assert statuses == {
+        "member": (403, 403),
+        "auditor": (200, 403),
+        "admin": (200, 200),
+    }
+    assert await _rows(db, test_org.id) == 1
+
+
+async def _migrate(db, step: str) -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "24b8466be324_add_organization_gateway_settings.py"
+    )
+    spec = importlib.util.spec_from_file_location("gateway_settings_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def run(connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            getattr(module, step)()
+
+    await (await db.connection()).run_sync(run)
+
+
+@pytest.mark.asyncio
+async def test_the_migration_drops_and_recreates_the_table_with_its_defaults(
+    db, test_org
+) -> None:
+    exists = text("SELECT to_regclass('organization_gateway_settings') IS NOT NULL")
+
+    await _migrate(db, "downgrade")
+    assert await db.scalar(exists) is False
+    await _migrate(db, "upgrade")
+
+    assert await db.scalar(exists) is True
+    await db.execute(
+        text(
+            "INSERT INTO organization_gateway_settings (organization_id) VALUES (:org)"
+        ),
+        {"org": test_org.id},
+    )
+    row = (
+        await db.execute(
+            text(
+                "SELECT settings, revision, updated_by FROM "
+                "organization_gateway_settings WHERE organization_id = :org"
+            ),
+            {"org": test_org.id},
+        )
+    ).one()
+    assert tuple(row) == ({}, 0, None)
+
+
+@pytest.mark.asyncio
+async def test_a_patch_keeps_keys_a_newer_build_wrote(db, test_org, registry) -> None:
+    db.add(
+        OrganizationGatewaySettings(
+            organization_id=test_org.id, settings={"future_switch": True}
+        )
+    )
+    await db.flush()
+    admin = await _admin(db, test_org.id)
+
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
+    )
+    row = await db.get(OrganizationGatewaySettings, test_org.id)
+    assert row.settings == {"future_switch": True, "response_analysis": ["shape"]}
+
+    await management.update_gateway_settings(
+        GatewaySettingsPatch(response_analysis=[]), _request(), admin, db
+    )
+    assert row.settings == {"future_switch": True}
+
+
+def test_a_stored_analyzer_this_build_does_not_have_is_dropped_and_logged_once(
+    registry, caplog
+) -> None:
+    caplog.set_level(logging.WARNING)
+    retired = f"retired_{uuid4().hex[:8]}"
+
+    assert stored_settings(
+        {"response_analysis": ["language", retired, "shape"]}
+    ) == GatewaySettings(response_analysis=["shape", "language"])
+    assert stored_settings({"response_analysis": [retired]}) == GatewaySettings()
+    assert caplog.text.count(f"name={retired}") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stored_analyzer_this_build_does_not_have_breaks_nothing(
+    db, test_org, registry
+) -> None:
+    stored = {"response_analysis": ["shape", "retired"]}
+    db.add(OrganizationGatewaySettings(organization_id=test_org.id, settings=stored))
+    await db.flush()
+    admin = await _admin(db, test_org.id)
+
+    resolved = await policy_module.TenantPolicyService(_PolicyCache(stored)).resolve(
+        SimpleNamespace(organization_id=test_org.id, tier="managed"), db
+    )
+    read = await management.get_gateway_settings(admin, db)
+    same = await management.update_gateway_settings(
+        GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
+    )
+    changed = await management.update_gateway_settings(
+        GatewaySettingsPatch(response_analysis=["language"]), _request(), admin, db
+    )
+
+    assert resolved.gateway_settings.response_analysis == ["shape"]
+    assert read.settings.response_analysis == ["shape"]
+    assert (same.revision, changed.revision) == (0, 1)
+    row = await db.get(OrganizationGatewaySettings, test_org.id)
+    assert row.settings == {"response_analysis": ["language"]}

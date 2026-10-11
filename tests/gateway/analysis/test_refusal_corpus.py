@@ -43,4 +43,5 @@ def test_hits_per_marker() -> None:
         f"{sum('known_gap' in case for case in CASES)} known gaps, {dict(hits)}"
     )
 
-    assert hits[None] >= 30 and sum(hits.values()) - hits[None] >= 45
+    languages = Counter(str(marker)[:2] for marker in hits.elements())
+    assert hits[None] >= 40 and languages["tr"] >= 25 and languages["en"] >= 25
