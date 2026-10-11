@@ -1156,14 +1156,7 @@
     {
       "id": "person-name",
       "text": "Ahmet Yılmaz aradı",
-      "expect": [
-        {
-          "entity": "PERSON",
-          "value": "Ahmet Yılmaz"
-        }
-      ],
-      "known_gap": "tier 4, no PRD",
-      "known_actual": []
+      "expect": []
     },
     {
       "id": "street-address",

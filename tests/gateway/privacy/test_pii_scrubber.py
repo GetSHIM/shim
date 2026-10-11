@@ -32,6 +32,7 @@ from shim.privacy.policies import (
     PrivacyOutcome,
     effective_entity_actions,
 )
+from shim.privacy.presidio_analyzer import person_names
 from shim.rules import validate_rule_set
 from shim.rules.content import ContentRules, content_rules
 
@@ -1345,8 +1346,11 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
         {"SECRET": "block", "PHONE_NUMBER": "monitor", "EMAIL_ADDRESS": "mask"},
     )
 
-    assert set(defaults.values()) == {"mask"}
-    assert len(defaults) == 13
+    assert set(defaults.values()) == {"mask", "off"}
+    assert [name for name, action in defaults.items() if action == "off"] == [
+        "PERSON_NAME_TR"
+    ]
+    assert len(defaults) == 14
     assert resolved["SECRET"] == "block"
     assert resolved["DB_URI"] == "mask"
     assert resolved["PHONE_NUMBER"] == "monitor"
@@ -1361,6 +1365,7 @@ def test_entity_actions_follow_the_switches_and_overrides_win() -> None:
         ({"PERSON": "mask"}, "unknown entity type: PERSON"),
         ({"SECRET": "warn"}, "unknown entity action: warn"),
         ({"EMAIL_ADDRESS": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
+        ({"PERSON_NAME_TR": "mask_last4"}, "mask_last4 is only for CREDIT_CARD"),
     ],
 )
 def test_entity_actions_reject_unknown_types_and_actions(overrides, message) -> None:
@@ -1782,7 +1787,9 @@ def test_a_built_in_detection_wins_every_overlap_with_a_rule(
 
 
 def test_all_default_types_have_an_overlap_sample() -> None:
-    assert {sample[0] for sample in _corpus_samples()} == set(DEFAULT_ACTIONS)
+    assert {sample[0] for sample in _corpus_samples()} == {
+        name for name, action in DEFAULT_ACTIONS.items() if action != "off"
+    }
 
 
 @pytest.mark.parametrize(
@@ -2041,3 +2048,135 @@ def test_a_dotted_i_maps_back_to_its_source_and_is_restored(
     assert list(mapping.values()) == ["i̇zmir proje"]
     assert scrubbed.endswith("si hazır") and "zmir" not in scrubbed
     assert scrubber.deanonymize(scrubbed, mapping) == text
+
+
+_NAMES_ONLY = {name: "off" for name in DEFAULT_ACTIONS} | {"PERSON_NAME_TR": "mask"}
+
+
+def _names(scrubber: PIIScrubberService, text: str, actions=_NAMES_ONLY) -> list[str]:
+    return [
+        text[finding["start"] : finding["end"]]
+        for finding in scrubber.analyze(text, actions)
+        if finding["type"] == "PERSON_NAME_TR"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "names"),
+    [
+        # Leading cue: any capitalised words, the suffix outside.
+        ("Sayın Gökberk Tunçsiper'in dosyası", ["Gökberk Tunçsiper"]),
+        ("Sn. Aykut Arıkan geldi", ["Aykut Arıkan"]),
+        ("sayın Ayten Kaya, Hn. Cihan Okutan", ["Ayten Kaya", "Cihan Okutan"]),
+        ("Sayın Yetkili, Sayın Müdürüm", []),
+        # Trailing cue.
+        ("Ayten Hanım geldi", ["Ayten"]),
+        ("Cihan Okutan Bey'e ilettim", ["Cihan Okutan"]),
+        ("Müdür Bey geldi", []),
+        # A listed first name, an optional second one, a listed surname.
+        ("Canan Ayten Kaya’ya", ["Canan Ayten Kaya"]),
+        ("Aykut Yılmaz Kaya aradı", ["Aykut Yılmaz Kaya"]),
+        # A non-ambiguous first name and another capitalised word.
+        ("Aykut Arıkan aradı", ["Aykut Arıkan"]),
+        # Capitals, alone or as a surname after a listed first name.
+        ("AYKUT YILMAZ", ["AYKUT YILMAZ"]),
+        ("Aykut YILMAZ", ["Aykut YILMAZ"]),
+        ("Aykut ARIKAN", []),
+        # Never a first name alone, and an ambiguous one only with a cue or a surname.
+        ("Aykut aradı", []),
+        ("Deniz Arıkan", []),
+        ("Deniz Kaya", ["Deniz Kaya"]),
+        ("Deniz Hanım", ["Deniz"]),
+        # Institutions and places.
+        ("Deniz Kuvvetleri", []),
+        ("Aykut Arıkan Caddesi", []),
+        ("Ayten Ankara'ya gitti", []),
+        ("Aykut Arıkan A.Ş. yetkilisi", []),
+        # One line, words apart only by spaces.
+        ("Aykut\nArıkan", []),
+        ("Aykut-Arıkan", []),
+    ],
+)
+def test_person_names_follow_the_rules(
+    scrubber: PIIScrubberService, text: str, names: list[str]
+) -> None:
+    assert _names(scrubber, text) == names
+
+
+@pytest.mark.parametrize(
+    "text", ["İSMET YILMAZ", "İsmet Yılmaz", "Işın Kaya", "IŞIN KAYA"]
+)
+def test_person_names_read_both_turkish_i_letters_in_both_cases(
+    scrubber: PIIScrubberService, text: str
+) -> None:
+    assert _names(scrubber, text) == [text]
+
+
+def test_person_names_are_off_by_default_and_follow_their_action(
+    scrubber: PIIScrubberService,
+) -> None:
+    text = "Sayın Aykut Yılmaz'ın başvurusu"
+    actions = effective_entity_actions(None, {"PERSON_NAME_TR": "monitor"})
+    unmasked: dict[str, str] = {}
+
+    assert DEFAULT_ACTIONS["PERSON_NAME_TR"] == "off"
+    assert scrubber.scrub(text, DEFAULT_ACTIONS) == (text, {})
+    masked, mapping = scrubber.scrub(text, _NAMES_ONLY)
+    assert re.fullmatch(r"Sayın <PERSON_NAME_TR_[0-9a-f]{32}>'ın başvurusu", masked)
+    assert list(mapping.values()) == ["Aykut Yılmaz"]
+    assert scrubber.deanonymize(masked, mapping) == text
+    assert scrubber.scrub(text, actions, unmasked=unmasked) == (text, {})
+    assert unmasked == {"Aykut Yılmaz": "PERSON_NAME_TR"}
+
+
+def test_every_other_detector_wins_a_span_shared_with_a_name(
+    scrubber: PIIScrubberService,
+) -> None:
+    actions = effective_entity_actions(None, {"PERSON_NAME_TR": "mask"})
+    text = "Sayın Aykut Yılmaz@example.com, Canan Kaya 10000000146"
+
+    assert [
+        (finding["type"], text[finding["start"] : finding["end"]])
+        for finding in scrubber.analyze(text, actions)
+    ] == [
+        ("EMAIL_ADDRESS", "Yılmaz@example.com"),
+        ("PERSON_NAME_TR", "Canan Kaya"),
+        ("TR_NATIONAL_ID", "10000000146"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Aykut Yılmaz Kaya " * 1800,
+        "Sayın " * 5400,
+        "Aykut" * 20000,
+    ],
+)
+def test_person_names_stay_linear(scrubber: PIIScrubberService, text: str) -> None:
+    started = time.perf_counter()
+    scrubber.analyze(text, _NAMES_ONLY)
+
+    assert time.perf_counter() - started < 5
+
+
+def test_person_name_data_is_reviewed_and_consistent() -> None:
+    data = json.loads(
+        (
+            Path(pii_scrubber_module.__file__).parent / "data" / "tr_person_names.json"
+        ).read_text(encoding="utf-8")
+    )
+    names = person_names()
+
+    assert set(data["source"]) == {
+        "first_names",
+        "ambiguous_first_names",
+        "surnames",
+        "following_stopwords",
+    }
+    assert names.ambiguous <= names.first
+    assert len(data["surnames"]) >= 200
+    # A stopword that starts a listed name would hide that name.
+    for name in names.first | names.surnames:
+        assert name not in names.stop_words, name
+        assert not any(name.startswith(prefix) for prefix in names.stop_prefixes), name

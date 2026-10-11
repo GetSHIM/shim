@@ -343,6 +343,8 @@ class PIIScrubberService:
             "CREDIT_CARD": 80,
             "TR_NATIONAL_ID": 70,
             "TR_VKN": 70,
+            # Below the types that rank 0 too, so every other detector wins a shared span.
+            "PERSON_NAME_TR": -1,
         }
         ordered = sorted(items, key=lambda item: (item.start, item.end))
         selected: list[RecognizerResult] = []

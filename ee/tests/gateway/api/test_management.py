@@ -1272,13 +1272,20 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         await management.get_privacy_settings(test_user_with_org, db)
     )
     assert defaults.entity_actions == {}
-    assert set(defaults.effective_actions.values()) == {"mask"}
+    assert {
+        name for name, action in defaults.effective_actions.items() if action != "mask"
+    } == {"PERSON_NAME_TR"}
+    assert defaults.effective_actions["PERSON_NAME_TR"] == "off"
 
     updated = management.PrivacySettings.model_validate(
         await management.update_privacy_settings(
             management.PrivacyPatch(
                 block_email=False,
-                entity_actions={"SECRET": "block", "PHONE_NUMBER": "monitor"},
+                entity_actions={
+                    "SECRET": "block",
+                    "PHONE_NUMBER": "monitor",
+                    "PERSON_NAME_TR": "mask",
+                },
             ),
             request,
             test_user_with_org,
@@ -1299,7 +1306,12 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         )
     )
 
-    assert updated.entity_actions == {"SECRET": "block", "PHONE_NUMBER": "monitor"}
+    assert updated.entity_actions == {
+        "SECRET": "block",
+        "PHONE_NUMBER": "monitor",
+        "PERSON_NAME_TR": "mask",
+    }
+    assert updated.effective_actions["PERSON_NAME_TR"] == "mask"
     assert updated.effective_actions["SECRET"] == "block"
     assert updated.effective_actions["PHONE_NUMBER"] == "monitor"
     assert updated.effective_actions["EMAIL_ADDRESS"] == "off"
@@ -1316,6 +1328,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
     assert policy_updates[0]["after"]["entity_actions"] == {
         "SECRET": "block",
         "PHONE_NUMBER": "monitor",
+        "PERSON_NAME_TR": "mask",
     }
     assert "effective_actions" not in policy_updates[0]["after"]
 
@@ -1349,6 +1362,13 @@ def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
             {"IBAN_CODE": "mask_last4"},
             {"IBAN_CODE": "monitor"},
             ["entity_actions.IBAN_CODE"],
+        ),
+        ({}, {"PERSON_NAME_TR": "mask"}, None),
+        ({"PERSON_NAME_TR": "mask"}, {}, ["entity_actions.PERSON_NAME_TR"]),
+        (
+            {"PERSON_NAME_TR": "block"},
+            {"PERSON_NAME_TR": "monitor"},
+            ["entity_actions.PERSON_NAME_TR"],
         ),
     ],
 )
