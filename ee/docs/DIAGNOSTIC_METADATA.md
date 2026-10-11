@@ -386,7 +386,11 @@ are counted under `excluded` (`estimated_usage`, `tool_calls`, `reasoning`,
 `short`, `not_analysed`, `language_unknown`, the first that applies). Money uses
 the output price the spend settlement recorded, the large-context one once the
 prompt crossed its threshold; unpriced settlements add none. The model is the one
-the spend settlement billed, so a registry alias groups under its provider model.
+the spend settlement billed, so a registry alias groups under its provider model,
+named by the price-book entry it matches (the longest entry it equals or extends
+with `-`, as the gateway matches prices) or `other`: a provider model name never
+reaches the answer or the evidence PDF as written. One statement reads the
+exclusions and the ratios together.
 
 ## Responses continuation markers
 

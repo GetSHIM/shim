@@ -7,7 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1.router import management_router
@@ -273,7 +273,7 @@ async def test_by_api_key_window_readers_and_tenants(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_read_takes_at_most_three_statements(db) -> None:
+async def test_the_read_is_one_statement(db) -> None:
     user, key = await _tenant(db)
     _answer(db, key)
     await db.flush()
@@ -296,4 +296,22 @@ async def test_the_read_takes_at_most_three_statements(db) -> None:
     finally:
         event.remove(connection.sync_connection, "before_cursor_execute", capture)
 
-    assert len(sent) <= 3
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_model_outside_the_price_book_is_other(db) -> None:
+    user, key = await _tenant(db)
+    _answer(db, key, model="kurum-alias", provider_model="Kurum Özel Model (v2)")
+    _answer(db, key, model="kurum-alias", provider_model="llama-internal-70b")
+    _answer(db, key, model="gpt-5-mini-2025-08-07")
+
+    answered = await _read(db, user)
+    bound = await db.scalar(text("SHOW statement_timeout"))
+
+    items = _items(answered.json())
+    assert set(items) == {("other", "tr"), ("gpt-5-mini", "tr")}
+    assert items[("other", "tr")]["requests"] == 2
+    assert "Kurum" not in answered.text and "llama" not in answered.text
+    # The read's statements are bounded.
+    assert bound == "10s"

@@ -3350,9 +3350,10 @@ async def read_language_cost(
     if start_at >= end_at:
         raise HTTPException(status_code=422, detail="start must be before end")
     _validate_sync_window(start_at, end_at)
-    return await language_cost(
-        session, _tenant_id(user), start=start_at, end=end_at, group_by=group_by
-    )
+    async with bounded_read(session):
+        return await language_cost(
+            session, _tenant_id(user), start=start_at, end=end_at, group_by=group_by
+        )
 
 
 @router.get("/outcomes", response_model=OutcomeRatesPage)

@@ -15,6 +15,9 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shim.billing.pricing import DEFAULT_PRICE_BOOK
+from shim_enterprise.observability.model_inventory import OTHER_MODEL
+
 LanguageCostGroup = Literal["model", "api_key"]
 LANGUAGE_COST_MIN_ANSWER_CHARACTERS = 200
 LANGUAGE_COST_MIN_REQUESTS = 30
@@ -33,9 +36,10 @@ EXCLUSIONS = (
 # spend settlement, when there is one, the output price per token it used: the
 # large-context price once the prompt crossed its threshold; none if unpriced.
 _ANSWERS = """
-    answers AS (
+    raw AS (
         SELECT l.request_id,
-               {group} AS grp,
+               {group} AS raw_grp,
+               coalesce(s.provider, l.provider) AS provider,
                {name} AS grp_name,
                (l.metadata ->> 'answer_characters')::int AS characters,
                q.completion_tokens AS tokens,
@@ -81,44 +85,68 @@ _ANSWERS = """
           AND l.started_at < CAST(:end AS timestamptz)
           AND l.metadata ->> 'completion_outcome' = 'complete'
           AND q.completion_tokens > 0
-    )
+    ),
+    {answers}
 """
-# The provider model the spend settlement billed, so a registry alias shows what it
-# called.
-_GROUPS: dict[LanguageCostGroup, tuple[str, str, str]] = {
+# Per grouping: the group, its name, a join for the name, and how `answers` names
+# the group. A model is the one the spend settlement billed, so a registry alias
+# shows what it called, shown as the price-book entry it matches (longest equal or
+# "-"-extended entry, as the gateway matched) or "other": never caller text.
+_GROUPS: dict[LanguageCostGroup, tuple[str, str, str, str]] = {
     "model": (
         "coalesce(s.provider_model, l.provider_model, l.requested_model)",
         "NULL::text",
         "",
+        """
+    shown AS (
+        SELECT named.provider, named.raw_grp, (
+            SELECT book.entry
+            FROM unnest(CAST(:book_providers AS text[]), CAST(:book_entries AS text[]))
+                AS book(provider, entry)
+            WHERE book.provider = named.provider
+              AND (lower(trim(named.raw_grp)) = book.entry
+                   OR left(lower(trim(named.raw_grp)), length(book.entry) + 1)
+                      = book.entry || '-')
+            ORDER BY length(book.entry) DESC LIMIT 1
+        ) AS entry
+        FROM (SELECT DISTINCT provider, raw_grp FROM raw) named
+    ),
+    answers AS (
+        SELECT raw.*, coalesce(shown.entry, CAST(:other AS text)) AS grp
+        FROM raw LEFT JOIN shown
+          ON shown.provider IS NOT DISTINCT FROM raw.provider
+         AND shown.raw_grp IS NOT DISTINCT FROM raw.raw_grp
+    )""",
     ),
     "api_key": (
         "l.api_key_id::text",
         "k.name",
         "LEFT JOIN api_keys k ON k.organization_id = l.organization_id"
         " AND k.id = l.api_key_id",
+        "answers AS (SELECT raw.*, raw.raw_grp AS grp FROM raw)",
     ),
 }
 
-_EXCLUDED_SQL = """
+# The exclusion counts (`reasons`) and the eligible answers per group and language,
+# in one pass.
+_READ_SQL = """
     WITH {answers}
-    SELECT excluded, count(*) AS requests FROM answers GROUP BY excluded
-"""
-_RATIOS_SQL = """
-    WITH {answers}
-    SELECT grp, max(grp_name) AS name, language,
+    SELECT GROUPING(grp, language) = 3 AS reasons, excluded,
+           grp, max(grp_name) AS name, language,
            count(*) AS requests,
            sum(characters) AS characters,
            sum(tokens) AS tokens,
-           percentile_cont(0.25) WITHIN GROUP (ORDER BY 1000.0 * tokens / characters)
-               AS ratio_p25,
-           percentile_cont(0.75) WITHIN GROUP (ORDER BY 1000.0 * tokens / characters)
-               AS ratio_p75,
+           percentile_cont(0.25) WITHIN GROUP (
+               ORDER BY 1000.0 * tokens / nullif(characters, 0)
+           ) AS ratio_p25,
+           percentile_cont(0.75) WITHIN GROUP (
+               ORDER BY 1000.0 * tokens / nullif(characters, 0)
+           ) AS ratio_p75,
            sum(tokens * price) AS usd,
            sum(characters) FILTER (WHERE price IS NOT NULL) AS priced_characters,
            count(price) AS priced_requests
     FROM answers
-    WHERE excluded IS NULL
-    GROUP BY grp, language
+    GROUP BY GROUPING SETS ((excluded), (excluded, grp, language))
 """
 
 
@@ -134,23 +162,29 @@ async def language_cost(
     end: datetime,
     group_by: LanguageCostGroup,
 ) -> dict[str, Any]:
-    group, name, key_join = _GROUPS[group_by]
-    answers = _ANSWERS.format(group=group, name=name, key_join=key_join)
+    group, name, key_join, named = _GROUPS[group_by]
+    answers = _ANSWERS.format(group=group, name=name, key_join=key_join, answers=named)
+    book = [
+        (provider, entry)
+        for provider, prices in DEFAULT_PRICE_BOOK.provider_prices.items()
+        for entry in prices
+    ]
     params = {
         "tenant_id": organization_id,
         "start": start,
         "end": end,
         "min_characters": LANGUAGE_COST_MIN_ANSWER_CHARACTERS,
+        "book_providers": [provider for provider, _ in book],
+        "book_entries": [entry for _, entry in book],
+        "other": OTHER_MODEL,
     }
-    counted = {
-        row.excluded: row.requests
-        for row in await session.execute(
-            text(_EXCLUDED_SQL.format(answers=answers)), params
-        )
-    }
-    rows = (
-        await session.execute(text(_RATIOS_SQL.format(answers=answers)), params)
-    ).all()
+    counted: dict[str | None, int] = {}
+    rows = []
+    for row in await session.execute(text(_READ_SQL.format(answers=answers)), params):
+        if row.reasons:
+            counted[row.excluded] = row.requests
+        elif row.excluded is None:
+            rows.append(row)
     totals: dict[Any, int] = {}
     for row in rows:
         totals[row.grp] = totals.get(row.grp, 0) + row.requests

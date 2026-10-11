@@ -1198,7 +1198,9 @@ English answer text, on your own traffic.
 2. As an owner, admin or auditor, read
    `GET /api/v1/management/language-cost?group_by=model` (or `api_key`; default the
    last 30 days, at most 31). Each item is a model (the one the provider billed,
-   so a deployment alias shows its upstream model) and an answer language, with
+   shown as its price-book entry, so dated snapshots group together; a model the
+   price book does not know, such as an on-premises one, is `other`) and an answer
+   language, with
    `tokens_per_1000_characters` (the ratio of the sums), its p25 and p75 per
    request, and `output_usd_per_1000_characters` from each settlement's own output
    price.
@@ -1214,8 +1216,9 @@ curl 'http://localhost:8000/api/v1/management/language-cost?group_by=model' \
 Notes: only the output side is measured, on complete answers of at least 200
 characters with no tool call, no reasoning and reported usage; `excluded` counts
 the rest by reason and `analysed_share` says how much traffic the numbers stand on.
-The ratio describes your tenant's answers; it is not a benchmark. The monthly
-evidence file shows the same numbers per model. The method is in
+The ratio describes your tenant's answers; it is not a benchmark. A statement
+over 10 seconds answers 503 `QUERY_TIMEOUT`. The monthly evidence file shows the
+same numbers per model. The method is in
 [diagnostic metadata](DIAGNOSTIC_METADATA.md#tokens-per-character-by-language).
 
 ## Find truncated and refused answers
