@@ -593,9 +593,10 @@ that nobody can delete, on S3 or an S3-compatible store with Object Lock
    `s3:PutObject`, `s3:GetObject` (for `HeadObject`) and
    `s3:GetBucketObjectLockConfiguration`, and egress to the endpoint.
 4. Read the state: `GET /api/v1/compliance/archive` (owners, admins, auditors)
-   answers `state` (`off`, `on` or `error`), the reason when off, the last
-   archived chain position against the tip, anchors and months archived, and the
-   last error type of the past 24 hours.
+   answers `state` (`off`, `on` or `error`), the reason when off, the prefix,
+   the last archived chain position against the tip, anchors and months
+   archived, and the last error type of the past 24 hours. The bucket name is
+   the operator's and is not shown.
 
 Notes:
 

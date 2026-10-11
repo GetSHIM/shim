@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -450,10 +452,11 @@ async def test_readers_see_the_state_members_do_not(
     answers = {role: await read(user) for role, user in users.items()}
 
     assert answers["member"].status_code == 403
+    # The installation's bucket is the operator's, not the tenant's.
+    assert "evidence" not in answers["auditor"].text
     assert answers["auditor"].json() == {
         "state": "on",
         "unavailable_reason": None,
-        "bucket": "evidence",
         "prefix": "shim",
         "last_archived_seq": 12,
         "chain_tip_seq": 12,
@@ -462,3 +465,45 @@ async def test_readers_see_the_state_members_do_not(
         "failed": 0,
         "last_error_type": None,
     }
+
+
+def test_the_client_gives_up_on_a_slow_endpoint(enabled, monkeypatch) -> None:
+    made: dict = {}
+    # boto3 is an optional extra: the call it receives is what is checked.
+    modules = {
+        "boto3": SimpleNamespace(client=lambda *_args, **kwargs: made.update(kwargs)),
+        "botocore.config": SimpleNamespace(Config=lambda **kwargs: kwargs),
+    }
+    monkeypatch.setattr(worm.importlib, "import_module", modules.__getitem__)
+
+    worm.build_client()
+
+    assert made["config"]["connect_timeout"] == 5
+    assert made["config"]["read_timeout"] == 30
+    assert made["config"]["retries"] == {"max_attempts": 2, "mode": "standard"}
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_pass_does_not_hold_up_the_other_maintenance(
+    enabled, monkeypatch
+) -> None:
+    async def stuck(*_args):
+        await asyncio.sleep(3600)
+
+    async def none(*_args, **_kwargs):
+        return 0, 0
+
+    monkeypatch.setattr(worker_module, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(worker_module, "build_client", lambda: object())
+    monkeypatch.setattr(worker_module, "archive_pass", stuck)
+    monkeypatch.setattr(worker_module, "WORM_PASS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(worker_module, "generate_due_monthly_evidence", none)
+    monkeypatch.setattr(worker_module, "remind_incident_deadlines", none)
+    monkeypatch.setattr(settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
+    monkeypatch.setattr(settings, "OVERSIGHT_ENABLED", False)
+
+    summary = await asyncio.wait_for(
+        worker_module.AuditMaintenanceWorker(interval_seconds=60).run_once(), 10
+    )
+
+    assert (summary.worm_archived, summary.errors) == (0, 1)

@@ -30,6 +30,7 @@ from shim.privacy.policies import (
     effective_entity_actions,
 )
 from shim.rules.model import RuleMatch
+from shim_enterprise.approvals.models import RequestApproval
 from shim_enterprise.archive import service
 from shim_enterprise.core import database
 from shim_enterprise.archive.models import RequestArchive
@@ -440,3 +441,41 @@ def test_more_content_kept_is_relaxing(before, after, direction) -> None:
         )[0]
         == direction
     )
+
+
+@pytest.mark.asyncio
+async def test_a_resend_of_a_held_request_is_kept_once(
+    db, factory, test_api_key, installed
+) -> None:
+    held = _prepared(test_api_key, pii_entities={"EMAIL_ADDRESS": 1})
+    approval = RequestApproval(
+        organization_id=test_api_key.organization_id,
+        api_key_id=test_api_key.id,
+        request_digest="d" * 64,
+        request_id=str(held.request_id),
+        protocol="chat",
+        provider="openai",
+        model="gpt-5-nano",
+        stream=False,
+        rule_ids=["kasa"],
+        input_bytes=1,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    db.add(approval)
+    await db.flush()
+    held = replace(held, approval_id=str(approval.id))
+    # Sent again while it waits, then once more with the approval.
+    resends = [
+        replace(
+            _prepared(test_api_key, pii_entities={"EMAIL_ADDRESS": 1}),
+            approval_id=str(approval.id),
+        )
+        for _ in range(2)
+    ]
+    for prepared in (held, *resends):
+        await _lifecycle(db, prepared)
+        await service.archive_request(factory, prepared)
+
+    assert (await _archived(db, held))[0] is not None
+    for prepared in resends:
+        assert await _archived(db, prepared) == (None, None)

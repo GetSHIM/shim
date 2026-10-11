@@ -38,7 +38,6 @@ def upgrade() -> None:
         sa.Column("retain_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("error_type", sa.String(length=64), nullable=True),
-        sa.Column("attempts", sa.Integer(), server_default="1", nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

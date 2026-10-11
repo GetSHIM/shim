@@ -340,6 +340,3 @@ class WormArchiveObject(Base, TimestampMixin):
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     error_type: Mapped[str | None] = mapped_column(String(64))
-    attempts: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=1, server_default="1"
-    )

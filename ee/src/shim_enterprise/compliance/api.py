@@ -370,7 +370,6 @@ async def create_connector(
 class ArchiveStateView(BaseModel):
     state: Literal["off", "on", "error"]
     unavailable_reason: str | None
-    bucket: str | None
     prefix: str
     last_archived_seq: int | None
     chain_tip_seq: int | None

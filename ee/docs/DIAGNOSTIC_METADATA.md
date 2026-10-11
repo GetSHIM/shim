@@ -312,8 +312,8 @@ CSV and `GET /api/v1/management/requests?approval_id=<uuid>` carry it.
 `request_archive` says what the self-hosted
 [request archive](POLICY_DECISIONS.md#request-archive) did with the request:
 `stored` (its row committed) or `skipped_size` (the payload was over 2,000,000
-bytes); absent when the archive is off, the request was clean, or the write
-failed. The request list and its CSV show it as `content_archived` (true only for
+bytes); absent when the archive is off, the request was clean, the write
+failed, or it resent a held request whose content is already kept. The request list and its CSV show it as `content_archived` (true only for
 `stored`), so a member sees which of their requests an admin could open.
 
 ## Outcome filters, counts and rates

@@ -37,6 +37,14 @@ from shim_enterprise.tenants.models import Organization
 logger = logging.getLogger(__name__)
 
 MAX_OBJECTS_PER_PASS = 50
+# A pass, and each S3 call in it, gives up on a slow endpoint instead of holding
+# up the rest of the audit maintenance.
+WORM_PASS_TIMEOUT_SECONDS = 300
+_CLIENT_LIMITS = {
+    "connect_timeout": 5,
+    "read_timeout": 30,
+    "retries": {"max_attempts": 2, "mode": "standard"},
+}
 ERROR_WINDOW = timedelta(hours=24)
 OFF = "off, needs WORM_ARCHIVE_ENABLED and a bucket with Object Lock"
 NO_BOTO3 = "off, needs boto3 (install shim-enterprise[archive-s3])"
@@ -72,6 +80,7 @@ def build_client() -> Any:
     config = importlib.import_module("botocore.config").Config(
         # S3-compatible stores behind an endpoint URL answer path-style requests.
         s3={"addressing_style": "path"} if settings.WORM_ARCHIVE_ENDPOINT_URL else {},
+        **_CLIENT_LIMITS,
     )
     return boto3.client(
         "s3",
@@ -360,7 +369,6 @@ async def _record(
                 index_elements=["organization_id", "kind", "period_key"],
                 set_={
                     **{key: statement.excluded[key] for key in values},
-                    "attempts": WormArchiveObject.attempts + 1,
                     "updated_at": func.now(),
                 },
             )
@@ -432,7 +440,6 @@ async def archive_state(session: AsyncSession, organization_id: UUID) -> dict[st
     return {
         "state": "off" if reason else "error" if recent else "on",
         "unavailable_reason": reason,
-        "bucket": settings.WORM_ARCHIVE_BUCKET,
         "prefix": settings.WORM_ARCHIVE_PREFIX,
         "last_archived_seq": counts[0],
         "chain_tip_seq": await session.scalar(

@@ -209,6 +209,10 @@ the installation does not allow it, the reason under `unavailable`.
   is logged by type, counted as `shim_request_archive_writes_total{result="failed"}`
   and the request goes on unchanged. A payload above 2,000,000 bytes is skipped
   (`skipped_size`). The request record says `stored` only when the row committed.
+  A request sent again under a held [request approval](#request-approval) (while
+  it waits, or once approved) has the same digest, so the same content: when the
+  first held request is kept, the resend is not (`result="duplicate"`, no record
+  marker); open the held request's row instead.
 - **90 days at most.** A tenant may shorten `retention_days` (1 to 90), never
   lengthen it; shortening moves existing rows' expiry forward in the same
   change. The ai_act worker deletes expired rows in batches of 1,000, at most 50
@@ -548,11 +552,14 @@ partial month). Never the request archive, findings or anything with content.
 - Each upload carries its SHA-256 checksum; after a crash, an object already in
   the bucket with the same checksum is recorded without a second upload. At most
   50 objects a pass; a failure is recorded per object and retried with the same
-  range. Uploads run outside any database transaction. `worm_archive_objects`
+  range. Uploads run outside any database transaction. Each S3 call gives up
+  after 5 seconds to connect or 30 to read, with one retry, and a whole pass
+  after 5 minutes (a worker error), so a slow endpoint never holds up the rest of
+  the audit maintenance. `worm_archive_objects`
   holds the references (`ai_act_audit_anchor.external_ref` stays null: the anchor
   row cannot be updated after insert).
 - Not offered in the hosted cloud. `GET /api/v1/compliance/archive` shows the
-  state to readers, never a credential.
+  state to readers, never a credential or the installation's bucket name.
 
 ## KVKK exposure report
 

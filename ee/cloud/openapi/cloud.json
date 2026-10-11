@@ -1091,17 +1091,6 @@
             "title": "Anchors Archived",
             "type": "integer"
           },
-          "bucket": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Bucket"
-          },
           "chain_tip_seq": {
             "anyOf": [
               {
@@ -1171,7 +1160,6 @@
         "required": [
           "state",
           "unavailable_reason",
-          "bucket",
           "prefix",
           "last_archived_seq",
           "chain_tip_seq",

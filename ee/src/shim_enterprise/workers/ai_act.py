@@ -15,7 +15,12 @@ from shim_enterprise.ai_act.anchor import write_anchor
 from shim_enterprise.ai_act.models import AIActAuditLog
 from shim_enterprise.ai_act.oversight import expire_pending, run_oversight_evaluation
 from shim_enterprise.ai_act.retention import archive_expired
-from shim_enterprise.ai_act.worm import archive_pass, build_client, unavailable_reason
+from shim_enterprise.ai_act.worm import (
+    WORM_PASS_TIMEOUT_SECONDS,
+    archive_pass,
+    build_client,
+    unavailable_reason,
+)
 from shim_enterprise.approvals.gate import delete_old_approvals
 from shim_enterprise.archive.service import delete_expired
 from shim_enterprise.compliance.services.monthly_evidence import (
@@ -77,7 +82,8 @@ class AuditMaintenanceWorker:
         worm, worm_failures = 0, 0
         if unavailable_reason() is None:
             try:
-                worm = await archive_pass(self.session_factory, build_client())
+                async with asyncio.timeout(WORM_PASS_TIMEOUT_SECONDS):
+                    worm = await archive_pass(self.session_factory, build_client())
             except Exception as exc:
                 worm_failures = 1
                 logger.error(

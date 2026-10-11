@@ -11,11 +11,12 @@ from typing import Any
 from uuid import UUID
 
 from cryptography.fernet import Fernet
-from sqlalchemy import func, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.gateway.kernel.result import PreparedInference
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim_enterprise.approvals.models import RequestApproval
 from shim_enterprise.archive.models import RequestArchive
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.config import settings
@@ -96,6 +97,25 @@ async def _mark(session: AsyncSession, prepared: PreparedInference, value: str) 
     )
 
 
+def _held_copy(prepared: PreparedInference) -> Any:
+    """Whether the request this one resends under its approval id is kept already:
+    the same digest, so the same content, and one copy is enough."""
+    held = (
+        select(RequestApproval.request_id)
+        .where(
+            RequestApproval.organization_id == prepared.tenant_id,
+            RequestApproval.id == UUID(str(prepared.approval_id)),
+        )
+        .scalar_subquery()
+    )
+    return select(
+        exists().where(
+            RequestArchive.organization_id == prepared.tenant_id,
+            RequestArchive.request_id == held,
+        )
+    )
+
+
 async def archive_request(
     session_factory: Callable[[], AsyncSession], prepared: PreparedInference
 ) -> None:
@@ -111,9 +131,15 @@ async def archive_request(
         edits = {} if privacy is None else dict(privacy.verification_map)
         sealed = await asyncio.to_thread(_sealed, prepared.payload, edits)
         async with session_factory() as session, session.begin():
-            if sealed is None:
-                await _mark(session, prepared, "skipped_size")
+            if prepared.approval_id is not None and await session.scalar(
+                _held_copy(prepared)
+            ):
+                result = "duplicate"
+            elif sealed is None:
+                result = "skipped_size"
+                await _mark(session, prepared, result)
             else:
+                result = "stored"
                 size, masked, edit = sealed
                 session.add(
                     RequestArchive(
@@ -129,14 +155,12 @@ async def archive_request(
                         expires_at=func.now() + timedelta(days=days),
                     )
                 )
-                await _mark(session, prepared, "stored")
+                await _mark(session, prepared, result)
     except Exception as exc:
         REQUEST_ARCHIVE_WRITES_TOTAL.labels(result="failed").inc()
         logger.warning("Request archive write failed type=%s", type(exc).__name__)
         return
-    REQUEST_ARCHIVE_WRITES_TOTAL.labels(
-        result="skipped_size" if sealed is None else "stored"
-    ).inc()
+    REQUEST_ARCHIVE_WRITES_TOTAL.labels(result=result).inc()
 
 
 class ArchiveUndecryptable(Exception):
