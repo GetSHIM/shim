@@ -9401,6 +9401,21 @@
             "description": "null turns the alarm off; left unchanged when absent.",
             "title": "Bulk Threshold"
           },
+          "embeddings_monitor_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replaces the stored list whole; left unchanged when absent.",
+            "title": "Embeddings Monitor Types"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9502,6 +9517,14 @@
             "title": "Effective Actions",
             "type": "object"
           },
+          "embeddings_monitor_types": {
+            "description": "Entity types an embeddings request only counts and sends unchanged where their action masks or blocks them; chat keeps the action.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Embeddings Monitor Types",
+            "type": "array"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9546,6 +9569,7 @@
           "bulk_threshold",
           "response_scan",
           "placeholder_mode",
+          "embeddings_monitor_types",
           "effective_actions"
         ],
         "title": "PrivacySettings",
