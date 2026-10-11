@@ -130,17 +130,17 @@ def validate_rule_set(
             raise _refusal(
                 "RULE_MATCH_INVALID", f"rules[{index}].match", error
             ) from None
-        stored = match.model_dump(mode="json")
+        dumped = match.model_dump(mode="json")
         for name, kind, key in _SET_LIMITS:
             if rule.kind == kind:
-                totals[name] += len(stored[key])
+                totals[name] += len(dumped[key])
                 if totals[name] > LIMITS[name]:
                     raise RuleSetError(
                         "RULE_SET_INVALID",
                         f"rules[{index}].match.{key}",
                         f"a rule set holds at most {LIMITS[name]:,} {key}",
                     )
-        rules.append(rule.model_copy(update={"match": stored}))
+        rules.append(rule.model_copy(update={"match": dumped}))
     return RuleSet(revision=rule_set.revision, rules=tuple(rules))
 
 
