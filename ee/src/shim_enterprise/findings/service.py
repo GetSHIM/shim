@@ -188,15 +188,13 @@ def _request_ids(
     return type_coerce(ordered, ARRAY(Text))[1:EVIDENCE_REQUEST_IDS]
 
 
-def _priced_settlement(
-    request_id: Any, tenant_id: UUID, ledger: Any = UsageLedger
-) -> Any:
+def _priced_settlement(request_id: Any, tenant_id: UUID) -> Any:
     # One settlement per request at most, so this join never repeats a row.
     return (
-        (ledger.organization_id == tenant_id)
-        & (ledger.request_id == request_id)
-        & (ledger.event_type == "spend_settlement")
-        & ledger.event_metadata["pricing"]["pricing_resolution"]
+        (UsageLedger.organization_id == tenant_id)
+        & (UsageLedger.request_id == request_id)
+        & (UsageLedger.event_type == "spend_settlement")
+        & UsageLedger.event_metadata["pricing"]["pricing_resolution"]
         .as_string()
         .is_distinct_from("unknown")
     )
