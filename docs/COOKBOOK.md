@@ -507,11 +507,14 @@ including on providers and local models that do not enforce it.
 What is read: OpenAI `response_format` and Responses `text.format`
 (`json_schema` or `json_object`), Anthropic `output_config.format` and
 `output_format`, Gemini `responseJsonSchema`, `responseSchema` (OpenAPI types)
-and `responseMimeType: application/json`, and each offered tool's parameters.
-With tool calls in the answer, every call is checked against its tool; a call
-to a tool that was not offered is `unknown_tool`, a built-in tool's call is
-skipped. A detected value inside the schema (an `enum` of e-mail addresses) is
-restored before the check, as the answer was.
+and `responseMimeType: application/json` (another type, such as `text/x.enum`,
+is not JSON and is not checked), and each offered tool's parameters, Chat's
+legacy `functions` included. With tool calls in the answer, every call is
+checked against its tool; a call to a tool that was not offered is
+`unknown_tool`, with `error_tool` set only when the name is one a provider
+would accept, and a built-in tool's call is skipped. A detected value inside an
+`enum` or `const` (e-mail addresses) is restored before the check, as the
+answer was; property names and `required` entries stay masked.
 
 shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
 `const`, `properties`, `required`, `additionalProperties`, `minProperties`,
@@ -519,7 +522,8 @@ shim checks a subset of JSON Schema, with no dependency: `type`, `enum`,
 `minLength`, `maxLength`, `minimum`, `maximum`, `exclusiveMinimum`,
 `exclusiveMaximum`, `multipleOf`, `allOf`, `anyOf`, `oneOf` and `$ref` within
 the document. Any other keyword, `pattern` included, is listed in
-`unsupported_keywords` and makes `valid` `null` instead of guessing; `pattern`
+`unsupported_keywords` (a keyword outside JSON Schema's own vocabulary is
+listed as `unknown`, so no schema text is recorded) and makes `valid` `null` instead of guessing; `pattern`
 is never run, so a tenant's expression cannot stall the gateway. `valid` is
 `null` with a `reason` when the answer was truncated (`truncated`), refused,
 filtered or empty, when the answer or the schema is too large (`too_large`),

@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 import math
 from typing import Any, Literal
 
-Reason = Literal["depth", "nodes", "too_large", "bad_schema"]
+Reason = Literal["depth", "nodes", "bad_schema"]
 
 _ANNOTATIONS = frozenset(
     {
@@ -36,6 +36,39 @@ _ANNOTATIONS = frozenset(
     }
 )
 _OPENAPI_ANNOTATIONS = frozenset({"propertyOrdering", "example", "nullable"})
+# What `unsupported` may name; any other keyword is "unknown", so no schema text is recorded.
+_UNSUPPORTED = frozenset(
+    {
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "$id",
+        "$recursiveRef",
+        "$ref",
+        "contains",
+        "dependencies",
+        "dependentRequired",
+        "dependentSchemas",
+        "else",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "if",
+        "maxContains",
+        "minContains",
+        "not",
+        "nullable",
+        "pattern",
+        "patternProperties",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+# Counts Gemini's int64 fields may carry as decimal strings.
+_COUNTS = frozenset(
+    {"minItems", "maxItems", "minLength", "maxLength", "minProperties", "maxProperties"}
+)
 _MAX_UNSUPPORTED = 16
 _MAX_SEGMENT = 64
 _MAX_PATH = 512
@@ -79,24 +112,18 @@ def _types(value: Any) -> set[str]:
     return set()
 
 
+def _count(argument: Any) -> Any:
+    """Gemini's int64 counts may arrive as decimal strings."""
+
+    if not isinstance(argument, str):
+        return argument
+    if not (argument.isascii() and argument.isdigit()):
+        raise _Stop("bad_schema")
+    return int(argument)
+
+
 def _number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
-
-
-def _equal(left: Any, right: Any) -> bool:
-    """JSON equality: 1 equals 1.0, true never equals 1."""
-
-    if isinstance(left, bool) or isinstance(right, bool):
-        return type(left) is type(right) and left == right
-    if _number(left) and _number(right):
-        return left == right
-    if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(map(_equal, left, right))
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(
-            _equal(value, right[key]) for key, value in left.items()
-        )
-    return type(left) is type(right) and left == right
 
 
 class _Run:
@@ -111,7 +138,7 @@ class _Run:
     def resolve(self, reference: Any) -> Any:
         if not isinstance(reference, str):
             raise _Stop("bad_schema")
-        if not reference.startswith("#"):
+        if reference != "#" and not reference.startswith("#/"):
             return None
         node = self.root
         for part in reference[1:].split("/")[1:] if reference != "#" else []:
@@ -125,17 +152,36 @@ class _Run:
         return node
 
     def unknown(self, keyword: str) -> bool | None:
-        self.unsupported.add(keyword[:_MAX_SEGMENT])
+        self.unsupported.add(keyword if keyword in _UNSUPPORTED else "unknown")
         return None
+
+    def visit(self, count: int = 1) -> None:
+        self.nodes += count
+        if self.nodes > self.max_nodes:
+            raise _Stop("nodes")
+
+    def key(self, value: Any) -> Any:
+        """A hashable form under JSON equality: 1 equals 1.0, true never equals 1."""
+
+        self.visit()
+        if isinstance(value, bool):
+            return "b", value
+        if _number(value):
+            return "n", value
+        if isinstance(value, list):
+            return "l", tuple(self.key(item) for item in value)
+        if isinstance(value, dict):
+            return "d", frozenset(
+                (name, self.key(item)) for name, item in value.items()
+            )
+        return type(value).__name__, value
 
     def evaluate(
         self, value: Any, schema: Any, path: tuple[str, ...], depth: int
     ) -> _Result:
         if depth > self.max_depth:
             raise _Stop("depth")
-        self.nodes += 1
-        if self.nodes > self.max_nodes:
-            raise _Stop("nodes")
+        self.visit()
         if schema is True:
             return _TRUE
         if schema is False:
@@ -172,6 +218,8 @@ class _Run:
     ) -> _Result:
         if keyword in _ANNOTATIONS or (keyword == "$id" and schema is self.root):
             return _TRUE
+        if keyword in _COUNTS:
+            argument = _count(argument)
         if self.openapi and keyword in _OPENAPI_ANNOTATIONS:
             return _TRUE
         if keyword == "type":
@@ -180,10 +228,11 @@ class _Run:
                 allowed = {name.lower() for name in allowed}
                 if schema.get("nullable") is True:
                     allowed.add("null")
-            return (True, None) if _types(value) & allowed else (False, None)
+            return _TRUE if _types(value) & allowed else (False, None)
         if keyword in {"enum", "const"}:
             options = argument if keyword == "enum" else [argument]
-            return (any(_equal(value, option) for option in options), None)
+            key = self.key(value)
+            return (any(self.key(option) == key for option in options), None)
         if keyword == "$ref":
             target = self.resolve(argument)
             if target is None:
@@ -255,6 +304,8 @@ class _Run:
                     unknown = unknown or state is None
             return (None, None) if unknown else _TRUE
         if keyword == "required":
+            if not all(isinstance(name, str) for name in argument):
+                raise _Stop("bad_schema")
             missing = next((name for name in argument if name not in value), None)
             return _TRUE if missing is None else (False, ((*path, missing), keyword))
         if keyword == "additionalProperties":
@@ -291,11 +342,14 @@ class _Run:
             keyword == "items" and isinstance(argument, list)
         ):
             # Draft 7's list form of items is what 2020-12 calls prefixItems.
-            pairs = list(enumerate(argument[: len(value)]))
+            pairs = enumerate(argument[: len(value)])
         elif keyword == "items":
             prefix = schema.get("prefixItems")
             start = len(prefix) if isinstance(prefix, list) else 0
-            pairs = [(index, argument) for index in range(start, len(value))]
+            # An array longer than what is left of the budget stops before the walk.
+            if self.nodes + len(value) - start > self.max_nodes:
+                raise _Stop("nodes")
+            pairs = ((index, argument) for index in range(start, len(value)))
         else:
             pairs = None
         if pairs is not None:
@@ -315,13 +369,12 @@ class _Run:
         if keyword == "uniqueItems":
             if not argument:
                 return _TRUE
-            # ponytail: O(n²) pairs, bounded by max_nodes; hashing JSON equality would cost more code.
-            for index, item in enumerate(value):
-                self.nodes += len(value) - index
-                if self.nodes > self.max_nodes:
-                    raise _Stop("nodes")
-                if any(_equal(item, other) for other in value[index + 1 :]):
+            seen: set[Any] = set()
+            for item in value:
+                key = self.key(item)
+                if key in seen:
                     return False, None
+                seen.add(key)
             return _TRUE
         if keyword in _APPLIES_TO:
             return _TRUE
@@ -345,9 +398,7 @@ class _Run:
         if keyword == "allOf":
             return (None, None) if unknowns else _TRUE
         if keyword == "anyOf":
-            return (
-                (True, None) if trues else (None, None) if unknowns else (False, None)
-            )
+            return _TRUE if trues else (None, None) if unknowns else (False, None)
         if trues >= 2:
             return False, None
         if trues == 1 and not unknowns:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Literal
 
-from shim.gateway.pipeline.analysis import AnalysisContext
+from shim.gateway.pipeline.analysis import TOOL_NAME, AnalysisContext
 from shim.jsonschema_subset import SchemaCheck, check
 
 Dialect = Literal["json_schema", "openapi"]
@@ -14,6 +14,8 @@ Dialect = Literal["json_schema", "openapi"]
 MAX_SCHEMA_CHARACTERS = 100_000
 MAX_TOOL_CALLS = 64
 _JSON_FORMATS = frozenset({"json_object", "json_schema"})
+# Maps of name to subschema; their names are keys, never values.
+_SCHEMA_MAPS = frozenset({"properties", "patternProperties", "$defs", "definitions"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +62,11 @@ def requested_output(payload: dict[str, Any], protocol: str) -> RequestedOutput 
         return RequestedOutput("json_schema", _at(found, "schema"), "json_schema", True)
     if protocol == "generate_content":
         config = payload.get("generationConfig")
-        if not isinstance(config, dict):
+        # An enum or text answer (text/x.enum) is not JSON, whatever its schema.
+        if not isinstance(config, dict) or config.get("responseMimeType") not in (
+            None,
+            "application/json",
+        ):
             return None
         if "responseJsonSchema" in config:
             return RequestedOutput(
@@ -82,11 +88,28 @@ def _tool_schemas(
 
     tools = payload.get("tools")
     found: dict[str, _ToolSchema | None] = {}
-    for tool in tools if isinstance(tools, list) else []:
+    legacy = payload.get("functions")
+    functions = (
+        [
+            *(
+                _at(tool, "function")
+                for tool in (tools if isinstance(tools, list) else [])
+            ),
+            # Chat's legacy `functions`, called with `function_call`.
+            *(legacy if isinstance(legacy, list) else []),
+        ]
+        if protocol == "chat"
+        else []
+    )
+    for function in functions:
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            found[function["name"]] = _ToolSchema(
+                _parameters(function), "json_schema", function.get("strict") is True
+            )
+    for tool in tools if isinstance(tools, list) and protocol != "chat" else []:
         if not isinstance(tool, dict):
             continue
         if protocol == "generate_content":
-            found.update(dict.fromkeys(set(tool) - {"functionDeclarations"}))
             for declaration in tool.get("functionDeclarations") or []:
                 if isinstance(declaration, dict) and isinstance(
                     declaration.get("name"), str
@@ -103,17 +126,6 @@ def _tool_schemas(
                         schema = None
                     found[declaration["name"]] = schema
             continue
-        if protocol == "chat":
-            function = tool.get("function")
-            if isinstance(function, dict) and isinstance(function.get("name"), str):
-                found[function["name"]] = _ToolSchema(
-                    function.get("parameters", {}),
-                    "json_schema",
-                    function.get("strict") is True,
-                )
-            elif isinstance(_at(tool, "custom", "name"), str):
-                found[tool["custom"]["name"]] = None
-            continue
         # A built-in has only a type; its calls are not the app's to check.
         name = tool.get("name", tool.get("type"))
         if not isinstance(name, str):
@@ -121,9 +133,7 @@ def _tool_schemas(
         if protocol == "responses":
             found[name] = (
                 _ToolSchema(
-                    tool.get("parameters", {}),
-                    "json_schema",
-                    tool.get("strict") is True,
+                    _parameters(tool), "json_schema", tool.get("strict") is True
                 )
                 if tool.get("type") == "function"
                 else None
@@ -139,30 +149,62 @@ def _tool_schemas(
     return found
 
 
-def _restored(schema: Any, restore) -> Any:
-    """A copy with every string turned back from its placeholder, as the answer was."""
+def _parameters(tool: dict[str, Any]) -> Any:
+    # Absent or null parameters: a function that takes no arguments.
+    parameters = tool.get("parameters")
+    return {} if parameters is None else parameters
 
-    if isinstance(schema, str):
-        return restore(schema)
+
+def _restored(schema: Any, restore) -> Any:
+    """A copy whose enum and const strings are turned back from placeholders, as the answer was.
+
+    Property names and `required` entries stay masked, so no restored value can reach
+    an error path.
+    """
+
     if isinstance(schema, list):
         return [_restored(item, restore) for item in schema]
-    if isinstance(schema, dict):
-        return {key: _restored(value, restore) for key, value in schema.items()}
-    return schema
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: _restored_value(value, restore)
+        if key in ("enum", "const")
+        else {name: _restored(item, restore) for name, item in value.items()}
+        if key in _SCHEMA_MAPS and isinstance(value, dict)
+        else _restored(value, restore)
+        for key, value in schema.items()
+    }
+
+
+def _restored_value(value: Any, restore) -> Any:
+    if isinstance(value, str):
+        return restore(value)
+    if isinstance(value, list):
+        return [_restored_value(item, restore) for item in value]
+    if isinstance(value, dict):
+        return {key: _restored_value(item, restore) for key, item in value.items()}
+    return value
 
 
 def _parse(text: str) -> tuple[bool, Any]:
     try:
         return True, json.loads(text.strip() or "null")
-    except ValueError:
+    except (ValueError, RecursionError):
         return False, None
 
 
-def _too_large(schema: Any) -> bool:
-    return (
-        len(json.dumps(schema, separators=(",", ":"), default=str))
-        > MAX_SCHEMA_CHARACTERS
-    )
+def _prepared(schema: Any, restore) -> tuple[Any, str | None]:
+    """The schema ready to check, or why it cannot be."""
+
+    try:
+        if (
+            len(json.dumps(schema, separators=(",", ":"), default=str))
+            > MAX_SCHEMA_CHARACTERS
+        ):
+            return None, "too_large"
+        return _restored(schema, restore), None
+    except RecursionError:
+        return None, "depth"
 
 
 class SchemaAnalyzer:
@@ -209,14 +251,10 @@ class SchemaAnalyzer:
             if not isinstance(instance, dict):
                 return {**result, "valid": False, "error_keyword": "type"}
             return {**result, "valid": True}
-        if _too_large(requested.schema):
-            return {**result, "reason": "too_large"}
-        found = check(
-            instance,
-            _restored(requested.schema, ctx.restore),
-            dialect=requested.dialect,
-        )
-        return _merged(result, found, "")
+        schema, reason = _prepared(requested.schema, ctx.restore)
+        if reason:
+            return {**result, "reason": reason}
+        return _merged(result, check(instance, schema, dialect=requested.dialect), "")
 
     def _tool_args(
         self,
@@ -228,20 +266,26 @@ class SchemaAnalyzer:
         checked: list[bool] = []
         unsupported: set[str] = set()
         reason = None
+        prepared: dict[str, tuple[Any, str | None]] = {}
         for index, call in enumerate(ctx.tool_calls[:MAX_TOOL_CALLS]):
+            if not call.name:
+                # A chat stream's custom tool call carries no function name.
+                continue
             prefix = f"/tool_calls/{index}"
-            failure = {"valid": False, "error_tool": call.name[:64]}
+            tool = tools.get(call.name)
             if call.name not in tools:
                 return {
                     **result,
-                    **failure,
+                    "valid": False,
                     "error_path": prefix,
                     "error_keyword": "unknown_tool",
+                    # The name is the model's text: recorded only as providers allow it.
+                    "error_tool": call.name if TOOL_NAME.fullmatch(call.name) else None,
                 }
-            tool = tools[call.name]
             if tool is None:
                 continue
             checked.append(tool.strict)
+            failure = {"valid": False, "error_tool": call.name, "strict": tool.strict}
             parsed, arguments = _parse(call.arguments or "{}")
             if not parsed:
                 return {
@@ -250,18 +294,18 @@ class SchemaAnalyzer:
                     "error_path": prefix,
                     "error_keyword": "parse",
                 }
-            if _too_large(tool.schema):
-                unknown, reason = True, reason or "too_large"
+            if call.name not in prepared:
+                prepared[call.name] = _prepared(tool.schema, ctx.restore)
+            schema, unusable = prepared[call.name]
+            if unusable:
+                unknown, reason = True, reason or unusable
                 continue
-            found = check(
-                arguments, _restored(tool.schema, ctx.restore), dialect=tool.dialect
-            )
+            found = check(arguments, schema, dialect=tool.dialect)
             unsupported.update(found.unsupported)
             if found.valid is False:
-                merged = _merged(result, found, prefix)
                 return {
-                    **merged,
-                    "error_tool": call.name[:64],
+                    **_merged(result, found, prefix),
+                    **failure,
                     "unsupported_keywords": sorted(unsupported)[:16],
                     "unsupported": bool(unsupported),
                 }
