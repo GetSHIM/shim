@@ -144,6 +144,49 @@ def test_claude_opus_4_5_versioned_alias_is_priced() -> None:
     ) == Decimal("35")
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-4o-" + "x" * 13_000,
+        "gpt-4o-" + "x" * 194,
+        "gpt-4o-john.doe@example.com",
+        "gpt-4o-john doe",
+        "gpt-4o-\nx",
+        "gpt-4o-\x00",
+        " gpt-4o",
+    ],
+    ids=["13kb", "201-chars", "email", "space", "newline", "nul", "padded"],
+)
+def test_a_model_id_that_is_not_id_shaped_is_never_supported(model: str) -> None:
+    assert not DEFAULT_PRICE_BOOK.supports(model)
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "entry"),
+    [
+        ("openai", "gpt-4o-2024-08-06", "gpt-4o-2024-08-06"),
+        ("openai", "gpt-4o-mini-2024-07-18", "gpt-4o-mini"),
+        pytest.param("openai", "GPT-4o-" + "x" * 193, "gpt-4o", id="200-chars"),
+        ("anthropic", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"),
+        ("google", "gemini-2.5-pro-preview-06-05", "gemini-2.5-pro"),
+        # Served only through a registered deployment alias, never the catalog.
+        ("openai", "ft:gpt-4o-mini:org::id", None),
+        ("anthropic", "anthropic.claude-sonnet-4-5-20250929-v1:0", None),
+        ("openai", "llama3:8b", None),
+        ("openai", "meta-llama/Llama-3.1-8B-Instruct", None),
+        ("google", "models/gemini-2.5-pro", None),
+    ],
+)
+def test_real_model_ids_keep_their_catalog_answer_and_price(
+    provider: str, model: str, entry: str | None
+) -> None:
+    assert DEFAULT_PRICE_BOOK.supports(model, provider) is (entry is not None)
+    if entry is not None:
+        assert DEFAULT_PRICE_BOOK.resolve(model, provider) is DEFAULT_PRICE_BOOK.exact(
+            entry, provider
+        )
+
+
 def test_negative_usage_is_rejected() -> None:
     with pytest.raises(ValueError, match="cannot be negative"):
         compute_cost_usd("gpt-5.6-luna", -1, 0)

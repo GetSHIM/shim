@@ -8,6 +8,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 import json
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Any
 
@@ -18,6 +19,9 @@ TOKENS_PER_MILLION = Decimal("1000000")
 COST_QUANTUM = Decimal("0.00000001")
 DEFAULT_MAX_OUTPUT_TOKENS = 200_000
 UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
+# The repo's existing id rules (deployment aliases, Gemini path ids, the catalog's
+# 200 cap) in one: it bounds what a caller can make the gateway store as a model.
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 _MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
 _STATUSES = frozenset({"alpha", "beta", "deprecated"})
@@ -206,7 +210,7 @@ class PriceBook:
         return self.provider_prices.get(provider, {}).get(model.strip().casefold())
 
     def supports(self, model: str | None, provider: str = "openai") -> bool:
-        if model is None or not model.strip():
+        if model is None or not _MODEL_ID.fullmatch(model):
             return False
         normalized = _normalize_model(model)
         prices = self.provider_prices.get(provider, {})
