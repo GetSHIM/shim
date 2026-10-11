@@ -56,6 +56,8 @@ class TaskCounter(Protocol):
         self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
     ) -> None: ...
 
+    async def release_call(self, tenant_id: str, task_key: str) -> None: ...
+
 
 @dataclass(slots=True)
 class InFlightEntry:
@@ -321,6 +323,11 @@ class InMemoryTaskCounter:
             amount=micro_usd,
             window_seconds=window_seconds,
         )
+
+    async def release_call(self, tenant_id: str, task_key: str) -> None:
+        key = (tenant_id, task_key, "calls")
+        if calls := self._current(key):
+            self._counters.windows[key] = (calls - 1, self._counters.windows[key][1])
 
 
 def _validate_rate_window(

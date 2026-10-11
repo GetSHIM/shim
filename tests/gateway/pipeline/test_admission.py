@@ -1395,6 +1395,21 @@ async def test_a_task_past_its_calls_cap_is_refused_and_untasked_calls_pass(
 
 
 @pytest.mark.asyncio
+async def test_a_call_the_quota_refuses_gives_its_task_call_back() -> None:
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, usage, _ = _limit_stage({"x-shim-task-id": "t-1"})
+    usage.admit.side_effect = [HTTPException(429, detail="quota"), None]
+    prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
+
+    with pytest.raises(HTTPException):
+        await stage.run(prepared)
+    admitted = await stage.run(replace(prepared, policy_verdicts=[]))
+
+    assert admitted.admission is not None and admitted.admission.task_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() -> None:
     from shim.gateway.admission import TaskAdmission
     from shim.gateway.request_policy import TaskCaps
@@ -1549,6 +1564,25 @@ async def test_only_a_shareable_twin_of_the_same_key_follows(
     assert admitted.admission is not None
     assert admitted.admission.inflight_duplicate_of == "req_1"
     assert (stage.leader is not None) is follows
+
+
+@pytest.mark.asyncio
+async def test_a_twin_arriving_after_the_answer_was_published_calls_itself() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    first = await _inflight_stage(registry).run(_twin("req_1"))
+    assert first.admission is not None
+    # The leader has its answer and is still finalizing: it has not left yet.
+    registry.publish(
+        str(first.tenant_id), str(first.admission.request_digest), "req_1", "answer"
+    )
+    stage = _inflight_stage(registry)
+    late = await stage.run(_twin("req_2"))
+
+    assert late.admission is not None
+    assert late.admission.inflight_duplicate_of == "req_1"
+    assert stage.leader is None
 
 
 @pytest.mark.asyncio

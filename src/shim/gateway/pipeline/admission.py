@@ -416,12 +416,14 @@ class AdmissionStage:
                 shareable,
             )
         )
-        # An answer never crosses keys.
+        # An answer never crosses keys, and one already published belongs to a call
+        # that was finishing, not one this request waited on.
         if (
             shareable
             and earlier is not None
             and earlier.shareable
             and earlier.api_key_id == str(value.api_key_id)
+            and not (earlier.outcome is not None and earlier.outcome.done())
         ):
             self.leader = earlier
         admission = AdmissionState(
@@ -444,6 +446,11 @@ class AdmissionStage:
                 self.inflight.leave(
                     str(value.tenant_id), request_digest, str(value.request_id)
                 )
+                # A call the quota refused is not one of the task's calls.
+                if task_calls and task_id is not None:
+                    await self.task_counter.release_call(
+                        str(value.tenant_id), _task_key(task_id)
+                    )
                 raise
             self.reserved = True
         return replace(
@@ -461,7 +468,7 @@ class AdmissionStage:
             return None
         task = await self.task_counter.admit_call(
             str(value.tenant_id),
-            hashlib.sha256(task_id.encode()).hexdigest(),
+            _task_key(task_id),
             max_calls=caps.max_calls,
             max_cost_micro_usd=micro_usd(caps.max_cost_usd),
             window_seconds=caps.window_seconds,
@@ -653,6 +660,11 @@ def _tool_signature(payload: Mapping[str, object], protocol: str) -> str | None:
         [protocol, calls], sort_keys=True, separators=(",", ":"), default=str
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _task_key(task_id: str) -> str:
+    """Counters hold a digest, never the task id itself."""
+    return hashlib.sha256(task_id.encode()).hexdigest()
 
 
 def _listed(value: object) -> list:

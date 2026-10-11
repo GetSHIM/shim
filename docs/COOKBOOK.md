@@ -496,7 +496,7 @@ Notes:
   cross it, concurrent calls can each pass before any cost lands, and unpriced
   requests add nothing; `SHIM_TASK_WINDOW_SECONDS` (60 to 86,400, default 3600)
   is how long a task's counters live from its first call. A request without a task
-  id is never capped. Task caps are advisory: the caller names its task, so a
+  id is never capped, and a call the quota refuses is given back to its task. Task caps are advisory: the caller names its task, so a
   caller that rotates or omits its task id is not capped; use key and team limits
   for a hard bound. Counters live in the process; when it is full, expired tasks
   go first, then the least recently used. The loop signal is on by
@@ -522,7 +522,8 @@ Notes:
   streams, Responses (provider-side conversation state), token counts, `n` above 1
   or Gemini `candidateCount` above 1, an explicit `temperature` above 0, and other
   keys. If the first request fails or is cancelled, the second calls the provider
-  itself, once. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
+  itself, once; so does one that arrives after the first one's answer is in, while
+  it is still finishing. Its usage event reads 0 tokens and cost `"0"`, and `inflight_share`
   holds `leader_request_id`, the shared answer's `prompt_tokens` and
   `completion_tokens`, and `avoided_cost_usd` at its own price; the first request's
   event carries the provider call and its cost, so the events add up to the
