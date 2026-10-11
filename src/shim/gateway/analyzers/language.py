@@ -50,13 +50,13 @@ def _turkish_lower(word: str) -> str:
     return word.replace("İ", "i").replace("I", "ı").lower()
 
 
-def _fold(word: str) -> str:
+def fold(word: str) -> str:
     return _turkish_lower(word).translate(_ASCII_FOLD)
 
 
-_TR_WORDS = frozenset(_fold(word) for word in _DATA["tr_function_words"])
+_TR_WORDS = frozenset(fold(word) for word in _DATA["tr_function_words"])
 _EN_WORDS = frozenset(_DATA["en_function_words"])
-_TR_SUFFIXES = tuple(_fold(suffix) for suffix in _DATA["tr_suffixes"])
+_TR_SUFFIXES = tuple(fold(suffix) for suffix in _DATA["tr_suffixes"])
 
 
 def _latin(character: str) -> bool:
@@ -76,7 +76,7 @@ def label(text: str) -> tuple[Label, bool, int]:
     turkish = english = 0.0
     strong = turkish_hits = 0
     for word in words:
-        folded = _fold(word)
+        folded = fold(word)
         if _STRONG.intersection(word):
             turkish += _DATA["strong_letter_score"]
             strong += 1

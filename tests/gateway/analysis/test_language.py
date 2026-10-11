@@ -9,7 +9,7 @@ import pytest
 
 from shim.gateway.analyzers.language import (
     LanguageAnalyzer,
-    _fold,
+    fold,
     _turkish_lower,
     label,
     request_text,
@@ -174,7 +174,7 @@ def test_code_urls_mail_and_placeholders_are_removed_first() -> None:
 
 def test_turkish_lowercase_and_the_ascii_fold() -> None:
     assert _turkish_lower("IŞIK İzmir") == "ışık izmir"
-    assert _fold("Çok Güzel ŞİMDİ") == "cok guzel simdi"
+    assert fold("Çok Güzel ŞİMDİ") == "cok guzel simdi"
     assert (
         label("cok guzel olmus, bu konuda bana biraz daha yardim eder misin")[0] == "tr"
     )
@@ -201,7 +201,7 @@ def test_the_word_lists_are_valid() -> None:
     turkish, english = data["tr_function_words"], data["en_function_words"]
 
     assert len(turkish) == len(set(turkish)) and len(english) == len(set(english))
-    folded = {_fold(word) for word in turkish}
+    folded = {fold(word) for word in turkish}
     assert len(folded) == len(turkish)
     assert not folded & {word.lower() for word in english}
     assert not {"de", "da", "ne", "mi", "o", "en", "ya", "her"} & (
