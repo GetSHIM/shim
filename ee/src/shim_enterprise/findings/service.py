@@ -8,6 +8,7 @@ from types import MappingProxyType, SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import logging
+import re
 from typing import Any, Literal, NamedTuple, get_args
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from sqlalchemy import (
     and_,
     case,
     cast,
+    distinct,
     func,
     not_,
     or_,
@@ -67,6 +69,9 @@ UNREGISTERED_MODEL = "gateway.unregistered_model"
 BYOK_USAGE = "gateway.byok_usage"
 TRUNCATION_RATE = "gateway.truncation_rate"
 REFUSAL_RATE = "gateway.refusal_rate"
+LANGUAGE_DRIFT = "gateway.language_drift"
+SCHEMA_ERRORS = "gateway.schema_errors"
+SOFT_REFUSALS = "gateway.soft_refusals"
 RULE_VERSION = 1
 RULE_VERSIONS = {RETRY_STORM: 2, REPEAT_SPEND: 2, UNUSED_DEPLOYMENT: 2}
 
@@ -92,6 +97,21 @@ OUTCOME_RATE_WINDOW_HOURS = 24
 OUTCOME_RATE_MIN_SETTLED = 50
 TRUNCATION_RATE_THRESHOLD = Decimal("0.05")
 REFUSAL_RATE_THRESHOLD = Decimal("0.05")
+# Answer quality from the response analyzers the tenant turned on (S38, S39, S40).
+QUALITY_WINDOW_HOURS = 24
+LANGUAGE_DRIFT_MIN_REQUESTS = 20
+LANGUAGE_DRIFT_THRESHOLD = Decimal("0.10")
+SCHEMA_ERRORS_MIN_CHECKED = 20
+SCHEMA_ERRORS_THRESHOLD = Decimal("0.05")
+SOFT_REFUSAL_MIN_ANALYSED = 50
+SOFT_REFUSAL_THRESHOLD = Decimal("0.05")
+SCHEMA_KINDS = ("json_schema", "json_object", "tool_args")
+EVIDENCE_PROMPT_VERSIONS = 5
+EVIDENCE_MARKERS = 5
+# Stored values that become evidence only in these shapes: a keyed prompt digest
+# and a refusal marker id of the analyzer's phrase list.
+_PROMPT_HASH = re.compile(r"hmac-sha256:v1:[0-9a-f]{64}")
+_MARKER_ID = re.compile(r"[a-z]{2}\.[a-z0-9_]{1,48}")
 EVIDENCE_KEY_IDS = 10
 EVIDENCE_MODELS = 10
 EVIDENCE_MODELS_PER_KEY = 5
@@ -347,6 +367,81 @@ RULES: dict[str, RuleSpec] = {
         RISK_CLASS="cost",
         PLAYBOOK=_playbook(IDLE_INTERNAL_DEPLOYMENT),
         ACTION_KIND="deployment.disable",
+    ),
+    LANGUAGE_DRIFT: RuleSpec(
+        TITLE="Turkish questions to an API key are answered in English",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{drifts} of {analysed_requests} Turkish questions to this API key "
+            "in {window_hours} hours were answered in English.",
+            "tr": "Son {window_hours} saatte bu API anahtarına sorulan "
+            "{analysed_requests} Türkçe sorudan {drifts} tanesi İngilizce yanıtlandı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "If the app expects English answers, suppress this finding for the "
+            "key. Otherwise state the answer language in the system prompt, or compare "
+            "the models the evidence lists; the prompt versions it lists show which "
+            "system prompt the drifted answers had.",
+            "tr": "Uygulama İngilizce yanıt bekliyorsa bu bulguyu bu anahtar için "
+            "bastırın. Aksi halde sistem isteminde yanıt dilini belirtin ya da kanıtta "
+            "listelenen modelleri karşılaştırın; listelenen istem sürümleri kayan "
+            "yanıtların hangi sistem istemiyle geldiğini gösterir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(LANGUAGE_DRIFT),
+    ),
+    SCHEMA_ERRORS: RuleSpec(
+        TITLE="Answers to an API key often break the schema it asked for",
+        SEVERITY_ID=3,
+        SUMMARY={
+            "en": "{invalid} of {checked_requests} checked answers to this API key in "
+            "{window_hours} hours did not match the schema the app asked for.",
+            "tr": "Son {window_hours} saatte bu API anahtarına verilen ve denetlenen "
+            "{checked_requests} yanıttan {invalid} tanesi uygulamanın istediği şemaya "
+            "uymadı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Use the provider's strict structured output where it exists, keep "
+            "the schema inside the subset the gateway checks, and compare the models "
+            "the evidence lists. Each request's own record holds where its answer "
+            "failed.",
+            "tr": "Sağlayıcının katı yapılandırılmış çıktısını destekleniyorsa "
+            "kullanın, şemayı gateway'in denetlediği alt küme içinde tutun ve kanıtta "
+            "listelenen modelleri karşılaştırın. Yanıtın nerede uymadığı her isteğin "
+            "kendi kaydında yazar.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(SCHEMA_ERRORS),
+    ),
+    SOFT_REFUSALS: RuleSpec(
+        TITLE="Answers to an API key often refuse in words",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "{soft_refusals} of {analysed_requests} complete answers to this API "
+            "key in {window_hours} hours refused in words.",
+            "tr": "Son {window_hours} saatte bu API anahtarına verilen "
+            "{analysed_requests} tam yanıttan {soft_refusals} tanesi sözle reddetti.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Read the requests: a polite refusal often means the system prompt "
+            "forbids the topic, or the model's own policy differs from the app's. "
+            "Refusals the provider marks itself are gateway.refusal_rate.",
+            "tr": "İstekleri okuyun: kibar bir ret çoğu zaman sistem isteminin konuyu "
+            "yasakladığını ya da modelin kendi politikasının uygulamanınkinden farklı "
+            "olduğunu gösterir. Sağlayıcının kendisinin işaretlediği retler "
+            "gateway.refusal_rate'tedir.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="key",
+        RISK_CLASS="quality",
+        PLAYBOOK=_playbook(SOFT_REFUSALS),
     ),
 }
 
@@ -1189,6 +1284,233 @@ async def _outcome_rates(
     return detections
 
 
+def _quality_scope(tenant_id: UUID, now: datetime) -> tuple[Any, ...]:
+    return (
+        RequestLifecycle.organization_id == tenant_id,
+        RequestLifecycle.started_at >= now - timedelta(hours=QUALITY_WINDOW_HOURS),
+        RequestLifecycle.started_at <= now,
+        RequestLifecycle.api_key_id.is_not(None),
+    )
+
+
+def _per_key(rows: Any) -> dict[UUID, list[Any]]:
+    keys: dict[UUID, list[Any]] = {}
+    for row in rows:
+        keys.setdefault(row.api_key_id, []).append(row)
+    return keys
+
+
+def _quality_finding(
+    rule_id: str,
+    key_id: UUID,
+    total: tuple[str, int],
+    affected: tuple[str, int],
+    minimum: int,
+    threshold: Decimal,
+    request_ids: list[str],
+    **evidence: Any,
+) -> Detection | None:
+    """A finding for one API key once enough answers were read and enough went wrong."""
+    (total_name, total_count), (affected_name, affected_count) = total, affected
+    if total_count < minimum:
+        return None
+    rate = Decimal(affected_count) / total_count
+    if rate < threshold:
+        return None
+    return Detection(
+        rule_id=rule_id,
+        subject_key=f"api_key:{key_id}",
+        subject={"api_key_id": str(key_id)},
+        evidence={
+            "window_hours": QUALITY_WINDOW_HOURS,
+            total_name: total_count,
+            affected_name: affected_count,
+            "rate": str(round(rate, 4)),
+            "threshold_rate": str(threshold),
+            **evidence,
+            "request_ids": request_ids[:EVIDENCE_REQUEST_IDS],
+        },
+        impact={"cost_usd": None, "requests": affected_count},
+    )
+
+
+async def _language_drift(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    language = RequestLifecycle.lifecycle_metadata["response_analysis"]["language"]
+    asked, answered = language["request"].as_string(), language["answer"].as_string()
+    drift = answered == "en"
+    prompt = RequestLifecycle.lifecycle_metadata["system_prompt_hash"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            func.count().label("analysed"),
+            func.count().filter(drift).label("drifts"),
+            _request_ids(drift).label("request_ids"),
+            func.array_agg(distinct(prompt))
+            .filter(drift & prompt.is_not(None))
+            .label("prompts"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            asked == "tr",
+            answered.in_(("tr", "en")),
+        )
+        .group_by(RequestLifecycle.api_key_id, model)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        groups.sort(key=lambda row: (-row.analysed, row.model or ""))
+        prompts = {
+            value
+            for row in groups
+            for value in row.prompts or ()
+            if _PROMPT_HASH.fullmatch(value)
+        }
+        found = _quality_finding(
+            LANGUAGE_DRIFT,
+            key_id,
+            ("analysed_requests", sum(row.analysed for row in groups)),
+            ("drifts", sum(row.drifts for row in groups)),
+            LANGUAGE_DRIFT_MIN_REQUESTS,
+            LANGUAGE_DRIFT_THRESHOLD,
+            [value for row in groups for value in row.request_ids or ()],
+            models=[
+                {"model": row.model, "analysed": row.analysed, "drifts": row.drifts}
+                for row in groups[:EVIDENCE_MODELS_PER_KEY]
+            ],
+            prompt_versions=sorted(prompts)[:EVIDENCE_PROMPT_VERSIONS],
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
+async def _schema_errors(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    schema = RequestLifecycle.lifecycle_metadata["response_analysis"]["schema"]
+    expected = schema["expected"].as_string()
+    invalid = schema["valid"].as_boolean().is_(False)
+    outcome = RequestLifecycle.lifecycle_metadata["completion_outcome"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            expected.label("expected"),
+            func.count().label("checked"),
+            func.count().filter(invalid).label("invalid"),
+            _request_ids(invalid).label("request_ids"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            expected.in_(SCHEMA_KINDS),
+            schema["valid"].as_boolean().is_not(None),
+            schema["unsupported"].as_boolean().is_not(True),
+            # A truncated answer is cut JSON: gateway.truncation_rate covers it.
+            outcome == "complete",
+        )
+        .group_by(RequestLifecycle.api_key_id, model, expected)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        models: dict[str, list[int]] = {}
+        kinds: dict[str, int] = {}
+        for row in groups:
+            counted = models.setdefault(row.model, [0, 0])
+            counted[0] += row.checked
+            counted[1] += row.invalid
+            for name, value in (("checked", row.checked), ("invalid", row.invalid)):
+                field = f"{name}_{row.expected}"
+                kinds[field] = kinds.get(field, 0) + value
+        ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
+        found = _quality_finding(
+            SCHEMA_ERRORS,
+            key_id,
+            ("checked_requests", sum(row.checked for row in groups)),
+            ("invalid", sum(row.invalid for row in groups)),
+            SCHEMA_ERRORS_MIN_CHECKED,
+            SCHEMA_ERRORS_THRESHOLD,
+            [
+                value
+                for row in sorted(groups, key=lambda row: -row.invalid)
+                for value in row.request_ids or ()
+            ],
+            **dict(sorted(kinds.items())),
+            models=[
+                {"model": name, "checked": counts[0], "invalid": counts[1]}
+                for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
+            ],
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
+async def _soft_refusals(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    refusal = RequestLifecycle.lifecycle_metadata["response_analysis"]["refusal"]
+    soft = refusal["soft_refusal"].as_boolean()
+    marker = refusal["marker"].as_string()
+    outcome = RequestLifecycle.lifecycle_metadata["completion_outcome"].as_string()
+    model = shown_model(RequestLifecycle.requested_model)
+    rows = await session.execute(
+        select(
+            RequestLifecycle.api_key_id,
+            model.label("model"),
+            marker.label("marker"),
+            func.count().label("analysed"),
+            func.count().filter(soft.is_(True)).label("refused"),
+            _request_ids(soft.is_(True)).label("request_ids"),
+        )
+        .where(
+            *_quality_scope(tenant_id, now),
+            soft.is_not(None),
+            outcome == "complete",
+        )
+        .group_by(RequestLifecycle.api_key_id, model, marker)
+    )
+    detections = []
+    for key_id, groups in sorted(_per_key(rows).items()):
+        models: dict[str, list[int]] = {}
+        markers: dict[str, int] = {}
+        for row in groups:
+            counted = models.setdefault(row.model, [0, 0])
+            counted[0] += row.analysed
+            counted[1] += row.refused
+            # Marker ids are the analyzer's fixed vocabulary; anything else is dropped.
+            if row.refused and row.marker and _MARKER_ID.fullmatch(row.marker):
+                name = f"marker_{row.marker.replace('.', '_')}"
+                markers[name] = markers.get(name, 0) + row.refused
+        ranked = sorted(models.items(), key=lambda item: (-item[1][0], item[0] or ""))
+        top_markers = sorted(markers.items(), key=lambda item: (-item[1], item[0]))
+        found = _quality_finding(
+            SOFT_REFUSALS,
+            key_id,
+            ("analysed_requests", sum(row.analysed for row in groups)),
+            ("soft_refusals", sum(row.refused for row in groups)),
+            SOFT_REFUSAL_MIN_ANALYSED,
+            SOFT_REFUSAL_THRESHOLD,
+            [
+                value
+                for row in sorted(groups, key=lambda row: -row.refused)
+                for value in row.request_ids or ()
+            ],
+            **dict(top_markers[:EVIDENCE_MARKERS]),
+            models=[
+                {"model": name, "analysed": counts[0], "soft_refusals": counts[1]}
+                for name, counts in ranked[:EVIDENCE_MODELS_PER_KEY]
+            ],
+        )
+        if found is not None:
+            detections.append(found)
+    return detections
+
+
 async def evaluate_organization(
     session: AsyncSession, tenant_id: UUID, *, now: datetime
 ) -> list[Detection]:
@@ -1202,6 +1524,9 @@ async def evaluate_organization(
         (_byok_usage, (BYOK_USAGE,)),
         (_answer_quality, (ANSWER_QUALITY,)),
         (_outcome_rates, (TRUNCATION_RATE, REFUSAL_RATE)),
+        (_language_drift, (LANGUAGE_DRIFT,)),
+        (_schema_errors, (SCHEMA_ERRORS,)),
+        (_soft_refusals, (SOFT_REFUSALS,)),
     )
     detections: list[Detection] = []
     failed: list[str] = []

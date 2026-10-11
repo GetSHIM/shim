@@ -471,6 +471,7 @@ enterprise = [
   "ee/tests/core/test_enterprise_config.py",
   "ee/tests/core/test_license.py",
   "ee/tests/findings/test_findings.py",
+  "ee/tests/findings/test_quality_signals.py",
   "ee/tests/gateway/api/test_deps.py",
   "ee/tests/gateway/api/test_enterprise_errors.py",
   "ee/tests/gateway/api/test_management.py",

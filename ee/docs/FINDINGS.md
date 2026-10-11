@@ -110,6 +110,7 @@ pass, and a lowered one removes the action. Nothing already applied is undone.
 | `gateway.retry_storm`, `gateway.repeat_spend` | `observe` | none: the client's timeout and retries |
 | `gateway.answer_quality`, `gateway.truncation_rate`, `gateway.refusal_rate` | `observe` | none: the prompt, the model or the client's output limit |
 | `gateway.unregistered_model`, `gateway.byok_usage` | `observe` | none: registering needs a secret and an origin; BYOK has no tenant switch |
+| `gateway.language_drift`, `gateway.schema_errors`, `gateway.soft_refusals` | `observe` | none: the prompt, the model choice or the client |
 | `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
 | `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
 
@@ -398,6 +399,82 @@ request ids. Impact is the count of those requests; no money.
 `empty` and this `api_key_id` and apply the fix for their class.
 
 **Resolves** after 7 days below the threshold.
+
+## gateway.language_drift
+
+**Checks.** For each API key, the requests started in the last 24 hours whose
+`response_analysis.language` (the `language` analyzer, which the tenant turns on
+in its [gateway settings](COOKBOOK.md#turn-on-answer-checks-and-read-the-findings))
+labels the question `tr` and the answer `tr` or `en`. An answer in English is a
+drift. It fires when at least 20 such requests have a drift share of at least 10
+percent. An English question answered in Turkish is not a drift, and `other` or
+`unknown` answers are not counted. Severity low. Subject: the API key. Max mode
+`observe`, blast radius `key`, risk class `quality`.
+
+**Why.** An app whose users write in Turkish and read English answers is failing
+them, and nothing in the response says so.
+
+**Evidence and impact.** The analysed and drifted counts, the share and the
+threshold, up to five models with their own counts, up to five system prompt
+versions (`system_prompt_hash`) among the drifted requests, so the
+[prompt version](COOKBOOK.md#see-what-changed-after-a-prompt-change) that causes it
+shows, and up to 20 request ids. Impact is the drifted request count.
+
+**Fix.** If the app expects English answers, suppress the finding for the key.
+Otherwise state the answer language in the system prompt, or compare the models
+the evidence lists.
+
+**Resolves** after 7 days below the threshold.
+
+## gateway.schema_errors
+
+**Checks.** For each API key, the requests started in the last 24 hours whose
+`response_analysis.schema` (the `schema` analyzer) checked the answer or a tool
+call against the schema the request asked for: `expected` is `json_schema`,
+`json_object` or `tool_args`, `valid` is decided, the schema used nothing outside
+the [checked subset](../../docs/COOKBOOK.md#check-structured-output) and the
+answer ended `complete` (a truncated answer is cut JSON and belongs to
+`gateway.truncation_rate`). It fires when at least 20 were checked and at least 5
+percent were invalid. Severity medium: the app cannot parse the answer. Subject:
+the API key. Max mode `observe`, blast radius `key`, risk class `quality`.
+
+**Why.** An answer that breaks the requested format reaches the app with a 200
+and fails there.
+
+**Evidence and impact.** The checked and invalid counts, the share and the
+threshold, the checked and invalid counts per kind (`checked_json_schema`,
+`invalid_tool_args`, ...), up to five models and up to 20 invalid request ids.
+Each request's own record holds where its answer failed; the finding holds no
+schema property name. Impact is the invalid request count.
+
+**Fix.** Use the provider's strict structured output where it exists, keep the
+schema inside the subset the gateway checks, and compare models.
+
+**Resolves** after 7 days below the threshold.
+
+## gateway.soft_refusals
+
+**Checks.** For each API key, the answers of the last 24 hours that ended
+`complete` and that the `refusal` analyzer read. An answer that refuses in words
+("Üzgünüm, bu konuda yardımcı olamam") is a soft refusal. It fires when at least 50
+were read and at least 5 percent refused. Severity low. Subject: the API key. Max
+mode `observe`, blast radius `key`, risk class `quality`.
+
+**Why.** A polite refusal is a `complete` answer with a 200; only its words say
+the user got nothing.
+
+**Evidence and impact.** The analysed and refused counts, the share and the
+threshold, the counts of the five most frequent phrase markers as
+`marker_<language>_<id>` (the analyzer's own ids, never the phrase), up to five
+models and up to 20 request ids. Impact is the refused request count.
+
+**Fix.** Read the requests: a polite refusal often means the system prompt
+forbids the topic, or the model's own policy differs from the app's. Refusals the
+provider marks itself are [`gateway.refusal_rate`](#gatewayrefusal_rate).
+
+**Resolves** after 7 days below the threshold.
+
+A tenant that has not turned an analyzer on gets no finding from its rule.
 
 ### Model rates and key rates
 

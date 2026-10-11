@@ -32,6 +32,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
+- [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
 - [Record an incident](#record-an-incident)
@@ -918,6 +919,31 @@ Notes: a mode above the rule's highest answers 422 naming the rule. `auto` is
 accepted for `gateway.unused_deployment` but works as `suggest` until an executor
 is installed. Setting a rule back to `observe` removes its action from open
 findings at the next pass. Modes and actions are in [findings](FINDINGS.md#modes).
+
+## Turn on answer checks and read the findings
+
+Learn which apps get English answers to Turkish questions, answers that break
+their schema, or polite refusals, without reading requests one by one.
+
+1. As an owner or admin, turn the analyzers on:
+   `PATCH /api/v1/management/gateway-settings` with
+   `{"response_analysis": ["language", "schema", "refusal"]}`. They read each
+   completed answer after it was delivered; they never change or delay it.
+2. After traffic, read the findings per API key:
+   `GET /api/v1/management/findings?rule_id=gateway.language_drift` (and
+   `gateway.schema_errors`, `gateway.soft_refusals`).
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"response_analysis": ["language", "schema", "refusal"]}'
+```
+
+Notes: each rule needs its analyzer, and a minimum of answers in 24 hours (20,
+20 and 50) before it judges a key. Analyzers that read the answer skip requests
+that carried personal data, so those never count. An app that expects English
+answers suppresses `gateway.language_drift` for its key. The rules and thresholds
+are in [findings](FINDINGS.md#gatewaylanguage_drift).
 
 ## Find truncated and refused answers
 
