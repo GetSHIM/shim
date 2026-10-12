@@ -22,6 +22,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
+- [Pin a parameter](#pin-a-parameter)
 - [Preview a rule before you enforce it](#preview-a-rule-before-you-enforce-it)
 - [Import AIUC rules](#import-aiuc-rules)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
@@ -403,7 +404,8 @@ Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
 revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
-`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_PIN_OUT_OF_RANGE` (a pinned
+temperature above 1 that could reach Anthropic), `RULE_SCOPE_UNKNOWN` (a key or team id this organization
 does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope, or a `block`
 scoped only by tags and endpoints) or
 `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
@@ -559,6 +561,47 @@ Some models price the whole request at a higher rate above a length (gpt-5.4 abo
 Notes: only catalog models with a tier are checked; registry deployments never
 match. The settled tokens decide the price, and `LARGE_CONTEXT_PRICE` still marks a
 request that was billed at the higher rate.
+
+## Pin a parameter
+
+Send every request in scope with the same temperature, seed or reasoning effort, so
+results stay comparable.
+
+1. Add a `parameter_pin` rule to the [rule set](#write-a-tenant-rule), scoped by
+   model and in `monitor` state first:
+
+```json
+{"id": "temp_zero", "name": "Deterministic answers", "kind": "parameter_pin",
+ "action": "set", "state": "monitor", "scope": {"models": ["gpt-5-nano"]},
+ "match": {"parameter": "temperature", "value": 0}}
+```
+
+| `parameter` | `value` | Chat | Responses | Messages | Gemini |
+| --- | --- | --- | --- | --- | --- |
+| `temperature` | 0 to 2 (above 1 needs an `endpoints` scope without `messages`) | `temperature` | `temperature` | `temperature` | `generationConfig.temperature` |
+| `top_p` | 0 to 1 | `top_p` | `top_p` | `top_p` | `generationConfig.topP` |
+| `top_k` | integer 1 to 500 | | | `top_k` | `generationConfig.topK` |
+| `seed` | integer 0 to 2,147,483,647 | `seed` | | | `generationConfig.seed` |
+| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` | `reasoning_effort` | `reasoning.effort` | | |
+
+2. Watch the request list: a request that omits the parameter or sends another
+   value shows in `rule_matches` with `RULE_WOULD_SET` (or `RULE_WOULD_BLOCK`).
+3. Send the set again with `"state": "enforced"`. `set` writes the value into
+   the request the provider receives and lists `parameter_pin.temp_zero` in
+   `settings_applied`; `block` refuses requests that do not send the value, with
+   400 `RULE_BLOCKED` and `X-Shim-Rule-Id`; `warn` adds `RULE_WARN`.
+
+Notes: shim writes a parameter only when a pin says so. Scope pins by model and
+watch the monitor results first: a model may refuse a parameter. Anthropic's
+documentation says Claude Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5, Fable
+and Mythos answer 400 to any non-default `temperature`, `top_p` or `top_k`, and
+OpenAI reasoning models accept only the default `temperature`. On an Anthropic request with
+thinking turned on, `temperature` and `top_k` pins are skipped
+(`RULE_PIN_INCOMPATIBLE`). Output-token limits cannot be pinned, and token
+counting is never pinned. Two enforced pins of one parameter: the lowest rule id
+applies, the other records `RULE_PIN_SHADOWED`. Request parameters are not stored,
+so a pin has no [preview](#preview-a-rule-before-you-enforce-it) from older
+traffic; its monitor history is the preview.
 
 ## Preview a rule before you enforce it
 

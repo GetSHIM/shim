@@ -28,12 +28,14 @@ from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocat
 from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
 from shim.gateway.pipeline.privacy import PrivacyStage
 from shim.gateway.pipeline.provider_spend import ProviderSpendStage
+from shim.gateway.pipeline.settings_band import SettingsBandStage, pins_in_scope
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
     ProviderExecutionStage,
     ProviderStream,
 )
+from shim.gateway.request_policy import BandSettings
 from shim.gateway.streaming import StreamSession
 from shim.gateway.usage import (
     UsageAuditPersistenceError,
@@ -57,6 +59,7 @@ from .result import PreparedInference
 
 
 logger = logging.getLogger(__name__)
+_BAND_OFF = BandSettings()
 _PROVIDERS = frozenset({"openai", "anthropic", "google"})
 
 
@@ -326,6 +329,12 @@ class GatewayKernel:
                 if counted.request_id:
                     headers["request-id"] = counted.request_id
                 return JSONResponse(content=counted.payload, headers=headers)
+            pins = pins_in_scope(prepared)
+            if pins or prepared.band != _BAND_OFF:
+                prepared, blocked = await run_stage(SettingsBandStage(pins), prepared)
+                if blocked is not None:
+                    await self.usage.record_privacy(prepared)
+                    raise rule_blocked(blocked)
             await self.usage.record_privacy(prepared)
             if leader is not None and (
                 answer := await self._leader_answer(prepared, leader)

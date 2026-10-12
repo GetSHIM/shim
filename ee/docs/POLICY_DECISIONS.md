@@ -160,6 +160,28 @@ rule's action applies; when only its approximate size (bytes / 4) exceeds it, th
 crossing is possible and the rule records a `warn` match whatever its action, so it
 never refuses a request that may be under the tier.
 
+### Parameter pins
+
+A `parameter_pin` rule names one provider parameter and its value
+(`match: {"parameter", "value"}`): `temperature` (0 to 2; above 1 only with an
+`endpoints` scope that leaves out `messages`, else 422 `RULE_PIN_OUT_OF_RANGE`),
+`top_p` (0 to 1), `top_k` (1 to 500, Anthropic and Gemini), `seed` (0 to
+2,147,483,647, chat and Gemini) or `reasoning_effort` (`none` to `xhigh`, chat and
+Responses). Output-token limits cannot be pinned: admission reserves output from
+the client's value before the pin would run. Pins are evaluated in the settings
+band, after the decision point and the token-count branch, on the masked payload,
+so token counting is never pinned. A pin matches when the request omits the
+parameter or sends another value (`0` equals `0.0`); a protocol without the
+parameter is not touched and records nothing. An enforced `set` writes the value
+(creating `generationConfig` or `reasoning` when absent) and records `RULE_SET`
+and a `settings_applied` entry; an enforced `block` refuses with `RULE_BLOCKED`
+after the privacy facts are recorded, with no spend reservation or provider call.
+Their verdicts carry stage `settings`. Two enforced pins of one parameter in scope:
+the lowest rule id applies and the other records `skip`, `RULE_PIN_SHADOWED`. On an
+Anthropic request with `thinking.type` `enabled` or `adaptive`, a `temperature` or
+`top_k` pin records `skip`, `RULE_PIN_INCOMPATIBLE` and changes nothing, since
+Anthropic refuses those parameters with thinking.
+
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
 
@@ -170,6 +192,7 @@ wins when both refuse. The verdict of each matched rule:
 | enforced `block` | `deny` | `RULE_BLOCKED`: 400, `X-Shim-Rule-Id`, no provider call |
 | enforced `mask` | `mask` | `RULE_MASKED` |
 | enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
+| enforced `set` (parameter pin) | `allow` | `RULE_SET`; `skip` with `RULE_PIN_SHADOWED` or `RULE_PIN_INCOMPATIBLE` when it does not apply |
 | enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
 | evaluation timed out, enforced `mask`, `block` or `require_approval` | `deny` | `RULE_BLOCKED` |
 | evaluation timed out, any other rule | `error` | `RULE_EVALUATION_TIMEOUT` |

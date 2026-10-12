@@ -43,6 +43,10 @@ class AgentLoop(FrozenContractModel):
     repeats: int = Field(default=5, ge=3, le=100)
 
 
+class BandSettings(FrozenContractModel):
+    """The tenant's settings band switches, each off by default."""
+
+
 class ResolvedRequestPolicy(FrozenContractModel):
     tenant_id: TenantId
     tenant_policy: TenantPolicy
@@ -67,6 +71,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     agent_loop: AgentLoop = AgentLoop()
     # The request's key may share an identical in-flight answer (S48).
     inflight_sharing: bool = False
+    band: BandSettings = BandSettings()
     rules: RuleSet | None = None
     # Enterprise: the loaded record sets the rules reference, by set id.
     record_sets: Mapping[str, Any] | None = None

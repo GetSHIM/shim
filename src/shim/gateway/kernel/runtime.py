@@ -16,6 +16,7 @@ _STAGE_SPANS = {
     "resolve_principal": "gateway.auth",
     "admission": "gateway.admission",
     "privacy": "gateway.privacy",
+    "settings_band": "gateway.settings_band",
     "provider_spend": "gateway.quota_reservation",
     "provider_execution": "gateway.provider_call",
     "postprocess": "gateway.postprocess",

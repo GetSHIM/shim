@@ -22,7 +22,7 @@ from shim.billing.pricing import (
 from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
-from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.gateway.request_policy import AgentLoop, BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
@@ -91,7 +91,9 @@ class PolicyVerdict(FrozenContractModel):
     rule_id: str = Field(pattern=r"^[a-z][a-z0-9_.]{0,95}$")
     rule_version: Literal[1] = 1
     policy_version: str = Field(min_length=1, max_length=128)
-    stage: Literal["authentication", "admission", "privacy", "provider_spend", "rules"]
+    stage: Literal[
+        "authentication", "admission", "privacy", "provider_spend", "rules", "settings"
+    ]
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
     effective_at: AwareDatetime
@@ -204,6 +206,9 @@ class PreparedInference:
     task_caps: TaskCaps = field(default_factory=TaskCaps)
     agent_loop: AgentLoop = field(default_factory=AgentLoop)
     inflight_sharing: bool = False
+    band: BandSettings = field(default_factory=BandSettings)
+    # The settings band's applied steps, by id and version; None when it did not run.
+    settings_applied: tuple[dict[str, object], ...] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
@@ -236,7 +241,12 @@ class PreparedInference:
         rule_id: str,
         *,
         stage: Literal[
-            "authentication", "admission", "privacy", "provider_spend", "rules"
+            "authentication",
+            "admission",
+            "privacy",
+            "provider_spend",
+            "rules",
+            "settings",
         ],
         outcome: Literal["allow", "mask", "deny", "error", "skip"],
         reason_code: str,

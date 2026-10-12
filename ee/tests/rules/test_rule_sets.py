@@ -116,6 +116,7 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
         "record_set",
         "destination",
         "request_limit",
+        "parameter_pin",
     }
     # The enterprise approval gate makes require_approval available where the kind allows it.
     assert {
@@ -266,7 +267,7 @@ async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
 ) -> None:
     admin = await _admin(db, test_org.id)
 
-    unavailable = await _refused(db, admin, 0, [_rule(kind="parameter_pin")])
+    unavailable = await _refused(db, admin, 0, [_rule(kind="route")])
     action = await _refused(db, admin, 0, [_rule(action="set")])
     unknown_key = await _refused(
         db, admin, 0, [_rule(match={"terms": ["Project"], "regex": "y"})]
@@ -542,6 +543,7 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
                 rule_id="falcon", kind="term", action="block", state="monitor", count=2
             )
         ],
+        settings_applied=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",

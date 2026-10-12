@@ -17,6 +17,8 @@ from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
+from shim.gateway.request_policy import BandSettings
+from shim.gateway.usage import LocalUsageLifecycle
 from shim.privacy.policies import (
     PrivacyAction,
     PrivacyOutcome,
@@ -47,8 +49,9 @@ def _kernel(usage) -> GatewayKernel:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_pin", [False, True])
 async def test_kernel_runs_the_authoritative_stage_order(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, with_pin: bool
 ) -> None:
     order: list[str] = []
     prepared = SimpleNamespace(
@@ -63,6 +66,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
     )
     provider_output = object()
     response = Response("ok")
@@ -76,6 +80,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         ("AuthenticateStage", "resolve_principal"),
         ("AdmissionStage", "admission"),
         ("PrivacyStage", "privacy"),
+        ("SettingsBandStage", "settings_band"),
         ("ProviderSpendStage", "provider_spend"),
         ("ProviderExecutionStage", "provider_execution"),
         ("PostprocessStage", "postprocess"),
@@ -88,10 +93,15 @@ async def test_kernel_runs_the_authoritative_stage_order(
             return provider_output
         if stage.name == "postprocess":
             return response
+        if stage.name == "settings_band":
+            return prepared, None
         return prepared
 
     async def record_privacy(*_args):
         order.append("record_privacy")
+
+    if with_pin:
+        monkeypatch.setattr(kernel_module, "pins_in_scope", lambda _prepared: ["pin"])
 
     monkeypatch.setattr(kernel_module, "run_stage", run_stage)
     provider_execution = SimpleNamespace(pii_scrubber=object())
@@ -121,6 +131,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         "resolve_principal",
         "admission",
         "privacy",
+        *(["settings_band"] if with_pin else []),
         "record_privacy",
         "provider_spend",
         "provider_execution",
@@ -242,6 +253,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
     )
     failure = ProviderCallError(
         status_code=status_code,
@@ -303,6 +315,7 @@ async def test_kernel_maps_post_reservation_admission_abort(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
     )
     failure = RuntimeError("admission interrupted")
 
@@ -338,6 +351,7 @@ async def test_recovery_session_failure_does_not_mask_original_error(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
     )
     failure = RuntimeError("admission interrupted")
 
@@ -848,7 +862,7 @@ def _rule_set(*rules: tuple[str, str, str]):
     return RuleSet(
         revision=4,
         rules=tuple(
-            Rule(id=rule_id, name="n", kind="parameter_pin", action=action, state=state)
+            Rule(id=rule_id, name="n", kind="route", action=action, state=state)
             for rule_id, action, state in rules
         ),
     )
@@ -864,7 +878,7 @@ def _matching_privacy(monkeypatch) -> None:
         stubbed = [
             rule
             for rule in (prepared.rules.rules if prepared.rules else ())
-            if rule.kind == "parameter_pin"
+            if rule.kind == "route"
         ]
         for rule in stubbed:
             broken = rule.id.startswith("broken")
@@ -884,6 +898,7 @@ async def _call_with_rules(
     headers=None,
     settings=None,
     record_sets=None,
+    extra=None,
 ):
     _matching_privacy(monkeypatch)
     calls: list[httpx.Request] = []
@@ -931,7 +946,7 @@ async def _call_with_rules(
                         "x-provider-key": "provider-secret",
                         **(headers or {}),
                     },
-                    json=build(text),
+                    json={**build(text), **(extra or {})},
                 )
     return (
         response,
@@ -968,7 +983,7 @@ async def test_an_enforced_block_refuses_before_any_provider_call(
     assert [match["rule_id"] for match in line["rule_matches"]] == ["alpha", "zeta"]
     assert line["rule_matches"][0] == {
         "rule_id": "alpha",
-        "kind": "parameter_pin",
+        "kind": "route",
         "action": "block",
         "state": "enforced",
         "count": 2,
@@ -1036,6 +1051,162 @@ async def test_without_rules_no_rule_key_or_verdict_is_written(monkeypatch) -> N
     [line] = lines
     assert "rule_matches" not in line
     assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+def _pin_rules(action="set", state="enforced"):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 3,
+            "rules": [
+                {
+                    "id": "temp_zero",
+                    "name": "n",
+                    "kind": "parameter_pin",
+                    "action": action,
+                    "state": state,
+                    "match": {"parameter": "temperature", "value": 0},
+                }
+            ],
+        }
+    )
+
+
+@pytest.fixture
+def band_spans(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    import shim.observability.tracing as tracing_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", provider.get_tracer)
+    yield lambda: [
+        span.attributes
+        for span in exporter.get_finished_spans()
+        if span.name == "gateway.settings_band"
+    ]
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "sent"),
+    [
+        ("chat", lambda body: body["temperature"]),
+        ("responses", lambda body: body["temperature"]),
+        ("messages", lambda body: body["temperature"]),
+        ("gemini", lambda body: body["generationConfig"]["temperature"]),
+        ("chat_stream", lambda body: body["temperature"]),
+    ],
+)
+async def test_an_enforced_pin_reaches_the_provider_and_the_record(
+    monkeypatch, band_spans, route, sent
+) -> None:
+    extra = {} if route in {"responses", "gemini"} else {"temperature": 0.7}
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, _pin_rules(), route, extra=extra
+    )
+
+    assert response.status_code == 200
+    [call] = calls
+    assert sent(json.loads(call.content)) == 0
+    [line] = lines
+    assert line["settings_applied"] == [{"id": "parameter_pin.temp_zero", "version": 3}]
+    assert line["rule_matches"][0]["rule_id"] == "temp_zero"
+    verdict = next(
+        v for v in line["policy_verdicts"] if v["rule_id"] == "rule.temp_zero"
+    )
+    assert (verdict["stage"], verdict["reason_code"]) == ("settings", "RULE_SET")
+    assert band_spans() == [{"settings_applied": 1, "status": "success"}]
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_pin_records_and_sends_what_the_client_sent(
+    monkeypatch,
+) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _pin_rules(state="monitor"),
+        "chat",
+        extra={"temperature": 0.7},
+    )
+
+    assert response.status_code == 200
+    assert json.loads(calls[0].content)["temperature"] == 0.7
+    [line] = lines
+    assert "settings_applied" not in line
+    assert line["rule_matches"][0]["state"] == "monitor"
+
+
+@pytest.mark.asyncio
+async def test_a_pin_block_records_privacy_and_refuses_before_the_provider(
+    monkeypatch,
+) -> None:
+    usage_calls: list[str] = []
+    original = LocalUsageLifecycle.record_privacy
+
+    async def record_privacy(self, prepared):
+        usage_calls.append("record_privacy")
+        return await original(self, prepared)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "record_privacy", record_privacy)
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, _pin_rules("block"), "chat", extra={"temperature": 0.7}
+    )
+
+    assert (response.status_code, response.headers["x-shim-rule-id"]) == (
+        400,
+        "temp_zero",
+    )
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED" and calls == []
+    assert usage_calls == ["record_privacy"]
+    [line] = lines
+    assert "settings_applied" not in line
+    verdict = next(
+        v for v in line["policy_verdicts"] if v["rule_id"] == "rule.temp_zero"
+    )
+    assert (verdict["outcome"], verdict["reason_code"]) == ("deny", "RULE_BLOCKED")
+
+    passed, calls, _ = await _call_with_rules(
+        monkeypatch, _pin_rules("block"), "chat", extra={"temperature": 0}
+    )
+    assert passed.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_reaches_the_band(monkeypatch, band_spans) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch, _pin_rules(), "count_tokens"
+    )
+
+    assert response.status_code == 200
+    assert "temperature" not in json.loads(calls[0].content)
+    assert band_spans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rules", [None, _rule_set(("careful", "warn", "enforced"))])
+async def test_without_a_pin_the_band_is_skipped(
+    monkeypatch, band_spans, rules
+) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, rules, "chat", extra={"temperature": 0.7}
+    )
+
+    assert response.status_code == 200
+    assert json.loads(calls[0].content)["temperature"] == 0.7
+    [line] = lines
+    assert "settings_applied" not in line
+    assert band_spans() == []
 
 
 @pytest.mark.asyncio

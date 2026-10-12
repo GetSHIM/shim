@@ -109,6 +109,8 @@ def test_trace_attributes_reject_unregistered_sensitive_fields() -> None:
 
 def test_every_gateway_stage_span_is_registered() -> None:
     assert set(_STAGE_SPANS.values()) <= SPAN_NAMES
+    assert _STAGE_SPANS["settings_band"] == "gateway.settings_band"
+    assert safe_attributes({"settings_applied": 2}) == {"settings_applied": 2}
 
 
 def test_public_metrics_are_bounded_and_exclude_enterprise_families() -> None:

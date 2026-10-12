@@ -14,7 +14,7 @@ from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
-from shim.gateway.request_policy import TaskCaps
+from shim.gateway.request_policy import BandSettings, TaskCaps
 from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.postprocess import ResponsePostprocessor
 from shim.gateway.pipeline.provider_execution import ProviderStream
@@ -185,6 +185,7 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
         policy_verdicts=[],
         payload={},
         rules=None,
+        band=BandSettings(),
     )
 
     def stage(name: str):

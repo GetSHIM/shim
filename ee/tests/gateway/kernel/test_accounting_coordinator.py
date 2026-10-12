@@ -52,7 +52,7 @@ from shim.gateway.contracts.context import (
 )
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.pipeline.admission import AdmissionStage
-from shim.gateway.request_policy import TaskCaps
+from shim.gateway.request_policy import BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -112,6 +112,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         rules=None,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
+        band=BandSettings(),
         approval_id=None,
         unpriced=False,
         deployment_price=None,
@@ -439,6 +441,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         privacy=privacy,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
         approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
@@ -981,6 +984,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         rules=None,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -3254,6 +3258,97 @@ async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
     assert (
         json.loads(row["injection_markers"]) if row["injection_markers"] else None
     ) == markers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "applied", [({"id": "parameter_pin.temp_zero", "version": 3},), (), None]
+)
+async def test_settings_applied_reaches_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, applied
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
+    prepared.settings_applied = applied
+    expected = None if applied is None else list(applied)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("settings_applied") == expected
+    assert ("settings_applied" in lifecycle.lifecycle_metadata) == (applied is not None)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].settings_applied == expected
+    assert (
+        json.loads(row["settings_applied"]) if row["settings_applied"] else None
+    ) == expected
 
 
 @pytest.mark.asyncio

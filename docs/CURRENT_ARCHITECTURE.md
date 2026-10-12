@@ -56,7 +56,7 @@ GatewayService
         |
         v
 GatewayKernel
-  policy -> admission -> privacy -> rules -> provider start
+  policy -> admission -> privacy -> rules -> settings band -> provider start
          -> one SDK attempt -> restore -> finalize
         |
         v
@@ -276,7 +276,14 @@ names entity types: for a request in its scope the privacy stage detects them,
 masks them under an enforced `mask` rule, and records the matches for the decision
 point. The `request_limit` kind (`src/shim/rules/request_limit.py`) is evaluated in
 admission before the rate limits, where an enforced block refuses; token counting is
-exempt. No other kind ships a matcher yet.
+exempt. The `parameter_pin` kind (`src/shim/rules/parameter_pin.py`) is evaluated in
+the settings band (`src/shim/gateway/pipeline/settings_band.py`), a kernel stage
+after the token-count branch and before `record_privacy`: it runs only when a pin
+is in scope for the request's protocol or a band setting is on, sets
+provider parameters on the masked payload, copying only the objects it changes,
+and never a content string. Its verdicts carry stage `settings`; an enforced block
+records the privacy facts and then refuses with `RULE_BLOCKED`. Applied steps are
+recorded as `settings_applied`. The `route` kind ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`
 (after the date) from `src/shim/billing/lifecycle.py`, which reads the reviewed

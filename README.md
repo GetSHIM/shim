@@ -109,6 +109,10 @@ request it:
   characters. Every error carries a code and, where one helps, a `hint`.
 - **Makes at most one billable provider attempt per admitted request**, because
   outbound SDK retries are disabled.
+- **Changes a request in three bands, each opt-in.** The settings band sets the
+  provider's own parameters and never touches content; a transform band changes
+  content only under published, switchable rules; a report band only shows. shim
+  writes a parameter such as `temperature` only when an enterprise tenant pins it.
 
 It does not translate payloads. When a provider ships a new field, a new model,
 or changes streaming behaviour, you are not waiting on shim to catch up.

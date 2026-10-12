@@ -275,6 +275,13 @@ class RequestActivityView(BaseModel):
         ),
     )
     rule_matches_truncated: bool | None = None
+    settings_applied: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Settings band steps that set a provider parameter, by id and version; "
+            "[] when the band ran and set nothing, null when it did not run."
+        ),
+    )
     approval_id: UUID | None = Field(
         default=None,
         description="The request approval this request created, was refused under "
@@ -657,6 +664,7 @@ async def export_requests(
                 "response_entities",
                 "response_analysis",
                 "rule_matches",
+                "settings_applied",
                 "injection_markers",
                 "restore_withheld",
                 "approval_id",
@@ -709,6 +717,7 @@ async def export_requests(
                     if response_analysis is not None
                     else None,
                     _json(details.get("rule_matches")),
+                    _json(details.get("settings_applied")),
                     _json(details.get("injection_markers")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),

@@ -12730,6 +12730,22 @@
             ],
             "title": "Rule Matches Truncated"
           },
+          "settings_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settings band steps that set a provider parameter, by id and version; [] when the band ran and set nothing, null when it did not run.",
+            "title": "Settings Applied"
+          },
           "shim_latency_ms": {
             "anyOf": [
               {

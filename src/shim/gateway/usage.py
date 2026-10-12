@@ -387,6 +387,11 @@ class LocalUsageLifecycle:
                 if privacy and privacy.injection_markers is not None
                 else {}
             ),
+            **(
+                {"settings_applied": list(prepared.settings_applied)}
+                if prepared.settings_applied
+                else {}
+            ),
             "warnings": list(prepared.warnings),
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts

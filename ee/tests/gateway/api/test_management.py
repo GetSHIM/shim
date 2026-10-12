@@ -427,6 +427,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "response_analysis",
         "rule_matches",
         "rule_matches_truncated",
+        "settings_applied",
         "approval_id",
         "content_archived",
     }

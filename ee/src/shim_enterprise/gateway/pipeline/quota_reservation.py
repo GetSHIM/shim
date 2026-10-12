@@ -602,6 +602,13 @@ class DurableAccountingCoordinator:
                             ),
                             **match_records(prepared),
                             **(
+                                {}
+                                if prepared.settings_applied is None
+                                else {
+                                    "settings_applied": list(prepared.settings_applied)
+                                }
+                            ),
+                            **(
                                 {"approval_id": prepared.approval_id}
                                 if prepared.approval_id is not None
                                 else {}

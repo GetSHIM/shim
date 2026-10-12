@@ -345,6 +345,15 @@ its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 
+`settings_applied` lists the settings band steps that set a provider parameter on
+the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
+is `parameter_pin.<rule id>` with the rule set's revision. It is written with the
+privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
+`warn` pin, a refused request), and absent when the band did not run: no pin in
+scope for the request's protocol, and token counting. Ids and versions only, never
+a parameter value. The request list and its CSV (compact JSON) show it; the
+community JSONL event carries it only when a step was applied.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is
