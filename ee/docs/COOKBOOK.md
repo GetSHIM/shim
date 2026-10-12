@@ -798,6 +798,9 @@ Notes:
   `state: error`, `last_error_type: BUCKET_NOT_LOCKED`.
 - Copies start from the beginning of the chain and catch up 50 objects a pass;
   PostgreSQL rows are never deleted because a copy exists.
+- The copy is the worker's last step: a slow or unreachable store costs at most
+  the pass timeout (300 seconds), after the anchors, the monthly files and the
+  incident deadline reminders are done.
 
 ## Produce a KVKK exposure report
 

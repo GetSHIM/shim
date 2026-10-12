@@ -510,3 +510,37 @@ async def test_a_stuck_pass_does_not_hold_up_the_other_maintenance(
     )
 
     assert (summary.worm_archived, summary.errors) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_incident_reminders_and_monthly_files_never_wait_for_the_archive(
+    tracked, enabled, monkeypatch
+) -> None:
+    ran: list[str] = []
+
+    async def slow(*_args):
+        ran.append("archive")
+        await asyncio.sleep(3600)
+
+    def done(name):
+        async def step(*_args, **_kwargs):
+            ran.append(name)
+            return 0, 0
+
+        return step
+
+    monkeypatch.setattr(worker_module, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(worker_module, "build_client", lambda: object())
+    monkeypatch.setattr(worker_module, "archive_pass", slow)
+    monkeypatch.setattr(worker_module, "WORM_PASS_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(worker_module, "generate_due_monthly_evidence", done("monthly"))
+    monkeypatch.setattr(worker_module, "remind_incident_deadlines", done("reminders"))
+    monkeypatch.setattr(settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
+    monkeypatch.setattr(settings, "OVERSIGHT_ENABLED", False)
+
+    await worker_module.AuditMaintenanceWorker(
+        session_factory=tracked.factory, interval_seconds=60
+    ).run_once()
+
+    # A slow bucket may take the whole pass timeout; a statutory reminder may not.
+    assert ran == ["monthly", "reminders", "archive"]

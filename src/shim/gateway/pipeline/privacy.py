@@ -418,7 +418,9 @@ class PrivacyStage:
                 ).inc(count)
         if content is not None:
             for rule in content.rules:
-                if rule.id in content.values or rule.id in content.errors:
+                if rule.id in (
+                    content.values.keys() | content.errors | content.truncated
+                ):
                     value.record_rule_match(
                         rule,
                         len(content.values.get(rule.id, ())),
