@@ -339,9 +339,11 @@ class AdmissionStage:
             }
         )
         task_id, trace_id = _task_identity(self.invocation.headers)
+        # A token count is neither an agent turn nor one of the task's calls.
+        counted = value.protocol != "count_tokens"
         signature = (
             _tool_signature(payload, value.protocol)
-            if value.agent_loop.action != "off"
+            if counted and value.agent_loop.action != "off"
             else None
         )
         turn_key = (
@@ -403,7 +405,7 @@ class AdmissionStage:
                     },
                     headers={"x-should-retry": "false"},
                 )
-        task_calls = await self._admit_task_call(value, task_id)
+        task_calls = await self._admit_task_call(value, task_id) if counted else None
         shareable = _shareable(value, candidates)
         earlier = (
             None
