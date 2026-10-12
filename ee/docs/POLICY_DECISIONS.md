@@ -332,6 +332,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `compliance.connector_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `provider`, `status`, and the redacted `config` |
 | `compliance.connector_run_requested` | `provider`; recorded before the manual run starts |
 | `compliance.forward_target_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `kind`, `endpoint_origin`, `signed`, `min_severity`, `enabled`; an update adds `destination_rotated` (true when the endpoint or signing secret was replaced) |
+| `compliance.forward_target_change_announced` | `subject_id` only: the target whose endpoint moved while four eyes was on; recorded with the notice to the old endpoint, never an endpoint |
 | `compliance.oversight_policy_created` / `_updated` / `_deleted` | `after` / `before` and `after` / `before`: `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` |
 | `compliance.oversight_evaluated` | `evaluated`, `created`, `expired` counts of the manual run |
 | `compliance.audit_anchored` | `anchor_date` and `row_count` of the manually written anchor |
@@ -489,6 +490,19 @@ owner override below.
   an owner may still turn it off directly: the write gets a version, the audit
   event `tenant.four_eyes_single_admin_override` and a
   `gateway_protection_relaxed` alert naming `four_eyes`.
+- A forward target's destination is a secret, so a plan cannot move it, and
+  `PATCH /compliance/forward-targets/{id}` with a new `endpoint` is not refused:
+  one administrator could otherwise redirect alerts, and with them these
+  announcements. Instead, while four eyes is on, the same transaction first
+  queues one delivery to the target's old endpoint (same delivery path and
+  address checks as every forward delivery): `kind: "forward_target_changed"`
+  with the target id and kind, who changed it and when, never the new endpoint
+  or a secret. It also records `compliance.forward_target_change_announced`
+  (target id only). If the delivery cannot be queued the move is refused (503)
+  and the endpoint stays; once queued, a failed send follows the outbox retry.
+  Delivery keeps the old secret until the notice is sent, then deletes it.
+  Disabling or deleting a target is already a relaxing change, so it already
+  asks for a plan.
 
 Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `off` none of this applies. Audit actions: `tenant.policy_plan_submitted`,

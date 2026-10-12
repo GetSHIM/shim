@@ -223,6 +223,8 @@ async def test_forward_target_rotation_rebinds_queued_delivery_before_cleanup(
         execute=AsyncMock(
             return_value=SimpleNamespace(scalars=lambda: (queued,)),
         ),
+        # No gateway settings stored: four eyes is off.
+        scalar=AsyncMock(return_value=None),
         commit=AsyncMock(
             side_effect=RuntimeError("commit failed") if fail_commit else None
         ),

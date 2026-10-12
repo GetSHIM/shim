@@ -295,6 +295,7 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
         raise ValueError("compliance delivery target kind mismatch")
     if target_kind == "email":
         subjects = {
+            "forward_target_changed": "shim forward target destination changed",
             "privacy_protection_relaxed": "shim privacy protection turned off",
             "gateway_protection_relaxed": "shim gateway protection turned off",
             "bulk_disclosure": "shim bulk disclosure in one request",
@@ -310,20 +311,30 @@ async def deliver_compliance_event(message: OutboxMessage) -> None:
             text=_compliance_text(body),
             idempotency_key=message.idempotency_key,
         )
-        return
-    delivered_body = (
-        {"text": _compliance_text(body)} if target_kind == "slack" else body
-    )
-    encoded = json.dumps(delivered_body, separators=(",", ":"), default=str).encode(
-        "utf-8"
-    )
-    headers = {
-        "content-type": "application/json",
-        "idempotency-key": message.idempotency_key,
-    }
-    if signing_secret:
-        headers["x-shim-signature"] = _signature(signing_secret, encoded)
-    await _post_forward_url(endpoint, content=encoded, headers=headers)
+    else:
+        delivered_body = (
+            {"text": _compliance_text(body)} if target_kind == "slack" else body
+        )
+        encoded = json.dumps(delivered_body, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+        headers = {
+            "content-type": "application/json",
+            "idempotency-key": message.idempotency_key,
+        }
+        if signing_secret:
+            headers["x-shim-signature"] = _signature(signing_secret, encoded)
+        await _post_forward_url(endpoint, content=encoded, headers=headers)
+    if payload.get("discard_secret") is True:
+        # A notice to a destination the target has left: nothing else holds this secret.
+        try:
+            await get_secret_store().delete_secret(
+                TenantId(message.organization_id),
+                SecretRef(secret_ref),
+                expected_purpose=_COMPLIANCE_DELIVERY_PURPOSE,
+            )
+        except Exception as exc:
+            logger.warning("Secret cleanup failed type=%s", type(exc).__name__)
 
 
 def _signature(secret: str, content: bytes) -> str:
@@ -378,6 +389,12 @@ def _compliance_text(body: dict) -> str:
         fields = ", ".join(map(str, body.get("fields", [])))
         actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
         return f"shim {area} protection turned off: {fields} (by {actor})"
+    if body.get("kind") == "forward_target_changed":
+        actor = body.get("actor_email") or f"user {body.get('actor', 'unknown')}"
+        return (
+            f"shim forward target {body.get('target_id')} ({body.get('target_kind')}) "
+            f"changed its destination (by {actor}) at {body.get('occurred_at')}"
+        )
     if body.get("kind") == "bulk_disclosure":
         counts = ", ".join(
             f"{entity_type} {count}"

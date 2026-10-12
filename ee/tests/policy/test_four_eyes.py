@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import httpx
@@ -14,18 +16,24 @@ from shim_enterprise.ai_act.models import OversightPolicy
 from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.billing.models import CostBudget
+from shim_enterprise.compliance import api as compliance_api
 from shim_enterprise.compliance.models import ComplianceForwardTarget
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
+from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim_enterprise.outbox import handlers
 from shim_enterprise.outbox.handlers import (
     COMPLIANCE_DELIVERY,
     POLICY_APPROVAL_REQUESTED,
     _compliance_text,
     announce_policy_approval,
     build_publisher,
+    deliver_compliance_event,
 )
 from shim_enterprise.outbox.models import OutboxEvent
-from shim_enterprise.outbox.publisher import OutboxMessage
+from shim_enterprise.outbox.publisher import OutboxMessage, OutboxWriter
+from shim_enterprise.secrets.migration import assign_secret_reference
+from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.policy import api as policy_api
 from shim_enterprise.policy.models import PolicyPlan, PolicyVersion
 from shim_enterprise.policy.resources import REGISTRY
@@ -1260,3 +1268,249 @@ async def test_an_approved_restore_rolls_back_only_plans_it_undid(db) -> None:
     row = await db.get(PolicyPlan, UUID(later["id"]))
     await db.refresh(row)
     assert row.status == "applied"
+
+
+_DESTINATION_PURPOSE = "compliance-forward-target-delivery"
+_ANNOUNCED = "compliance.forward_target_change_announced"
+
+
+async def _destination(tenant: UUID, ref: str | SecretRef) -> tuple[str, str | None]:
+    bundle = json.loads(
+        await get_secret_store().get_secret(
+            TenantId(tenant), SecretRef(ref), expected_purpose=_DESTINATION_PURPOSE
+        )
+    )
+    return bundle["endpoint"], bundle["signing_secret"]
+
+
+async def _destination_target(
+    db,
+    tenant: UUID,
+    endpoint: str = "https://old.example/hook",
+    *,
+    kind: str = "siem_webhook",
+    signing_secret: str | None = "sign-1",
+) -> ComplianceForwardTarget:
+    ref = await get_secret_store().put_secret(
+        TenantId(tenant),
+        _DESTINATION_PURPOSE,
+        json.dumps(
+            {"kind": kind, "endpoint": endpoint, "signing_secret": signing_secret}
+        ),
+        metadata={"kind": kind},
+    )
+    target = ComplianceForwardTarget(
+        id=uuid4(),
+        organization_id=tenant,
+        kind=kind,
+        endpoint_origin="https://old.example",
+        signed=signing_secret is not None,
+        enabled=True,
+    )
+    assign_secret_reference(target, ref)
+    db.add(target)
+    await db.flush()
+    return target
+
+
+@pytest.mark.asyncio
+async def test_moving_a_forward_target_tells_the_old_endpoint_under_four_eyes(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(compliance_api, "assert_safe_forward_url", AsyncMock())
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = await _destination_target(db, tenant)
+    await _turn_on(db, owner)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+
+    first = await _call(
+        db, admin, "PATCH", forward, json={"endpoint": "https://first.example/hook"}
+    )
+    # A second move must not carry the first notice to the first new endpoint.
+    second = await _call(
+        db, admin, "PATCH", forward, json={"endpoint": "https://second.example/hook"}
+    )
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    await db.refresh(target)
+    assert await _destination(tenant, target.secret_ref) == (
+        "https://second.example/hook",
+        "sign-1",
+    )
+    notices = await _outbox(db, tenant, COMPLIANCE_DELIVERY)
+    assert [
+        (await _destination(tenant, notice.payload["secret_ref"]))[0]
+        for notice in notices
+    ] == ["https://old.example/hook", "https://first.example/hook"]
+    body = notices[0].payload["body"]
+    assert body == {
+        "source": "shim",
+        "event_type": "tenant_policy",
+        "kind": "forward_target_changed",
+        "target_id": str(target.id),
+        "target_kind": "siem_webhook",
+        "actor": str(admin.id),
+        "actor_email": admin.email,
+        "occurred_at": body["occurred_at"],
+    }
+    audits = await _audits(db, tenant, _ANNOUNCED)
+    assert audits == [
+        {"subject_id": str(target.id), "actor_type": "user_jwt"},
+        {"subject_id": str(target.id), "actor_type": "user_jwt"},
+    ]
+    published = json.dumps([notice.payload["body"] for notice in notices] + audits)
+    for secret in ("first.example", "second.example", "sign-1"):
+        assert secret not in published
+    assert _compliance_text(body) == (
+        f"shim forward target {target.id} (siem_webhook) changed its destination "
+        f"(by {admin.email}) at {body['occurred_at']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_notice_reaches_the_old_endpoint_and_then_drops_its_secret(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(compliance_api, "assert_safe_forward_url", AsyncMock())
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = await _destination_target(db, tenant)
+    await _turn_on(db, owner)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+    store = get_secret_store()
+    cleaned = AsyncMock(wraps=store.delete_secret)
+    monkeypatch.setattr(store, "delete_secret", cleaned)
+    moved = await _call(
+        db, admin, "PATCH", forward, json={"endpoint": "https://new.example/hook"}
+    )
+    [notice] = await _outbox(db, tenant, COMPLIANCE_DELIVERY)
+    sent = []
+
+    async def post(url: str, *, content: bytes, headers: dict[str, str]) -> None:
+        sent.append((url, content, headers))
+
+    monkeypatch.setattr(handlers, "_post_forward_url", post)
+
+    # The change itself drops no secret: the queued notice still needs the old one.
+    assert moved.status_code == 200
+    cleaned.assert_not_awaited()
+    await deliver_compliance_event(OutboxMessage.from_event(notice))
+
+    [(url, content, headers)] = sent
+    assert url == "https://old.example/hook"
+    assert b"new.example" not in content
+    assert "x-shim-signature" in headers
+    cleaned.assert_awaited_once_with(
+        TenantId(tenant),
+        SecretRef(notice.payload["secret_ref"]),
+        expected_purpose=_DESTINATION_PURPOSE,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_email_notice_has_its_own_subject(db, monkeypatch) -> None:
+    users = await _organization(db)
+    tenant = users["owner"].organization_id
+    target = await _destination_target(
+        db, tenant, "ops@example.com", kind="email", signing_secret=None
+    )
+    sent = []
+
+    async def send(recipient: str, *, subject: str, text: str, idempotency_key: str):
+        sent.append((recipient, subject))
+
+    monkeypatch.setattr(handlers, "_send_compliance_email", send)
+
+    await deliver_compliance_event(
+        OutboxMessage(
+            id=uuid4(),
+            organization_id=tenant,
+            event_type=COMPLIANCE_DELIVERY,
+            aggregate_type="organization",
+            aggregate_id=str(tenant),
+            idempotency_key=f"notice:{uuid4()}",
+            payload={
+                "organization_id": str(tenant),
+                "connector_id": None,
+                "target_kind": "email",
+                "secret_ref": target.secret_ref,
+                "body": {"kind": "forward_target_changed"},
+            },
+            attempt_count=0,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    assert sent == [("ops@example.com", "shim forward target destination changed")]
+
+
+@pytest.mark.asyncio
+async def test_moving_a_forward_target_tells_no_one_with_four_eyes_off(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(compliance_api, "assert_safe_forward_url", AsyncMock())
+    users = await _organization(db, "admin")
+    tenant = users["owner"].organization_id
+    target = await _destination_target(db, tenant)
+    store = get_secret_store()
+    cleaned = AsyncMock(wraps=store.delete_secret)
+    monkeypatch.setattr(store, "delete_secret", cleaned)
+
+    moved = await _call(
+        db,
+        users["admin"],
+        "PATCH",
+        f"/api/v1/compliance/forward-targets/{target.id}",
+        json={"endpoint": "https://new.example/hook"},
+    )
+
+    assert moved.status_code == 200
+    await db.refresh(target)
+    assert (await _destination(tenant, target.secret_ref))[0] == (
+        "https://new.example/hook"
+    )
+    assert await _outbox(db, tenant, COMPLIANCE_DELIVERY) == []
+    assert await _audits(db, tenant, _ANNOUNCED) == []
+    cleaned.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_forward_target_that_cannot_announce_its_move_stays_put(
+    db, monkeypatch
+) -> None:
+    monkeypatch.setattr(compliance_api, "assert_safe_forward_url", AsyncMock())
+    users = await _organization(db, "admin")
+    owner, admin = users["owner"], users["admin"]
+    tenant = owner.organization_id
+    target = await _destination_target(db, tenant)
+    old_ref = target.secret_ref
+    await _turn_on(db, owner)
+    append = OutboxWriter.append
+
+    async def refuse(self, session, *, organization_id, values):
+        if values["event_type"] == COMPLIANCE_DELIVERY:
+            raise RuntimeError("outbox unavailable")
+        return await append(
+            self, session, organization_id=organization_id, values=values
+        )
+
+    monkeypatch.setattr(OutboxWriter, "append", refuse)
+
+    refused = await _call(
+        db,
+        admin,
+        "PATCH",
+        f"/api/v1/compliance/forward-targets/{target.id}",
+        json={"endpoint": "https://new.example/hook"},
+    )
+
+    assert refused.status_code == 503
+    assert "new.example" not in refused.text
+    await db.refresh(target)
+    assert target.secret_ref == old_ref
+    assert (await _destination(tenant, old_ref))[0] == "https://old.example/hook"
+    assert await _outbox(db, tenant, COMPLIANCE_DELIVERY) == []
+    assert await _audits(db, tenant, _ANNOUNCED) == []

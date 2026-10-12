@@ -51,6 +51,7 @@ from shim_enterprise.compliance.schemas import (
     StreamHealth,
     TopActor,
 )
+from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
     assert_safe_forward_url,
@@ -67,6 +68,7 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
+    four_eyes_on,
     lock_tenant,
     no_impact,
     record_managed_write,
@@ -899,6 +901,7 @@ async def update_forward_target(
     store: SecretStore | None = None
     previous_ref: str | None = None
     replacement_ref: str | None = None
+    announced = False
     try:
         async with record_managed_write(
             session,
@@ -933,6 +936,11 @@ async def update_forward_target(
                 endpoint = await _validate_target_destination(
                     target.kind, endpoint, enabled=after["enabled"]
                 )
+                if endpoint != current_endpoint and await four_eyes_on(
+                    session, tenant_id
+                ):
+                    await _announce_endpoint_change(session, current_user, target)
+                    announced = True
                 replacement_ref = await store.rotate_secret(
                     tenant_id,
                     SecretRef(target.secret_ref),
@@ -973,7 +981,8 @@ async def update_forward_target(
                 _FORWARD_SECRET_PURPOSE,
             )
         raise
-    if store is not None and previous_ref is not None:
+    # An announced move leaves the old secret to its notice.
+    if store is not None and previous_ref is not None and not announced:
         await _delete_secret_best_effort(
             store,
             tenant_id,
@@ -982,6 +991,25 @@ async def update_forward_target(
         )
     await session.refresh(target)
     return _target_view(target)
+
+
+async def _announce_endpoint_change(
+    session: AsyncSession, actor: User, target: ComplianceForwardTarget
+) -> None:
+    """Under four eyes, the old endpoint hears of its replacement first; no notice, no move."""
+    try:
+        await ComplianceForwarderService().send_target_changed(
+            session, target, actor=str(actor.id), actor_email=actor.email
+        )
+    except Exception as exc:
+        logger.warning("Forward target notice failed type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="The change notice could not be queued, so the target was not changed",
+        ) from exc
+    await _audit(
+        session, actor, "compliance.forward_target_change_announced", str(target.id)
+    )
 
 
 @router.delete(
