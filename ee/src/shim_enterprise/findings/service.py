@@ -1976,13 +1976,16 @@ _DEAD_TOOLS = text(
         GROUP BY api_key_id
     ),
     dead AS (
-        -- A Responses built-in tool is called as <name>_call.
+        -- A Responses built-in tool, offered as builtin:<type>, is called as
+        -- <type>_call (web_search_preview as web_search_call).
         SELECT key_rows.api_key_id, tool, count(*) AS offers
         FROM key_rows
         JOIN offering USING (api_key_id)
         JOIN calls USING (api_key_id),
              jsonb_array_elements_text(key_rows.offered) AS tool
-        WHERE tool <> ALL(calls.names) AND tool || '_call' <> ALL(calls.names)
+        WHERE tool <> ALL(calls.names)
+          AND split_part(regexp_replace(tool, '^builtin:', ''), '_preview', 1)
+              || '_call' <> ALL(calls.names)
         GROUP BY key_rows.api_key_id, tool, offering.offering
         HAVING count(*) >= offering.offering * CAST(:share AS numeric)
     ),
@@ -2316,7 +2319,8 @@ _QUEUEING = text(
         FROM classified
         WHERE stream AND deployment_id IN (SELECT deployment_id FROM baseline)
         GROUP BY deployment_id, date_trunc('hour', started_at AT TIME ZONE 'UTC')
-        HAVING count(*) >= :min_hour_streams
+        -- The p95's own sample: warm streams with a first byte.
+        HAVING count(first_byte) FILTER (WHERE NOT cold) >= :min_hour_streams
     ),
     spans AS (
         SELECT l.metadata ->> 'deployment_id' AS deployment_id,

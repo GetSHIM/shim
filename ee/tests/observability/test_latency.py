@@ -494,6 +494,33 @@ async def test_no_queueing_without_baseline_or_concurrency(db) -> None:
     assert await service._queueing(db, key.organization_id, NOW) == []
 
 
+@pytest.mark.parametrize(("measured", "fires"), [(10, True), (1, False)])
+@pytest.mark.asyncio
+async def test_an_hour_is_judged_on_ten_measured_streams(
+    db, measured: int, fires: bool
+) -> None:
+    _, key = await _tenant(db)
+    deployment = str(uuid4())
+    await _baseline(db, key, deployment)
+    for index in range(2):
+        hour = NOW - timedelta(hours=5 - index)
+        # A stream that never sent a first byte is not part of the p95's sample.
+        for second in range(10):
+            _request(
+                db,
+                key,
+                hour + timedelta(seconds=second),
+                first_byte=1_000.0 if second < measured else None,
+                seconds=60,
+                deployment_id=deployment,
+            )
+    await db.flush()
+
+    found = await service._queueing(db, key.organization_id, NOW)
+
+    assert len(found) == int(fires)
+
+
 @pytest.mark.asyncio
 async def test_slow_json_answers_after_a_gap_are_not_cold_starts(db) -> None:
     _, key = await _tenant(db)
