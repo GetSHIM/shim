@@ -203,6 +203,43 @@ async def test_unused_personal_workspace_is_archived_when_its_user_joins(
 
 
 @pytest.mark.asyncio
+async def test_an_archived_entra_secret_is_deleted_under_its_own_purpose(
+    db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _secret_store(monkeypatch)
+    owner = await _destination(db)
+    analyst = await _personal(db)
+    workspace_id = analyst.organization_id
+    await _configure(db, analyst)
+    db.add(
+        ProviderSecret(
+            organization_id=workspace_id,
+            provider="azure_entra",
+            secret_ref="ref-entra",
+            secret_backend="local",
+            secret_version="1",
+            masked_key="entra:000...00a1",
+        )
+    )
+    await db.flush()
+
+    await _accept(db, await _invite(db, owner, analyst.email), analyst)
+
+    assert (
+        call(
+            workspace_id,
+            "ref-entra",
+            expected_purpose="provider:openai:azure-entra-client",
+        )
+        in store.delete_secret.await_args_list
+    )
+    assert (
+        call(workspace_id, "ref-provider", expected_purpose="provider:openai:api-key")
+        in store.delete_secret.await_args_list
+    )
+
+
+@pytest.mark.asyncio
 async def test_archiving_deletes_the_workspace_service_accounts(
     db, monkeypatch: pytest.MonkeyPatch, audit_events
 ) -> None:

@@ -34,6 +34,10 @@ from shim_enterprise.compliance.reporting import (
     report_styles,
 )
 from shim_enterprise.findings.models import Finding
+from shim_enterprise.observability.language_cost import (
+    LANGUAGE_COST_MIN_REQUESTS,
+    language_cost,
+)
 from shim_enterprise.outbox.handlers import EVIDENCE_MONTHLY_READY
 from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.tenants.models import (
@@ -66,6 +70,15 @@ ACCESS_ACTIONS = (
     "tenant.request_content_opened",
 )
 NO_ACCESS_THIS_MONTH = "Bu ay kayıtlı erişim yok."
+LANGUAGE_COST_OFF = "Bu sürümde kaydedilmiyor: dil çözümleyicisi kapalı."
+LANGUAGE_COST_METHOD = (
+    "Yalnızca çıktı tarafı ölçülür: sağlayıcının faturaladığı yanıt tokenları, yanıt "
+    "metninin karakterlerine bölünür. Araç çağrısı, akıl yürütme ya da tahmini "
+    "kullanım içeren, 200 karakterden kısa ya da dili Türkçe veya İngilizce olarak "
+    "etiketlenmemiş yanıtlar dışarıda kalır. Tabloda ay içinde en az 30 uygun Türkçe "
+    "yanıtı olan modeller yer alır. Oran bu kurumun kendi yanıtlarını anlatır; bir "
+    "kıyaslama testi değildir."
+)
 ACCESS_NOT_RECORDED = "Okuma ve dışa aktarma kayıtları bu kurum için henüz tutulmuyor."
 CHAIN_TOO_LONG = (
     "Doğrulama çalışmadı: dönemin denetim kayıtları tek seferde doğrulanabilecek "
@@ -122,6 +135,10 @@ class MonthlyEvidence:
     access_note: str | None
     # Key name, team name, providers, models and requests.
     model_access: tuple[tuple[str, str, str, str, int], ...]
+    # Per model with enough Turkish answers: name, the Turkish and English
+    # ratios with their counts, and their quotient; a note when not recorded.
+    language_cost: tuple[tuple[str, str, str, str, str, str], ...]
+    language_cost_note: str | None
 
 
 def monthly_window(period: str, *, now: datetime) -> MonthlyWindow:
@@ -254,6 +271,7 @@ async def collect_monthly_evidence(
         session, tenant_id, window.start, window.end
     )
     access, access_note = await access_counts(session, tenant_id, window)
+    costs, costs_note = await language_costs(session, tenant_id, window)
     organization_name = (
         await session.execute(
             select(Organization.name).where(Organization.id == tenant_id)
@@ -279,6 +297,8 @@ async def collect_monthly_evidence(
         access=access,
         access_note=access_note,
         model_access=await model_access(session, tenant_id, window),
+        language_cost=costs,
+        language_cost_note=costs_note,
     )
 
 
@@ -406,6 +426,36 @@ async def model_access(
             )
         )
     return tuple(top)
+
+
+async def language_costs(
+    session: AsyncSession, tenant_id: UUID, window: MonthlyWindow
+) -> tuple[tuple[tuple[str, str, str, str, str, str], ...], str | None]:
+    read = await language_cost(
+        session, tenant_id, start=window.start, end=window.end, group_by="model"
+    )
+    # The analyzer never labelled an answer of the month: nothing was measured.
+    if not read["items"] and not read["excluded"]["language_unknown"]:
+        return (), LANGUAGE_COST_OFF
+    by_model: dict[str, dict[str, Any]] = {}
+    for item in read["items"]:
+        by_model.setdefault(item["group"]["id"], {})[item["language"]] = item
+    rows = []
+    for model, sides in by_model.items():
+        tr, en = sides.get("tr"), sides.get("en")
+        if tr is None or tr["requests"] < LANGUAGE_COST_MIN_REQUESTS:
+            continue
+        rows.append(
+            (
+                str(model)[:MODEL_NAME_LIMIT],
+                f"{tr['tokens_per_1000_characters']:.1f}",
+                str(tr["requests"]),
+                "—" if en is None else f"{en['tokens_per_1000_characters']:.1f}",
+                "0" if en is None else str(en["requests"]),
+                "—" if tr["tr_vs_en"] is None else f"{tr['tr_vs_en']:.2f}",
+            )
+        )
+    return tuple(rows), None
 
 
 async def denial_counts(
@@ -668,6 +718,26 @@ def _monthly_story(evidence: MonthlyEvidence, styles: Any) -> list[Any]:
                 or [["—", "—", "—", "—", "0"]],
                 ["API anahtarı", "Takım", "Sağlayıcı", "Model", "İstek"],
                 [40, 40, 22, 56, 16],
+            ),
+        ),
+        *section(
+            "8. Dile göre karakter başına token",
+            source("request_lifecycle ve usage_ledger"),
+            text(LANGUAGE_COST_METHOD),
+            Spacer(1, 2 * mm),
+            text(evidence.language_cost_note)
+            if evidence.language_cost_note
+            else wrapped(
+                [list(row) for row in evidence.language_cost] or [["—"] * 6],
+                [
+                    "Model",
+                    "TR token / 1000 karakter",
+                    "TR yanıt",
+                    "EN token / 1000 karakter",
+                    "EN yanıt",
+                    "TR / EN",
+                ],
+                [56, 30, 18, 30, 18, 22],
             ),
         ),
     ]

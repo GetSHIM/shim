@@ -1,0 +1,1657 @@
+{
+ "format": "shim.detection.corpus",
+ "version": 1,
+ "claim_scope": "Synthetic fixture-bound evidence only; not a real-world statistical claim.",
+ "provenance": "Held-out corpus: written by an author who never saw tr_person_names.json, person-tr-v1.json or the recognizer. Labels are scored as written and are not edited to pass. Spans exclude cues and suffixes; a single first name with a cue is positive; streets and institutions named after people and 'Sayın Yetkili/Müşterimiz' are negative; historical full names (id tag hist) and initials such as 'A. Yılmaz' (tag initial, the initial inside the span) are positive; titles Dr., Doç. Dr., Prof. and Av. are cues. History: measured first on the branch with the Faker list and the lane's names; the rule changes that followed (titles as cues, initials, a listed name after a cue, a third title-case word, a place word two words on) were made after that measurement; the second team name list was written by a third author who never saw this corpus.",
+ "entities": [
+  "PERSON_NAME_TR"
+ ],
+ "cases": [
+  {
+   "id": "pos-001-full-support",
+   "text": "Merhaba, siparişim hâlâ gelmedi. Adım Zeynep Arslan, lütfen kargo durumunu kontrol eder misiniz?",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 38,
+     "end": 51
+    }
+   ]
+  },
+  {
+   "id": "pos-002-full-short",
+   "text": "Az önce müşteri Fatma Şimşek aradı, geri dönüş istiyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 28
+    }
+   ]
+  },
+  {
+   "id": "pos-003-full-chat",
+   "text": "[14:02] Burak Aydoğan: abonelik iptali için ne yapmam gerekiyor?\n[14:03] Destek: Yardımcı olayım.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 21
+    }
+   ]
+  },
+  {
+   "id": "pos-004-full-hr",
+   "text": "İK notu: Merve Sezer 3 Mart'ta işe başladı, deneme süresi altı ay, yöneticisi Finans Direktörlüğü.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-005-full-bank",
+   "text": "Hesabımdan izinsiz 4.750 TL çekildi. Hesap sahibi Kemal Tunçer olarak şikâyetimin ivedilikle incelenmesini talep ediyorum.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 50,
+     "end": 62
+    }
+   ]
+  },
+  {
+   "id": "pos-006-full-email",
+   "text": "Konu: Fatura itirazı\n\nİyi günler,\n\nGeçen ayki faturamda hatalı bir kalem var. Ayrıntıları ekte iletiyorum.\n\nSaygılarla,\nGülşen Bozkurt",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 120,
+     "end": 134
+    }
+   ]
+  },
+  {
+   "id": "pos-007-full-code",
+   "text": "# TODO: Emre Karaca ile görüştükten sonra bu doğrulamayı kaldır, test verisi gerçek müşteri kaydı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-008-full-code2",
+   "text": "// Reviewer: Sevda Koçak — retry mantığı onaylandı",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 13,
+     "end": 24
+    }
+   ]
+  },
+  {
+   "id": "pos-009-full-meeting",
+   "text": "Toplantıya Tolga Başaran, Nilüfer Ateş ve Cengiz Yalçın katıldı; karar alınmadan dağıldık.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 11,
+     "end": 24
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 26,
+     "end": 38
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 42,
+     "end": 55
+    }
+   ]
+  },
+  {
+   "id": "pos-010-full-form",
+   "text": "Başvuru sahibi: Dilara Korkmaz\nDoğum yeri: Eskişehir\nMeslek: Mühendis",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 30
+    }
+   ]
+  },
+  {
+   "id": "pos-011-full-complaint",
+   "text": "Şubenize 12 Eylül'de gittiğimde gişedeki görevli Volkan Önal bana yanlış bilgi verdi ve işlemim iki gün gecikti.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 49,
+     "end": 60
+    }
+   ]
+  },
+  {
+   "id": "pos-012-full-short2",
+   "text": "Kargoyu teslim alan kişi: Rıza Tekin, saat 16:40.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 26,
+     "end": 36
+    }
+   ]
+  },
+  {
+   "id": "pos-013-full-ticket",
+   "text": "Ticket #48213 açan kişi Özlem Uçar, öncelik yüksek, ürün: kurumsal paket.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 24,
+     "end": 34
+    }
+   ]
+  },
+  {
+   "id": "pos-014-full-note",
+   "text": "Not: Yasemin Kurt yarın izinli, vekâlet Murat Çetin'de.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 5,
+     "end": 17
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 40,
+     "end": 51
+    }
+   ]
+  },
+  {
+   "id": "pos-015-full-long",
+   "text": "Geçen hafta yaptığımız görüşmede bahsettiğim sözleşme taslağını ekte bulabilirsiniz; hukuk birimi incelemesini tamamladıktan sonra imza için Songül Aktaş ile yeniden iletişime geçeceğiz, ardından ödeme planı netleşecek ve ilk taksit ay sonunda tahsil edilecek.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 141,
+     "end": 153
+    }
+   ]
+  },
+  {
+   "id": "pos-016-full-list",
+   "text": "Katılımcılar:\n- Ferhat Polat\n- Büşra Ünal\n- Berkay Doğru",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 28
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 31,
+     "end": 41
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 44,
+     "end": 56
+    }
+   ]
+  },
+  {
+   "id": "pos-017-full-sms",
+   "text": "Ece Karahan hanesine 250 TL gönderdi, açıklama: kira.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 11
+    }
+   ]
+  },
+  {
+   "id": "pos-018-full-ins",
+   "text": "Poliçe sahibi Selçuk Bayram, araç plakası 34 ABC 123, hasar tarihi 5 Ağustos.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 14,
+     "end": 27
+    }
+   ]
+  },
+  {
+   "id": "pos-019-full-rec",
+   "text": "Mülakat değerlendirmesi — aday: Leyla Erkan; teknik puan 82/100, iletişim güçlü.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 32,
+     "end": 43
+    }
+   ]
+  },
+  {
+   "id": "pos-020-full-log",
+   "text": "2026-10-02 09:14:55 INFO  user=Nihat Aslan action=login result=ok",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 31,
+     "end": 42
+    }
+   ]
+  },
+  {
+   "id": "pos-021-full-dm",
+   "text": "abi Gizem Yavuz dün yine gelmedi, yerine sen bakar mısın",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 15
+    }
+   ]
+  },
+  {
+   "id": "pos-022-two-hh",
+   "text": "Sözleşmenin tarafı Hasan Hüseyin Aksoy olup adresi aşağıda yer almaktadır.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 19,
+     "end": 38
+    }
+   ]
+  },
+  {
+   "id": "pos-023-two-en",
+   "text": "Öğrenci: Elif Naz Çakır, 9-B, devamsızlık 4 gün.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 23
+    }
+   ]
+  },
+  {
+   "id": "pos-024-two-ihh",
+   "text": "İbrahim Halil Taş adına düzenlenen vekâletname noterde onaylandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-025-two-of",
+   "text": "Dosyayı Ömer Faruk Bayrak hazırladı, kontrol bekliyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 25
+    }
+   ]
+  },
+  {
+   "id": "pos-026-two-yz",
+   "text": "Mezun listesinde Yusuf Ziya Sezgin ve Beyza Nur Aksu yer alıyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 17,
+     "end": 34
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 38,
+     "end": 52
+    }
+   ]
+  },
+  {
+   "id": "pos-027-two-ag",
+   "text": "Hasta Ayşe Gül Demirtaş, 54 yaşında, poliklinik randevusu 14:30.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 23
+    }
+   ]
+  },
+  {
+   "id": "pos-028-two-am",
+   "text": "Kayıt sahibi: Mehmet Emin Güler",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 14,
+     "end": 31
+    }
+   ]
+  },
+  {
+   "id": "pos-029-two-zn",
+   "text": "Müşteri temsilcimiz Hatice Nur Erdem sizinle en kısa sürede iletişime geçecektir.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 20,
+     "end": 36
+    }
+   ]
+  },
+  {
+   "id": "pos-030-two-mk",
+   "text": "Teşekkürler, ben Mustafa Kerem Ilgaz, başvuru numaram 7781.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 17,
+     "end": 36
+    }
+   ]
+  },
+  {
+   "id": "pos-031-two-sg",
+   "text": "Alacaklı Sibel Gül Yazıcı tarafından icra takibi başlatıldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 25
+    }
+   ]
+  },
+  {
+   "id": "pos-032-cue-sayin",
+   "text": "Sayın Ahmet Kılıç, talebiniz alınmıştır.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-033-cue-sayin-sfx",
+   "text": "Sayın Cem Yıldırım'ın başvurusu değerlendirmeye alınmıştır.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 18
+    }
+   ]
+  },
+  {
+   "id": "pos-034-cue-sayin-sfx2",
+   "text": "Sayın Tuğba Çiftçi’ya ulaşamadık, tekrar deneyeceğiz.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 18
+    }
+   ]
+  },
+  {
+   "id": "pos-035-cue-sayin-long",
+   "text": "Sayın Alper Dinç, 18 Ekim tarihli dilekçenizi aldık; ilgili birimlerimiz inceleme yapmış olup sonuç tarafınıza yazılı olarak bildirilecektir. Ek bilgi gerekirse sizi arayacağız.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 16
+    }
+   ]
+  },
+  {
+   "id": "pos-036-cue-sn",
+   "text": "Sn. Ebru Uysal adına ödeme yapıldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-037-cue-sn-up",
+   "text": "SN. SALİH YAVUZER İÇİN BELGE DÜZENLENMİŞTİR",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-038-cue-bay",
+   "text": "Bay Taner Karataş toplantıyı erteledi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-039-cue-bay-three",
+   "text": "Bay Mehmet Nuri Karahan bugün ofiste olmayacak.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 23
+    }
+   ]
+  },
+  {
+   "id": "pos-040-cue-bayan",
+   "text": "Bayan Tülin Karagöz resepsiyonda bekliyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-041-cue-hn",
+   "text": "Hn. Derya Balcı dosyayı imzaladı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 15
+    }
+   ]
+  },
+  {
+   "id": "pos-042-cue-hn2",
+   "text": "Hn. Seda Önder'e iletilmek üzere teslim edilmiştir.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-043-cue-sayin-single",
+   "text": "Sayın Süleyman, oturumunuz süresi doldu.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-044-cue-bay-single",
+   "text": "Bay Orhan kapıda sizi bekliyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 9
+    }
+   ]
+  },
+  {
+   "id": "pos-045-cue-dr",
+   "text": "Dr. Çağla Esen muayene sonrası ilaç dozunu değiştirdi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-046-cue-dr2",
+   "text": "Randevu: Dr. Ümit Kaplan, Kardiyoloji, 3. kat.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 13,
+     "end": 24
+    }
+   ]
+  },
+  {
+   "id": "pos-047-cue-doc",
+   "text": "Doç. Dr. Işıl Gürsoy tez jürisinde yer alacak.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-048-cue-prof",
+   "text": "Prof. Dr. Hülya Özkan konferansın açılış konuşmasını yaptı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 10,
+     "end": 21
+    }
+   ]
+  },
+  {
+   "id": "pos-049-cue-prof2",
+   "text": "Prof. Kadir Bulut'un ders notları sisteme yüklendi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-050-cue-av",
+   "text": "Av. Zübeyde Tan davayı temyize götürdü.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 15
+    }
+   ]
+  },
+  {
+   "id": "pos-051-cue-av2",
+   "text": "Vekil Av. Ramazan Eren'in imzası eksik.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 10,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-052-cue-upper",
+   "text": "SAYIN AYŞE YILMAZ ADINA DÜZENLENEN MAKBUZ",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-053-trail-hanim",
+   "text": "Zeynep Hanım şubeye geldiğinde sizi arayacağız.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 6
+    }
+   ]
+  },
+  {
+   "id": "pos-054-trail-bey",
+   "text": "Kemal Bey yarın saat ikide odasında olacak.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 5
+    }
+   ]
+  },
+  {
+   "id": "pos-055-trail-bey2",
+   "text": "Toplantı notlarını Ali Rıza Bey'e ilettim.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 19,
+     "end": 27
+    }
+   ]
+  },
+  {
+   "id": "pos-056-trail-hanim2",
+   "text": "Meryem Ekinci Hanım'ın talebi onaylandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 13
+    }
+   ]
+  },
+  {
+   "id": "pos-057-trail-hfendi",
+   "text": "Buyurun Selin Hanımefendi, size nasıl yardımcı olabilirim?",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 13
+    }
+   ]
+  },
+  {
+   "id": "pos-058-trail-bey-sur",
+   "text": "Gökhan Tuncer Bey, faturanız hazır.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 13
+    }
+   ]
+  },
+  {
+   "id": "pos-059-cue-mixed",
+   "text": "Sayın Fadime Yurt Hanım, iade talebiniz işleme alındı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-060-sfx-in",
+   "text": "Ayşe Demir'in şifresi sıfırlandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 10
+    }
+   ]
+  },
+  {
+   "id": "pos-061-sfx-a",
+   "text": "Dosyayı Mehmet Kaya'ya gönderdim.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-062-sfx-typo-apos",
+   "text": "Faturayı Oğuzhan Koç’a kestik.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-063-sfx-den",
+   "text": "Bu mesaj Pınar Güneş'ten geldi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-064-sfx-le",
+   "text": "Dün Cansu Bilgin'le konuştum, tamam dedi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 16
+    }
+   ]
+  },
+  {
+   "id": "pos-065-sfx-de",
+   "text": "Ödeme Serkan Kılıç'ta bekliyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 18
+    }
+   ]
+  },
+  {
+   "id": "pos-066-sfx-i",
+   "text": "Müdür, Melike Sönmez'i toplantıya çağırdı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-067-sfx-nin",
+   "text": "Hacer Işık'ın kartı bloke edildi, yenisi gönderilecek.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 10
+    }
+   ]
+  },
+  {
+   "id": "pos-068-sfx-yi",
+   "text": "Müşteriyi, yani Recep Cömert'i aradım ama açmadı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 28
+    }
+   ]
+  },
+  {
+   "id": "pos-069-sfx-dan",
+   "text": "Havale Esra Turan’dan geldi, açıklaması boş.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-070-sfx-la-long",
+   "text": "Perşembe günü yapılan denetimde, kasa sayımı sırasında ortaya çıkan 2.300 TL'lik fark nedeniyle Ufuk Sarı'yla ve ayrıca muhasebe sorumlusuyla ayrı ayrı görüşme yapılması kararlaştırıldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 96,
+     "end": 105
+    }
+   ]
+  },
+  {
+   "id": "pos-071-sfx-up",
+   "text": "NESLİHAN AKGÜL'IN HESABI KAPATILDI",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-072-up-form",
+   "text": "ADI SOYADI: AHMET ÇELİK\nT.C. KİMLİK NO: 12345678901",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 12,
+     "end": 23
+    }
+   ]
+  },
+  {
+   "id": "pos-073-up-form2",
+   "text": "MÜŞTERİ: METİN ÖZER / ŞUBE: KADIKÖY",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-074-up-sig",
+   "text": "İMZA: SİBEL GÜLER",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-075-up-three",
+   "text": "SÖZLEŞME TARAFI: MEHMET ALİ DOĞRU VE ŞİRKET YETKİLİSİ",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 17,
+     "end": 33
+    }
+   ]
+  },
+  {
+   "id": "pos-076-up-bank",
+   "text": "ALICI ADI: DOĞUKAN MERCAN IBAN TR33 0006 1005 1978 6457 8413 26",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 11,
+     "end": 25
+    }
+   ]
+  },
+  {
+   "id": "pos-077-up-short",
+   "text": "ZİYARETÇİ: CEREN ALTIN - 5. KAT - SATIŞ OFİSİ",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 11,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-078-ascii-1",
+   "text": "Merhaba, ben Ayse Yilmaz degil, Sukru Ozturk. Siparis numaram 5521.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 32,
+     "end": 44
+    }
+   ]
+  },
+  {
+   "id": "pos-079-ascii-2",
+   "text": "Basvuru sahibi Ozlem Cakir, adres Izmir Karsiyaka.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 15,
+     "end": 26
+    }
+   ]
+  },
+  {
+   "id": "pos-080-ascii-3",
+   "text": "kargoyu Huseyin Gungor teslim aldi, imza atti",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-081-ascii-4",
+   "text": "Sayin Gokhan Oztas, talebiniz iletildi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 18
+    }
+   ]
+  },
+  {
+   "id": "pos-082-ascii-5",
+   "text": "Toplanti: Cagri Sahin ve Irem Aydin katildi.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 10,
+     "end": 21
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 25,
+     "end": 35
+    }
+   ]
+  },
+  {
+   "id": "pos-083-ascii-6",
+   "text": "Dr. Sebnem Yildiz muayene etti.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 4,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-084-ascii-7",
+   "text": "fatura Gulsum Tas adina kesilecek lutfen",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-085-ascii-sfx",
+   "text": "Paketi Ismail Kocak'a verdim.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-086-pii-tckn",
+   "text": "Müşteri Halil Kandemir, TCKN 10000000146, telefon 0532 111 22 33.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-087-pii-tckn2",
+   "text": "TC: 10000000146 Ad Soyad: Esin Karaman",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 26,
+     "end": 38
+    }
+   ]
+  },
+  {
+   "id": "pos-088-pii-iban",
+   "text": "Alıcı Meltem Özdoğan — IBAN TR12 0006 4000 0011 2345 6789 01 — açıklama: depozito.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-089-pii-phone",
+   "text": "Beni Anıl Sayar adıyla +90 555 123 45 67 numarasından arayabilirsiniz.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 5,
+     "end": 15
+    }
+   ]
+  },
+  {
+   "id": "pos-090-pii-email",
+   "text": "İletişim: Burcu Taşkın <burcu.taskin@example.com>",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 10,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-091-pii-card",
+   "text": "Kart sahibi Barış Altun, kart no 4111 1111 1111 1111, son kullanma 08/29.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 12,
+     "end": 23
+    }
+   ]
+  },
+  {
+   "id": "pos-092-pii-addr",
+   "text": "Gönderi adresi: Nermin Ersoy, Moda Cad. No: 14 Daire 3 Kadıköy/İstanbul, 0216 555 01 02",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 28
+    }
+   ]
+  },
+  {
+   "id": "pos-093-pii-vkn",
+   "text": "Fatura Kübra Aksakal adına, vergi no 1234567890, tutar 1.180,00 TL.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 20
+    }
+   ]
+  },
+  {
+   "id": "pos-094-rare-1",
+   "text": "Ofis yöneticisi Nurhan Gedik anahtarları teslim aldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 28
+    }
+   ]
+  },
+  {
+   "id": "pos-095-rare-2",
+   "text": "Başvuruyu Tevfik Dağdelen yaptı, belgeler eksik.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 10,
+     "end": 25
+    }
+   ]
+  },
+  {
+   "id": "pos-096-rare-3",
+   "text": "Hakem heyetinde Gülnihal Pekdemir görev aldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 16,
+     "end": 33
+    }
+   ]
+  },
+  {
+   "id": "pos-097-rare-4",
+   "text": "Kaptan Mümtaz Gökçe geminin yönetimini devraldı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 19
+    }
+   ]
+  },
+  {
+   "id": "pos-098-rare-5",
+   "text": "Okul müdürü Handan Ergül velileri toplantıya çağırdı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 12,
+     "end": 24
+    }
+   ]
+  },
+  {
+   "id": "pos-099-rare-6",
+   "text": "Ekipten Yiğit Atasoy ve Selva Bozdoğan projeye atandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 20
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 24,
+     "end": 38
+    }
+   ]
+  },
+  {
+   "id": "pos-100-rare-7",
+   "text": "Teşekkür ederim, Ceylan Kuzu ile görüştüm.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 17,
+     "end": 28
+    }
+   ]
+  },
+  {
+   "id": "pos-101-rare-8",
+   "text": "Müvekkil Hikmet Sungur yurt dışındadır.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 22
+    }
+   ]
+  },
+  {
+   "id": "pos-102-rare-9",
+   "text": "Ayrılan çalışan: Perihan Sarıkaya; son iş günü 30 Eylül.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 17,
+     "end": 33
+    }
+   ]
+  },
+  {
+   "id": "pos-103-rare-10",
+   "text": "Muhasebe Cüneyt Ayhan'a bağlı çalışıyor.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 21
+    }
+   ]
+  },
+  {
+   "id": "pos-104-amb-1",
+   "text": "Yeni müşteri kaydı: Deniz Yıldırım, kurumsal hesap.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 20,
+     "end": 34
+    }
+   ]
+  },
+  {
+   "id": "pos-105-amb-2",
+   "text": "Katılımcı listesinde Umut Duman ve Barış Özkaya var.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 21,
+     "end": 31
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 35,
+     "end": 47
+    }
+   ]
+  },
+  {
+   "id": "pos-106-amb-3",
+   "text": "Gül Tekin'in başvurusu onaylandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 0,
+     "end": 9
+    }
+   ]
+  },
+  {
+   "id": "pos-107-amb-4",
+   "text": "Ödemeyi Can Yücel yaptı, makbuz ekte.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 8,
+     "end": 17
+    }
+   ]
+  },
+  {
+   "id": "pos-108-hist-1",
+   "text": "Okulumuzda Mustafa Kemal Atatürk köşesi hazırlandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 11,
+     "end": 32
+    }
+   ]
+  },
+  {
+   "id": "pos-109-hist-2",
+   "text": "Konuşmacı, Yunus Emre'nin şiirlerinden alıntı yaptı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 11,
+     "end": 21
+    }
+   ]
+  },
+  {
+   "id": "pos-110-initial-1",
+   "text": "Evrak A. Yılmaz tarafından imzalandı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 6,
+     "end": 15
+    }
+   ]
+  },
+  {
+   "id": "pos-111-initial-2",
+   "text": "Raporu M. Kaya'ya ilettim.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 7,
+     "end": 14
+    }
+   ]
+  },
+  {
+   "id": "pos-112-initial-3",
+   "text": "Paketi teslim alan: S. Öztürk, daire 4.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 20,
+     "end": 29
+    }
+   ]
+  },
+  {
+   "id": "pos-113-long-1",
+   "text": "Konu: Kredi kartı limit itirazı. Merhaba, 3 Ekim'den beri kartımın limiti aniden düşürüldü ve hiçbir bilgilendirme almadım; şubeyle görüştüğümde bunun sistemsel olduğunu söylediler. Bu yazıyı kart sahibi Pelin Yazgan olarak gönderiyorum, dosya numaram 99231. En geç cuma gününe kadar yazılı yanıt bekliyorum, aksi hâlde BDDK'ya başvuracağım.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 204,
+     "end": 216
+    }
+   ]
+  },
+  {
+   "id": "pos-114-long-2",
+   "text": "Haftalık İK özeti: Satış ekibine katılan Anıl Tezcan için bilgisayar ve erişim kartı hazırlandı, oryantasyon salı günü yapılacak; ayrıca Rukiye Doğan Çınar'ın izin talebi onaylandı, yerine geçici olarak operasyon biriminden bir arkadaş görevlendirilecek ve süreç yöneticisi tarafından takip edilecek.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 41,
+     "end": 52
+    },
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 137,
+     "end": 155
+    }
+   ]
+  },
+  {
+   "id": "pos-115-long-3",
+   "text": "ÖNEMLİ: Aşağıdaki müşteri bilgileri gizlidir ve yalnızca yetkili personel tarafından görüntülenebilir. ADI SOYADI: SERPİL KARATAŞ — HESAP TÜRÜ: VADESİZ — ŞUBE: ALSANCAK — SON İŞLEM: 02.10.2026 — NOT: Müşteri kart yenileme talebinde bulundu, adres doğrulaması bekleniyor, arama yapılmadan önce kimlik teyidi alınmalı.",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 115,
+     "end": 129
+    }
+   ]
+  },
+  {
+   "id": "pos-116-initial-4",
+   "text": "Yetkili: M. Ali Demir - Satın Alma",
+   "expect": [
+    {
+     "entity_type": "PERSON_NAME_TR",
+     "start": 9,
+     "end": 21
+    }
+   ]
+  },
+  {
+   "id": "neg-001-single-1",
+   "text": "Ayşe bugün işe gelmedi.",
+   "expect": []
+  },
+  {
+   "id": "neg-002-single-2",
+   "text": "Mehmet ile Fatma yarın toplantıda olacak.",
+   "expect": []
+  },
+  {
+   "id": "neg-003-single-3",
+   "text": "Selin, dosyayı bana gönderir misin?",
+   "expect": []
+  },
+  {
+   "id": "neg-004-single-4",
+   "text": "Abi Cengiz'e söyle, kargo yarın gelecek.",
+   "expect": []
+  },
+  {
+   "id": "neg-005-single-5",
+   "text": "Zeynep'in şifresi sıfırlandı.",
+   "expect": []
+  },
+  {
+   "id": "neg-006-single-6",
+   "text": "Dün akşam Burak'la maça gittik, çok güzeldi.",
+   "expect": []
+  },
+  {
+   "id": "neg-007-single-7",
+   "text": "Merhaba Elif, siparişin yola çıktı.",
+   "expect": []
+  },
+  {
+   "id": "neg-008-single-8",
+   "text": "Hasan geldi mi, kimse görmedi.",
+   "expect": []
+  },
+  {
+   "id": "neg-009-single-9",
+   "text": "Teşekkürler Murat, hallettim.",
+   "expect": []
+  },
+  {
+   "id": "neg-010-single-10",
+   "text": "Esra ve Kerem'in dönüşünü bekliyoruz, sonra karar verelim.",
+   "expect": []
+  },
+  {
+   "id": "neg-011-word-umut",
+   "text": "Umut verici gelişmeler yaşandı ve umut hâlâ var.",
+   "expect": []
+  },
+  {
+   "id": "neg-012-word-deniz",
+   "text": "Deniz kenarında yürüyüş yaptık, deniz çok sakindi.",
+   "expect": []
+  },
+  {
+   "id": "neg-013-word-baris",
+   "text": "Barış görüşmeleri bu hafta yeniden başlayacak.",
+   "expect": []
+  },
+  {
+   "id": "neg-014-word-gul",
+   "text": "Gül bahçesinde dolaşırken gül kokusu her yeri sardı.",
+   "expect": []
+  },
+  {
+   "id": "neg-015-word-can",
+   "text": "Bu toplantı gerçekten can sıkıcı olmaya başladı.",
+   "expect": []
+  },
+  {
+   "id": "neg-016-word-kaya",
+   "text": "Kaya gibi sağlam bir temel atmamız gerekiyor.",
+   "expect": []
+  },
+  {
+   "id": "neg-017-word-dogan",
+   "text": "Doğan güneşle birlikte kuşlar ötmeye başladı.",
+   "expect": []
+  },
+  {
+   "id": "neg-018-word-cicek",
+   "text": "Bahçede çiçek açtı, bahar geldi.",
+   "expect": []
+  },
+  {
+   "id": "neg-019-word-isik",
+   "text": "Odada ışık yandı ve herkes sustu.",
+   "expect": []
+  },
+  {
+   "id": "neg-020-word-yildiz",
+   "text": "Gökyüzünde bir yıldız kaydı ve herkes dilek tuttu.",
+   "expect": []
+  },
+  {
+   "id": "neg-021-word-aslan",
+   "text": "Aslan gibi çalışıyor ama dinlenmeyi de bilmeli.",
+   "expect": []
+  },
+  {
+   "id": "neg-022-word-su",
+   "text": "Su içmeyi unutma, bugün hava çok sıcak.",
+   "expect": []
+  },
+  {
+   "id": "neg-023-word-gunes",
+   "text": "Güneş Enerjisi yatırımları bu yıl yüzde yirmi arttı.",
+   "expect": []
+  },
+  {
+   "id": "neg-024-word-bahar",
+   "text": "Bahar aylarında satışlar genellikle artıyor.",
+   "expect": []
+  },
+  {
+   "id": "neg-025-word-nur",
+   "text": "Odaya nur gibi bir ışık doldu.",
+   "expect": []
+  },
+  {
+   "id": "neg-026-word-ozan",
+   "text": "Ozan sahneye çıktı ve türkü söyledi.",
+   "expect": []
+  },
+  {
+   "id": "neg-027-inst-deniz",
+   "text": "Deniz Kuvvetleri Komutanlığı yeni bir tatbikat duyurdu.",
+   "expect": []
+  },
+  {
+   "id": "neg-028-inst-umut",
+   "text": "Umut Sigorta poliçenizi yenilemek için sizi arayacak.",
+   "expect": []
+  },
+  {
+   "id": "neg-029-inst-doganh",
+   "text": "Doğan Holding hisseleri günü yükselişle kapattı.",
+   "expect": []
+  },
+  {
+   "id": "neg-030-inst-yildiz",
+   "text": "Yıldız Teknik Üniversitesi'nde mezuniyet töreni yapıldı.",
+   "expect": []
+  },
+  {
+   "id": "neg-031-inst-kocvakfi",
+   "text": "Vehbi Koç Vakfı yeni burs programını açıkladı.",
+   "expect": []
+  },
+  {
+   "id": "neg-032-inst-akif",
+   "text": "Mehmet Akif Ersoy Üniversitesi kampüsünde sınav var.",
+   "expect": []
+  },
+  {
+   "id": "neg-033-street-ata",
+   "text": "Atatürk Caddesi üzerindeki şubemize gelebilirsiniz.",
+   "expect": []
+  },
+  {
+   "id": "neg-034-street-ata2",
+   "text": "Adresim: Atatürk Bulvarı No: 45 Çankaya/Ankara.",
+   "expect": []
+  },
+  {
+   "id": "neg-035-street-bridge",
+   "text": "Fatih Sultan Mehmet Köprüsü'nde yoğun trafik var.",
+   "expect": []
+  },
+  {
+   "id": "neg-036-street-sok",
+   "text": "Gül Sokak No: 7 Daire 2, Karşıyaka.",
+   "expect": []
+  },
+  {
+   "id": "neg-037-street-cad",
+   "text": "Mehmet Akif Cad. üzerinde bir kafe açıldı.",
+   "expect": []
+  },
+  {
+   "id": "neg-038-street-park",
+   "text": "Ahmet Hamdi Tanpınar Parkı'nda buluşalım.",
+   "expect": []
+  },
+  {
+   "id": "neg-039-place-1",
+   "text": "Ankara'dan Konya'ya giderken Aksaray'da mola verdik.",
+   "expect": []
+  },
+  {
+   "id": "neg-040-place-2",
+   "text": "Kadıköy'de ofis arıyoruz, Moda tarafı olabilir.",
+   "expect": []
+  },
+  {
+   "id": "neg-041-place-3",
+   "text": "Şubemiz Beşiktaş, Üsküdar ve Bakırköy'de hizmet veriyor.",
+   "expect": []
+  },
+  {
+   "id": "neg-042-place-4",
+   "text": "Eskişehir Osmangazi bölgesindeki depo kapasitesi doldu.",
+   "expect": []
+  },
+  {
+   "id": "neg-043-brand-1",
+   "text": "Türk Telekom faturanız ayın 5'inde kesilecektir.",
+   "expect": []
+  },
+  {
+   "id": "neg-044-brand-2",
+   "text": "Garanti BBVA mobil uygulamasından havale yapabilirsiniz.",
+   "expect": []
+  },
+  {
+   "id": "neg-045-brand-3",
+   "text": "Trendyol ve Hepsiburada kampanyaları bu hafta sonu başlıyor.",
+   "expect": []
+  },
+  {
+   "id": "neg-046-brand-4",
+   "text": "Yeni iPhone modelinin Türkiye fiyatı açıklandı.",
+   "expect": []
+  },
+  {
+   "id": "neg-047-brand-5",
+   "text": "Anadolu Sigorta ile Allianz arasında teklif karşılaştırması yaptık.",
+   "expect": []
+  },
+  {
+   "id": "neg-048-date-1",
+   "text": "Ocak, Şubat ve Mart aylarında bakım yapılacak.",
+   "expect": []
+  },
+  {
+   "id": "neg-049-date-2",
+   "text": "Pazartesi ve Cuma günleri destek hattı 09:00'da açılıyor.",
+   "expect": []
+  },
+  {
+   "id": "neg-050-date-3",
+   "text": "Salı Pazarı'nda taze sebze bulmak kolay.",
+   "expect": []
+  },
+  {
+   "id": "neg-051-cue-nonname-1",
+   "text": "Sayın Yetkili, aşağıdaki konuda bilgi almak istiyorum.",
+   "expect": []
+  },
+  {
+   "id": "neg-052-cue-nonname-2",
+   "text": "Sayın Müşterimiz, kampanya süresi uzatılmıştır.",
+   "expect": []
+  },
+  {
+   "id": "neg-053-cue-nonname-3",
+   "text": "Sayın Hakem Heyeti, itirazımız ekte sunulmuştur.",
+   "expect": []
+  },
+  {
+   "id": "neg-054-sent-1",
+   "text": "Teşekkür ederim. Yarın görüşürüz.",
+   "expect": []
+  },
+  {
+   "id": "neg-055-sent-2",
+   "text": "Fatura ödemesi ayın on beşinde yapılmalıdır, aksi hâlde gecikme faizi uygulanır.",
+   "expect": []
+  },
+  {
+   "id": "neg-056-sent-3",
+   "text": "Kargonuz Pazartesi günü teslim edilecektir. Lütfen adreste bulununuz.",
+   "expect": []
+  },
+  {
+   "id": "neg-057-sent-4",
+   "text": "Güzel bir haber: iade talebiniz onaylandı ve tutar üç iş günü içinde hesabınıza geçecek.",
+   "expect": []
+  },
+  {
+   "id": "neg-058-sent-5",
+   "text": "Yardım istiyorum, hesabıma giremiyorum.",
+   "expect": []
+  },
+  {
+   "id": "neg-059-sent-long",
+   "text": "Şikâyetimin temel nedeni, ürünün sipariş sırasında belirtilen özelliklerle uyuşmaması ve iade sürecinin iki haftadan uzun sürmesidir; ayrıca müşteri hizmetlerine yaptığım üç ayrı görüşmede de kesin bir çözüm sunulmamıştır, bu nedenle durumun yazılı olarak değerlendirilmesini talep ediyorum.",
+   "expect": []
+  },
+  {
+   "id": "neg-060-en-1",
+   "text": "Hello, my order has not arrived yet. Could you check the shipping status?",
+   "expect": []
+  },
+  {
+   "id": "neg-061-en-2",
+   "text": "Please reset the password for the account and send a confirmation to the admin team.",
+   "expect": []
+  },
+  {
+   "id": "neg-062-code-1",
+   "text": "def get_user_name(first_name, last_name): return f\"{first_name} {last_name}\"",
+   "expect": []
+  },
+  {
+   "id": "neg-063-code-2",
+   "text": "# TODO: retry with exponential backoff before raising ConnectionError",
+   "expect": []
+  },
+  {
+   "id": "neg-064-num-1",
+   "text": "Müşteri TCKN 10000000146, telefon 0532 111 22 33, IBAN TR12 0006 4000 0011 2345 6789 01.",
+   "expect": []
+  }
+ ]
+}

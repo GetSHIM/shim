@@ -9,6 +9,7 @@ from threading import Lock
 from typing import Final
 
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
@@ -42,6 +43,8 @@ ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
         "entity_type",
         "estimated_input_tokens",
         "event_type",
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
         "gen_ai.request.model",
         "gen_ai.response.finish_reasons",
         "gen_ai.usage.input_tokens",
@@ -57,6 +60,7 @@ ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
         "repeat_status",
         "reserved",
         "shim.cost_usd",
+        "shim.task_id",
         "shim.usage_estimated",
         "source_endpoint",
         "status",
@@ -118,13 +122,20 @@ def safe_attributes(
     return output
 
 
+# The GenAI names are still in development upstream; the schema pins the ones used here.
+SCHEMA_URL: Final = "https://opentelemetry.io/schemas/1.44.0"
+
+
 @contextmanager
-def start_span(name: str, **attributes: object) -> Iterator[trace.Span]:
+def start_span(
+    name: str, *, context: Context | None = None, **attributes: object
+) -> Iterator[trace.Span]:
     if name not in SPAN_NAMES:
         raise ValueError(f"unregistered gateway span: {name!r}")
-    tracer = trace.get_tracer("shim.gateway")
+    tracer = trace.get_tracer("shim.gateway", schema_url=SCHEMA_URL)
     with tracer.start_as_current_span(
         name,
+        context=context,
         attributes=safe_attributes(attributes),
         record_exception=False,
         set_status_on_exception=False,

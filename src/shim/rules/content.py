@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal
+from time import perf_counter
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 import re
 import unicodedata
 
@@ -25,6 +26,9 @@ from shim.observability.metrics import LABEL_VALUES
 from shim.rules.model import ACTION_RANK, Rule, RuleSet
 from shim.rules.patterns import PatternTimeout, SearchBudget, compile_safe
 from shim.rules.tr_suffixes import TR_SUFFIX
+
+if TYPE_CHECKING:
+    from shim.privacy.record_match import RecordSetIndex
 
 
 _WORD = r"[\p{L}\p{N}_]"
@@ -382,14 +386,16 @@ def _accept(
 
 @dataclass(slots=True)
 class ContentRules:
-    """One request's term and pattern rules in scope, and what they found."""
+    """One request's term, pattern and record_set rules in scope, and what they found."""
 
     rule_set: RuleSet
     rules: tuple[Rule, ...]
     budget: SearchBudget = field(default_factory=SearchBudget)
-    # Distinct matched values per rule id; held for counting only.
+    # Distinct matched values per rule id (record numbers for a record set); counting only.
     values: dict[str, set[str]] = field(default_factory=dict)
     errors: set[str] = field(default_factory=set)
+    truncated: set[str] = field(default_factory=set)
+    record_sets: Mapping[str, RecordSetIndex] = field(default_factory=dict)
 
     @property
     def protects(self) -> bool:
@@ -401,7 +407,9 @@ class ContentRules:
 
     def count(self, hit: ContentHit, value: str) -> None:
         for rule in hit.rules:
-            self.values.setdefault(rule.id, set()).add(value)
+            # A record set counts the records it matched, not the spans.
+            if rule.kind != "record_set":
+                self.values.setdefault(rule.id, set()).add(value)
 
     def search(self, text: str) -> list[ContentHit]:
         matchers = self.rule_set.matchers
@@ -419,6 +427,8 @@ class ContentRules:
                     for match in found
                     if match.end() > match.start()
                 )
+            if rule.kind == "record_set":
+                hits.extend(self._record_set(rule, text))
         # One hit per span, with every rule that found it.
         spans: dict[tuple[int, int], dict[str, Rule]] = {}
         for hit in hits:
@@ -430,18 +440,60 @@ class ContentRules:
             for (start, end), rules in spans.items()
         ]
 
+    def _record_set(self, rule: Rule, text: str) -> list[ContentHit]:
+        """The spans of the set's matched record fields; matched records are counted."""
+        index = self.record_sets.get(str(rule.match["set_id"]))
+        if index is None or self.budget.remaining <= 0:
+            self.errors.add(rule.id)
+            return []
+        started = perf_counter()
+        deadline = started + self.budget.remaining
+        try:
+            if index.kind == "records":
+                matched, spans, truncated = index.match_records(
+                    text, rule.match["min_fields"] or 2, deadline
+                )
+            else:
+                matched, spans, truncated = (
+                    index.match_documents(
+                        text, rule.match["min_shared"] or 6, deadline
+                    ),
+                    [],
+                    False,
+                )
+        except TimeoutError:
+            self.errors.add(rule.id)
+            return []
+        finally:
+            self.budget.remaining -= perf_counter() - started
+        if truncated:
+            self.truncated.add(rule.id)
+        if matched:
+            self.values.setdefault(rule.id, set()).update(map(str, matched))
+        # The set's label is the placeholder type of an enforced mask.
+        labelled = rule.model_copy(
+            update={"match": {**rule.match, "label": index.label}}
+        )
+        return [ContentHit(start, end, (labelled,)) for start, end in set(spans)]
 
-def content_rules(rule_set: RuleSet | None, in_scope) -> ContentRules | None:
-    """The request's term and pattern rules for which `in_scope(rule)` holds, or None."""
+
+def content_rules(
+    rule_set: RuleSet | None,
+    in_scope,
+    record_sets: Mapping[str, RecordSetIndex] | None = None,
+) -> ContentRules | None:
+    """The request's content rules for which `in_scope(rule)` holds, or None."""
 
     if rule_set is None:
         return None
     rules = tuple(
         rule
         for rule in rule_set.rules
-        if rule.kind in {"term", "pattern"} and in_scope(rule)
+        if rule.kind in {"term", "pattern", "record_set"} and in_scope(rule)
     )
-    return ContentRules(rule_set, rules) if rules else None
+    return (
+        ContentRules(rule_set, rules, record_sets=record_sets or {}) if rules else None
+    )
 
 
 def first_fit(
@@ -470,7 +522,8 @@ def count_rule_matches(rule_set: RuleSet, text: str) -> dict[str, int]:
     # Here, not at the top: importing shim.rules must not load the detector stack.
     from shim.privacy.pii_scrubber import PIIScrubberService
 
-    found = content_rules(rule_set, lambda _rule: True)
+    # A record set needs its loaded index, which only the gateway has.
+    found = content_rules(rule_set, lambda rule: rule.kind != "record_set")
     if found is None:
         return {}
     prepared = PIIScrubberService.preprocess(text)

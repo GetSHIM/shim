@@ -239,7 +239,9 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
         "0.5",
         str(secret.id),
     )
-    assert resources["budgets"][budget.json()["id"]] == {
+    budget_state = resources["budgets"][budget.json()["id"]]
+    [target] = budget_state.pop("notify_targets")
+    assert budget_state == {
         "scope_type": "org",
         "scope_value": None,
         "limit_usd": "10",
@@ -247,8 +249,11 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
         "alert_thresholds": [0.8, 1.0],
         "enabled": True,
     }
+    assert set(target) == {"kind", "endpoint_origin", "id"}
+    assert target["endpoint_origin"] == "https://alerts.example.com"
     assert resources["oversight_policies"][oversight.json()["id"]]["mode"] == "flag"
-    assert "notify_targets" not in json.dumps(state)
+    assert _TARGET["endpoint"] not in json.dumps(state)
+    assert "secret_ref" not in json.dumps(state)
 
 
 @pytest.mark.parametrize(
@@ -318,7 +323,7 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
             "budgets",
             {"alert_thresholds": [1.0]},
             {"alert_thresholds": [0.5]},
-            "neutral",
+            "relaxing",
         ),
         ("oversight_policies", {"enabled": True}, None, "relaxing"),
         ("oversight_policies", {"enabled": True}, {"enabled": False}, "relaxing"),
@@ -1270,7 +1275,8 @@ async def test_versions_are_read_only_with_the_reads_of_what_they_hold(db) -> No
     for refused in (state, version):
         assert (refused.status_code, refused.json()["detail"]) == (
             403,
-            "Permission required: deployments.read and settings.read and usage.read",
+            "Permission required: deployments.read and rules.read and settings.read "
+            "and usage.read",
         )
     assert listed.status_code == 200
 

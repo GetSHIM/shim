@@ -6,6 +6,10 @@ role is `owner`, `admin`, `member`, or `auditor`, or a member's
 [custom role](#custom-roles); a team administrator is an organization member
 with a delegated membership, not another global role.
 
+Restore permission, which [shows a masked type only to some teams](COOKBOOK.md#show-masked-values-only-to-some-teams),
+is granted to teams and gateway keys, not to people: the gateway sees the key and
+its team, never the user behind an application.
+
 ## Permissions
 
 Every management route asks for one permission. A built-in role holds a fixed
@@ -17,7 +21,7 @@ write nor own gateway keys.
 | `settings.read` | Read the privacy, provider-key and gateway settings | x | x | x | x |
 | `settings.write` | Change those settings and the organization name | x | x | | |
 | `rules.read` | Read the rule set | x | x | | x |
-| `rules.write` | Change the rule set | x | x | | |
+| `rules.write` | Change the rule set and [preview a rule](COOKBOOK.md#preview-a-rule-before-you-enforce-it); with `plans.create`, [import AIUC rules](COOKBOOK.md#import-aiuc-rules) | x | x | | |
 | `deployments.read` | List the model registry | x | x | | x |
 | `deployments.manage` | Create, change and health-check deployments | x | x | | |
 | `providers.manage` | List, add, change, verify and delete provider credentials | x | x | | |
@@ -29,7 +33,7 @@ write nor own gateway keys.
 | `members.manage` | Invite, list and revoke invites, remove members | x | x | | |
 | `roles.manage` | Change roles, invite or remove admins, custom roles, service accounts | x | | | |
 | `usage.read` | Organization-wide requests, overview, billing, budgets and teams and keys | x | x | | x |
-| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
+| `audit.read` | Compliance overview, audit log, bundle, verify, reports, reads of connectors, forward targets, oversight and readiness, request approvals, and policy plans, versions and state (state and one version's states also need `settings.read`, `usage.read` and `deployments.read`) | x | x | | x |
 | `compliance.manage` | Connectors, forward targets, oversight, audit anchor, readiness declarations | x | x | | |
 | `findings.read` | Read and export [findings](FINDINGS.md) | x | x | | x |
 | `findings.manage` | Change a finding's status | x | x | | |
@@ -37,8 +41,8 @@ write nor own gateway keys.
 | `incidents.manage` | Open incidents, change them and their status, record notifications | x | x | | |
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
-| `plans.approve` | Approve or reject a pending plan | x | x | | |
-| `requests.approve` | Decide request approvals | x | x | | |
+| `plans.approve` | Approve or reject a pending plan ([four eyes](POLICY_DECISIONS.md#four-eyes)); never a service account, nor the plan's creator or submitter, nor who created or rotated their service-account key. While four eyes is on, the last two holders cannot be demoted or removed (409 `FOUR_EYES_UNAVAILABLE`) | x | x | | |
+| `requests.approve` | Read and decide [request approvals](POLICY_DECISIONS.md#request-approval); never a service account, nor the owner of the key that sent the request, nor who created or rotated its service account's key | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
 | `config.manage` | Signing keys and file mode | x | | | |
 

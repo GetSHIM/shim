@@ -16,6 +16,171 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AgentLoop": {
+        "additionalProperties": false,
+        "description": "What a tool call repeated in one task's history does: counted by default.",
+        "properties": {
+          "action": {
+            "default": "count",
+            "enum": [
+              "off",
+              "count",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "repeats": {
+            "default": 5,
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Repeats",
+            "type": "integer"
+          }
+        },
+        "title": "AgentLoop",
+        "type": "object"
+      },
+      "AiucPolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedRevision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expectedrevision"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "offlineAction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "warn",
+                  "block"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offlineaction"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/AiucRule"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "title": "Rules",
+            "type": "array"
+          },
+          "schemaVersion": {
+            "anyOf": [
+              {
+                "const": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schemaversion"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          }
+        },
+        "required": [
+          "rules"
+        ],
+        "title": "AiucPolicy",
+        "type": "object"
+      },
+      "AiucRule": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "monitor",
+              "warn",
+              "mask",
+              "block"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "category": {
+            "enum": [
+              "secret",
+              "email",
+              "term"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "terms": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 2,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Terms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "action"
+        ],
+        "title": "AiucRule",
+        "type": "object"
+      },
       "AnchorMismatch": {
         "properties": {
           "anchor_date": {
@@ -602,6 +767,497 @@
         ],
         "title": "ApiSpec",
         "type": "string"
+      },
+      "ApprovalKey": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefix"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix"
+        ],
+        "title": "ApprovalKey",
+        "type": "object"
+      },
+      "ApprovalPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ApprovalPage",
+        "type": "object"
+      },
+      "ApprovalRequester": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email"
+        ],
+        "title": "ApprovalRequester",
+        "type": "object"
+      },
+      "ApprovalRule": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ApprovalRule",
+        "type": "object"
+      },
+      "ApprovalTeam": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ApprovalTeam",
+        "type": "object"
+      },
+      "ApprovalView": {
+        "properties": {
+          "api_key": {
+            "$ref": "#/components/schemas/ApprovalKey"
+          },
+          "content": {
+            "title": "Content",
+            "type": "null"
+          },
+          "content_note": {
+            "default": "content is not stored",
+            "enum": [
+              "content is not stored",
+              "content is in the request archive"
+            ],
+            "title": "Content Note",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "detected": {
+            "additionalProperties": true,
+            "title": "Detected",
+            "type": "object"
+          },
+          "estimated_input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Input Tokens"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "input_bytes": {
+            "title": "Input Bytes",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "protocol": {
+            "title": "Protocol",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalRequester"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRule"
+            },
+            "title": "Rules",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "expired",
+              "used"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "stream": {
+            "title": "Stream",
+            "type": "boolean"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalTeam"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "use_by": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use By"
+          },
+          "used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used At"
+          },
+          "used_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used Request Id"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "created_at",
+          "expires_at",
+          "decided_by",
+          "decided_at",
+          "use_by",
+          "used_at",
+          "request_id",
+          "used_request_id",
+          "rules",
+          "api_key",
+          "requested_by",
+          "team",
+          "protocol",
+          "provider",
+          "model",
+          "stream",
+          "detected",
+          "input_bytes",
+          "estimated_input_tokens"
+        ],
+        "title": "ApprovalView",
+        "type": "object"
+      },
+      "ArchivePurgeView": {
+        "properties": {
+          "rows_deleted": {
+            "minimum": 0.0,
+            "title": "Rows Deleted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows_deleted"
+        ],
+        "title": "ArchivePurgeView",
+        "type": "object"
+      },
+      "ArchiveStateView": {
+        "properties": {
+          "anchors_archived": {
+            "title": "Anchors Archived",
+            "type": "integer"
+          },
+          "chain_tip_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chain Tip Seq"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "last_archived_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Archived Seq"
+          },
+          "last_error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Type"
+          },
+          "months_archived": {
+            "title": "Months Archived",
+            "type": "integer"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "off",
+              "on",
+              "error"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "state",
+          "unavailable_reason",
+          "prefix",
+          "last_archived_seq",
+          "chain_tip_seq",
+          "anchors_archived",
+          "months_archived",
+          "failed",
+          "last_error_type"
+        ],
+        "title": "ArchiveStateView",
+        "type": "object"
+      },
+      "ArchivedContentView": {
+        "properties": {
+          "archived_at": {
+            "format": "date-time",
+            "title": "Archived At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "masked_payload": {
+            "title": "Masked Payload"
+          },
+          "matched": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Matched",
+            "type": "array"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "original_payload": {
+            "title": "Original Payload"
+          },
+          "protocol": {
+            "title": "Protocol",
+            "type": "string"
+          },
+          "replacements": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Replacements",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "archived_at",
+          "expires_at",
+          "protocol",
+          "model",
+          "matched",
+          "masked_payload",
+          "replacements",
+          "original_payload"
+        ],
+        "title": "ArchivedContentView",
+        "type": "object"
       },
       "AspectRatio": {
         "description": "The aspect ratio for the image output.",
@@ -1362,6 +2018,51 @@
         "title": "AuthType",
         "type": "string"
       },
+      "AzureEntraInput": {
+        "additionalProperties": false,
+        "description": "A Microsoft Entra ID app registration's client secret.",
+        "properties": {
+          "client_id": {
+            "format": "uuid",
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "format": "password",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Client Secret",
+            "type": "string",
+            "writeOnly": true
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "pattern": "^https://\\S+/\\.default$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the operator's SHIM_AZURE_TOKEN_SCOPE.",
+            "title": "Scope"
+          },
+          "tenant_id": {
+            "pattern": "^[A-Za-z0-9.-]{1,128}$",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "client_id",
+          "client_secret"
+        ],
+        "title": "AzureEntraInput",
+        "type": "object"
+      },
       "Behavior": {
         "description": "Specifies the function Behavior.\n\nIf not specified, the system keeps the current function call behavior. This\nfield is currently only supported by the BidiGenerateContent method.",
         "enum": [
@@ -2040,6 +2741,71 @@
         "title": "BudgetView",
         "type": "object"
       },
+      "BulkReject": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_id": {
+            "format": "uuid",
+            "title": "Api Key Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "api_key_id"
+        ],
+        "title": "BulkReject",
+        "type": "object"
+      },
+      "BulkRejected": {
+        "properties": {
+          "rejected": {
+            "title": "Rejected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rejected"
+        ],
+        "title": "BulkRejected",
+        "type": "object"
+      },
+      "ByScopeView": {
+        "properties": {
+          "api_keys": {
+            "items": {
+              "$ref": "#/components/schemas/IdCount"
+            },
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelCount"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/IdCount"
+            },
+            "title": "Teams",
+            "type": "array"
+          },
+          "truncated_rows": {
+            "title": "Truncated Rows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "api_keys",
+          "teams",
+          "models",
+          "truncated_rows"
+        ],
+        "title": "ByScopeView",
+        "type": "object"
+      },
       "ChainBreak": {
         "properties": {
           "id": {
@@ -2593,6 +3359,75 @@
         "title": "Content",
         "type": "object"
       },
+      "ContentOpeningPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContentOpeningView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "ContentOpeningPage",
+        "type": "object"
+      },
+      "ContentOpeningView": {
+        "properties": {
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "opened_at",
+          "actor_user_id",
+          "request_id"
+        ],
+        "title": "ContentOpeningView",
+        "type": "object"
+      },
       "CountTokensRequest": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -3037,6 +3872,24 @@
         "title": "DailyUsageView",
         "type": "object"
       },
+      "DecisionInput": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "DecisionInput",
+        "type": "object"
+      },
       "Delivery": {
         "description": "Delivery mode for the generated content.",
         "enum": [
@@ -3124,6 +3977,21 @@
         ],
         "title": "DynamicRetrievalConfigMode",
         "type": "string"
+      },
+      "EmbedContentRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "description": "Native `:embedContent` or `:batchEmbedContents` JSON, kept as sent.",
+        "title": "EmbedContentRequest",
+        "type": "object"
+      },
+      "EmbeddingsRequest": {
+        "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+        },
+        "title": "EmbeddingsRequest",
+        "type": "object"
       },
       "EnterpriseWebSearch": {
         "additionalProperties": false,
@@ -4007,6 +4875,84 @@
         "title": "FindingRemediation",
         "type": "object"
       },
+      "FindingRuleView": {
+        "properties": {
+          "action_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Kind"
+          },
+          "effective_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Effective Mode",
+            "type": "string"
+          },
+          "max_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Max Mode",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "open_findings": {
+            "title": "Open Findings",
+            "type": "integer"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "const": "auto_executor_not_installed",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "max_mode",
+          "action_kind",
+          "mode",
+          "effective_mode",
+          "unavailable_reason",
+          "open_findings"
+        ],
+        "title": "FindingRuleView",
+        "type": "object"
+      },
       "FindingSubject": {
         "properties": {
           "id": {
@@ -4753,6 +5699,76 @@
       "GatewaySettings": {
         "description": "The effective settings; a later PRD adds a field here, never a column.",
         "properties": {
+          "agent_loop": {
+            "$ref": "#/components/schemas/AgentLoop",
+            "default": {
+              "action": "count",
+              "repeats": 5
+            }
+          },
+          "finding_modes": {
+            "additionalProperties": {
+              "enum": [
+                "observe",
+                "suggest",
+                "auto"
+              ],
+              "type": "string"
+            },
+            "default": {},
+            "title": "Finding Modes",
+            "type": "object"
+          },
+          "four_eyes": {
+            "default": "off",
+            "enum": [
+              "off",
+              "relaxing"
+            ],
+            "title": "Four Eyes",
+            "type": "string"
+          },
+          "inflight_sharing_api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "title": "Inflight Sharing Api Key Ids",
+            "type": "array"
+          },
+          "injection_markers": {
+            "default": "off",
+            "enum": [
+              "off",
+              "count",
+              "warn"
+            ],
+            "title": "Injection Markers",
+            "type": "string"
+          },
+          "model_retiring_warning": {
+            "default": "record",
+            "enum": [
+              "record",
+              "header"
+            ],
+            "title": "Model Retiring Warning",
+            "type": "string"
+          },
+          "price_tier_warning": {
+            "default": false,
+            "title": "Price Tier Warning",
+            "type": "boolean"
+          },
+          "request_archive": {
+            "$ref": "#/components/schemas/RequestArchiveSettings",
+            "default": {
+              "enabled": false,
+              "retention_days": 90
+            }
+          },
           "response_analysis": {
             "default": [],
             "items": {
@@ -4760,6 +5776,20 @@
             },
             "title": "Response Analysis",
             "type": "array"
+          },
+          "restore_withheld": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RestoreGrant"
+            },
+            "default": {},
+            "title": "Restore Withheld",
+            "type": "object"
+          },
+          "task_caps": {
+            "$ref": "#/components/schemas/TaskCaps-Output",
+            "default": {
+              "window_seconds": 3600
+            }
           }
         },
         "title": "GatewaySettings",
@@ -4768,6 +5798,118 @@
       "GatewaySettingsPatch": {
         "additionalProperties": false,
         "properties": {
+          "agent_loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finding_modes": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "enum": [
+                    "observe",
+                    "suggest",
+                    "auto"
+                  ],
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Modes"
+          },
+          "four_eyes": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "relaxing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Four Eyes"
+          },
+          "inflight_sharing_api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inflight Sharing Api Key Ids"
+          },
+          "injection_markers": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "count",
+                  "warn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Injection Markers"
+          },
+          "model_retiring_warning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "record",
+                  "header"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Retiring Warning"
+          },
+          "price_tier_warning": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Tier Warning"
+          },
+          "request_archive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RequestArchivePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "response_analysis": {
             "anyOf": [
               {
@@ -4781,6 +5923,37 @@
               }
             ],
             "title": "Response Analysis"
+          },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RestoreGrant"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Withheld"
+          },
+          "task_caps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "title": "GatewaySettingsPatch",
@@ -4794,6 +5967,15 @@
             },
             "title": "Available Analyzers",
             "type": "array"
+          },
+          "request_archive_state": {
+            "description": "on only when this installation allows the archive and the tenant turned it on.",
+            "enum": [
+              "on",
+              "off"
+            ],
+            "title": "Request Archive State",
+            "type": "string"
           },
           "revision": {
             "minimum": 0.0,
@@ -4842,7 +6024,8 @@
           "updated_at",
           "updated_by",
           "available_analyzers",
-          "unavailable"
+          "unavailable",
+          "request_archive_state"
         ],
         "title": "GatewaySettingsView",
         "type": "object"
@@ -5567,6 +6750,47 @@
         "title": "HarmCategory",
         "type": "string"
       },
+      "HeadOfLineSide": {
+        "properties": {
+          "streams": {
+            "title": "Streams",
+            "type": "integer"
+          },
+          "ttft_ms_p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttft Ms P50"
+          }
+        },
+        "required": [
+          "ttft_ms_p50",
+          "streams"
+        ],
+        "title": "HeadOfLineSide",
+        "type": "object"
+      },
+      "HeadOfLineView": {
+        "properties": {
+          "alone": {
+            "$ref": "#/components/schemas/HeadOfLineSide"
+          },
+          "behind_long": {
+            "$ref": "#/components/schemas/HeadOfLineSide"
+          }
+        },
+        "required": [
+          "behind_long",
+          "alone"
+        ],
+        "title": "HeadOfLineView",
+        "type": "object"
+      },
       "HttpElementLocation": {
         "description": "The location of the API key. This enum is not supported in Gemini API.",
         "enum": [
@@ -5579,6 +6803,24 @@
         ],
         "title": "HttpElementLocation",
         "type": "string"
+      },
+      "IdCount": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requests"
+        ],
+        "title": "IdCount",
+        "type": "object"
       },
       "ImageResponseFormat": {
         "additionalProperties": false,
@@ -5651,6 +6893,31 @@
         ],
         "title": "ImageSize",
         "type": "string"
+      },
+      "ImportView": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          }
+        },
+        "required": [
+          "plan",
+          "report"
+        ],
+        "title": "ImportView",
+        "type": "object"
       },
       "IncidentInput": {
         "additionalProperties": false,
@@ -6088,6 +7355,195 @@
         "title": "LanguageAuto",
         "type": "object"
       },
+      "LanguageCostGroupView": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "LanguageCostGroupView",
+        "type": "object"
+      },
+      "LanguageCostItem": {
+        "properties": {
+          "answer_characters": {
+            "title": "Answer Characters",
+            "type": "integer"
+          },
+          "comparison_unavailable_reason": {
+            "anyOf": [
+              {
+                "const": "not_enough_answers",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Unavailable Reason"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "group": {
+            "$ref": "#/components/schemas/LanguageCostGroupView"
+          },
+          "language": {
+            "enum": [
+              "tr",
+              "en"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "output_usd_per_1000_characters": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Usd Per 1000 Characters"
+          },
+          "priced_requests": {
+            "title": "Priced Requests",
+            "type": "integer"
+          },
+          "ratio_p25": {
+            "title": "Ratio P25",
+            "type": "number"
+          },
+          "ratio_p75": {
+            "title": "Ratio P75",
+            "type": "number"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens_per_1000_characters": {
+            "title": "Tokens Per 1000 Characters",
+            "type": "number"
+          },
+          "tr_vs_en": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tr Vs En"
+          }
+        },
+        "required": [
+          "group",
+          "language",
+          "requests",
+          "answer_characters",
+          "completion_tokens",
+          "tokens_per_1000_characters",
+          "ratio_p25",
+          "ratio_p75",
+          "output_usd_per_1000_characters",
+          "priced_requests",
+          "tr_vs_en",
+          "comparison_unavailable_reason"
+        ],
+        "title": "LanguageCostItem",
+        "type": "object"
+      },
+      "LanguageCostView": {
+        "properties": {
+          "analysed_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Eligible answers over settled complete answers.",
+            "title": "Analysed Share"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "excluded": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Settled complete answers left out, by reason.",
+            "title": "Excluded",
+            "type": "object"
+          },
+          "group_by": {
+            "enum": [
+              "model",
+              "api_key"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LanguageCostItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "items",
+          "truncated",
+          "excluded",
+          "analysed_share"
+        ],
+        "title": "LanguageCostView",
+        "type": "object"
+      },
       "LanguageHints": {
         "additionalProperties": false,
         "description": "Deprecated: Use AudioTranscriptionConfig.language_codes instead.",
@@ -6141,6 +7597,225 @@
           }
         },
         "title": "LatLng",
+        "type": "object"
+      },
+      "LatencyBucketView": {
+        "properties": {
+          "first_byte_ms": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LatencyPercentiles"
+            },
+            "propertyNames": {
+              "enum": [
+                "stream",
+                "json"
+              ]
+            },
+            "title": "First Byte Ms",
+            "type": "object"
+          },
+          "output_tokens_per_second": {
+            "$ref": "#/components/schemas/OutputSpeedView"
+          },
+          "peak_concurrency": {
+            "title": "Peak Concurrency",
+            "type": "integer"
+          },
+          "provider_errors": {
+            "title": "Provider Errors",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "shim_queue_ms": {
+            "$ref": "#/components/schemas/LatencyPercentiles"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "streams": {
+            "title": "Streams",
+            "type": "integer"
+          },
+          "timeouts": {
+            "title": "Timeouts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "requests",
+          "streams",
+          "first_byte_ms",
+          "shim_queue_ms",
+          "output_tokens_per_second",
+          "peak_concurrency",
+          "timeouts",
+          "provider_errors"
+        ],
+        "title": "LatencyBucketView",
+        "type": "object"
+      },
+      "LatencyGroupView": {
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/LatencyBucketView"
+            },
+            "title": "Buckets",
+            "type": "array"
+          },
+          "head_of_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeadOfLineView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "head_of_line_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "window_over_48h",
+                  "group_by"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Of Line Unavailable Reason"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requests",
+          "buckets",
+          "head_of_line",
+          "head_of_line_unavailable_reason"
+        ],
+        "title": "LatencyGroupView",
+        "type": "object"
+      },
+      "LatencyPercentiles": {
+        "properties": {
+          "p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          }
+        },
+        "required": [
+          "p50",
+          "p95"
+        ],
+        "title": "LatencyPercentiles",
+        "type": "object"
+      },
+      "LatencyView": {
+        "properties": {
+          "bucket": {
+            "enum": [
+              "hour",
+              "day"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "group_by": {
+            "enum": [
+              "team",
+              "api_key",
+              "tag",
+              "model",
+              "deployment"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/LatencyGroupView"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "group_by",
+          "bucket",
+          "truncated",
+          "groups"
+        ],
+        "title": "LatencyView",
         "type": "object"
       },
       "Links": {
@@ -6293,6 +7968,24 @@
         "title": "Modality",
         "type": "string"
       },
+      "ModelCount": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
+        "type": "object"
+      },
       "ModelDeploymentInput": {
         "additionalProperties": false,
         "properties": {
@@ -6308,6 +8001,40 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
           },
           "context_window": {
             "anyOf": [
@@ -6381,6 +8108,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6400,6 +8140,16 @@
             "minimum": 1.0,
             "title": "Timeout Seconds",
             "type": "integer"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
+            "type": "string"
           },
           "upstream_model": {
             "maxLength": 200,
@@ -6436,6 +8186,32 @@
             "minLength": 1,
             "title": "Base Url",
             "type": "string"
+          },
+          "cache_read_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million cached input tokens read; needs the input price.",
+            "title": "Cache Read Price Per Million"
+          },
+          "cache_write_price_per_million": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "USD per million input tokens written to the cache; needs the input price.",
+            "title": "Cache Write Price Per Million"
           },
           "context_window": {
             "anyOf": [
@@ -6532,6 +8308,19 @@
             "title": "Owner",
             "type": "string"
           },
+          "price_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The catalog model whose prices and limits apply when no price is set.",
+            "title": "Price Model"
+          },
           "provider": {
             "enum": [
               "openai",
@@ -6555,6 +8344,16 @@
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
+            "type": "string"
+          },
+          "upstream": {
+            "default": "generic",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "enum": [
+              "generic",
+              "azure_openai"
+            ],
+            "title": "Upstream",
             "type": "string"
           },
           "upstream_model": {
@@ -6869,6 +8668,70 @@
           "owned_by"
         ],
         "title": "ModelRecordView",
+        "type": "object"
+      },
+      "ModelRetirementView": {
+        "properties": {
+          "affected": {
+            "$ref": "#/components/schemas/RetiringAffectedView"
+          },
+          "checked_on": {
+            "format": "date",
+            "title": "Checked On",
+            "type": "string"
+          },
+          "deprecated_on": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deprecated On"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "replacement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacement"
+          },
+          "retires_on": {
+            "format": "date",
+            "title": "Retires On",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "retires_on",
+          "deprecated_on",
+          "replacement",
+          "source",
+          "checked_on",
+          "affected"
+        ],
+        "title": "ModelRetirementView",
         "type": "object"
       },
       "ModelSelectionConfig": {
@@ -7406,6 +9269,32 @@
           "soft_refusal_rate"
         ],
         "title": "OutcomeRatesView",
+        "type": "object"
+      },
+      "OutputSpeedView": {
+        "properties": {
+          "count": {
+            "description": "Streams the median is based on.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "p50": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          }
+        },
+        "required": [
+          "p50",
+          "count"
+        ],
+        "title": "OutputSpeedView",
         "type": "object"
       },
       "OversightDecision": {
@@ -8788,6 +10677,58 @@
         "title": "PreventiveOverview",
         "type": "object"
       },
+      "PreviewInput": {
+        "properties": {
+          "rule": {
+            "additionalProperties": true,
+            "description": "A rule as in PUT /rules.",
+            "title": "Rule",
+            "type": "object"
+          },
+          "window_days": {
+            "default": 7,
+            "maximum": 31.0,
+            "minimum": 1.0,
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "title": "PreviewInput",
+        "type": "object"
+      },
+      "PreviewWindow": {
+        "properties": {
+          "covered_days": {
+            "title": "Covered Days",
+            "type": "integer"
+          },
+          "days": {
+            "title": "Days",
+            "type": "integer"
+          },
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "days",
+          "covered_days"
+        ],
+        "title": "PreviewWindow",
+        "type": "object"
+      },
       "PrivacyCard": {
         "description": "What shim caught on one local calendar day; counts only.",
         "properties": {
@@ -8975,6 +10916,21 @@
             "description": "null turns the alarm off; left unchanged when absent.",
             "title": "Bulk Threshold"
           },
+          "embeddings_monitor_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replaces the stored list whole; left unchanged when absent.",
+            "title": "Embeddings Monitor Types"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9076,6 +11032,14 @@
             "title": "Effective Actions",
             "type": "object"
           },
+          "embeddings_monitor_types": {
+            "description": "Entity types an embeddings request only counts and sends unchanged where their action masks or blocks them; chat keeps the action.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Embeddings Monitor Types",
+            "type": "array"
+          },
           "entity_actions": {
             "additionalProperties": {
               "enum": [
@@ -9120,6 +11084,7 @@
           "bulk_threshold",
           "response_scan",
           "placeholder_mode",
+          "embeddings_monitor_types",
           "effective_actions"
         ],
         "title": "PrivacySettings",
@@ -9276,11 +11241,28 @@
       },
       "ProviderSecretInput": {
         "properties": {
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
-            "maxLength": 10000,
-            "minLength": 10,
-            "title": "Key",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
           },
           "monthly_limit_usd": {
             "anyOf": [
@@ -9311,24 +11293,35 @@
             "title": "Name"
           },
           "provider": {
+            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments.",
             "enum": [
               "openai",
               "anthropic",
-              "google"
+              "google",
+              "azure_entra"
             ],
             "title": "Provider",
             "type": "string"
           }
         },
         "required": [
-          "provider",
-          "key"
+          "provider"
         ],
         "title": "ProviderSecretInput",
         "type": "object"
       },
       "ProviderSecretPatch": {
         "properties": {
+          "azure_entra": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AzureEntraInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "key": {
             "anyOf": [
               {
@@ -9761,6 +11754,313 @@
         "title": "ReadinessReportRequest",
         "type": "object"
       },
+      "RecordSetChunkPut": {
+        "additionalProperties": false,
+        "properties": {
+          "documents": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents"
+          },
+          "records": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Records"
+          }
+        },
+        "title": "RecordSetChunkPut",
+        "type": "object"
+      },
+      "RecordSetCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RecordSetFieldSpec"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "default": "RECORD",
+            "maxLength": 32,
+            "pattern": "^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$",
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "RecordSetCreate",
+        "type": "object"
+      },
+      "RecordSetCreatedView": {
+        "properties": {
+          "active_revision": {
+            "title": "Active Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_count": {
+            "title": "Entry Count",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "fingerprint_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint Version"
+          },
+          "hash_key": {
+            "description": "Shown once: the base64url key the hashing tool uses.",
+            "title": "Hash Key",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "previous_revision": {
+            "title": "Previous Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "label",
+          "fields",
+          "fingerprint_version",
+          "active_revision",
+          "previous_revision",
+          "entry_count",
+          "created_at",
+          "updated_at",
+          "hash_key"
+        ],
+        "title": "RecordSetCreatedView",
+        "type": "object"
+      },
+      "RecordSetFieldSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "tckn",
+              "vkn",
+              "iban",
+              "email",
+              "phone",
+              "digits",
+              "token",
+              "name"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "length": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "digits only: the shortest and longest run, 4 to 34.",
+            "title": "Length"
+          },
+          "name": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "primary": {
+            "default": false,
+            "title": "Primary",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "RecordSetFieldSpec",
+        "type": "object"
+      },
+      "RecordSetView": {
+        "properties": {
+          "active_revision": {
+            "title": "Active Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_count": {
+            "title": "Entry Count",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "fingerprint_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint Version"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "records",
+              "fingerprints"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "previous_revision": {
+            "title": "Previous Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "label",
+          "fields",
+          "fingerprint_version",
+          "active_revision",
+          "previous_revision",
+          "entry_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "RecordSetView",
+        "type": "object"
+      },
       "ReplicatedVoiceConfig": {
         "additionalProperties": false,
         "description": "The configuration for the replicated voice to use.",
@@ -10076,6 +12376,19 @@
       },
       "RequestActivityView": {
         "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The request approval this request created, was refused under or consumed; null when no approval gate decided it.",
+            "title": "Approval Id"
+          },
           "blocked_entities": {
             "anyOf": [
               {
@@ -10142,6 +12455,12 @@
             "title": "Completion Tokens",
             "type": "integer"
           },
+          "content_archived": {
+            "default": false,
+            "description": "The self-hosted request archive kept this request's content; an admin can open it, and every opening is listed.",
+            "title": "Content Archived",
+            "type": "boolean"
+          },
           "cost_center": {
             "anyOf": [
               {
@@ -10200,6 +12519,28 @@
               }
             ],
             "title": "Endpoint"
+          },
+          "injection_markers": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Tool results and documents carrying each hidden-instruction marker; {\"error\": true} when the scan failed; null when the tenant's scan was off.",
+            "title": "Injection Markers"
           },
           "model": {
             "anyOf": [
@@ -10333,6 +12674,21 @@
             "description": "Distinct values the answer carried that the request did not, by entity type; null when the response scan was off or has not finished.",
             "title": "Response Entities"
           },
+          "restore_withheld": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
+            "title": "Restore Withheld"
+          },
           "rule_matches": {
             "anyOf": [
               {
@@ -10443,7 +12799,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -10474,6 +12834,57 @@
           "team"
         ],
         "title": "RequestActivityView",
+        "type": "object"
+      },
+      "RequestArchivePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "retention_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Days"
+          }
+        },
+        "title": "RequestArchivePatch",
+        "type": "object"
+      },
+      "RequestArchiveSettings": {
+        "additionalProperties": false,
+        "description": "Keep rule-matched requests, encrypted, for at most 90 days (self-hosted only).",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "retention_days": {
+            "default": 90,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Retention Days",
+            "type": "integer"
+          }
+        },
+        "title": "RequestArchiveSettings",
         "type": "object"
       },
       "RequestOutcomeCountsView": {
@@ -10580,6 +12991,34 @@
         "title": "ResponsesRequest",
         "type": "object"
       },
+      "RestoreGrant": {
+        "additionalProperties": false,
+        "description": "Who gets a withheld type back: keys, and every key of the listed teams.",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "team_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Team Ids",
+            "type": "array"
+          }
+        },
+        "title": "RestoreGrant",
+        "type": "object"
+      },
       "RestoreInput": {
         "properties": {
           "expected_version": {
@@ -10645,6 +13084,120 @@
           "approximated"
         ],
         "title": "RestoreView",
+        "type": "object"
+      },
+      "RetiringAffectedView": {
+        "properties": {
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Aliases",
+            "type": "array"
+          },
+          "api_keys": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringKeyView"
+            },
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTagView"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "teams": {
+            "items": {
+              "$ref": "#/components/schemas/RetiringTeamView"
+            },
+            "title": "Teams",
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_keys",
+          "teams",
+          "tags",
+          "aliases"
+        ],
+        "title": "RetiringAffectedView",
+        "type": "object"
+      },
+      "RetiringKeyView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used": {
+            "format": "date-time",
+            "title": "Last Used",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "requests",
+          "last_used"
+        ],
+        "title": "RetiringKeyView",
+        "type": "object"
+      },
+      "RetiringTagView": {
+        "properties": {
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "requests"
+        ],
+        "title": "RetiringTagView",
+        "type": "object"
+      },
+      "RetiringTeamView": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "requests"
+        ],
+        "title": "RetiringTeamView",
         "type": "object"
       },
       "Retrieval": {
@@ -10838,6 +13391,91 @@
           "unavailable_reason"
         ],
         "title": "RuleKindView",
+        "type": "object"
+      },
+      "RulePreviewView": {
+        "properties": {
+          "basis": {
+            "enum": [
+              "metadata",
+              "monitor_history",
+              "none"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "by_scope": {
+            "$ref": "#/components/schemas/ByScopeView"
+          },
+          "enforce_on_create": {
+            "title": "Enforce On Create",
+            "type": "boolean"
+          },
+          "errors": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Errors"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "preview_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Expires At"
+          },
+          "requests": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requests"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/PreviewWindow"
+          }
+        },
+        "required": [
+          "rule_id",
+          "basis",
+          "requests",
+          "errors",
+          "window",
+          "by_scope",
+          "note",
+          "enforce_on_create",
+          "preview_expires_at"
+        ],
+        "title": "RulePreviewView",
         "type": "object"
       },
       "RuleScope": {
@@ -12119,6 +14757,91 @@
           "entitlements"
         ],
         "title": "SubscriptionView",
+        "type": "object"
+      },
+      "TaskCaps-Input": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 100000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
+        "type": "object"
+      },
+      "TaskCaps-Output": {
+        "additionalProperties": false,
+        "description": "Calls and settled cost one agent task may use; off until a cap is set.",
+        "properties": {
+          "max_calls": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Calls"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "window_seconds": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Window Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "TaskCaps",
         "type": "object"
       },
       "TeamInput": {
@@ -14390,6 +17113,33 @@
         "summary": "Get Session",
         "tags": [
           "identity"
+        ]
+      }
+    },
+    "/api/v1/compliance/archive": {
+      "get": {
+        "description": "Where the write-once copy of this organization's audit evidence stands.",
+        "operationId": "get_archive_state_api_v1_compliance_archive_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchiveStateView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Archive State",
+        "tags": [
+          "compliance"
         ]
       }
     },
@@ -17026,6 +19776,289 @@
         ]
       }
     },
+    "/api/v1/management/approvals": {
+      "get": {
+        "operationId": "list_approvals_api_v1_management_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "approved",
+                    "rejected",
+                    "expired",
+                    "used"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Only approvals created before this time.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only approvals created before this time.",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Approvals",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/reject": {
+      "post": {
+        "description": "Reject every pending request of one key, as one decision.",
+        "operationId": "reject_pending_api_v1_management_approvals_reject_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkReject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkRejected"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Pending",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}": {
+      "get": {
+        "operationId": "get_approval_api_v1_management_approvals__approval_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Approval",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}/approve": {
+      "post": {
+        "operationId": "approve_request_api_v1_management_approvals__approval_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Approve Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/management/approvals/{approval_id}/reject": {
+      "post": {
+        "operationId": "reject_request_api_v1_management_approvals__approval_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
     "/api/v1/management/auth/me": {
       "get": {
         "operationId": "current_profile_api_v1_management_auth_me_get",
@@ -17845,6 +20878,36 @@
         ]
       }
     },
+    "/api/v1/management/findings/rules": {
+      "get": {
+        "operationId": "finding_rules_api_v1_management_findings_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FindingRuleView"
+                  },
+                  "title": "Response Finding Rules Api V1 Management Findings Rules Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Finding Rules",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/findings/{finding_id}": {
       "get": {
         "operationId": "get_finding_api_v1_management_findings__finding_id__get",
@@ -17949,6 +21012,54 @@
         ]
       }
     },
+    "/api/v1/management/findings/{finding_id}/plan": {
+      "post": {
+        "operationId": "plan_from_finding_api_v1_management_findings__finding_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan From Finding",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
     "/api/v1/management/gateway-settings": {
       "get": {
         "operationId": "get_gateway_settings_api_v1_management_gateway_settings_get",
@@ -18014,6 +21125,205 @@
           }
         ],
         "summary": "Update Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/language-cost": {
+      "get": {
+        "operationId": "read_language_cost_api_v1_management_language_cost_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to 30 days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to 30 days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "enum": [
+                "model",
+                "api_key"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LanguageCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Language Cost",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/latency": {
+      "get": {
+        "operationId": "latency_api_v1_management_latency_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to 24 hours before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to 24 hours before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "description": "An app is an API key; apps behind one key separate by tag.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "api_key",
+              "description": "An app is an API key; apps behind one key separate by tag.",
+              "enum": [
+                "team",
+                "api_key",
+                "tag",
+                "model",
+                "deployment"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "hour",
+              "enum": [
+                "hour",
+                "day"
+              ],
+              "title": "Bucket",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LatencyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Latency",
         "tags": [
           "management"
         ]
@@ -18270,6 +21580,61 @@
           }
         ],
         "summary": "Model Inventory",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-retirements": {
+      "get": {
+        "description": "Models retiring within `days` that this organization used in 30 days or registered.",
+        "operationId": "list_model_retirements_api_v1_management_model_retirements_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 90,
+              "maximum": 730,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelRetirementView"
+                  },
+                  "title": "Response List Model Retirements Api V1 Management Model Retirements Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Model Retirements",
         "tags": [
           "management"
         ]
@@ -18652,6 +22017,16 @@
             },
             "description": "Successful Response"
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -18669,6 +22044,122 @@
           }
         ],
         "summary": "Apply Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/approve": {
+      "post": {
+        "operationId": "approve_plan_api_v1_management_policy_plans__plan_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Approve Plan",
+        "tags": [
+          "policy"
+        ]
+      }
+    },
+    "/api/v1/management/policy/plans/{plan_id}/reject": {
+      "post": {
+        "operationId": "reject_plan_api_v1_management_policy_plans__plan_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Plan Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reject Plan",
         "tags": [
           "policy"
         ]
@@ -18857,6 +22348,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
           },
           "422": {
             "content": {
@@ -19208,6 +22709,478 @@
         ]
       }
     },
+    "/api/v1/management/record-sets": {
+      "get": {
+        "operationId": "list_record_sets_api_v1_management_record_sets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RecordSetView"
+                  },
+                  "title": "Response List Record Sets Api V1 Management Record Sets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Record Sets",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "operationId": "create_record_set_api_v1_management_record_sets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSetCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetCreatedView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Record Set",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}": {
+      "delete": {
+        "operationId": "delete_record_set_api_v1_management_record_sets__set_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Record Set",
+        "tags": [
+          "management"
+        ]
+      },
+      "get": {
+        "operationId": "get_record_set_api_v1_management_record_sets__set_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Record Set",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions": {
+      "post": {
+        "operationId": "open_record_set_revision_api_v1_management_record_sets__set_id__revisions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Open Record Set Revision Api V1 Management Record Sets  Set Id  Revisions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Record Set Revision",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions/{revision}/activate": {
+      "post": {
+        "operationId": "activate_record_set_revision_api_v1_management_record_sets__set_id__revisions__revision__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "title": "Revision",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordSetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Activate Record Set Revision",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}": {
+      "put": {
+        "operationId": "put_record_set_chunk_api_v1_management_record_sets__set_id__revisions__revision__chunks__chunk_index__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "set_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Set Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "title": "Revision",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_index",
+            "required": true,
+            "schema": {
+              "title": "Chunk Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSetChunkPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Put Record Set Chunk Api V1 Management Record Sets  Set Id  Revisions  Revision  Chunks  Chunk Index  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Record Set Chunk",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/request-archive": {
+      "delete": {
+        "operationId": "purge_request_archive_api_v1_management_request_archive_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivePurgeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Purge Request Archive",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/request-archive/openings": {
+      "get": {
+        "description": "Readers see every opening; anyone else the openings of their own keys' requests.",
+        "operationId": "list_content_openings_api_v1_management_request_archive_openings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentOpeningPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Content Openings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/requests": {
       "get": {
         "operationId": "list_requests_api_v1_management_requests_get",
@@ -19402,7 +23375,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -19448,6 +23425,25 @@
               ],
               "description": "Only requests a tenant rule with this id matched.",
               "title": "Rule Id"
+            }
+          },
+          {
+            "description": "Only requests this request approval decided.",
+            "in": "query",
+            "name": "approval_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests this request approval decided.",
+              "title": "Approval Id"
             }
           },
           {
@@ -19741,7 +23737,11 @@
                     "LARGE_CONTEXT_PRICE",
                     "CACHE_NOT_APPLIED",
                     "RULE_WARN",
-                    "SEMANTIC_WARN"
+                    "SEMANTIC_WARN",
+                    "INJECTION_MARKERS",
+                    "PRICE_TIER_CROSSED",
+                    "MODEL_RETIRING",
+                    "MODEL_RETIRED"
                   ],
                   "type": "string"
                 },
@@ -19787,6 +23787,25 @@
               ],
               "description": "Only requests a tenant rule with this id matched.",
               "title": "Rule Id"
+            }
+          },
+          {
+            "description": "Only requests this request approval decided.",
+            "in": "query",
+            "name": "approval_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests this request approval decided.",
+              "title": "Approval Id"
             }
           },
           {
@@ -19871,6 +23890,54 @@
           }
         ],
         "summary": "Export Requests",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/requests/{request_id}/content": {
+      "get": {
+        "description": "The archived request as sent and as shim changed it; the opening is audited first.",
+        "operationId": "open_request_content_api_v1_management_requests__request_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedContentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Request Content",
         "tags": [
           "management"
         ]
@@ -20114,6 +24181,108 @@
         "summary": "Replace Rules",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/rules/import/aiuc": {
+      "post": {
+        "operationId": "import_aiuc_api_v1_management_rules_import_aiuc_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiucPolicy"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportView"
+                }
+              }
+            },
+            "description": "Nothing would change"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import Aiuc",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/rules/preview": {
+      "post": {
+        "operationId": "preview_api_v1_management_rules_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RulePreviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview",
+        "tags": [
+          "rules"
         ]
       }
     },
@@ -21389,6 +25558,190 @@
         "summary": "Chat Completions"
       }
     },
+    "/v1/embeddings": {
+      "post": {
+        "operationId": "embeddings_v1_embeddings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbeddingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Native OpenAI embeddings JSON."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          },
+          "529": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenAIErrorResponse"
+                }
+              }
+            },
+            "description": "Sanitized OpenAI-compatible error."
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Embeddings"
+      }
+    },
     "/v1/messages": {
       "post": {
         "operationId": "messages_v1_messages_post",
@@ -22516,6 +26869,128 @@
         "tags": [
           "shared-results"
         ]
+      }
+    },
+    "/v1beta/models/{model}:batchEmbedContents": {
+      "post": {
+        "operationId": "embed_content_v1beta_models__model__batchEmbedContents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Embed Content"
+      }
+    },
+    "/v1beta/models/{model}:embedContent": {
+      "post": {
+        "operationId": "embed_content_v1beta_models__model__embedContent_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+              "title": "Model",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedContentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "ShimAPIKey": []
+          },
+          {
+            "HTTPBearer": []
+          },
+          {
+            "GoogleAPIKey": []
+          }
+        ],
+        "summary": "Embed Content"
       }
     },
     "/v1beta/models/{model}:generateContent": {

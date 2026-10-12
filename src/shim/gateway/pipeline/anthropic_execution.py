@@ -96,6 +96,8 @@ class AnthropicExecution:
                     else {}
                 ),
             )
+        except ProviderCallError:
+            raise
         except Exception:
             raise ProviderCallError(
                 503,
@@ -215,7 +217,7 @@ class AnthropicExecution:
         await circuit.record_success()
         payload = restore_anthropic_payload(
             payload,
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         return ProviderNonStream(
@@ -234,7 +236,7 @@ class AnthropicExecution:
     ) -> AsyncIterator[bytes]:
         assert prepared.privacy is not None
         restorer = AnthropicStreamRestorer(
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         try:

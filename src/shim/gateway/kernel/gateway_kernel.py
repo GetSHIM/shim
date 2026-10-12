@@ -2,18 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 import logging
 from typing import Any
 
 from fastapi import HTTPException
-from starlette.responses import Response, JSONResponse
+from opentelemetry import trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from shim.billing.lifecycle import ModelLifecycle, load_lifecycle
 from shim.core.middleware import AsyncRateLimiter
-from shim.gateway.admission import LoopDetector
+from shim.gateway.admission import (
+    InFlightEntry,
+    InFlightRegistry,
+    InMemoryTaskCounter,
+    LoopDetector,
+    TaskCounter,
+)
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
-from shim.gateway.pipeline.admission import AdmissionStage
+from shim.gateway.pipeline.admission import AdmissionStage, rule_blocked
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
 from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
 from shim.gateway.pipeline.privacy import PrivacyStage
@@ -32,11 +42,12 @@ from shim.gateway.usage import (
     UsageLimitExceeded,
 )
 from shim.observability.metrics import (
+    INFLIGHT_DUPLICATES_TOTAL,
     REQUESTS_IN_FLIGHT,
     REQUESTS_TOTAL,
     bounded_label,
 )
-from shim.observability.tracing import start_span
+from shim.observability.tracing import safe_attributes, start_span
 from shim.privacy.continuation import PrivacyContinuationStore
 from shim.rules.approval import ApprovalGate, ApprovalRequest
 from shim.rules.evaluate import record_rule_verdicts, settle_matches
@@ -47,6 +58,22 @@ from .result import PreparedInference
 
 logger = logging.getLogger(__name__)
 _PROVIDERS = frozenset({"openai", "anthropic", "google"})
+
+
+# OpenTelemetry GenAI names at schema 1.44.0 (tracing.SCHEMA_URL); a token count is no operation.
+_GENAI_OPERATIONS = {
+    "chat": "chat",
+    "responses": "chat",
+    "messages": "chat",
+    "generate_content": "generate_content",
+    "embeddings": "embeddings",
+    "embed_content": "embeddings",
+}
+_GENAI_PROVIDERS = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "gcp.gemini",
+}
 
 
 class GatewayKernel:
@@ -67,6 +94,9 @@ class GatewayKernel:
         prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
         | None = None,
         approval_gate: ApprovalGate | None = None,
+        honor_trace_parent: bool = False,
+        task_counter: TaskCounter | None = None,
+        model_lifecycle: ModelLifecycle | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -77,15 +107,21 @@ class GatewayKernel:
         self.loop_repeat_limit = loop_repeat_limit
         self.loop_window_seconds = loop_window_seconds
         self.cost_tag_max_length = cost_tag_max_length
+        self.task_counter = task_counter or InMemoryTaskCounter()
+        self.model_lifecycle = model_lifecycle or load_lifecycle()
+        # Per process in both editions: a duplicate on another replica is not seen.
+        self.inflight = InFlightRegistry()
         self.postprocessor = ResponsePostprocessor(
             usage,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             output_hash_salt=output_hash_salt,
+            task_counter=self.task_counter,
         )
         self.chain_store = chain_store
         self.policy_resolver = policy_resolver
         self.prepare_inference = prepare_inference
         self.approval_gate = approval_gate
+        self.honor_trace_parent = honor_trace_parent
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -101,6 +137,10 @@ class GatewayKernel:
 
         with start_span(
             "gateway.request",
+            # A missing or invalid traceparent extracts an empty context: a new trace.
+            context=TraceContextTextMapPropagator().extract(invocation.headers)
+            if self.honor_trace_parent
+            else None,
             endpoint=endpoint,
             method=invocation.metadata.method,
             protocol=invocation.protocol,
@@ -186,6 +226,9 @@ class GatewayKernel:
             loop_repeat_limit=self.loop_repeat_limit,
             loop_window_seconds=self.loop_window_seconds,
             cost_tag_max_length=self.cost_tag_max_length,
+            task_counter=self.task_counter,
+            inflight=self.inflight,
+            model_lifecycle=self.model_lifecycle,
         )
         try:
             prepared = await run_stage(admission_stage, prepared)
@@ -209,10 +252,28 @@ class GatewayKernel:
                     )
                 await self.usage.reject(prepared)
             raise
+        assert prepared.admission is not None
+        trace.get_current_span().set_attributes(
+            safe_attributes(
+                {
+                    "gen_ai.operation.name": _GENAI_OPERATIONS.get(prepared.protocol),
+                    "gen_ai.provider.name": _GENAI_PROVIDERS[str(prepared.provider)],
+                    "shim.task_id": prepared.admission.task_id,
+                }
+            )
+        )
 
         stream_session: StreamSession | None = None
         # A reference, not a copy: the approval gate digests what entered privacy.
         admitted_payload = prepared.payload
+        admission = prepared.admission
+        inflight_key = (
+            str(prepared.tenant_id),
+            str(admission.request_digest),
+            str(prepared.request_id),
+        )
+        leader = admission_stage.leader
+        shared = handed_off = False
         try:
             prepared = await run_stage(
                 PrivacyStage(
@@ -266,6 +327,15 @@ class GatewayKernel:
                     headers["request-id"] = counted.request_id
                 return JSONResponse(content=counted.payload, headers=headers)
             await self.usage.record_privacy(prepared)
+            if leader is not None and (
+                answer := await self._leader_answer(prepared, leader)
+            ):
+                response = await self.postprocessor.finalize_shared(
+                    prepared, answer, leader.request_id
+                )
+                if response is not None:
+                    shared = True
+                    return response
             prepared = await run_stage(
                 ProviderSpendStage(invocation, self.usage),
                 prepared,
@@ -273,6 +343,7 @@ class GatewayKernel:
             if prepared.stream:
                 stream_session = self.postprocessor.create_stream_session(
                     prepared,
+                    on_terminal=lambda: self.inflight.leave(*inflight_key),
                 )
             # A stream's session releases its own call at its terminal state.
             in_flight = REQUESTS_IN_FLIGHT.labels(
@@ -293,8 +364,10 @@ class GatewayKernel:
                 raise
             if not isinstance(provider_output, ProviderStream):
                 in_flight.dec()
+                # Before this request's own postprocess, so followers do not wait on it.
+                self.inflight.publish(*inflight_key, provider_output)
             try:
-                return await run_stage(
+                response = await run_stage(
                     PostprocessStage(
                         self.postprocessor,
                         prepared,
@@ -302,6 +375,9 @@ class GatewayKernel:
                     ),
                     provider_output,
                 )
+                # A stream leaves at its terminal state, through its session.
+                handed_off = isinstance(response, StreamingResponse)
+                return response
             except BaseException:
                 if isinstance(provider_output, ProviderStream):
                     in_flight.dec()
@@ -329,6 +405,26 @@ class GatewayKernel:
                     )
                 await self.usage.reject(prepared)
             raise
+        finally:
+            if not handed_off:
+                self.inflight.leave(*inflight_key)
+            if admission.inflight_duplicate_of is not None:
+                INFLIGHT_DUPLICATES_TOTAL.labels(shared=str(shared).lower()).inc()
+
+    async def _leader_answer(
+        self, prepared: PreparedInference, leader: InFlightEntry
+    ) -> ProviderNonStream | None:
+        """The leader's answer, or None once it ends without one or its entry expires."""
+        assert leader.outcome is not None
+        try:
+            # Provider time, like the call it replaces. Shielded: a follower that stops
+            # waiting must not cancel the leader's answer.
+            with prepared.timing.exclude():
+                async with asyncio.timeout(leader.expires_at - self.inflight.clock()):
+                    answer = await asyncio.shield(leader.outcome)
+        except TimeoutError:
+            return None
+        return answer if isinstance(answer, ProviderNonStream) else None
 
     async def _decide_rules(
         self,
@@ -349,15 +445,7 @@ class GatewayKernel:
         if blocked:
             if not counting:
                 await self.usage.record_privacy(prepared)
-            return prepared, HTTPException(
-                status_code=400,
-                detail={
-                    "code": "RULE_BLOCKED",
-                    "message": f"Request blocked by tenant rule {blocked[0]}.",
-                    "param": blocked[0],
-                },
-                headers={"X-Shim-Rule-Id": blocked[0]},
-            )
+            return prepared, rule_blocked(blocked[0])
         if not approval:
             return prepared, None
         first = approval[0]

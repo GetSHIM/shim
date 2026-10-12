@@ -281,3 +281,44 @@ async def test_closing_spans_carry_model_tokens_and_cost(
         assert all(
             prompt not in str(value) for value in (span.attributes or {}).values()
         )
+
+
+def test_the_genai_names_are_the_pinned_semantic_conventions() -> None:
+    from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as gen_ai
+
+    import shim.gateway.kernel.gateway_kernel as kernel_module
+
+    assert tracing_module.SCHEMA_URL == "https://opentelemetry.io/schemas/1.44.0"
+    assert {gen_ai.GEN_AI_OPERATION_NAME, gen_ai.GEN_AI_PROVIDER_NAME} <= (
+        tracing_module.ATTRIBUTE_KEYS
+    )
+    assert set(kernel_module._GENAI_OPERATIONS.values()) == {
+        gen_ai.GenAiOperationNameValues.CHAT.value,
+        gen_ai.GenAiOperationNameValues.GENERATE_CONTENT.value,
+        gen_ai.GenAiOperationNameValues.EMBEDDINGS.value,
+    }
+    assert kernel_module._GENAI_PROVIDERS == {
+        "openai": gen_ai.GenAiProviderNameValues.OPENAI.value,
+        "anthropic": gen_ai.GenAiProviderNameValues.ANTHROPIC.value,
+        "google": gen_ai.GenAiProviderNameValues.GCP_GEMINI.value,
+    }
+    assert safe_attributes({"shim.task_id": "t-1"}) == {"shim.task_id": "t-1"}
+
+
+def test_a_span_started_with_a_remote_context_is_its_child(
+    recorded_spans: InMemorySpanExporter,
+) -> None:
+    from opentelemetry.trace.propagation.tracecontext import (
+        TraceContextTextMapPropagator,
+    )
+
+    parent = TraceContextTextMapPropagator().extract(
+        {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}
+    )
+    with tracing_module.start_span("gateway.request", context=parent):
+        pass
+
+    [span] = recorded_spans.get_finished_spans()
+    assert format(span.context.trace_id, "032x") == "0af7651916cd43dd8448eb211c80319c"
+    assert span.parent is not None and span.parent.span_id == 0xB7AD6B7169203331
+    assert span.instrumentation_scope.schema_url == tracing_module.SCHEMA_URL

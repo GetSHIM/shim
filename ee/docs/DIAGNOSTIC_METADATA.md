@@ -16,7 +16,7 @@ provider attempt rule are unchanged.
 | `tool_call_names` | Sorted, unique tool names the answer called, at most 64 of them. A name is kept only if it is 1 to 64 characters of `A-Za-z0-9_.:-` (what the providers allow); any other, such as a hallucinated name carrying text, is dropped, not truncated. Sources: chat `tool_calls[].function.name` and `function_call.name`; Responses output items whose type ends in `_call` (`name`, else the type, such as `web_search_call`); Anthropic `tool_use` and `server_tool_use`; Gemini `functionCall.name`. | `[]` when the answer called none; not recorded for failed and rejected requests. |
 | `reasoning_seen` | `true` when the answer carried reasoning (a Responses `reasoning` item or `response.reasoning*` event, an Anthropic `thinking` or `redacted_thinking` block, a Gemini `thought: true` part, a chat `reasoning_content` field) or reported reasoning tokens above 0 (`reasoning_tokens`, `thoughtsTokenCount`). Token-per-character ratios that include reasoning output are distorted. | `false` when none was seen; not recorded for failed and rejected requests. |
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
-| `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution. | New unclassified requests use `unknown`; historical rows use `null`. |
+| `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution; tenant rules treat `unknown` as external. A row labelled `internal` outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` resolves as `external`. | New unclassified requests use `unknown`; historical rows use `null`. |
 | `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
 | `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
@@ -179,6 +179,11 @@ not `hmac-sha256:v1:` and 64 lowercase hex characters answers 422.
 
 ## Persistence and reading
 
+`request_lifecycle.source_endpoint` names the route: `chat.completions`,
+`responses`, `messages`, `messages.count_tokens`, `generateContent`, `embeddings`,
+`embedContent` or `batchEmbedContents`. An embeddings request settles its prompt
+tokens, no completion tokens and a null `completion_outcome`.
+
 Request fields enter `request_lifecycle.metadata` during quota reservation.
 Completion facts, TTFT and shim processing time join them in the terminal
 accounting transaction, and so do `provider_latency_ms`, `answer_characters`,
@@ -216,6 +221,43 @@ appends one `privacy.bulk_disclosure` outbox intent, idempotency key
 and counts by type; never a value, placeholder or prompt text. Its handler
 queues one delivery per enabled forward target (`kind: "bulk_disclosure"`), and
 none when the tenant has no target.
+
+`injection_markers` counts, per marker (`INSTRUCTION_OVERRIDE`,
+`ROLE_REASSIGNMENT`, `SYSTEM_IMPERSONATION`, `SECRECY_REQUEST`, `HIDDEN_TEXT`), the
+tool results and documents of the request that carried it, when the tenant's
+`injection_markers` gateway setting is `count` or `warn`: `{}` when none did,
+`{"error": true}` when the scan failed, and absent while the setting is `off`.
+It is written with the privacy counts, in the same transaction, and is in the
+analytics row, the request list and the last column of its CSV (as JSON) and the
+community JSONL event. Only marker ids and counts are kept, never the text.
+
+`restore_withheld` counts, per type, the placeholders a caller got back unrestored
+because its key and team are outside the tenant's restore grant for that type
+(`{}` when none was in the request), written with the privacy counts in the same
+transaction, and absent for callers no grant concerns. It is in the analytics row,
+the request list and the CSV's last column (as JSON). Counts only, never a value or
+a placeholder.
+
+`task_id` and `trace_id` are written at reservation: `task_id` is the request's
+`X-Shim-Task-Id` (up to 128 characters), else the trace id of a valid incoming
+`traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
+the lifecycle metadata only; reads and filters by task come with the task view.
+
+`tool_call_repeats` (how many times the latest tool call of the request's history
+was seen for its task, else its key, within the loop window) and `task_calls` (the
+task's calls after this one, only while a task cap is set) are written at
+reservation, `null` when not computed.
+
+`inflight_duplicate_of` is written at reservation: the request id of an identical
+request of the tenant (the same body bytes, provider, protocol, model and stream
+flag) that was in flight on the same replica when this one was admitted, else
+`null`. `inflight_share` is written at finalization, only on a request that
+received that request's answer because its key is in
+`inflight_sharing_api_key_ids`: `leader_request_id`, the shared answer's
+`prompt_tokens` and `completion_tokens`, and `avoided_cost_usd` at this request's
+price. Such a request settles one request unit with no tokens and no spend row;
+the leader's row carries the provider call and its cost. Both are in the
+lifecycle metadata only.
 
 `response_entities` holds the distinct values a delivered answer carried that
 the request did not, by entity type, when the tenant's `response_scan` is
@@ -292,7 +334,8 @@ and the reasons are in the community
 
 `rule_matches` lists the [tenant rules](POLICY_DECISIONS.md#tenant-rules) that
 matched, as `rule_id`, `kind`, `action`, `state` and `count` (plus `error: true`
-when the rule's evaluation failed), blocks first and then by id, at most 32;
+when the rule's evaluation failed, and `truncated: true` when a record set's
+candidates in one string ran past 2,000), blocks first and then by id, at most 32;
 `rule_matches_truncated` says whether more matched. Both are written with the
 privacy facts, so a refused request has them too. They are `[]` and `false`
 when a rule matcher ran and nothing matched, and absent when none ran: no
@@ -301,6 +344,20 @@ run (those show as a `rule.<id>` verdict). A match is ids and counts, never the 
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+
+`approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
+the approval gate decided the request with: the one it was held under
+(`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is
+absent when the queue was full or the gate could not be reached (the error
+code says which) and on requests the gate never saw. The request list, its
+CSV and `GET /api/v1/management/requests?approval_id=<uuid>` carry it.
+
+`request_archive` says what the self-hosted
+[request archive](POLICY_DECISIONS.md#request-archive) did with the request:
+`stored` (its row committed) or `skipped_size` (the payload was over 2,000,000
+bytes); absent when the archive is off, the request was clean, the write
+failed, or it resent a held request whose content is already kept. The request list and its CSV show it as `content_archived` (true only for
+`stored`), so a member sees which of their requests an admin could open.
 
 ## Outcome filters, counts and rates
 
@@ -331,6 +388,52 @@ Groups are sorted by `settled`, at most 200 with `truncated: true` beyond, and
 `totals` covers every group. The rates per API key also drive the
 [`gateway.truncation_rate` and `gateway.refusal_rate`
 findings](FINDINGS.md#gatewaytruncation_rate).
+
+## Latency per group
+
+`GET /api/v1/management/latency` reads the request timestamps on demand over the
+indexed `started_at` window; there is no rollup table. Its measures:
+
+- first byte: `ttft_ms` for a stream, `provider_latency_ms` for a JSON answer;
+- shim queue: `provider_started_at - started_at`, shim's admission, privacy and
+  reservation commits before the provider call;
+- output tokens per second: a stream's settled `completion_tokens` over
+  `completed_at - stream_started_at`, which includes the terminal commit, so it
+  slightly understates the provider's speed; not for estimated usage, answers with
+  reasoning, or streams under one second;
+- peak concurrency: each request's span from `provider_started_at` to
+  `completed_at` (still running: to the window's end), clipped to every bucket it
+  overlaps, swept in time order with an end before a start at the same instant;
+  a request without `provider_started_at` never reached the provider and is not
+  counted;
+- head of line: one time-ordered pass per group over long requests' starts and
+  ends and short streams' starts counts the long requests in flight when each
+  short stream starts (a long request covers its start, not its end).
+
+The findings `gateway.cold_start` and `gateway.queueing` use the same sweep;
+`gateway.cold_start` reads only streams' first byte
+([findings](FINDINGS.md#gatewaycold_start)).
+
+## Tokens per character by language
+
+`GET /api/v1/management/language-cost` divides the quota settlement's
+`completion_tokens` by the answer's `answer_characters`, per model or API key and
+per answer language (`response_analysis.language.answer`, `tr` or `en`). No
+tokenizer is used: the provider's own count is the measure. Only the output side
+is measured, because `prompt_tokens` mixes system prompts, tool definitions,
+history and cached prefixes with the question. An answer counts when it ended
+`complete`, has at least 200 characters, called no tool, carried no reasoning
+(`reasoning_seen`; Gemini thought parts count as answer text, so a Gemini answer
+with thoughts is left out too) and its settlement is not estimated; the others
+are counted under `excluded` (`estimated_usage`, `tool_calls`, `reasoning`,
+`short`, `not_analysed`, `language_unknown`, the first that applies). Money uses
+the output price the spend settlement recorded, the large-context one once the
+prompt crossed its threshold; unpriced settlements add none. The model is the one
+the spend settlement billed, so a registry alias groups under its provider model,
+named by the price-book entry it matches (the longest entry it equals or extends
+with `-`, as the gateway matches prices) or `other`: a provider model name never
+reaches the answer or the evidence PDF as written. One statement reads the
+exclusions and the ratios together.
 
 ## Responses continuation markers
 
@@ -368,7 +471,12 @@ source has them. A deprecated model stays in the catalog with
 
 `warnings` lists the `X-Shim-Warnings` codes a request carried
 (`MODEL_DEPRECATED`, `CONTEXT_MAY_EXCEED`, `LARGE_CONTEXT_PRICE`,
-`CACHE_NOT_APPLIED`, `RULE_WARN`), `[]` when none. It is in the lifecycle metadata at
+`CACHE_NOT_APPLIED`, `RULE_WARN`, `INJECTION_MARKERS`, `PRICE_TIER_CROSSED`,
+`MODEL_RETIRING`, `MODEL_RETIRED`), `[]` when none. The two retirement codes are
+always recorded and reach the header only while `model_retiring_warning` is
+`header`. `PRICE_TIER_CROSSED` is raised before the provider call from the request's
+approximate size; `LARGE_CONTEXT_PRICE` after it from the settled tokens, so a request
+can carry both. It is in the lifecycle metadata at
 finalization, the analytics row, the request list and its CSV (comma-separated),
 and the community JSONL event. `GET /api/v1/management/requests?warning=<code>`
 and the export filter on one code. Rows written before it existed read as null.

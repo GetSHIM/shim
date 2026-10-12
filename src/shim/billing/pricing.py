@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 
 TOKENS_PER_MILLION = Decimal("1000000")
@@ -22,6 +22,8 @@ UNSPECIFIED_PROVIDER_MODEL = "__unspecified_provider_model__"
 # The repo's existing id rules (deployment aliases, Gemini path ids, the catalog's
 # 200 cap) in one: it bounds what a caller can make the gateway store as a model.
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
+# A dated snapshot id: the model it is dated from, then the date.
+DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _CATALOG_PATH = Path(__file__).with_name("model_catalog.json")
 _MODALITIES = frozenset({"text", "image", "pdf", "audio", "video"})
 _STATUSES = frozenset({"alpha", "beta", "deprecated"})
@@ -53,6 +55,8 @@ class ModelPrice:
     structured_output: bool | None = None
     input_modalities: tuple[str, ...] | None = None
     status: str | None = None
+    # Embeddings models price input only and answer only the embeddings routes.
+    kind: Literal["chat", "embedding"] = "chat"
 
     def __post_init__(self) -> None:
         if (
@@ -238,7 +242,12 @@ class PriceBook:
         return self.resolve(model, provider).cost(input_tokens, output_tokens, cache)
 
     def models(self, provider: str) -> tuple[str, ...]:
-        return tuple(self.provider_prices.get(provider, ()))
+        """The chat models: what the model listings show."""
+        return tuple(
+            model
+            for model, price in self.provider_prices.get(provider, {}).items()
+            if price.kind == "chat"
+        )
 
     def maximum_output_tokens(
         self,
@@ -381,6 +390,11 @@ def _catalog_facts(raw: Mapping[str, object]) -> dict[str, Any]:
         if status not in _STATUSES:
             raise ValueError("catalog status is invalid")
         facts["status"] = status
+    kind = raw.get("kind")
+    if kind is not None:
+        if kind != "embedding":
+            raise ValueError("catalog kind is invalid")
+        facts["kind"] = kind
     return facts
 
 

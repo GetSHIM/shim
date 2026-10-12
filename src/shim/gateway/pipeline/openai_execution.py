@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from time import perf_counter
 from typing import Any
 
@@ -15,6 +15,7 @@ from openai import (
     APITimeoutError,
     AsyncOpenAI,
 )
+from openai.types import CreateEmbeddingResponse
 
 from shim.core.circuit_breaker import CircuitBreaker
 from shim.core.community_config import CommunitySettings
@@ -63,8 +64,13 @@ class OpenAIExecution:
         http_client: httpx.AsyncClient,
         chain_store: PrivacyContinuationStore,
         pii_scrubber: PIIScrubberService | None = None,
+        catalog_base_url: str | None = None,
+        catalog_deployments: Mapping[str, str] | None = None,
     ) -> None:
         self.credential_resolver = credential_resolver
+        # Azure OpenAI v1 for catalog routes: its base URL and catalog id to deployment name.
+        self.catalog_base_url = catalog_base_url
+        self.catalog_deployments = dict(catalog_deployments or {})
         self.pii_scrubber = pii_scrubber or PIIScrubberService()
         self.http_client = http_client
         self.chain_store = chain_store
@@ -103,6 +109,8 @@ class OpenAIExecution:
                     else {}
                 ),
             )
+        except ProviderCallError:
+            raise
         except Exception:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
@@ -114,7 +122,11 @@ class OpenAIExecution:
                 api_key=api_key,
                 base_url=prepared.target.base_url
                 if prepared.target
-                else (self.settings.OPENAI_BASE_URL or "https://api.openai.com/v1"),
+                else (
+                    self.catalog_base_url
+                    or self.settings.OPENAI_BASE_URL
+                    or "https://api.openai.com/v1"
+                ),
                 timeout=prepared.target.timeout_seconds
                 if prepared.target
                 else self.timeout,
@@ -129,9 +141,21 @@ class OpenAIExecution:
             create = (
                 client.responses.create
                 if prepared.protocol == "responses"
+                else client.embeddings.create
+                if prepared.protocol == "embeddings"
                 else client.chat.completions.create
             )
             kwargs = sdk_create_kwargs(create, prepared.payload)
+            # Admission, pricing and records keep the catalog id; Azure gets its deployment.
+            if (
+                self.catalog_deployments
+                and prepared.target is None
+                and prepared.model in self.catalog_deployments
+            ):
+                kwargs["model"] = self.catalog_deployments[prepared.model]
+            # Omitted, the SDK would ask upstream for base64 and decode it itself.
+            if prepared.protocol == "embeddings" and "encoding_format" not in kwargs:
+                kwargs["encoding_format"] = "float"
             client_options = prepared.payload.get("stream_options")
             meter_usage = (
                 prepared.protocol == "chat"
@@ -169,6 +193,8 @@ class OpenAIExecution:
             raise _public_error(exc) from None
 
         if prepared.stream:
+            # Embeddings have no stream: their route never sets one.
+            assert not isinstance(result, CreateEmbeddingResponse)
             request_id = _stream_request_id(result)
             state = {"closed": False, "recorded": False}
 
@@ -200,7 +226,8 @@ class OpenAIExecution:
             )
 
         try:
-            payload = _dump_sdk(result)
+            # A client's base64 vectors stay strings where the SDK model expects floats.
+            payload = _dump_sdk(result, warnings=prepared.protocol != "embeddings")
         except BaseException:
             await circuit.release_probe()
             raise
@@ -225,10 +252,15 @@ class OpenAIExecution:
                 response_id,
                 prepared.privacy.verification_map,
             )
-        restored = restore_openai_payload(
-            payload,
-            prepared.privacy.verification_map,
-            self.pii_scrubber,
+        # Vectors carry no placeholder to restore.
+        restored = (
+            payload
+            if prepared.protocol == "embeddings"
+            else restore_openai_payload(
+                payload,
+                prepared.privacy.restore_map,
+                self.pii_scrubber,
+            )
         )
         if prepared.protocol == "responses":
             restored = _sanitize_responses_failure(restored)
@@ -248,7 +280,7 @@ class OpenAIExecution:
     ) -> AsyncIterator[bytes]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         next_sequence_number = 0
@@ -348,7 +380,7 @@ class OpenAIExecution:
     ) -> AsyncIterator[bytes | MeterOnly]:
         assert prepared.privacy is not None
         restorer = OpenAIStreamRestorer(
-            prepared.privacy.verification_map,
+            prepared.privacy.restore_map,
             self.pii_scrubber,
         )
         expected_choices = _expected_chat_choices(prepared.payload)
@@ -401,8 +433,8 @@ class OpenAIExecution:
         await record_provider_error(circuit, exc, status_code, APIError)
 
 
-def _dump_sdk(value: Any) -> dict[str, Any]:
-    dumped = value.model_dump(mode="json")
+def _dump_sdk(value: Any, *, warnings: bool = True) -> dict[str, Any]:
+    dumped = value.model_dump(mode="json", warnings=warnings)
     if not isinstance(dumped, dict):
         raise TypeError("OpenAI SDK value did not serialize to an object")
     return dumped
@@ -444,9 +476,52 @@ def _expected_chat_choices(payload: dict[str, Any]) -> int:
     )
 
 
+# Azure's content filter categories; any other name in the body is dropped.
+_FILTER_CATEGORIES = frozenset(
+    {
+        "hate",
+        "sexual",
+        "violence",
+        "self_harm",
+        "jailbreak",
+        "indirect_attack",
+        "profanity",
+        "protected_material_text",
+        "protected_material_code",
+        "custom_blocklists",
+    }
+)
+
+
+def _content_filter(body: object) -> ProviderCallError | None:
+    """Azure's 400 for a filtered prompt, with only the allowlisted categories it names."""
+    error = body.get("error", body) if isinstance(body, dict) else None
+    if not isinstance(error, dict) or error.get("code") != "content_filter":
+        return None
+    inner = error.get("innererror")
+    results = inner.get("content_filter_result") if isinstance(inner, dict) else None
+    categories = sorted(
+        name
+        for name, result in (results.items() if isinstance(results, dict) else ())
+        if name in _FILTER_CATEGORIES
+        and isinstance(result, dict)
+        and (result.get("filtered") is True or result.get("detected") is True)
+    )
+    message = "The provider's content filter refused the prompt."
+    if categories:
+        message += f" Categories: {', '.join(categories)}."
+    return _error(400, "PROVIDER_CONTENT_FILTERED", False, message=message)
+
+
 def _public_error(exc: Exception) -> ProviderCallError:
     if isinstance(exc, APITimeoutError):
         return _error(504, "PROVIDER_TIMEOUT", True)
+    if (
+        isinstance(exc, APIStatusError)
+        and exc.status_code == 400
+        and (filtered := _content_filter(exc.body)) is not None
+    ):
+        return filtered
     if isinstance(exc, APIStatusError):
         retryable = exc.status_code in {408, 409, 429} or exc.status_code >= 500
         return _error(

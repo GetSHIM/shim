@@ -4,14 +4,26 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shim.gateway.contracts.ids import TenantId
+from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.policy.models import PolicyVersion, Risk, Source
-from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.audit import record_management_action
+from shim_enterprise.tenants.gateway_settings import stored_settings
+from shim_enterprise.tenants.models import (
+    Organization,
+    OrganizationGatewaySettings,
+    ServiceAccountCredential,
+    User,
+)
+from shim_enterprise.tenants.permissions import BUILTIN_ROLE_PERMISSIONS
 
 if TYPE_CHECKING:
     from shim_enterprise.policy.resources import ManagedResource
@@ -21,12 +33,16 @@ State = dict[str, Any]
 
 class Impact(TypedDict):
     requests: int | None
-    basis: Literal["metadata", "none"]
+    basis: Literal["metadata", "monitor_history", "none"]
     window_days: int
     note: str | None
 
 
 Change = tuple["ManagedResource", str, State | None, State | None]
+
+# The source of the managed write in progress, for the one check that differs by
+# source: a restore may re-create an enforced rule without a preview.
+WRITE_SOURCE: ContextVar[Source] = ContextVar("policy_write_source", default="api")
 
 
 def no_impact(window_days: int, note: str | None = None) -> Impact:
@@ -71,6 +87,148 @@ async def current_version(session: AsyncSession, organization_id: UUID) -> int:
     )
 
 
+# Custom roles never grant plans.approve and hang only off the member role, so
+# built-in roles are the approvers.
+_APPROVER_ROLES = [
+    role
+    for role, granted in BUILTIN_ROLE_PERMISSIONS.items()
+    if "plans.approve" in granted
+]
+
+
+async def four_eyes_on(session: AsyncSession, organization_id: UUID) -> bool:
+    stored = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == organization_id
+        )
+    )
+    return stored is not None and stored_settings(stored).four_eyes == "relaxing"
+
+
+async def count_approvers(session: AsyncSession, organization_id: UUID) -> int:
+    return int(
+        await session.scalar(
+            select(func.count()).where(
+                User.organization_id == organization_id,
+                User.is_active.is_(True),
+                User.kind == "human",
+                User.role.in_(_APPROVER_ROLES),
+            )
+        )
+        or 0
+    )
+
+
+async def key_holders(
+    session: AsyncSession, organization_id: UUID, user_ids: set[UUID]
+) -> set[UUID]:
+    """The users, and whoever created or rotated their service-account key."""
+    if not user_ids:
+        return set()
+    creators = await session.scalars(
+        select(ServiceAccountCredential.created_by).where(
+            ServiceAccountCredential.organization_id == organization_id,
+            ServiceAccountCredential.user_id.in_(user_ids),
+        )
+    )
+    return user_ids | set(creators)
+
+
+async def require_two_approvers(
+    session: AsyncSession, organization_id: UUID, *, losing: int = 0
+) -> None:
+    if await count_approvers(session, organization_id) - losing < 2:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "FOUR_EYES_UNAVAILABLE",
+                "message": "Four eyes needs two active administrators.",
+            },
+        )
+
+
+async def keep_two_approvers(
+    session: AsyncSession, member: User, organization_id: UUID, role: str | None
+) -> None:
+    """Under four eyes, refuse to demote (`role`) or remove (None) the second approver."""
+    if (
+        member.kind == "human"
+        and member.role in _APPROVER_ROLES
+        and role not in _APPROVER_ROLES
+        and await four_eyes_on(session, organization_id)
+    ):
+        await require_two_approvers(session, organization_id, losing=1)
+
+
+def relaxed_fields(changes: Sequence[Change]) -> list[str]:
+    """`resource.item.field` of each relaxing field, `resource.item` for a create or delete."""
+    relaxed: list[str] = []
+    for resource, item, before, after in changes:
+        if resource.classify(before, after) != "relaxing":
+            continue
+        prefix = f"{resource.name}.{item}"
+        if before is None or after is None:
+            relaxed.append(prefix)
+            continue
+        fields = [
+            f"{prefix}.{field}"
+            for field in after
+            if before.get(field) != after[field]
+            and resource.classify(before, {**before, field: after[field]}) == "relaxing"
+        ]
+        relaxed += fields or [prefix]
+    return relaxed
+
+
+async def _refuse_unapproved(
+    session: AsyncSession,
+    actor: User | None,
+    organization_id: UUID,
+    changes: Sequence[Change],
+    version: int,
+) -> None:
+    relaxed = relaxed_fields(changes)
+    if not relaxed or not await four_eyes_on(session, organization_id):
+        return
+    if (
+        relaxed == ["gateway_settings._.four_eyes"]
+        and actor is not None
+        and actor.role == "owner"
+        and await count_approvers(session, organization_id) < 2
+    ):
+        # Single-admin lockout: nobody could approve turning four eyes off.
+        event_id = await record_management_action(
+            session,
+            actor,
+            "tenant.four_eyes_single_admin_override",
+            str(organization_id),
+            details={"policy_version": version},
+        )
+        await ComplianceForwarderService().send_privacy_protection_relaxed(
+            session,
+            TenantId(organization_id),
+            fields=["four_eyes"],
+            actor=str(actor.id),
+            actor_email=actor.email,
+            event_id=event_id,
+            kind="gateway_protection_relaxed",
+        )
+        return
+    raise approval_required(relaxed)
+
+
+def approval_required(relaxed: list[str]) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "CHANGE_REQUIRES_APPROVAL",
+            "relaxed": relaxed,
+            "message": "This change loosens protection. Create a plan and ask a "
+            "second administrator to approve it.",
+        },
+    )
+
+
 @asynccontextmanager
 async def record_managed_write(
     session: AsyncSession,
@@ -92,14 +250,25 @@ async def record_managed_write(
         yield None
         return
     version = await current_version(session, organization_id) + 1
-    yield version
+    if plan_id is None:
+        await _refuse_unapproved(session, actor, organization_id, changed, version)
+    token = WRITE_SOURCE.set(source)
+    try:
+        yield version
+    finally:
+        WRITE_SOURCE.reset(token)
     await session.flush()
     snapshot: dict[str, State] = {}
     previous: dict[str, State] = {}
+    items: dict[ManagedResource, list[str]] = {}
     for resource, item, before, _ in changed:
-        current = await resource.snapshot(session, organization_id, [item])
-        snapshot.setdefault(resource.name, {})[item] = current.get(item)
+        items.setdefault(resource, []).append(item)
         previous.setdefault(resource.name, {})[item] = before
+    # One read per resource: a rule set PUT can change a hundred items.
+    for resource, names in items.items():
+        current = await resource.snapshot(session, organization_id, names)
+        for item in names:
+            snapshot.setdefault(resource.name, {})[item] = current.get(item)
     session.add(
         PolicyVersion(
             organization_id=organization_id,

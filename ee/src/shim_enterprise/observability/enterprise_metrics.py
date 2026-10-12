@@ -27,6 +27,21 @@ AUDIT_WORKER_LAG_SECONDS = Gauge(
     "audit_worker_lag_seconds",
     "Age of the oldest undelivered audit event observed by the worker.",
 )
+REQUEST_APPROVALS_TOTAL = Counter(
+    "shim_request_approvals_total",
+    "Approval gate outcomes for requests a tenant rule holds.",
+    ("outcome",),
+)
+REQUEST_APPROVAL_DECISIONS_TOTAL = Counter(
+    "shim_request_approval_decisions_total",
+    "Administrator decisions on held requests.",
+    ("decision",),
+)
+REQUEST_ARCHIVE_WRITES_TOTAL = Counter(
+    "shim_request_archive_writes_total",
+    "Request archive writes: stored, skipped_size or failed.",
+    ("result",),
+)
 LICENSE_DAYS_REMAINING = Gauge(
     "license_days_remaining",
     "Days until the enterprise licence expires; negative inside the grace period.",

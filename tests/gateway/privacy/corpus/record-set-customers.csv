@@ -1,0 +1,6 @@
+Müşteri No,Ad Soyad,TCKN,IBAN,E-posta
+MUS000001,Ayşe Yılmaz,10000000146,TR330006100519786457841326,ayse@example.com
+MUS000002,İsmail Işık,,TR120006400000112345678901,ismail@example.com
+MUS000003,Çağrı Öztürk,,,cagri@example.com
+MUS000004,Şule Ünal,,,
+MUS000005,Gökhan Demir,,,gokhan@example.com

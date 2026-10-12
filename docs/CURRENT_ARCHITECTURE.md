@@ -150,6 +150,10 @@ sessions; hosted Supabase remains a separate selected authentication mode.
 - Anthropic `x-api-key` is never inferred to be a provider credential.
 
 Credential-bearing headers are removed before request metadata is recorded.
+Admission reads three gateway headers besides the credentials: `X-Shim-Tag`,
+`X-Shim-Task-Id` and `traceparent` (the task and trace ids of the request);
+with `SHIM_TRACE_PARENT=honor` the kernel also starts the request span as a
+child of the incoming `traceparent`/`tracestate`. None of them is forwarded.
 Inbound authorization, cookies, host headers, shim tags, and credentials are
 never forwarded wholesale.
 
@@ -157,9 +161,20 @@ never forwarded wholesale.
 
 | Provider | Current route family | Native stream terminal |
 | --- | --- | --- |
-| OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events |
+| OpenAI | `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/models` | Chat ends with `[DONE]`; Responses uses named `response.*` events; embeddings never stream |
 | Anthropic | `/v1/messages`, `/v1/messages/count_tokens`, `/v1/models` | Messages use native named events ending in `message_stop`; token counting returns JSON |
-| Gemini | `/v1beta/models/{model}:generateContent` and stream | Data-only Gemini SSE, without `[DONE]` |
+| Gemini | `/v1beta/models/{model}:generateContent` and stream, `:embedContent`, `:batchEmbedContents` | Data-only Gemini SSE, without `[DONE]`; embeddings return JSON |
+
+Embeddings run the same stages as chat. Catalog entries carry a `kind`: an
+`embedding` model answers only the embeddings routes and never appears in
+`/v1/models`, and every other route refuses it with `MODEL_NOT_PRICED`. Admission
+reserves no output and skips the context and capability checks; the privacy stage
+applies the tenant's actions (and its embeddings-only `monitor` list) and refuses
+token-id input while any type is masked or blocked; OpenAI runs through the SDK
+with `encoding_format: "float"` when the client omitted it, Gemini through a native
+HTTP call (the SDK would turn `:embedContent` into a batch); nothing is restored in
+vectors; settlement takes the prompt tokens the provider reports, no completion
+tokens and no outcome.
 
 OpenAI errors use `{error: {message, type, param, code, hint}}`. Anthropic
 errors use `{type: "error", error: {type, message, code, hint}, request_id}`,
@@ -174,10 +189,15 @@ keeps its status and `retry-after` and carries the code `PROVIDER_RATE_LIMITED`;
 it is the caller's quota, so it neither opens nor closes the provider circuit.
 A provider 400, 403, 404, 413 or 422 keeps its status with the code
 `PROVIDER_REJECTED_REQUEST`, and a provider 401 keeps its status with
-`INVALID_PROVIDER_CREDENTIAL`, so it is never mistaken for a bad shim key. A
-request the provider SDK refuses before sending it is 400 `INVALID_REQUEST` with
-a fixed message; a provider answer the SDK cannot parse stays 502
-`PROVIDER_UNAVAILABLE`.
+`INVALID_PROVIDER_CREDENTIAL`, so it is never mistaken for a bad shim key. An
+OpenAI-protocol 400 whose body code is `content_filter` (Azure's content filter) is
+`PROVIDER_CONTENT_FILTERED`, with a fixed message naming only the allowlisted
+filter categories. A request the provider SDK refuses before sending it is 400
+`INVALID_REQUEST` with a fixed message; a provider answer the SDK cannot parse
+stays 502 `PROVIDER_UNAVAILABLE`. A credential resolver may raise a
+`ProviderCallError`, which reaches the caller with its own status and code (an
+Entra ID refusal is 401 `INVALID_PROVIDER_CREDENTIAL`); any other resolver
+exception is 503 `PROVIDER_UNAVAILABLE`.
 
 Every gateway error response whose code shim knows carries it in
 `X-Shim-Error-Code`, in all three shapes, and browsers may read that header.
@@ -192,18 +212,19 @@ there. An error raised after authentication also carries `X-Shim-Request-Id`.
 The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
 `MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `MODEL_CONTEXT_EXCEEDED`,
-`MODEL_CAPABILITY_UNSUPPORTED`, `PROVIDER_NOT_ALLOWED`,
+`MODEL_CAPABILITY_UNSUPPORTED`, `PROVIDER_NOT_ALLOWED`, `TASK_LIMIT_EXCEEDED`,
+`AGENT_LOOP_DETECTED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
 `SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,
 `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE`,
 `PRIVACY_STATE_UNAVAILABLE`, `PROVIDER_NOT_CONFIGURED`, `PROVIDER_RATE_LIMITED`,
-`PROVIDER_REJECTED_REQUEST`, `PROVIDER_UNAVAILABLE`, `PROVIDER_TIMEOUT` and
-`INTERNAL_ERROR`; enterprise adds
+`PROVIDER_REJECTED_REQUEST`, `PROVIDER_CONTENT_FILTERED`, `PROVIDER_UNAVAILABLE`,
+`PROVIDER_TIMEOUT` and `INTERNAL_ERROR`; enterprise adds
 `MODEL_NOT_ALLOWED`, `MODEL_NOT_REGISTERED`, `DEPLOYMENT_NOT_APPROVED`,
 `MODEL_PRICE_UNKNOWN`, `MONTHLY_QUOTA_EXCEEDED`, `SPEND_LIMIT_EXCEEDED`,
 `PROVIDER_KEY_NOT_ALLOWED`,
-`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY` and
-`AUDIT_INTENT_FAILED`. A request
+`SCAN_LIMIT_EXCEEDED`, `TENANT_NOT_FOUND`, `DEPLOYMENT_UNHEALTHY`,
+`BEDROCK_REGION_NOT_ALLOWED` and `AUDIT_INTENT_FAILED`. A request
 that fails schema validation carries the validator's error type instead.
 
 `background=true` Responses requests remain unsupported because shim has no
@@ -248,8 +269,23 @@ requests in its scope. The `term` and `pattern` kinds (`src/shim/rules/content.p
 are searched by `PIIScrubberService` on its normalized text: terms through a
 word index and pattern regexes, both built once per `RuleSet` object
 (`RuleSet.matchers`), the Turkish endings from a grammar
-(`src/shim/rules/tr_suffixes.py`); no other kind ships a matcher yet.
+(`src/shim/rules/tr_suffixes.py`). The `destination` kind (`src/shim/rules/destination.py`)
+names entity types: for a request in its scope the privacy stage detects them,
+masks them under an enforced `mask` rule, and records the matches for the decision
+point. The `request_limit` kind (`src/shim/rules/request_limit.py`) is evaluated in
+admission before the rate limits, where an enforced block refuses; token counting is
+exempt. No other kind ships a matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
+Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`
+(after the date) from `src/shim/billing/lifecycle.py`, which reads the reviewed
+`model_lifecycle.json` and an operator's `SHIM_MODEL_LIFECYCLE_FILE`; both codes stay
+out of `X-Shim-Warnings` unless the tenant's mode is `header`. Nothing is refused
+for a date.
+With `SHIM_INJECTION_MARKERS` (enterprise: the `injection_markers` gateway
+setting) at `count` or `warn`, the privacy stage also counts instruction markers
+in tool results and documents of the raw request (`src/shim/privacy/injection.py`,
+shim-cli's patterns), on the same worker thread as the privacy scan; `warn` adds
+the `INJECTION_MARKERS` warning. It never blocks or changes the request.
 
 Anthropic token counting shares authentication, registry authorization and
 privacy transformation. It persists nonbillable enterprise audit preflight and

@@ -15,6 +15,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import SecretBytes
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from shim.billing.lifecycle import load_lifecycle
 from shim.api.v1.chat import router as chat_router
 from shim.api.v1.community_scan import router as community_scan_router
 from shim.api.v1.gemini import router as gemini_router
@@ -32,17 +33,52 @@ from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
-from shim.gateway.request_policy import LocalRequestPolicyResolver
+from shim.gateway.request_policy import AgentLoop, LocalRequestPolicyResolver, TaskCaps
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim.privacy.continuation import InMemoryPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
-from shim.secrets.credentials import EnvironmentProviderCredentialResolver
+from shim.secrets.azure import (
+    AzureCredentialResolver,
+    EntraClientCredential,
+    EntraTokenCache,
+)
+from shim.secrets.credentials import (
+    EnvironmentProviderCredentialResolver,
+    ProviderCredentialResolver,
+)
 from shim.services.gateway.service import GatewayService
 
 
 _LOCAL_STATE_CAPACITY = 10_000
+
+
+def _openai_credentials(
+    configured: CommunitySettings, client: httpx.AsyncClient
+) -> ProviderCredentialResolver:
+    """The OpenAI key, or with an Azure endpoint its key or an Entra token."""
+    if not configured.SHIM_AZURE_OPENAI_ENDPOINT:
+        return EnvironmentProviderCredentialResolver("openai")
+    if configured.SHIM_AZURE_OPENAI_API_KEY is not None:
+        return AzureCredentialResolver(
+            api_key=configured.SHIM_AZURE_OPENAI_API_KEY.get_secret_value()
+        )
+    return AzureCredentialResolver(
+        entra=(
+            EntraTokenCache(
+                client, authority_host=configured.SHIM_AZURE_AUTHORITY_HOST
+            ),
+            EntraClientCredential.model_validate(
+                {
+                    "tenant": configured.SHIM_AZURE_TENANT_ID,
+                    "client_id": configured.SHIM_AZURE_CLIENT_ID,
+                    "client_secret": configured.SHIM_AZURE_CLIENT_SECRET,
+                    "scope": configured.SHIM_AZURE_TOKEN_SCOPE,
+                }
+            ),
+        )
+    )
 
 
 def create_community_app(
@@ -114,14 +150,16 @@ def create_community_app(
                         pii_scrubber=pii_scrubber,
                     ),
                     "openai": OpenAIExecution(
-                        credential_resolver=EnvironmentProviderCredentialResolver(
-                            "openai"
-                        ),
+                        credential_resolver=_openai_credentials(configured, client),
                         circuit=InMemoryCircuitBreaker(),
                         settings=configured,
                         http_client=client,
                         chain_store=chain_store,
                         pii_scrubber=pii_scrubber,
+                        catalog_base_url=f"{configured.SHIM_AZURE_OPENAI_ENDPOINT}/openai/v1"
+                        if configured.SHIM_AZURE_OPENAI_ENDPOINT
+                        else None,
+                        catalog_deployments=configured.SHIM_AZURE_OPENAI_DEPLOYMENTS,
                     ),
                 },
                 chain_store=chain_store,
@@ -138,6 +176,22 @@ def create_community_app(
                     bulk_threshold=configured.PII_BULK_THRESHOLD or None,
                     response_scan=configured.PII_RESPONSE_SCAN,
                     response_analysis=tuple(configured.SHIM_RESPONSE_ANALYSIS),
+                    injection_markers=configured.SHIM_INJECTION_MARKERS,
+                    price_tier_warning=configured.SHIM_PRICE_TIER_WARNING == "on",
+                    task_caps=TaskCaps(
+                        max_calls=configured.SHIM_TASK_MAX_CALLS,
+                        max_cost_usd=configured.SHIM_TASK_MAX_COST_USD,
+                        window_seconds=configured.SHIM_TASK_WINDOW_SECONDS,
+                    ),
+                    agent_loop=AgentLoop(
+                        action=configured.SHIM_AGENT_LOOP,
+                        repeats=configured.SHIM_AGENT_LOOP_REPEATS,
+                    ),
+                    inflight_sharing=configured.SHIM_INFLIGHT_SHARING == "on",
+                    model_retiring_warning=configured.SHIM_MODEL_RETIRING_WARNING,
+                    embeddings_monitor_types=frozenset(
+                        configured.PII_EMBEDDINGS_MONITOR
+                    ),
                 ),
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,
@@ -145,6 +199,8 @@ def create_community_app(
                 loop_window_seconds=configured.LOOP_WINDOW_SECONDS,
                 cost_tag_max_length=configured.COST_TAG_MAX_LENGTH,
                 usage=usage,
+                honor_trace_parent=configured.SHIM_TRACE_PARENT == "honor",
+                model_lifecycle=load_lifecycle(configured.SHIM_MODEL_LIFECYCLE_FILE),
             )
         )
         try:

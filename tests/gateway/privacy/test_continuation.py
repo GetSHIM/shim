@@ -304,3 +304,32 @@ async def test_bulk_disclosure_counts_distinct_new_values_of_every_action(
         or 0
     )
     assert after - before == (1 if bulk else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("withheld", "restored"),
+    [(frozenset({"TR_NATIONAL_ID"}), False), (frozenset(), True)],
+)
+async def test_a_continuation_restores_by_the_permission_of_its_own_caller(
+    withheld, restored
+) -> None:
+    scrubber = PIIScrubberService()
+    parent_placeholder, parent_map = scrubber.scrub("10000000146", DEFAULT_ACTIONS)
+    continuation_store = SimpleNamespace(
+        load=AsyncMock(return_value=parent_map), ensure_available=AsyncMock()
+    )
+    prepared = replace(
+        _prepared({"previous_response_id": "resp_parent", "input": "Thanks"}),
+        restore_withheld=withheld,
+    )
+
+    result = await PrivacyStage(scrubber, continuation_store).run(prepared)
+
+    assert result.privacy is not None
+    # The chain is saved and loaded whole; only this caller's restore map shrinks.
+    assert result.privacy.verification_map == parent_map
+    assert (parent_placeholder in result.privacy.restore_map) is restored
+    assert scrubber.deanonymize(
+        f"echo {parent_placeholder}", result.privacy.restore_map
+    ) == ("echo 10000000146" if restored else f"echo {parent_placeholder}")

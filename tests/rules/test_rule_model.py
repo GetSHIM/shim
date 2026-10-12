@@ -6,6 +6,9 @@ import shim.rules.kinds as kinds
 import shim.rules.patterns as patterns
 from shim.rules import RuleSet, RuleSetError, validate_rule_set
 from shim.rules.content import PatternMatch, TermMatch
+from shim.rules.destination import DestinationMatch
+from shim.rules.record_set import RecordSetMatch
+from shim.rules.request_limit import RequestLimitMatch
 
 
 def _rule(**values) -> dict:
@@ -102,7 +105,7 @@ def test_kinds_actions_and_duplicates_are_checked() -> None:
         _refused({"revision": 1, "rules": [_rule(kind="weather")]}).path
         == "rules[0].kind"
     )
-    unavailable = _refused({"revision": 1, "rules": [_rule(kind="record_set")]})
+    unavailable = _refused({"revision": 1, "rules": [_rule(kind="parameter_pin")]})
     assert (unavailable.code, unavailable.path) == (
         "RULE_KIND_UNAVAILABLE",
         "rules[0].kind",
@@ -140,6 +143,9 @@ def test_a_kind_is_unavailable_until_its_prd_adds_a_match_model() -> None:
         **dict.fromkeys(kinds.KINDS),
         "term": TermMatch,
         "pattern": PatternMatch,
+        "destination": DestinationMatch,
+        "request_limit": RequestLimitMatch,
+        "record_set": RecordSetMatch,
     }
     assert {kind: spec.point for kind, spec in kinds.KINDS.items()} == {
         "term": "privacy",
@@ -208,3 +214,16 @@ def test_a_stored_pattern_is_not_probed_again(monkeypatch) -> None:
     assert [rule.id for rule in kinds.load_rule_set(1, [rule]).rules] == [
         "project_names"
     ]
+
+
+def test_every_written_pattern_rule_is_probed_not_only_the_first(monkeypatch) -> None:
+    monkeypatch.setattr(patterns, "PROBE_SECONDS", 0.0)
+    first = _rule(id="terms_first", kind="term", match={"terms": ["Apollo"]})
+    second = _rule(kind="pattern", match={"regexes": [r"INV\d{6}"]})
+
+    refused = _refused({"revision": 1, "rules": [first, second]})
+
+    assert (refused.code, refused.path) == (
+        "RULE_PATTERN_UNSAFE",
+        "rules[1].match.regexes[0]",
+    )

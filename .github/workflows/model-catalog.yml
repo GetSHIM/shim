@@ -33,7 +33,7 @@ jobs:
           version: "0.12.5"
           enable-cache: true
       - name: Refresh catalog
-        run: uv run --locked python scripts/sync_models_dev.py
+        run: uv run --locked python scripts/sync_models_dev.py --report "$RUNNER_TEMP/retirements.md"
       - name: Open update pull request
         env:
           BRANCH: automation/models-dev-catalog
@@ -56,9 +56,14 @@ jobs:
           git push --force-with-lease origin "HEAD:$BRANCH"
 
           if [ -z "$(gh pr list --base "$PR_BASE" --head "$BRANCH" --state open --json url --jq '.[0].url')" ]; then
+            {
+              echo "Automated catalog refresh from https://models.dev/api.json. Pricing feeds cost accounting, so this reaches main through review."
+              echo
+              cat "$RUNNER_TEMP/retirements.md"
+            } > "$RUNNER_TEMP/body.md"
             gh pr create \
               --base "$PR_BASE" \
               --head "$BRANCH" \
               --title "chore: update Models.dev catalog" \
-              --body "Automated catalog refresh from https://models.dev/api.json. Pricing feeds cost accounting, so this reaches main through review."
+              --body-file "$RUNNER_TEMP/body.md"
           fi

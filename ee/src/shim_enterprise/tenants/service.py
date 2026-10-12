@@ -34,6 +34,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import Base
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.outbox.models import OutboxEvent
+from shim_enterprise.secrets.store import provider_secret_purpose
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.audit import record_management_action
 from shim_enterprise.tenants.models import (
@@ -307,7 +308,7 @@ async def _archive_workspace(
 ) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     tenant_id = organization.id
     secrets_to_delete = [
-        (reference, f"provider:{provider}:api-key")
+        (reference, provider_secret_purpose(provider))
         for reference, provider in await session.execute(
             select(ProviderSecret.secret_ref, ProviderSecret.provider).where(
                 ProviderSecret.organization_id == tenant_id

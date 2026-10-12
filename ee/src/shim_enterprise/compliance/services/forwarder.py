@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,6 +104,7 @@ class ComplianceForwarderService:
         actor: str,
         actor_email: str,
         event_id: str,
+        kind: str = "privacy_protection_relaxed",
     ) -> None:
         await self.send_tenant_alert(
             session,
@@ -110,13 +112,44 @@ class ComplianceForwarderService:
             body={
                 "source": "shim",
                 "event_type": "tenant_policy",
-                "kind": "privacy_protection_relaxed",
+                "kind": kind,
                 "fields": fields,
                 "actor": actor,
                 "actor_email": actor_email,
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
             },
-            delivery_key=f"privacy_protection_relaxed:{event_id}",
+            delivery_key=f"{kind}:{event_id}",
+        )
+
+    async def send_target_changed(
+        self,
+        session: AsyncSession,
+        target: ComplianceForwardTarget,
+        *,
+        actor: str,
+        actor_email: str,
+    ) -> None:
+        """Queue a notice to the destination `target` is about to leave.
+
+        Call it before the destination moves: the notice keeps the secret it holds
+        now. It names the target, who moves it and when, never the new destination.
+        """
+        await self._append(
+            session,
+            None,
+            target,
+            body={
+                "source": "shim",
+                "event_type": "tenant_policy",
+                "kind": "forward_target_changed",
+                "target_id": str(target.id),
+                "target_kind": target.kind,
+                "actor": actor,
+                "actor_email": actor_email,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            },
+            delivery_key=f"forward_target_changed:{uuid4()}",
+            discard_secret=True,
         )
 
     async def send_tenant_alert(
@@ -169,6 +202,7 @@ class ComplianceForwarderService:
         *,
         body: dict[str, Any],
         delivery_key: str,
+        discard_secret: bool = False,
     ) -> None:
         tenant_id = TenantId(target.organization_id)
         aggregate_type, aggregate_id = (
@@ -189,10 +223,17 @@ class ComplianceForwarderService:
                 "payload": {
                     "organization_id": str(tenant_id),
                     "connector_id": None if connector is None else str(connector.id),
-                    "target_id": str(target.id),
                     "target_kind": target.kind,
                     "secret_ref": target.secret_ref,
                     "body": body,
+                    # A notice to a destination being left: delivery drops its secret
+                    # afterwards, and with no target_id the target's rebinding and
+                    # cancelling leave it alone.
+                    **(
+                        {"discard_secret": True}
+                        if discard_secret
+                        else {"target_id": str(target.id)}
+                    ),
                 },
                 "status": "pending",
                 "next_attempt_at": datetime.now(timezone.utc),

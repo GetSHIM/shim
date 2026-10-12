@@ -53,6 +53,24 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "DELETE /api/v1/management/record-sets/{set_id}": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "DELETE /api/v1/management/request-archive": {
+  "admin": "403 Organization owner required",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization owner required",
+  "owner": "200",
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization owner required"
+ },
  "DELETE /api/v1/management/roles/{role_id}": {
   "admin": "403 Permission required: roles.manage",
   "auditor": "403 Auditor access is read-only",
@@ -97,6 +115,15 @@
   "service_admin": "403 Service accounts cannot change team access",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "404"
+ },
+ "GET /api/v1/compliance/archive": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
  },
  "GET /api/v1/compliance/audit/bundle": {
   "admin": "404",
@@ -260,6 +287,24 @@
   "service_auditor": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/approvals": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Permission required: requests.approve or audit.read",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Permission required: requests.approve or audit.read"
+ },
+ "GET /api/v1/management/approvals/{approval_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: requests.approve or audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "team_admin": "403 Permission required: requests.approve or audit.read"
+ },
  "GET /api/v1/management/auth/me": {
   "admin": "200",
   "auditor": "200",
@@ -323,6 +368,15 @@
   "service_auditor": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/findings/rules": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/findings/{finding_id}": {
   "admin": "404",
   "auditor": "404",
@@ -341,6 +395,24 @@
   "service_auditor": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/language-cost": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/latency": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/model-deployments": {
   "admin": "200",
   "auditor": "200",
@@ -351,6 +423,15 @@
   "team_admin": "403 Organization reader required"
  },
  "GET /api/v1/management/model-inventory": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/model-retirements": {
   "admin": "200",
   "auditor": "200",
   "member": "403 Organization reader required",
@@ -440,6 +521,33 @@
   "service_auditor": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
  },
+ "GET /api/v1/management/record-sets": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/record-sets/{set_id}": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Organization reader required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/request-archive/openings": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "200"
+ },
  "GET /api/v1/management/requests": {
   "admin": "200",
   "auditor": "200",
@@ -457,6 +565,15 @@
   "service_admin": "200",
   "service_auditor": "200",
   "team_admin": "200"
+ },
+ "GET /api/v1/management/requests/{request_id}/content": {
+  "admin": "404",
+  "auditor": "403 Permission required: content.read",
+  "member": "403 Permission required: content.read",
+  "owner": "404",
+  "service_admin": "403 Service accounts cannot open archived content",
+  "service_auditor": "403 Permission required: content.read",
+  "team_admin": "403 Permission required: content.read"
  },
  "GET /api/v1/management/roles": {
   "admin": "403 Permission required: roles.manage",
@@ -791,6 +908,33 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "404"
  },
+ "POST /api/v1/management/approvals/reject": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: requests.approve",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: requests.approve"
+ },
+ "POST /api/v1/management/approvals/{approval_id}/approve": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: requests.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: requests.approve"
+ },
+ "POST /api/v1/management/approvals/{approval_id}/reject": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: requests.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: requests.approve"
+ },
  "POST /api/v1/management/cost/budgets": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
@@ -808,6 +952,15 @@
   "service_admin": "200",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/findings/{finding_id}/plan": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
  },
  "POST /api/v1/management/model-deployments": {
   "admin": "422",
@@ -845,6 +998,24 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Permission required: plans.apply"
  },
+ "POST /api/v1/management/policy/plans/{plan_id}/approve": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.approve"
+ },
+ "POST /api/v1/management/policy/plans/{plan_id}/reject": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.approve",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.approve"
+ },
  "POST /api/v1/management/policy/versions/{version}/restore": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
@@ -872,6 +1043,33 @@
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },
+ "POST /api/v1/management/record-sets": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/record-sets/{set_id}/revisions": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/record-sets/{set_id}/revisions/{revision}/activate": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
  "POST /api/v1/management/roles": {
   "admin": "403 Permission required: roles.manage",
   "auditor": "403 Auditor access is read-only",
@@ -880,6 +1078,24 @@
   "service_admin": "403 Permission required: roles.manage",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Permission required: roles.manage"
+ },
+ "POST /api/v1/management/rules/import/aiuc": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: plans.create"
+ },
+ "POST /api/v1/management/rules/preview": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: rules.write",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Permission required: rules.write"
  },
  "POST /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
@@ -968,6 +1184,15 @@
   "member": "403 Organization admin required",
   "owner": "404",
   "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "team_admin": "403 Organization admin required"
+ },
+ "PUT /api/v1/management/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
   "service_auditor": "403 Auditor access is read-only",
   "team_admin": "403 Organization admin required"
  },

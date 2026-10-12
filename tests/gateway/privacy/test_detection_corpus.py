@@ -12,16 +12,18 @@ from typing import Any
 import pytest
 
 from shim.privacy.pii_scrubber import PIIScrubberService
-from shim.privacy.policies import effective_entity_actions
+from shim.privacy.policies import OPT_IN_ENTITY_TYPES, effective_entity_actions
 from shim.rules import validate_rule_set
 from shim.rules.content import content_rules
 
 
+# A corpus of opt-in types has its own runner and bar (test_person_corpus.py).
 CORPORA: dict[str, dict[str, Any]] = {
     path.stem: corpus
     for path in sorted((Path(__file__).parent / "corpus").glob("*.json"))
     if (corpus := json.loads(path.read_text(encoding="utf-8"))).get("format")
     == "shim.detection.corpus"
+    and not set(corpus["entities"]) <= OPT_IN_ENTITY_TYPES.keys()
 }
 CASES: list[dict[str, Any]] = [
     case for corpus in CORPORA.values() for case in corpus["cases"]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from array import array
+
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -12,6 +14,7 @@ from collections.abc import (
     Sequence,
 )
 import asyncio
+import base64
 import csv
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -21,6 +24,7 @@ import io
 import itertools
 import json
 import logging
+import re
 import secrets
 from typing import Annotated, Any, Literal, cast, get_args
 from urllib.parse import urlsplit
@@ -28,13 +32,16 @@ from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from starlette.types import Message
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     computed_field,
     field_validator,
     ValidationError,
@@ -42,9 +49,11 @@ from pydantic import (
 )
 from sqlalchemy import (
     ColumnDefault,
+    Text,
     and_,
     case,
     cast as sql_cast,
+    delete as sql_delete,
     distinct,
     func,
     inspect,
@@ -54,6 +63,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.dialects.postgresql import array as sql_array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -65,7 +75,15 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     get_current_user,
     get_invite_user,
+    get_org_owner,
     require,
+)
+from shim_enterprise.ai_act.models import AIActAuditLog
+from shim_enterprise.archive.models import RequestArchive
+from shim_enterprise.archive.service import (
+    ArchiveUndecryptable,
+    opened,
+    shorten_retention,
 )
 from shim.billing.attribution import normalize_attribution
 from shim.findings import Finding as FindingV1
@@ -74,10 +92,7 @@ from shim.rules import (
     KINDS,
     LIMITS,
     Rule,
-    RuleScope,
-    RuleSetError,
     load_rule_set,
-    validate_rule_set,
 )
 from shim.gateway.kernel.result import ResponseWarning
 from shim_enterprise.billing.models import (
@@ -113,14 +128,26 @@ from shim_enterprise.compliance.url_guard import (
     UnsafeForwardURL,
     assert_safe_forward_url,
 )
+from shim.billing.lifecycle import load_lifecycle
+from shim.billing.pricing import DATE_SUFFIX, DEFAULT_PRICE_BOOK
+from shim.core.community_config import AZURE_DEPLOYMENT_NAME
+from shim.gateway.pipeline.provider_execution import ProviderCallError
+from shim.secrets.azure import EntraTokenCache
+from shim.privacy.record_match import FINGERPRINT_VERSION, KEY_BYTES
 from shim_enterprise.core.config import settings
-from shim_enterprise.core.database import get_db
+from shim_enterprise.core.database import AsyncSessionLocal, bounded_read, get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.findings.service import (
+    RULES as FINDING_RULES,
+    RULE_VERSION,
+    RULE_VERSIONS,
     STATUS_IDS,
     STATUS_RESOLVED,
+    apply_modes,
+    effective_mode,
     finding_from_row,
+    finding_modes,
     ocsf_detection_finding,
 )
 from shim.gateway.contracts.ids import SecretRef, TenantId
@@ -140,20 +167,46 @@ from shim_enterprise.observability.outcomes import (
     OutcomeGroup,
     OutcomeRatesReadModel,
 )
+from shim_enterprise.observability.language_cost import (
+    LanguageCostGroup,
+    language_cost,
+)
+from shim_enterprise.observability.latency import (
+    LatencyBucket,
+    LatencyGroup,
+    latency_by_group,
+)
 from shim_enterprise.observability.overview import OverviewReadModel, _spend_denied
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.secrets.migration import assign_secret_reference
-from shim_enterprise.secrets.store import get_secret_store
+from shim_enterprise.secrets.store import (
+    ManagedProviderCredentialResolver,
+    get_secret_store,
+    provider_secret_purpose,
+)
 from shim_enterprise.tenants.audit import change_details, export_details
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.rules.changes import classify_rule_changes
 from shim_enterprise.rules.models import OrganizationRuleSet
+from shim_enterprise.rules.preview import checked_set
+from shim_enterprise.rules.resource import (
+    RULES,
+    rule_changes,
+    rule_set_row,
+    store_rule_set,
+)
 from shim_enterprise.tenants.gateway_settings import (
     SETTING_AVAILABILITY,
+    FindingMode,
     GatewaySettings,
     GatewaySettingsPatch,
+    Directions,
     classify_change,
+    restore_relaxed,
+    patched,
+    classify_fields,
+    neutral,
     stored_settings,
+    toward,
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -164,13 +217,21 @@ from shim_enterprise.tenants.models import (
     OrganizationPIIConfig,
     OrganizationRole,
     ProviderSecret,
+    RecordSet,
+    RecordSetChunk,
     ServiceAccountCredential,
     TierDefinition,
     Team,
     TeamMembership,
     User,
 )
+from shim_enterprise.tenants.record_sets import (
+    KEY_PURPOSE as RECORD_SET_KEY_PURPOSE,
+    pack_documents,
+    pack_records,
+)
 from shim_enterprise.tenants.deployments import (
+    internal_origin_approved,
     require_model_aliases,
     validate_deployment_url,
 )
@@ -178,9 +239,13 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
+    approval_required,
+    four_eyes_on,
+    keep_two_approvers,
     lock_tenant,
     no_impact,
     record_managed_write,
+    require_two_approvers,
     version_detail,
 )
 from shim_enterprise.tenants.permissions import (
@@ -385,16 +450,59 @@ class CreatedApiKey(ApiKeyView):
     plaintext: str
 
 
+class AzureEntraInput(BaseModel):
+    """A Microsoft Entra ID app registration's client secret."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str = Field(pattern=r"^[A-Za-z0-9.-]{1,128}$")
+    client_id: UUID
+    client_secret: SecretStr = Field(min_length=1, max_length=1_024)
+    scope: str | None = Field(
+        default=None,
+        max_length=256,
+        pattern=r"^https://\S+/\.default$",
+        description="Defaults to the operator's SHIM_AZURE_TOKEN_SCOPE.",
+    )
+
+    def stored(self) -> str:
+        return json.dumps(
+            {
+                "tenant_id": self.tenant_id,
+                "client_id": str(self.client_id),
+                "client_secret": self.client_secret.get_secret_value(),
+                "scope": self.scope or settings.SHIM_AZURE_TOKEN_SCOPE,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def masked(self) -> str:
+        return f"entra:{_mask(str(self.client_id))}"
+
+
 class ProviderSecretInput(BaseModel):
-    provider: Literal["openai", "anthropic", "google"]
+    provider: Literal["openai", "anthropic", "google", "azure_entra"] = Field(
+        description="azure_entra: an Entra ID client credential for Azure OpenAI "
+        "deployments."
+    )
     name: str | None = Field(default=None, max_length=100)
-    key: str = Field(min_length=10, max_length=10_000)
+    key: str | None = Field(default=None, min_length=10, max_length=10_000)
+    azure_entra: AzureEntraInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def one_credential_of_its_provider(self) -> ProviderSecretInput:
+        entra = self.provider == "azure_entra"
+        if (self.key is not None) == entra or (self.azure_entra is not None) != entra:
+            raise ValueError("azure_entra takes azure_entra; another provider a key")
+        return self
 
 
 class ProviderSecretPatch(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
+    azure_entra: AzureEntraInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
 
 
@@ -441,6 +549,12 @@ class PrivacySettings(BaseModel):
             "can stay in provider logs after the window ends."
         )
     )
+    embeddings_monitor_types: list[str] = Field(
+        description=(
+            "Entity types an embeddings request only counts and sends unchanged "
+            "where their action masks or blocks them; chat keeps the action."
+        )
+    )
 
     @computed_field(description="The action every entity type gets.")
     @property
@@ -484,14 +598,26 @@ class PrivacyPatch(BaseModel):
         le=2_147_483_647,
         description="null turns the alarm off; left unchanged when absent.",
     )
+    embeddings_monitor_types: list[str] | None = Field(
+        default=None,
+        description="Replaces the stored list whole; left unchanged when absent.",
+    )
 
-    @field_validator("placeholder_mode", "response_scan")
+    @field_validator("placeholder_mode", "response_scan", "embeddings_monitor_types")
     @classmethod
-    def reject_null(cls, value: str | None) -> str:
+    def reject_null[Value](cls, value: Value | None) -> Value:
         # None is only the absent default; the columns are NOT NULL.
         if value is None:
             raise ValueError("must not be null")
         return value
+
+    @field_validator("embeddings_monitor_types")
+    @classmethod
+    def known_monitor_types(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - set(effective_entity_actions()))
+        if unknown:
+            raise ValueError(f"unknown entity type: {', '.join(unknown)}")
+        return sorted(set(value))
 
     @field_validator("entity_actions")
     @classmethod
@@ -986,6 +1112,20 @@ class RequestActivityView(BaseModel):
             "tenant's bulk threshold of distinct detected values; null otherwise."
         ),
     )
+    injection_markers: dict[str, int | bool] | None = Field(
+        default=None,
+        description=(
+            "Tool results and documents carrying each hidden-instruction marker; "
+            '{"error": true} when the scan failed; null when the tenant\'s scan was off.'
+        ),
+    )
+    restore_withheld: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Placeholders left in the answer, by type, because the caller's key and "
+            "team may not see the value; null when nothing was withheld for this caller."
+        ),
+    )
     response_entities: dict[str, int] | None = Field(
         default=None,
         description=(
@@ -1001,6 +1141,16 @@ class RequestActivityView(BaseModel):
         ),
     )
     rule_matches_truncated: bool | None = None
+    approval_id: UUID | None = Field(
+        default=None,
+        description="The request approval this request created, was refused under "
+        "or consumed; null when no approval gate decided it.",
+    )
+    content_archived: bool = Field(
+        default=False,
+        description="The self-hosted request archive kept this request's content; "
+        "an admin can open it, and every opening is listed.",
+    )
     response_analysis: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -1044,6 +1194,10 @@ class GatewaySettingsView(BaseModel):
     available_analyzers: list[str]
     unavailable: dict[str, str] = Field(
         description='Per field, why it is "off, needs X"; empty when everything is available.'
+    )
+    request_archive_state: Literal["on", "off"] = Field(
+        description="on only when this installation allows the archive and the "
+        "tenant turned it on."
     )
 
 
@@ -1518,6 +1672,7 @@ async def update_team_member(
         custom_role_id = member.custom_role_id
     if member.role == "owner" and patch.role != "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), patch.role)
     roles = await _roles_by_id(session, _tenant_id(user))
     if custom_role_id is not None:
         if custom_role_id not in roles:
@@ -1569,6 +1724,7 @@ async def remove_team_member(
         raise HTTPException(status_code=403, detail="Only owners can remove admins")
     if member.role == "owner":
         await _protect_last_owner(session, _tenant_id(user))
+    await keep_two_approvers(session, member, _tenant_id(user), None)
     await _deactivate(session, member)
     await _audit(session, user, "tenant.team_member_removed", str(member.id))
     await session.commit()
@@ -2031,6 +2187,9 @@ async def create_api_key(
     ) and await session.scalar(member_team_ids(user).limit(1)):
         raise HTTPException(status_code=403, detail="Choose a team for this API key")
     await require_model_aliases(session, tenant_id, payload.allowed_models)
+    if payload.allowed_models is None and await four_eyes_on(session, tenant_id):
+        # Create it with allowed_models; widening it later is a plan.
+        raise approval_required(["api_keys.new.allowed_models"])
     plaintext, api_key = await create_tenant_api_key(
         session,
         user_id=user.id,
@@ -2150,18 +2309,18 @@ async def create_provider_secret(
     tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
-    purpose = _provider_purpose(payload.provider)
+    purpose = provider_secret_purpose(payload.provider)
+    entra = payload.azure_entra
+    plaintext = entra.stored() if entra is not None else payload.key
+    assert plaintext is not None
     reference = await get_secret_store().put_secret(
-        TenantId(tenant_id),
-        purpose,
-        payload.key,
-        {"provider": payload.provider},
+        TenantId(tenant_id), purpose, plaintext, {"provider": payload.provider}
     )
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
         name=payload.name,
-        masked_key=_mask(payload.key),
+        masked_key=entra.masked() if entra is not None else _mask(plaintext),
         monthly_limit_usd=payload.monthly_limit_usd,
     )
     assign_secret_reference(row, reference)
@@ -2192,13 +2351,21 @@ async def update_provider_secret(
     session: AsyncSession = Depends(get_db),
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
-    if row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
+    entra = row.provider == "azure_entra"
+    if not entra and row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
         raise HTTPException(
             status_code=409,
             detail="Unsupported provider secrets are read-only.",
         )
+    if (patch.key is not None and entra) or (
+        patch.azure_entra is not None and not entra
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A credential's kind never changes; create a new provider secret",
+        )
     tenant_id = _tenant_id(user)
-    purpose = _provider_purpose(row.provider)
+    purpose = provider_secret_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
     before = _provider_secret_details(row)
@@ -2206,16 +2373,25 @@ async def update_provider_secret(
         row.name = patch.name
     if "monthly_limit_usd" in patch.model_fields_set:
         row.monthly_limit_usd = patch.monthly_limit_usd
-    if patch.key is not None:
+    rotated = (
+        patch.key
+        if patch.key is not None
+        else (patch.azure_entra.stored() if patch.azure_entra is not None else None)
+    )
+    if rotated is not None:
         previous_reference = SecretRef(row.secret_ref)
         rotated_reference = await get_secret_store().rotate_secret(
             TenantId(tenant_id),
             previous_reference,
-            patch.key,
+            rotated,
             expected_purpose=purpose,
         )
         assign_secret_reference(row, rotated_reference)
-        row.masked_key = _mask(patch.key)
+        row.masked_key = (
+            patch.azure_entra.masked()
+            if patch.azure_entra is not None
+            else _mask(rotated)
+        )
         row.verified_at = None
     try:
         await _audit(
@@ -2225,7 +2401,7 @@ async def update_provider_secret(
             str(row.id),
             details={
                 **change_details(before, _provider_secret_details(row)),
-                "key_rotated": patch.key is not None,
+                "key_rotated": rotated is not None,
             },
         )
         await session.commit()
@@ -2253,23 +2429,58 @@ async def verify_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     verification_request = _PROVIDER_VERIFICATION_REQUESTS.get(row.provider)
-    if verification_request is None:
+    if verification_request is None and row.provider != "azure_entra":
         raise HTTPException(status_code=409, detail="Unsupported provider secret")
     tenant_id = _tenant_id(user)
+    client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
+    if client is None:
+        raise HTTPException(status_code=503, detail="Provider verification unavailable")
+    if verification_request is None:
+        rejected = await _entra_rejects(row, tenant_id, client)
+    else:
+        rejected = await _provider_rejects(row, tenant_id, client, verification_request)
+    if rejected:
+        row.verified_at = None
+        await _audit(
+            session,
+            user,
+            "tenant.provider_secret_rejected",
+            str(row.id),
+            details=_provider_secret_details(row),
+        )
+        await session.commit()
+        raise HTTPException(status_code=400, detail="Provider rejected the credential")
+    row.verified_at = datetime.now(timezone.utc)
+    await _audit(
+        session,
+        user,
+        "tenant.provider_secret_verified",
+        str(row.id),
+        details=_provider_secret_details(row),
+    )
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def _provider_rejects(
+    row: ProviderSecret,
+    tenant_id: UUID,
+    client: httpx.AsyncClient,
+    verification_request: tuple[str, str, str, dict[str, str]],
+) -> bool:
+    """Whether the provider's model listing refuses the key; 503 when it cannot say."""
     try:
         credential = await get_secret_store().get_secret(
             TenantId(tenant_id),
             SecretRef(row.secret_ref),
-            expected_purpose=_provider_purpose(row.provider),
+            expected_purpose=provider_secret_purpose(row.provider),
         )
     except Exception as exc:
         logger.warning("Provider verification secret lookup failed")
         raise HTTPException(
             status_code=503, detail="Provider verification unavailable"
         ) from exc
-    client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
-    if client is None:
-        raise HTTPException(status_code=503, detail="Provider verification unavailable")
     setting_name, default_base_url, path, header_templates = verification_request
     base_url = cast(str | None, getattr(settings, setting_name)) or default_base_url
     try:
@@ -2285,29 +2496,44 @@ async def verify_provider_secret(
             status_code=503, detail="Provider verification unavailable"
         ) from exc
     if response.status_code in {401, 403}:
-        row.verified_at = None
-        await _audit(
-            session,
-            user,
-            "tenant.provider_secret_rejected",
-            str(row.id),
-            details=_provider_secret_details(row),
-        )
-        await session.commit()
-        raise HTTPException(status_code=400, detail="Provider rejected the credential")
+        return True
     if response.status_code != 200:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
-    row.verified_at = datetime.now(timezone.utc)
-    await _audit(
-        session,
-        user,
-        "tenant.provider_secret_verified",
-        str(row.id),
-        details=_provider_secret_details(row),
+    return False
+
+
+async def _entra_rejects(
+    row: ProviderSecret, tenant_id: UUID, client: httpx.AsyncClient
+) -> bool:
+    """Whether Entra ID refuses the client credential, asked for a fresh token."""
+    try:
+        await _fresh_resolver("openai", client).resolve_row(TenantId(tenant_id), row)
+    except ProviderCallError as exc:
+        if exc.status_code == 401:
+            return True
+        raise HTTPException(
+            status_code=503, detail="Provider verification unavailable"
+        ) from None
+    except Exception as exc:
+        logger.warning("Provider verification secret lookup failed")
+        raise HTTPException(
+            status_code=503, detail="Provider verification unavailable"
+        ) from exc
+    return False
+
+
+def _fresh_resolver(
+    provider: str, client: httpx.AsyncClient
+) -> ManagedProviderCredentialResolver:
+    """A resolver with a token cache of its own, so a check always asks Entra afresh."""
+    return ManagedProviderCredentialResolver(
+        provider,
+        get_secret_store(),
+        AsyncSessionLocal,
+        entra=EntraTokenCache(
+            client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
+        ),
     )
-    await session.commit()
-    await session.refresh(row)
-    return row
 
 
 @router.delete(
@@ -2323,7 +2549,7 @@ async def delete_provider_secret(
     row = await _owned_provider_secret(session, user, secret_id)
     tenant_id = _tenant_id(user)
     secret_ref = SecretRef(row.secret_ref)
-    purpose = _provider_purpose(row.provider)
+    purpose = provider_secret_purpose(row.provider)
     details = _provider_secret_details(row)
     await session.delete(row)
     await _audit(
@@ -2386,10 +2612,7 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
         kinds={
             kind: RuleKindView(
                 available=spec.match is not None,
-                # The approval gate is not configured until request approvals exist.
-                actions=[
-                    action for action in spec.actions if action != "require_approval"
-                ],
+                actions=list(spec.actions),
                 unavailable_reason=None
                 if spec.match is not None
                 else "Not available in this release.",
@@ -2397,25 +2620,6 @@ def _rule_set_view(row: OrganizationRuleSet | None) -> RuleSetView:
             for kind, spec in KINDS.items()
         },
     )
-
-
-def _rule_audit(rule: Rule, before: Rule | None) -> dict[str, object]:
-    # Ids, kinds and counts only: never a term, a pattern, a name or a match hash.
-    return {
-        "id": rule.id,
-        "kind": rule.kind,
-        "action": rule.action,
-        "state": rule.state,
-        "scope": [
-            field for field in RuleScope.model_fields if getattr(rule.scope, field)
-        ],
-        "match_changed": before is not None and before.match != rule.match,
-        "counts": {
-            key: len(value)
-            for key, value in rule.match.items()
-            if isinstance(value, list)
-        },
-    }
 
 
 @router.get("/rules", response_model=RuleSetView)
@@ -2426,32 +2630,35 @@ async def get_rules(
     return _rule_set_view(await session.get(OrganizationRuleSet, _tenant_id(user)))
 
 
-class _RuleSetPutRoute(APIRoute):
-    """Counts the body's bytes as they arrive, so a chunked body cannot pass the limit."""
+def bounded_body(limit: int, message: str) -> type[APIRoute]:
+    """A route that counts the body's bytes as they arrive and refuses past `limit`,
+    so neither a chunked body nor the parser sees more."""
 
-    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-        handler = super().get_route_handler()
+    class Bounded(APIRoute):
+        def get_route_handler(
+            self,
+        ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            handler = super().get_route_handler()
 
-        async def bounded(request: Request) -> Response:
-            receive, size = request.receive, 0
+            async def bounded(request: Request) -> Response:
+                receive, size = request.receive, 0
 
-            async def counted() -> Message:
-                nonlocal size
-                message = await receive()
-                size += len(message.get("body", b""))
-                if size > LIMITS["request_bytes"]:
-                    raise HTTPException(
-                        status_code=413,
-                        detail={
-                            "code": "REQUEST_TOO_LARGE",
-                            "message": "A rule set is at most 1,000,000 bytes.",
-                        },
-                    )
-                return message
+                async def counted() -> Message:
+                    nonlocal size
+                    message_in = await receive()
+                    size += len(message_in.get("body", b""))
+                    if size > limit:
+                        raise HTTPException(
+                            status_code=413,
+                            detail={"code": "REQUEST_TOO_LARGE", "message": message},
+                        )
+                    return message_in
 
-            return await handler(Request(request.scope, counted))
+                return await handler(Request(request.scope, counted))
 
-        return bounded
+            return bounded
+
+    return Bounded
 
 
 async def replace_rules(
@@ -2461,15 +2668,8 @@ async def replace_rules(
     session: AsyncSession = Depends(get_db),
 ) -> RuleSetView:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        insert(OrganizationRuleSet)
-        .values(organization_id=tenant_id)
-        .on_conflict_do_nothing()
-    )
-    row = await session.get(
-        OrganizationRuleSet, tenant_id, with_for_update=True, populate_existing=True
-    )
-    assert row is not None
+    await lock_tenant(session, tenant_id)
+    row = await rule_set_row(session, tenant_id)
     if payload.revision != row.revision:
         raise HTTPException(
             status_code=409,
@@ -2479,102 +2679,440 @@ async def replace_rules(
                 "revision": row.revision,
             },
         )
+    after = checked_set(row.revision + 1, payload.rules)
+    changes = rule_changes(await RULES.snapshot(session, tenant_id, None), after)
+    async with record_managed_write(
+        session, user, tenant_id, changes, source="api"
+    ) as version:
+        await store_rule_set(
+            session, user, row, after, source="api", policy_version=version
+        )
+    await session.commit()
+    await RULES.after_commit(request, tenant_id)
+    await session.refresh(row)
+    return _rule_set_view(row)
+
+
+router.add_api_route(
+    "/rules",
+    replace_rules,
+    methods=["PUT"],
+    response_model=RuleSetView,
+    route_class_override=bounded_body(
+        LIMITS["request_bytes"], "A rule set is at most 1,000,000 bytes."
+    ),
+)
+
+
+# Record sets (S51): hashed customer records and document fingerprints.
+
+_RECORD_SETS_PER_ORGANIZATION = 10
+_RECORD_SET_LIMITS = {
+    "chunks": 500,
+    "records_per_chunk": 10_000,
+    "documents_per_chunk": 50,
+    "prints_per_document": 20_000,
+    "records": 250_000,
+    "documents": 2_000,
+    "prints": 2_000_000,
+}
+_HASH = re.compile(r"[0-9a-f]{16}")
+
+
+class RecordSetFieldSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    kind: Literal["tckn", "vkn", "iban", "email", "phone", "digits", "token", "name"]
+    primary: bool = False
+    length: tuple[int, int] | None = Field(
+        default=None, description="digits only: the shortest and longest run, 4 to 34."
+    )
+
+    @model_validator(mode="after")
+    def coherent(self) -> RecordSetFieldSpec:
+        if self.kind == "name" and self.primary:
+            raise ValueError("a name field is never primary")
+        if (self.length is not None) != (self.kind == "digits"):
+            raise ValueError("length is given for digits fields, and only for them")
+        if self.length is not None and not 4 <= self.length[0] <= self.length[1] <= 34:
+            raise ValueError("length is a range within 4 to 34")
+        return self
+
+
+class RecordSetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    kind: Literal["records", "fingerprints"]
+    label: str = Field(
+        default="RECORD",
+        max_length=32,
+        pattern=r"^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$",
+    )
+    fields: list[RecordSetFieldSpec] = []
+
+    @model_validator(mode="after")
+    def coherent(self) -> RecordSetCreate:
+        if self.label in effective_entity_actions():
+            raise ValueError(f"{self.label} is a built-in entity type")
+        if self.kind == "fingerprints" and self.fields:
+            raise ValueError("a fingerprints set has no fields")
+        if self.kind == "records" and not (
+            2 <= len(self.fields) <= 6 and any(field.primary for field in self.fields)
+        ):
+            raise ValueError("a records set has 2 to 6 fields, at least one primary")
+        return self
+
+
+class RecordSetView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    kind: Literal["records", "fingerprints"]
+    label: str
+    fields: list[dict[str, Any]]
+    fingerprint_version: int | None
+    active_revision: int
+    previous_revision: int
+    entry_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class RecordSetCreatedView(RecordSetView):
+    hash_key: str = Field(
+        description="Shown once: the base64url key the hashing tool uses."
+    )
+
+
+class RecordSetChunkPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[list[str]] | None = None
+    documents: list[list[str]] | None = None
+
+
+def _record_set_error(status_code: int, code: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code, detail={"code": code, "message": message}
+    )
+
+
+async def _record_set(
+    session: AsyncSession, tenant_id: UUID, set_id: UUID
+) -> RecordSet:
+    row = await session.scalar(
+        select(RecordSet)
+        .where(RecordSet.organization_id == tenant_id, RecordSet.id == set_id)
+        .with_for_update()
+    )
+    if row is None:
+        raise _record_set_error(404, "RECORD_SET_NOT_FOUND", "No such record set.")
+    return row
+
+
+async def _invalidate_policy(request: Request, tenant_id: UUID) -> None:
     try:
-        after = validate_rule_set(
-            {"revision": row.revision + 1, "rules": payload.rules},
-            approval_available=False,
+        cache: CacheService = request.app.state.cache
+        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
+    except Exception as exc:
+        logger.warning(
+            "Record set cache invalidation failed type=%s", type(exc).__name__
         )
-    except RuleSetError as error:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": error.code, "path": error.path, "message": str(error)},
+
+
+@router.post("/record-sets", response_model=RecordSetCreatedView, status_code=201)
+async def create_record_set(
+    payload: RecordSetCreate,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant_id = _tenant_id(user)
+    await lock_tenant(session, tenant_id)
+    existing = await session.scalar(
+        select(func.count())
+        .select_from(RecordSet)
+        .where(RecordSet.organization_id == tenant_id)
+    )
+    if (existing or 0) >= _RECORD_SETS_PER_ORGANIZATION:
+        raise _record_set_error(
+            422, "RECORD_SET_LIMIT", "An organization holds at most 10 record sets."
+        )
+    key = base64.urlsafe_b64encode(secrets.token_bytes(KEY_BYTES)).decode()
+    key_ref = await get_secret_store().put_secret(
+        TenantId(tenant_id), RECORD_SET_KEY_PURPOSE, key
+    )
+    row = RecordSet(
+        organization_id=tenant_id,
+        kind=payload.kind,
+        name=payload.name,
+        label=payload.label,
+        fields=[
+            field.model_dump(mode="json", exclude_none=True) for field in payload.fields
+        ],
+        fingerprint_version=FINGERPRINT_VERSION
+        if payload.kind == "fingerprints"
+        else None,
+        key_ref=key_ref,
+        created_by=str(user.id),
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise _record_set_error(
+            409, "RECORD_SET_NAME_TAKEN", "A record set with this name exists."
         ) from None
-    before = load_rule_set(row.revision, row.rules) if row.rules else None
-    stored = {rule.id: rule for rule in before.rules} if before is not None else {}
-    # This release cannot read them, so it keeps them as they are.
-    kept = before.unusable if before is not None else ()
-    if len(after.rules) + len(kept) > LIMITS["rules_per_set"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "RULE_SET_INVALID",
-                "path": "rules",
-                "message": "A rule set holds at most 100 rules, with the "
-                f"{len(kept)} this release cannot run.",
-            },
-        )
-    known: dict[str, set[str]] = {}
-    for field, model in (("api_key_ids", ApiKey), ("team_ids", Team)):
-        ids = {value for rule in after.rules for value in getattr(rule.scope, field)}
-        known[field] = (
-            {
-                str(value)
-                for value in await session.scalars(
-                    select(model.id).where(
-                        model.organization_id == tenant_id, model.id.in_(ids)
-                    )
-                )
-            }
-            if ids
-            else set()
-        )
-    kept_ids = {rule.id for rule in kept}
-    for index, rule in enumerate(after.rules):
-        if rule.id in kept_ids:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_ID_DUPLICATE",
-                    "path": f"rules[{index}].id",
-                    "message": f"rule id {rule.id} is held by a stored rule this "
-                    "release cannot run.",
-                },
-            )
-        for field, values in known.items():
-            for position, value in enumerate(getattr(rule.scope, field)):
-                if value not in values:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={
-                            "code": "RULE_SCOPE_UNKNOWN",
-                            "path": f"rules[{index}].scope.{field}[{position}]",
-                            "message": f"{field} names an id this organization does not have.",
-                        },
-                    )
-        if rule.id not in stored and rule.state != "monitor":
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "RULE_MUST_START_IN_MONITOR",
-                    "path": f"rules[{index}].state",
-                    "message": "A new rule starts in state monitor.",
-                },
-            )
-    current = {rule.id: rule for rule in after.rules}
     await _audit(
         session,
         user,
-        "tenant.rules_updated",
+        "tenant.record_set_created",
         str(tenant_id),
         details={
-            "revision": after.revision,
-            "added": [
-                _rule_audit(rule, None) for rule in after.rules if rule.id not in stored
-            ],
-            "changed": [
-                _rule_audit(rule, stored[rule.id])
-                for rule in after.rules
-                if rule.id in stored and stored[rule.id] != rule
-            ],
-            "removed": [
-                _rule_audit(rule, None)
-                for rule in stored.values()
-                if rule.id not in current
-            ],
+            "record_set_id": str(row.id),
+            "kind": row.kind,
+            "fields": len(row.fields),
         },
     )
-    relaxed = classify_rule_changes(before, after)
-    if relaxed:
+    await session.commit()
+    await session.refresh(row)
+    return {**RecordSetView.model_validate(row).model_dump(), "hash_key": key}
+
+
+@router.get("/record-sets", response_model=list[RecordSetView])
+async def list_record_sets(
+    user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    return (
+        await session.scalars(
+            select(RecordSet)
+            .where(RecordSet.organization_id == _tenant_id(user))
+            .order_by(RecordSet.name)
+        )
+    ).all()
+
+
+@router.get("/record-sets/{set_id}", response_model=RecordSetView)
+async def get_record_set(
+    set_id: UUID,
+    user: User = Depends(require("rules.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    row = await session.scalar(
+        select(RecordSet).where(
+            RecordSet.organization_id == _tenant_id(user), RecordSet.id == set_id
+        )
+    )
+    if row is None:
+        raise _record_set_error(404, "RECORD_SET_NOT_FOUND", "No such record set.")
+    return row
+
+
+@router.post("/record-sets/{set_id}/revisions", status_code=201)
+async def open_record_set_revision(
+    set_id: UUID,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    row = await _record_set(session, _tenant_id(user), set_id)
+    uploaded = await session.scalar(
+        select(func.max(RecordSetChunk.revision)).where(
+            RecordSetChunk.record_set_id == set_id
+        )
+    )
+    await session.commit()
+    return {
+        "revision": max(row.active_revision, row.previous_revision, uploaded or 0) + 1
+    }
+
+
+def _hashes(values: list[str], path: str) -> list[int]:
+    if not all(_HASH.fullmatch(value) for value in values):
+        raise _record_set_error(
+            422,
+            "RECORD_SET_CHUNK_INVALID",
+            f"{path} holds a value that is not 16 hex digits.",
+        )
+    return [int(value, 16) for value in values]
+
+
+async def put_record_set_chunk(
+    set_id: UUID,
+    revision: int,
+    chunk_index: int,
+    payload: RecordSetChunkPut,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+    limits = _RECORD_SET_LIMITS
+    if not 0 <= chunk_index < limits["chunks"]:
+        raise _record_set_error(
+            422, "RECORD_SET_CHUNK_INVALID", "A chunk index is 0 to 499."
+        )
+    if revision <= max(row.active_revision, row.previous_revision):
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_SEALED",
+            "Chunks go to a newly opened revision; an activated one never changes.",
+        )
+    if row.kind == "records":
+        if payload.records is None or payload.documents is not None:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A records set takes `records`."
+            )
+        width = len(row.fields)
+        primary = [
+            index for index, field in enumerate(row.fields) if field.get("primary")
+        ]
+        if not 1 <= len(payload.records) <= limits["records_per_chunk"]:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A chunk holds 1 to 10,000 records."
+            )
+        rows = []
+        for number, record in enumerate(payload.records):
+            hashes = _hashes(record, f"records[{number}]")
+            if len(hashes) != width or not any(hashes[index] for index in primary):
+                raise _record_set_error(
+                    422,
+                    "RECORD_SET_CHUNK_INVALID",
+                    f"records[{number}] needs {width} fields and a primary value.",
+                )
+            rows.append(hashes)
+        data, count = pack_records(rows), len(rows)
+    else:
+        if payload.documents is None or payload.records is not None:
+            raise _record_set_error(
+                422, "RECORD_SET_CHUNK_INVALID", "A fingerprints set takes `documents`."
+            )
+        if not 1 <= len(payload.documents) <= limits["documents_per_chunk"] or any(
+            len(prints) > limits["prints_per_document"] for prints in payload.documents
+        ):
+            raise _record_set_error(
+                422,
+                "RECORD_SET_CHUNK_INVALID",
+                "A chunk holds 1 to 50 documents of at most 20,000 fingerprints.",
+            )
+        documents = [
+            _hashes(prints, f"documents[{number}]")
+            for number, prints in enumerate(payload.documents)
+        ]
+        data, count = pack_documents(documents), len(documents)
+    await session.merge(
+        RecordSetChunk(
+            record_set_id=set_id,
+            revision=revision,
+            chunk_index=chunk_index,
+            organization_id=tenant_id,
+            entry_count=count,
+            data=data,
+        )
+    )
+    await session.commit()
+    return {"revision": revision, "chunk_index": chunk_index, "entry_count": count}
+
+
+router.add_api_route(
+    "/record-sets/{set_id}/revisions/{revision}/chunks/{chunk_index}",
+    put_record_set_chunk,
+    methods=["PUT"],
+    route_class_override=bounded_body(
+        4_000_000, "A record set chunk is at most 4,000,000 bytes."
+    ),
+)
+
+
+@router.post(
+    "/record-sets/{set_id}/revisions/{revision}/activate", response_model=RecordSetView
+)
+async def activate_record_set_revision(
+    set_id: UUID,
+    revision: int,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Any:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+
+    async def chunks_of(number: int) -> list[tuple[int, bytes]]:
+        return list(
+            (
+                await session.execute(
+                    select(RecordSetChunk.entry_count, RecordSetChunk.data).where(
+                        RecordSetChunk.record_set_id == set_id,
+                        RecordSetChunk.revision == number,
+                    )
+                )
+            ).tuples()
+        )
+
+    def matchable(stored: list[tuple[int, bytes]]) -> int:
+        """Hashes a revision can match with: record fields that are not empty, or
+        fingerprints after each document's 4-byte count."""
+        if row.kind == "records":
+            return sum(len(data) // 8 - array("Q", data).count(0) for _, data in stored)
+        return sum(len(data) - 4 * count for count, data in stored) // 8
+
+    chunks = await chunks_of(revision)
+    if revision == row.active_revision or not chunks:
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_EMPTY",
+            "That revision is active or holds no chunks.",
+        )
+    entries = sum(count for count, _ in chunks)
+    limits = _RECORD_SET_LIMITS
+    too_many = (
+        entries > limits["records"]
+        if row.kind == "records"
+        else entries > limits["documents"] or matchable(chunks) > limits["prints"]
+    )
+    if too_many:
+        raise _record_set_error(
+            422,
+            "RECORD_SET_TOO_LARGE",
+            "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
+            "fingerprints.",
+        )
+    # Fewer records or documents, or fewer values to find them by, relaxes the set.
+    fewer = row.active_revision > 0 and (
+        entries < row.entry_count
+        or matchable(chunks) < matchable(await chunks_of(row.active_revision))
+    )
+    row.previous_revision, row.active_revision, row.entry_count = (
+        row.active_revision,
+        revision,
+        entries,
+    )
+    # One revision back stays for a rollback; every other one goes.
+    await session.execute(
+        sql_delete(RecordSetChunk).where(
+            RecordSetChunk.record_set_id == set_id,
+            RecordSetChunk.revision.not_in(
+                {row.active_revision, row.previous_revision}
+            ),
+        )
+    )
+    await _audit(
+        session,
+        user,
+        "tenant.record_set_revision_activated",
+        str(tenant_id),
+        details={
+            "record_set_id": str(set_id),
+            "revision": revision,
+            "entry_count": entries,
+        },
+    )
+    if fewer:
+        relaxed = [f"record_sets.{set_id}"]
         event_id = await _audit(
             session,
             user,
@@ -2590,28 +3128,53 @@ async def replace_rules(
             actor_email=user.email,
             event_id=event_id,
         )
-    row.rules = [rule.model_dump(mode="json") for rule in after.rules] + [
-        rule.stored for rule in kept
-    ]
-    row.revision = after.revision
-    row.updated_by = str(user.id)
+    await session.commit()
+    await _invalidate_policy(request, tenant_id)
+    await session.refresh(row)
+    return row
+
+
+@router.delete("/record-sets/{set_id}", status_code=204)
+async def delete_record_set(
+    set_id: UUID,
+    request: Request,
+    user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    tenant_id = _tenant_id(user)
+    row = await _record_set(session, tenant_id, set_id)
+    # Locked, so a rule naming the set cannot be written while it goes.
+    rule_set = await session.get(OrganizationRuleSet, tenant_id, with_for_update=True)
+    if any(
+        rule.get("kind") == "record_set"
+        and (rule.get("match") or {}).get("set_id") == str(set_id)
+        for rule in (rule_set.rules if rule_set is not None else [])
+    ):
+        raise _record_set_error(
+            409,
+            "RECORD_SET_IN_USE",
+            "A rule references this record set; remove it first.",
+        )
+    key_ref = row.key_ref
+    await session.delete(row)
+    await _audit(
+        session,
+        user,
+        "tenant.record_set_deleted",
+        str(tenant_id),
+        details={"record_set_id": str(set_id)},
+    )
     await session.commit()
     try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_pii_config(str(tenant_id))
+        await get_secret_store().delete_secret(
+            TenantId(tenant_id),
+            SecretRef(key_ref),
+            expected_purpose=RECORD_SET_KEY_PURPOSE,
+        )
     except Exception as exc:
-        logger.warning("Rule set cache invalidation failed type=%s", type(exc).__name__)
-    await session.refresh(row)
-    return _rule_set_view(row)
-
-
-router.add_api_route(
-    "/rules",
-    replace_rules,
-    methods=["PUT"],
-    response_model=RuleSetView,
-    route_class_override=_RuleSetPutRoute,
-)
+        logger.warning("Record set key deletion failed type=%s", type(exc).__name__)
+    await _invalidate_policy(request, tenant_id)
+    return Response(status_code=204)
 
 
 def _gateway_settings_view(
@@ -2633,6 +3196,10 @@ def _gateway_settings_view(
             for field, available in SETTING_AVAILABILITY.items()
             if (reason := available()) is not None
         },
+        request_archive_state="on"
+        if settings.request_archive.enabled
+        and SETTING_AVAILABILITY["request_archive"]() is None
+        else "off",
     )
 
 
@@ -2654,64 +3221,25 @@ async def update_gateway_settings(
     session: AsyncSession = Depends(get_db),
 ) -> GatewaySettingsView:
     tenant_id = _tenant_id(user)
-    changes = patch.model_dump(exclude_unset=True)
-    row = await session.get(
-        OrganizationGatewaySettings, tenant_id, with_for_update=True
+    await lock_tenant(session, tenant_id)
+    before = (await GATEWAY_SETTINGS.snapshot(session, tenant_id, None))["_"]
+    after = await GATEWAY_SETTINGS.validate(
+        session, user, "_", before, patch.model_dump(mode="json", exclude_unset=True)
     )
-    if row is None:
-        if GatewaySettings.model_validate(changes) == GatewaySettings():
-            return _gateway_settings_view(None)
-        await session.execute(
-            insert(OrganizationGatewaySettings)
-            .values(organization_id=tenant_id)
-            .on_conflict_do_nothing()
-        )
-        row = await session.get(
-            OrganizationGatewaySettings,
-            tenant_id,
-            with_for_update=True,
-            populate_existing=True,
-        )
-        assert row is not None
-    before = stored_settings(row.settings)
-    after = GatewaySettings.model_validate({**before.model_dump(), **changes})
-    if after == before:
-        # Nothing to write; a row inserted above came from a concurrent first write.
-        return _gateway_settings_view(row)
-    # Only the fields this PATCH named are written; keys another build wrote stay.
-    row.settings = {
-        key: value for key, value in row.settings.items() if key not in changes
-    } | after.model_dump(mode="json", include=set(changes), exclude_defaults=True)
-    row.revision += 1
-    row.updated_by = user.id
-    await _audit(
-        session,
-        user,
-        "tenant.gateway_settings_updated",
-        str(tenant_id),
-        details=change_details(
-            before.model_dump(mode="json"), after.model_dump(mode="json")
-        ),
-    )
-    direction, relaxed = classify_change(before, after)
-    if direction == "relaxing":
-        await _audit(
-            session,
-            user,
-            "tenant.gateway_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
+    async with record_managed_write(
+        session, user, tenant_id, [(GATEWAY_SETTINGS, "_", before, after)], source="api"
+    ) as version:
+        if version is not None:
+            await GATEWAY_SETTINGS.apply(
+                session, user, tenant_id, "_", before, after, policy_version=version
+            )
     await session.commit()
-    try:
-        cache: CacheService = request.app.state.cache
-        await CacheManager(cache).invalidate_gateway_settings(str(tenant_id))
-    except Exception as exc:
-        logger.warning(
-            "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+    await GATEWAY_SETTINGS.after_commit(request, tenant_id)
+    return _gateway_settings_view(
+        await session.get(
+            OrganizationGatewaySettings, tenant_id, populate_existing=True
         )
-    await session.refresh(row)
-    return _gateway_settings_view(row)
+    )
 
 
 @router.get("/settings/provider-keys", response_model=ProviderKeySettings)
@@ -2731,20 +3259,18 @@ async def update_provider_key_settings(
     user: User = Depends(require("settings.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
-    tenant = await session.get(Organization, _tenant_id(user), with_for_update=True)
-    if tenant is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
-    before = {"allow_customer_provider_keys": tenant.allow_customer_provider_keys}
-    tenant.allow_customer_provider_keys = payload.allow_customer_provider_keys
-    await _audit(
-        session,
-        user,
-        "tenant.provider_key_policy_updated",
-        str(tenant.id),
-        details=change_details(before, payload.model_dump()),
-    )
+    tenant_id = _tenant_id(user)
+    await lock_tenant(session, tenant_id)
+    before = (await PROVIDER_KEYS.snapshot(session, tenant_id, None))["_"]
+    after = payload.model_dump()
+    async with record_managed_write(
+        session, user, tenant_id, [(PROVIDER_KEYS, "_", before, after)], source="api"
+    ) as version:
+        await PROVIDER_KEYS.apply(
+            session, user, tenant_id, "_", before, after, policy_version=version
+        )
     await session.commit()
-    return tenant
+    return await session.get(Organization, tenant_id)
 
 
 @router.get("/tier-info", response_model=TierView)
@@ -2804,11 +3330,13 @@ async def create_budget(
     session: AsyncSession = Depends(get_db),
 ) -> BudgetView:
     tenant_id, budget_id = _tenant_id(user), uuid4()
-    after = _budget_state(payload.model_dump())
-    await _require_budget_team(session, tenant_id, after)
+    await _require_budget_team(session, tenant_id, payload.model_dump())
     await _validate_targets(payload.notify_targets)
     stored_targets = await _store_budget_targets(tenant_id, payload.notify_targets)
     try:
+        after = _budget_state(
+            {**payload.model_dump(), "notify_targets": stored_targets}
+        )
         async with record_managed_write(
             session,
             user,
@@ -2863,8 +3391,8 @@ async def update_budget(
             tenant_id, patch.notify_targets
         )
         values["notify_targets"] = replacement_targets
-    before = _budget_state({field: getattr(row, field) for field in _BUDGET_FIELDS})
-    after = _budget_state({**before, **values})
+    current = {field: getattr(row, field) for field in _BUDGET_FIELDS}
+    before, after = _budget_state(current), _budget_state({**current, **values})
     try:
         async with record_managed_write(
             session,
@@ -2922,9 +3450,9 @@ async def _create_budget(
         id=budget_id,
         organization_id=organization_id,
         period="monthly",
-        notify_targets=targets,
         **{
             **state,
+            "notify_targets": targets,
             "limit_usd": None
             if state["limit_usd"] is None
             else Decimal(state["limit_usd"]),
@@ -3167,6 +3695,309 @@ class OutcomeRatesPage(BaseModel):
     totals: OutcomeRatesView
 
 
+class LatencyPercentiles(BaseModel):
+    p50: float | None
+    p95: float | None
+
+
+class OutputSpeedView(BaseModel):
+    p50: float | None
+    count: int = Field(description="Streams the median is based on.")
+
+
+class LatencyBucketView(BaseModel):
+    start: datetime
+    requests: int
+    streams: int
+    first_byte_ms: dict[Literal["stream", "json"], LatencyPercentiles]
+    shim_queue_ms: LatencyPercentiles
+    output_tokens_per_second: OutputSpeedView
+    peak_concurrency: int
+    timeouts: int
+    provider_errors: int
+
+
+class HeadOfLineSide(BaseModel):
+    ttft_ms_p50: float | None
+    streams: int
+
+
+class HeadOfLineView(BaseModel):
+    behind_long: HeadOfLineSide
+    alone: HeadOfLineSide
+
+
+class LatencyGroupView(BaseModel):
+    id: str | None
+    name: str | None
+    requests: int
+    buckets: list[LatencyBucketView]
+    head_of_line: HeadOfLineView | None
+    head_of_line_unavailable_reason: Literal["window_over_48h", "group_by"] | None
+
+
+class LatencyView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LatencyGroup
+    bucket: LatencyBucket
+    truncated: bool
+    groups: list[LatencyGroupView]
+
+
+_LATENCY_WINDOWS = {"hour": timedelta(days=7), "day": timedelta(days=31)}
+
+
+@router.get("/latency", response_model=LatencyView)
+async def latency(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 24 hours before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LatencyGroup = Query(
+        default="api_key",
+        description="An app is an API key; apps behind one key separate by tag.",
+    ),
+    bucket: LatencyBucket = Query(default="hour"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(hours=24)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    if end_at - start_at > _LATENCY_WINDOWS[bucket]:
+        raise HTTPException(
+            status_code=422,
+            detail="hour buckets cover at most 7 days, day buckets at most 31",
+        )
+    async with bounded_read(session):
+        return await latency_by_group(
+            session,
+            _tenant_id(user),
+            start=start_at,
+            end=end_at,
+            group_by=group_by,
+            bucket=bucket,
+        )
+
+
+class LanguageCostGroupView(BaseModel):
+    id: str | None
+    name: str | None
+
+
+class LanguageCostItem(BaseModel):
+    group: LanguageCostGroupView
+    language: Literal["tr", "en"]
+    requests: int
+    answer_characters: int
+    completion_tokens: int
+    tokens_per_1000_characters: float
+    ratio_p25: float
+    ratio_p75: float
+    output_usd_per_1000_characters: str | None
+    priced_requests: int
+    tr_vs_en: float | None
+    comparison_unavailable_reason: Literal["not_enough_answers"] | None
+
+
+class LanguageCostView(BaseModel):
+    start: datetime
+    end: datetime
+    group_by: LanguageCostGroup
+    items: list[LanguageCostItem]
+    truncated: bool
+    excluded: dict[str, int] = Field(
+        description="Settled complete answers left out, by reason."
+    )
+    analysed_share: float | None = Field(
+        description="Eligible answers over settled complete answers."
+    )
+
+
+class ArchivedContentView(BaseModel):
+    request_id: str
+    archived_at: datetime
+    expires_at: datetime
+    protocol: str
+    model: str
+    matched: list[dict[str, Any]]
+    masked_payload: Any
+    replacements: list[dict[str, str]]
+    original_payload: Any
+
+
+@router.get("/requests/{request_id}/content", response_model=ArchivedContentView)
+async def open_request_content(
+    request_id: str,
+    response: Response,
+    user: User = Depends(require("content.read")),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivedContentView:
+    """The archived request as sent and as shim changed it; the opening is audited first."""
+    if user.kind != "human":
+        raise HTTPException(
+            status_code=403, detail="Service accounts cannot open archived content"
+        )
+    tenant_id = _tenant_id(user)
+    row = await session.scalar(
+        select(RequestArchive).where(
+            RequestArchive.organization_id == tenant_id,
+            RequestArchive.request_id == request_id,
+            RequestArchive.expires_at > func.now(),
+        )
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Archived request not found")
+    await _audit(
+        session,
+        user,
+        "tenant.request_content_opened",
+        request_id,
+        details={"api_key_id": None if row.api_key_id is None else str(row.api_key_id)},
+    )
+    # The opening is recorded before any content is decrypted.
+    await session.commit()
+    try:
+        parts = await asyncio.to_thread(opened, row)
+    except ArchiveUndecryptable:
+        raise HTTPException(
+            status_code=410,
+            detail="archived content cannot be decrypted with the current ENCRYPTION_KEY",
+        ) from None
+    response.headers["Cache-Control"] = "no-store"
+    return ArchivedContentView(
+        request_id=row.request_id,
+        archived_at=row.created_at,
+        expires_at=row.expires_at,
+        protocol=row.protocol,
+        model=row.model,
+        matched=row.matched,
+        **parts,
+    )
+
+
+class ContentOpeningView(BaseModel):
+    opened_at: datetime
+    actor_user_id: str | None
+    request_id: str | None
+
+
+class ContentOpeningPage(BaseModel):
+    items: list[ContentOpeningView]
+    total: int
+    limit: int
+    offset: int
+
+
+@router.get("/request-archive/openings", response_model=ContentOpeningPage)
+async def list_content_openings(
+    start: AwareDatetime | None = Query(default=None),
+    end: AwareDatetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> ContentOpeningPage:
+    """Readers see every opening; anyone else the openings of their own keys' requests."""
+    tenant_id = _tenant_id(user)
+    end_at = end or datetime.now(timezone.utc)
+    start_at = start or end_at - timedelta(days=30)
+    _validate_sync_window(start_at, end_at)
+    filters = [
+        AIActAuditLog.organization_id == tenant_id,
+        AIActAuditLog.endpoint == "tenant.request_content_opened",
+        AIActAuditLog.created_at >= start_at,
+        AIActAuditLog.created_at <= end_at,
+    ]
+    if "audit.read" not in await user_permissions(session, user):
+        filters.append(
+            AIActAuditLog.extra["api_key_id"]
+            .as_string()
+            .in_(
+                select(sql_cast(ApiKey.id, Text)).where(
+                    ApiKey.organization_id == tenant_id, ApiKey.user_id == user.id
+                )
+            )
+        )
+    total = await session.scalar(select(func.count()).where(*filters))
+    rows = await session.scalars(
+        select(AIActAuditLog)
+        .where(*filters)
+        .order_by(AIActAuditLog.created_at.desc(), AIActAuditLog.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return ContentOpeningPage(
+        items=[
+            ContentOpeningView(
+                opened_at=row.created_at,
+                actor_user_id=row.actor,
+                request_id=(row.extra or {}).get("subject_id"),
+            )
+            for row in rows
+        ],
+        total=total or 0,
+        limit=limit,
+        offset=offset,
+    )
+
+
+class ArchivePurgeView(BaseModel):
+    rows_deleted: int = Field(ge=0)
+
+
+@router.delete("/request-archive", response_model=ArchivePurgeView)
+async def purge_request_archive(
+    user: User = Depends(get_org_owner),
+    session: AsyncSession = Depends(get_db),
+) -> ArchivePurgeView:
+    tenant_id = _tenant_id(user)
+    deleted = cast(
+        CursorResult[Any],
+        await session.execute(
+            sql_delete(RequestArchive).where(
+                RequestArchive.organization_id == tenant_id
+            )
+        ),
+    ).rowcount
+    await _audit(
+        session,
+        user,
+        "tenant.request_archive_purged",
+        str(tenant_id),
+        details={"rows": deleted},
+    )
+    await session.commit()
+    return ArchivePurgeView(rows_deleted=deleted)
+
+
+@router.get("/language-cost", response_model=LanguageCostView)
+async def read_language_cost(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to 30 days before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    group_by: LanguageCostGroup = Query(default="model"),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    end_at = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    start_at = (start or end_at - timedelta(days=30)).astimezone(timezone.utc)
+    if start_at >= end_at:
+        raise HTTPException(status_code=422, detail="start must be before end")
+    _validate_sync_window(start_at, end_at)
+    async with bounded_read(session):
+        return await language_cost(
+            session, _tenant_id(user), start=start_at, end=end_at, group_by=group_by
+        )
+
+
 @router.get("/outcomes", response_model=OutcomeRatesPage)
 async def outcome_rates(
     start: datetime | None = Query(
@@ -3237,6 +4068,10 @@ async def list_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -3274,6 +4109,7 @@ async def list_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -3310,6 +4146,7 @@ async def list_requests(
                     field: (row.details or {}).get(field)
                     for field in _DIAGNOSTIC_FIELDS
                 },
+                content_archived=(row.details or {}).get("request_archive") == "stored",
                 response_entities=response_entities,
                 response_analysis=response_analysis,
             )
@@ -3512,6 +4349,53 @@ async def export_findings(
     return Response(body, media_type="application/x-ndjson")
 
 
+class FindingRuleView(BaseModel):
+    rule_id: str
+    rule_version: int
+    max_mode: FindingMode
+    action_kind: str | None
+    mode: FindingMode
+    effective_mode: FindingMode
+    unavailable_reason: Literal["auto_executor_not_installed"] | None
+    open_findings: int
+
+
+# Before /findings/{finding_id}, which would take rules for an id.
+@router.get("/findings/rules", response_model=list[FindingRuleView])
+async def finding_rules(
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> list[FindingRuleView]:
+    tenant_id = _tenant_id(user)
+    modes = await finding_modes(session, tenant_id)
+    open_counts = {
+        rule_id: count
+        for rule_id, count in await session.execute(
+            select(Finding.rule_id, func.count())
+            .where(
+                Finding.organization_id == tenant_id,
+                Finding.status_id != STATUS_RESOLVED,
+            )
+            .group_by(Finding.rule_id)
+        )
+    }
+    return [
+        FindingRuleView(
+            rule_id=rule_id,
+            rule_version=RULE_VERSIONS.get(rule_id, RULE_VERSION),
+            max_mode=spec.MAX_MODE,
+            action_kind=spec.ACTION_KIND,
+            mode=modes.get(rule_id, "observe"),
+            effective_mode=effective_mode(rule_id, modes),
+            unavailable_reason="auto_executor_not_installed"
+            if modes.get(rule_id) == "auto"
+            else None,
+            open_findings=open_counts.get(rule_id, 0),
+        )
+        for rule_id, spec in sorted(FINDING_RULES.items())
+    ]
+
+
 @router.get("/findings/{finding_id}", response_model=FindingV1)
 async def get_finding(
     finding_id: UUID,
@@ -3628,6 +4512,10 @@ async def export_requests(
         str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
     ] = None,
     rule_id: _RuleIdFilter = None,
+    approval_id: Annotated[
+        UUID | None,
+        Query(description="Only requests this request approval decided."),
+    ] = None,
     completion_outcome: Annotated[
         CompletionOutcomeFilter | None,
         Query(
@@ -3665,6 +4553,7 @@ async def export_requests(
         warning=warning,
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
+        approval_id=approval_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -3740,6 +4629,10 @@ async def export_requests(
                 "response_entities",
                 "response_analysis",
                 "rule_matches",
+                "injection_markers",
+                "restore_withheld",
+                "approval_id",
+                "content_archived",
             )
         )
         yield output.getvalue().encode("utf-8-sig")
@@ -3798,6 +4691,14 @@ async def export_requests(
                     json.dumps(details["rule_matches"], sort_keys=True)
                     if details.get("rule_matches") is not None
                     else None,
+                    *(
+                        json.dumps(details[field], sort_keys=True)
+                        if details.get(field) is not None
+                        else None
+                        for field in ("injection_markers", "restore_withheld")
+                    ),
+                    details.get("approval_id"),
+                    details.get("request_archive") == "stored",
                 )
             )
             yield output.getvalue().encode("utf-8")
@@ -4080,6 +4981,7 @@ async def _request_filters(
     system_prompt_hash: str | None = None,
     api_key_id: UUID | None = None,
     rule_id: str | None = None,
+    approval_id: UUID | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     soft_refusal: bool | None = None,
 ) -> list[Any]:
@@ -4163,6 +5065,8 @@ async def _request_filters(
         filters.append(
             RequestLog.details.contains({"rule_matches": [{"rule_id": rule_id}]})
         )
+    if approval_id is not None:
+        filters.append(RequestLog.details.contains({"approval_id": str(approval_id)}))
     if completion_outcome is not None:
         outcome = RequestLog.details["completion_outcome"].as_string()
         filters.append(
@@ -4906,10 +5810,6 @@ def _tenant_id(user: User) -> UUID:
     return user.organization_id
 
 
-def _provider_purpose(provider: str) -> str:
-    return f"provider:{provider}:api-key"
-
-
 def _mask(value: str) -> str:
     return f"{value[:3]}...{value[-4:]}"
 
@@ -4939,6 +5839,16 @@ def _validate_sync_window(start: datetime, end: datetime) -> None:
             status_code=422,
             detail="synchronous operations are limited to 31 days",
         )
+
+
+_KEPT_WHEN_ABSENT = frozenset(
+    {
+        "upstream",
+        "price_model",
+        "cache_read_price_per_million",
+        "cache_write_price_per_million",
+    }
+)
 
 
 class ModelDeploymentInput(BaseModel):
@@ -4974,6 +5884,29 @@ class ModelDeploymentInput(BaseModel):
         ge=1,
         description="Tokens the served model accepts; a request that certainly exceeds it is refused.",
     )
+    upstream: Literal["generic", "azure_openai"] = Field(
+        default="generic",
+        description="azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+    )
+    price_model: str | None = Field(
+        default=None,
+        max_length=200,
+        description="The catalog model whose prices and limits apply when no price is set.",
+    )
+    cache_read_price_per_million: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=8,
+        description="USD per million cached input tokens read; needs the input price.",
+    )
+    cache_write_price_per_million: Decimal | None = Field(
+        default=None,
+        ge=0,
+        max_digits=18,
+        decimal_places=8,
+        description="USD per million input tokens written to the cache; needs the input price.",
+    )
 
     @model_validator(mode="after")
     def price_pair(self) -> ModelDeploymentInput:
@@ -4981,6 +5914,29 @@ class ModelDeploymentInput(BaseModel):
             self.output_price_per_million is None
         ):
             raise ValueError("Set both input and output prices, or neither")
+        if self.input_price_per_million is None and (
+            self.cache_read_price_per_million is not None
+            or self.cache_write_price_per_million is not None
+        ):
+            raise ValueError("A cache price needs the input and output prices")
+        return self
+
+    @model_validator(mode="after")
+    def catalog_and_azure_rules(self) -> ModelDeploymentInput:
+        if self.price_model is not None and self.price_model not in (
+            DEFAULT_PRICE_BOOK.models(self.provider)
+        ):
+            raise ValueError("price_model is not a catalog model for this provider")
+        if self.upstream != "azure_openai":
+            return self
+        if self.provider != "openai":
+            raise ValueError("An Azure OpenAI deployment uses provider openai")
+        if self.deployment_kind != "external":
+            raise ValueError("An Azure OpenAI deployment is external")
+        if urlsplit(self.base_url).path != "/openai/v1":
+            raise ValueError("An Azure OpenAI base_url ends in /openai/v1")
+        if not AZURE_DEPLOYMENT_NAME.fullmatch(self.upstream_model):
+            raise ValueError("upstream_model is the Azure deployment name")
         return self
 
     @field_validator("upstream_model", "declared_version", "owner")
@@ -5004,6 +5960,11 @@ class ModelDeploymentView(ModelDeploymentInput):
     def approved_destination(cls, value: str) -> str:
         # Operators must still be able to inspect a now-disallowed deployment.
         return value
+
+    @model_validator(mode="after")
+    def catalog_and_azure_rules(self) -> ModelDeploymentView:
+        # A catalog update must not hide a row whose price model it dropped.
+        return self
 
     id: UUID
     health: Literal["unknown", "healthy", "unhealthy"]
@@ -5030,6 +5991,202 @@ async def list_model_deployments(
         .scalars()
         .all()
     )
+
+
+class RetiringKeyView(BaseModel):
+    id: UUID
+    name: str | None
+    requests: int
+    last_used: datetime
+
+
+class RetiringTeamView(BaseModel):
+    id: UUID
+    requests: int
+
+
+class RetiringTagView(BaseModel):
+    tag: str
+    requests: int
+
+
+class RetiringAffectedView(BaseModel):
+    api_keys: list[RetiringKeyView]
+    teams: list[RetiringTeamView]
+    tags: list[RetiringTagView]
+    aliases: list[str]
+
+
+class ModelRetirementView(BaseModel):
+    provider: str
+    model: str
+    retires_on: date
+    deprecated_on: date | None
+    replacement: str | None
+    source: str
+    checked_on: date
+    affected: RetiringAffectedView
+
+
+# One pass over the last 30 days: per model, its keys (with names), teams and tags.
+_RETIREMENT_USAGE = text(
+    """
+    SELECT l.provider, l.requested_model, l.api_key_id, k.name AS key_name,
+           l.metadata->>'team_id' AS team_id, tag,
+           count(DISTINCT l.id) AS requests, max(l.started_at) AS last_used,
+           GROUPING(l.api_key_id) AS key_rollup,
+           GROUPING(l.metadata->>'team_id') AS team_rollup
+    FROM request_lifecycle AS l
+    LEFT JOIN api_keys AS k
+      ON k.organization_id = l.organization_id AND k.id = l.api_key_id
+    LEFT JOIN LATERAL jsonb_array_elements_text(
+      CASE WHEN jsonb_typeof(l.metadata->'tags') = 'array'
+           THEN l.metadata->'tags' ELSE '[]'::jsonb END
+    ) AS tag ON true
+    WHERE l.organization_id = :tenant_id AND l.started_at >= :since
+      AND (lower(l.requested_model) = ANY(:names)
+           OR lower(l.requested_model) LIKE ANY(:prefixes))
+    GROUP BY GROUPING SETS (
+      (l.provider, l.requested_model, l.api_key_id, k.name),
+      (l.provider, l.requested_model, l.metadata->>'team_id'),
+      (l.provider, l.requested_model, tag)
+    )
+    """
+)
+# Per retiring model, at most this many keys, teams and tags, the busiest first.
+_AFFECTED_LIMIT = 100
+
+
+@router.get("/model-retirements", response_model=list[ModelRetirementView])
+async def list_model_retirements(
+    days: int = Query(default=90, ge=1, le=730),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> list[ModelRetirementView]:
+    """Models retiring within `days` that this organization used in 30 days or registered."""
+    tenant_id = _tenant_id(user)
+    lifecycle = load_lifecycle(settings.SHIM_MODEL_LIFECYCLE_FILE)
+    now = datetime.now(timezone.utc)
+    soon = {
+        name
+        for entries in lifecycle.models.values()
+        for name, entry in entries.items()
+        if (entry.retires_on - now.date()).days <= days
+    }
+    if not soon:
+        return []
+    deployments = {
+        alias: (provider, upstream)
+        for alias, provider, upstream in await session.execute(
+            select(
+                ModelDeployment.alias,
+                ModelDeployment.provider,
+                ModelDeployment.upstream_model,
+            ).where(ModelDeployment.organization_id == tenant_id)
+        )
+    }
+
+    def retiring(provider: str | None, model: str) -> tuple[str, str, Any] | None:
+        """The entry a request's model retires under; never the caller's own text."""
+        alias = model if model in deployments else None
+        if alias is not None:
+            provider, model = deployments[alias]
+        for candidate in [provider] if provider else ["openai", "anthropic", "google"]:
+            if (found := lifecycle.match(model, candidate, alias)) is not None:
+                return found
+        return None
+
+    items: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def item(found: tuple[str, str, Any]) -> dict[str, Any]:
+        return items.setdefault(
+            found[:2],
+            {
+                "retirement": found[2],
+                "keys": {},
+                "teams": {},
+                "tags": {},
+                "aliases": set(),
+            },
+        )
+
+    # Only usage that can match a retiring entry is read: its name, a dated id of
+    # it, the undated alias of a snapshot, or a registry alias.
+    usage = await session.execute(
+        _RETIREMENT_USAGE,
+        {
+            "tenant_id": tenant_id,
+            "since": now - timedelta(days=30),
+            "names": sorted(
+                soon
+                | {DATE_SUFFIX.sub("", name) for name in soon}
+                | {alias.casefold() for alias in deployments}
+            ),
+            "prefixes": sorted(name.replace("_", "\\_") + "-%" for name in soon),
+        },
+    )
+    for row in usage:
+        matched = retiring(row.provider, row.requested_model)
+        if matched is None:
+            continue
+        found = item(matched)
+        # Several requested names can match one entry, so counts add up.
+        if not row.key_rollup:
+            if row.api_key_id is not None:
+                _, requests, last = found["keys"].get(
+                    row.api_key_id, (None, 0, row.last_used)
+                )
+                found["keys"][row.api_key_id] = (
+                    row.key_name,
+                    requests + row.requests,
+                    max(last, row.last_used),
+                )
+        elif not row.team_rollup:
+            if row.team_id is not None:
+                team = UUID(row.team_id)
+                found["teams"][team] = found["teams"].get(team, 0) + row.requests
+        elif row.tag is not None:
+            found["tags"][row.tag] = found["tags"].get(row.tag, 0) + row.requests
+    for alias, (provider, _) in deployments.items():
+        if (matched := retiring(provider, alias)) is not None:
+            item(matched)["aliases"].add(alias)
+
+    views = []
+    for (provider, model), found in items.items():
+        retirement = found["retirement"]
+        if (retirement.retires_on - now.date()).days > days:
+            continue
+        views.append(
+            ModelRetirementView(
+                provider=provider,
+                model=model,
+                **retirement.model_dump(),
+                affected=RetiringAffectedView(
+                    api_keys=[
+                        RetiringKeyView(
+                            id=key_id, name=name, requests=requests, last_used=last
+                        )
+                        for key_id, (name, requests, last) in sorted(
+                            found["keys"].items(), key=lambda entry: -entry[1][1]
+                        )[:_AFFECTED_LIMIT]
+                    ],
+                    teams=[
+                        RetiringTeamView(id=team_id, requests=requests)
+                        for team_id, requests in sorted(
+                            found["teams"].items(), key=lambda entry: -entry[1]
+                        )[:_AFFECTED_LIMIT]
+                    ],
+                    tags=[
+                        RetiringTagView(tag=tag, requests=requests)
+                        for tag, requests in sorted(
+                            found["tags"].items(), key=lambda entry: -entry[1]
+                        )[:_AFFECTED_LIMIT]
+                    ],
+                    aliases=sorted(found["aliases"]),
+                ),
+            )
+        )
+    return sorted(views, key=lambda view: (view.retires_on, view.provider, view.model))
 
 
 class ModelInventoryItemView(BaseModel):
@@ -5121,8 +6278,13 @@ async def update_model_deployment(
     before = (await DEPLOYMENTS.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(404, detail="Model deployment not found")
+    # A client that predates these fields never erases them.
     after = await DEPLOYMENTS.validate(
-        session, user, item, before, payload.model_dump()
+        session,
+        user,
+        item,
+        before,
+        payload.model_dump(exclude=set(_KEPT_WHEN_ABSENT - payload.model_fields_set)),
     )
     async with record_managed_write(
         session, user, tenant_id, [(DEPLOYMENTS, item, before, after)], source="api"
@@ -5152,16 +6314,15 @@ async def check_model_deployment_health(
             503, detail="Deployment origin is no longer approved"
         ) from None
     checked_version = row.updated_at
-    secret_ref, provider, tenant_id = secret.secret_ref, row.provider, _tenant_id(user)
+    provider, upstream, tenant_id = row.provider, row.upstream, _tenant_id(user)
     # Finish the read transaction before secret-store or provider I/O.
     await session.commit()
+    client = request.app.state.http_client
     healthy = False
     try:
         async with asyncio.timeout(5):
-            credential = await get_secret_store().get_secret(
-                TenantId(tenant_id),
-                SecretRef(secret_ref),
-                expected_purpose=f"provider:{provider}:api-key",
+            credential = await _fresh_resolver(provider, client).resolve_row(
+                TenantId(tenant_id), secret
             )
             headers = (
                 {"Authorization": f"Bearer {credential}"}
@@ -5170,15 +6331,18 @@ async def check_model_deployment_health(
             )
             path = "/models" if provider == "openai" else "/v1/models"
             # Stream headers only: an unhealthy server cannot force an unbounded body read.
-            async with request.app.state.http_client.stream(
+            async with client.stream(
                 "GET",
                 base_url + path,
                 headers=headers,
                 timeout=5,
                 follow_redirects=False,
             ) as response:
-                healthy = response.status_code == 200
-    except (httpx.HTTPError, ValueError, TimeoutError):
+                # Azure documents no v1 model listing: a 404 still proves the credential.
+                healthy = response.status_code in (
+                    {200, 404} if upstream == "azure_openai" else {200}
+                )
+    except (httpx.HTTPError, ValueError, TimeoutError, ProviderCallError):
         healthy = False
     # Locked, so an update committing now cannot be overwritten by a stale result.
     row = await _owned_model_deployment(session, user, deployment_id, for_update=True)
@@ -5249,7 +6413,9 @@ def _validated[M: BaseModel](model: type[M], data: Mapping[str, Any]) -> M:
     except ValidationError as exc:
         raise HTTPException(
             status_code=422,
-            detail=exc.errors(include_url=False, include_context=False),
+            detail=jsonable_encoder(
+                exc.errors(include_url=False, include_context=False)
+            ),
         ) from None
 
 
@@ -5299,6 +6465,15 @@ def _lowered(before: int | None, after: int | None) -> bool:
     return after is not None and (before is None or after < before)
 
 
+def _limit(before: Any, after: Any) -> Risk:
+    """A changed limit: removing or raising it relaxes. Dollars arrive as strings."""
+    if before is None:
+        return "tightening"
+    if after is None or Decimal(after) > Decimal(before):
+        return "relaxing"
+    return "tightening"
+
+
 def _privacy_relaxed(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[str]:
     actions = get_args(EntityAction)
     relaxed = [
@@ -5310,6 +6485,13 @@ def _privacy_relaxed(before: Mapping[str, Any], after: Mapping[str, Any]) -> lis
         relaxed.append("bulk_threshold")
     if before["response_scan"] == "count" and after["response_scan"] == "off":
         relaxed.append("response_scan")
+    relaxed += [
+        f"embeddings_monitor_types.{kind}"
+        for kind in sorted(
+            set(after["embeddings_monitor_types"])
+            - set(before["embeddings_monitor_types"])
+        )
+    ]
     return relaxed + [
         f"entity_actions.{entity_type}"
         for entity_type, action in after["effective_actions"].items()
@@ -5328,6 +6510,10 @@ def _privacy_tightened(before: Mapping[str, Any], after: Mapping[str, Any]) -> b
         == ("stable", "random")
         or _lowered(before["bulk_threshold"], after["bulk_threshold"])
         or (before["response_scan"], after["response_scan"]) == ("off", "count")
+        or bool(
+            set(before["embeddings_monitor_types"])
+            - set(after["embeddings_monitor_types"])
+        )
         or any(
             actions.index(action) > actions.index(before["effective_actions"][kind])
             for kind, action in after["effective_actions"].items()
@@ -5483,7 +6669,231 @@ class _PrivacyResource:
             )
 
 
-_TEAM_LIMITS = ("daily_request_limit", "monthly_request_limit", "monthly_token_limit")
+class _GatewaySettingsResource:
+    name = "gateway_settings"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        row = await session.get(OrganizationGatewaySettings, organization_id)
+        settings = GatewaySettings() if row is None else stored_settings(row.settings)
+        return {"_": settings.model_dump(mode="json")}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        changes = _validated(GatewaySettingsPatch, proposed).model_dump(
+            mode="json", exclude_unset=True
+        )
+        state = before or GatewaySettings().model_dump(mode="json")
+        after = _validated(GatewaySettings, patched(state, changes))
+        tenant_id = _tenant_id(actor)
+        named = {
+            kind
+            for kind, grant in changes.get("restore_withheld", {}).items()
+            if grant is not None
+        }
+        unknown = named - effective_entity_actions().keys()
+        if unknown:
+            rules = await session.scalar(
+                select(OrganizationRuleSet.rules).where(
+                    OrganizationRuleSet.organization_id == tenant_id
+                )
+            )
+            labels = {
+                rule["match"].get("label") for rule in rules or () if "match" in rule
+            } | set(
+                await session.scalars(
+                    select(RecordSet.label).where(
+                        RecordSet.organization_id == tenant_id
+                    )
+                )
+            )
+            if unknown - labels:
+                raise HTTPException(
+                    422,
+                    detail="restore_withheld names no entity type or rule label: "
+                    + ", ".join(sorted(unknown - labels)),
+                )
+        for setting, field, model, ids in (
+            (
+                "restore_withheld",
+                "api_key_ids",
+                ApiKey,
+                {
+                    key
+                    for grant in after.restore_withheld.values()
+                    for key in grant.api_key_ids
+                },
+            ),
+            (
+                "restore_withheld",
+                "team_ids",
+                Team,
+                {
+                    team
+                    for grant in after.restore_withheld.values()
+                    for team in grant.team_ids
+                },
+            ),
+            (
+                "inflight_sharing_api_key_ids",
+                "api_key_ids",
+                ApiKey,
+                set(after.inflight_sharing_api_key_ids),
+            ),
+        ):
+            known = (
+                set(
+                    await session.scalars(
+                        select(model.id).where(
+                            model.organization_id == tenant_id, model.id.in_(ids)
+                        )
+                    )
+                )
+                if ids and setting in changes
+                else ids
+            )
+            if ids - known:
+                raise HTTPException(
+                    422, detail=f"{setting} names {field} this organization lacks"
+                )
+        return after.model_dump(mode="json")
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert before is not None and after is not None
+        previous = GatewaySettings.model_validate(before)
+        current = GatewaySettings.model_validate(after)
+        # Here, not in validate: approvers are counted under the lock the write holds.
+        if current.four_eyes == "relaxing" and previous.four_eyes != "relaxing":
+            await require_two_approvers(session, organization_id)
+        changed = {
+            field
+            for field in GatewaySettings.model_fields
+            if getattr(previous, field) != getattr(current, field)
+        }
+        await session.execute(
+            insert(OrganizationGatewaySettings)
+            .values(organization_id=organization_id)
+            .on_conflict_do_nothing()
+        )
+        row = await session.get(
+            OrganizationGatewaySettings,
+            organization_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+        assert row is not None
+        # Only the changed fields are written; keys another build wrote stay.
+        row.settings = {
+            key: value for key, value in row.settings.items() if key not in changed
+        } | current.model_dump(mode="json", include=changed, exclude_defaults=True)
+        row.revision += 1
+        row.updated_by = actor.id
+        days = current.request_archive.retention_days
+        if days < previous.request_archive.retention_days:
+            await shorten_retention(session, organization_id, days)
+        if "finding_modes" in changed:
+            # A lowered mode takes the suggested action away now, not at the next pass.
+            await apply_modes(session, organization_id, current.finding_modes)
+        await _audit(
+            session,
+            actor,
+            "tenant.gateway_settings_updated",
+            str(organization_id),
+            details={
+                **change_details(
+                    previous.model_dump(mode="json"), current.model_dump(mode="json")
+                ),
+                **version_detail(policy_version),
+            },
+        )
+        _, relaxed = classify_change(previous, current)
+        # Restore permission protects personal data, so it is a privacy relaxation.
+        relaxed = [field for field in relaxed if field != "restore_withheld"]
+        if relaxed:
+            await _audit(
+                session,
+                actor,
+                "tenant.gateway_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+        privacy_relaxed = restore_relaxed(
+            previous.restore_withheld, current.restore_withheld
+        )
+        if privacy_relaxed:
+            event_id = await _audit(
+                session,
+                actor,
+                "tenant.privacy_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": privacy_relaxed, **version_detail(policy_version)},
+            )
+            await ComplianceForwarderService().send_privacy_protection_relaxed(
+                session,
+                TenantId(organization_id),
+                fields=privacy_relaxed,
+                actor=str(actor.id),
+                actor_email=actor.email,
+                event_id=event_id,
+            )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_change(
+            GatewaySettings.model_validate(before),
+            GatewaySettings.model_validate(after),
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        try:
+            cache: CacheService = request.app.state.cache
+            await CacheManager(cache).invalidate_gateway_settings(str(organization_id))
+        except Exception as exc:
+            logger.warning(
+                "Gateway settings cache invalidation failed type=%s", type(exc).__name__
+            )
+
+
+_TEAM_DIRECTIONS: Directions = {
+    "name": neutral,
+    "daily_request_limit": _limit,
+    "monthly_request_limit": _limit,
+    "monthly_token_limit": _limit,
+}
 
 
 class _TeamResource:
@@ -5599,11 +7009,7 @@ class _TeamResource:
     def classify(self, before: State | None, after: State | None) -> Risk:
         if before is None or after is None:
             return "neutral"
-        if any(_raised(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "relaxing"
-        if any(_lowered(before[field], after[field]) for field in _TEAM_LIMITS):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _TEAM_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -5675,6 +7081,23 @@ class _TeamResource:
 _KEY_FIELDS = ("allowed_models", "team_id")
 
 
+def _models(before: list[str] | None, after: list[str] | None) -> Risk:
+    if after is None or (before is not None and not set(after) <= set(before)):
+        return "relaxing"
+    if before is not None and set(after) == set(before):
+        return "neutral"
+    return "tightening"
+
+
+_KEY_DIRECTIONS: Directions = {
+    "allowed_models": _models,
+    # Off its team, a key leaves the team's limits behind.
+    "team_id": lambda before, _after: (
+        "relaxing" if before is not None else "tightening"
+    ),
+}
+
+
 class _ApiKeyResource:
     name = "api_keys"
     # Who may change which key is the PATCH route's rule, checked in validate and apply.
@@ -5740,18 +7163,7 @@ class _ApiKeyResource:
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         assert before is not None and after is not None
-        models_before, models_after = before["allowed_models"], after["allowed_models"]
-        loosened = models_before is not None and (
-            models_after is None or bool(set(models_after) - set(models_before))
-        )
-        narrowed = models_after is not None and (
-            models_before is None or bool(set(models_before) - set(models_after))
-        )
-        if loosened or (before["team_id"] is not None and after["team_id"] is None):
-            return "relaxing"
-        if narrowed or (before["team_id"] is None and after["team_id"] is not None):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _KEY_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -5813,6 +7225,16 @@ async def _write_api_key(
     )
 
 
+_DEPLOYMENT_DIRECTIONS: Directions = {
+    "enabled": toward(True),
+    "deployment_kind": toward("internal"),
+    # Labels and the upstream wait: none lets a refused request through.
+    "declared_version": neutral,
+    "owner": neutral,
+    "timeout_seconds": neutral,
+}
+
+
 def _deployment_state(values: Mapping[str, Any]) -> State:
     return {field: _plain(values[field]) for field in ModelDeploymentInput.model_fields}
 
@@ -5856,9 +7278,23 @@ class _DeploymentResource:
         secret = await _owned_provider_secret(
             session, actor, payload.provider_secret_id
         )
-        if secret.provider != payload.provider:
+        if secret.provider == "azure_entra":
+            if (payload.provider, payload.upstream) != ("openai", "azure_openai"):
+                raise HTTPException(
+                    422,
+                    detail="An Entra credential can only serve an Azure OpenAI "
+                    "deployment",
+                )
+        elif secret.provider != payload.provider:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
+            )
+        if payload.deployment_kind == "internal" and not internal_origin_approved(
+            payload.base_url
+        ):
+            raise HTTPException(
+                422,
+                detail="Deployment origin is not an operator-approved internal origin",
             )
         return _deployment_state(payload.model_dump())
 
@@ -5912,24 +7348,37 @@ class _DeploymentResource:
             item_id,
             details={**details, **version_detail(policy_version)},
         )
+        # Destination rules let an internal target see what an external one may not,
+        # so becoming internal, or an internal target moving, relaxes them.
+        relaxed = [
+            f"{field}.{item_id}"
+            for field in ("deployment_kind", "base_url")
+            if before is not None
+            and after["deployment_kind"] == "internal"
+            and before[field] != after[field]
+        ]
+        if relaxed:
+            event_id = await _audit(
+                session,
+                actor,
+                "tenant.privacy_protection_relaxed",
+                str(organization_id),
+                details={"relaxed": relaxed, **version_detail(policy_version)},
+            )
+            await ComplianceForwarderService().send_privacy_protection_relaxed(
+                session,
+                TenantId(organization_id),
+                fields=relaxed,
+                actor=str(actor.id),
+                actor_email=actor.email,
+                event_id=event_id,
+            )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
         if before is None:
             return "relaxing"
         assert after is not None
-        if (
-            (not before["enabled"] and after["enabled"])
-            or before["base_url"] != after["base_url"]
-            or (before["deployment_kind"], after["deployment_kind"])
-            == ("external", "internal")
-        ):
-            return "relaxing"
-        if (before["enabled"] and not after["enabled"]) or (
-            before["deployment_kind"],
-            after["deployment_kind"],
-        ) == ("internal", "external"):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _DEPLOYMENT_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -5970,7 +7419,16 @@ _BUDGET_FIELDS = (
     "limit_tokens",
     "alert_thresholds",
     "enabled",
+    "notify_targets",
 )
+_BUDGET_DIRECTIONS: Directions = {
+    "limit_usd": _limit,
+    "limit_tokens": _limit,
+    "enabled": toward(False),
+    "alert_thresholds": lambda before, after: (
+        "relaxing" if set(before) - set(after) else "tightening"
+    ),
+}
 
 
 class _ManagedBudget(BudgetInput):
@@ -5982,7 +7440,18 @@ class _ManagedBudget(BudgetInput):
 
 
 def _budget_state(values: Mapping[str, Any]) -> State:
-    return {field: _plain(values[field]) for field in _BUDGET_FIELDS}
+    return {
+        **{field: _plain(values[field]) for field in _BUDGET_FIELDS},
+        # A digest of each secret reference shows a replacement, never the URL.
+        "notify_targets": [
+            {
+                "kind": target["kind"],
+                "endpoint_origin": target["endpoint_origin"],
+                "id": hashlib.sha256(target["secret_ref"].encode()).hexdigest()[:16],
+            }
+            for target in values["notify_targets"] or []
+        ],
+    }
 
 
 class _BudgetResource:
@@ -6079,29 +7548,7 @@ class _BudgetResource:
             return "relaxing"
         if before is None:
             return "tightening"
-        usd_before, usd_after = (
-            Decimal(value) if value is not None else None
-            for value in (before["limit_usd"], after["limit_usd"])
-        )
-
-        def raised(old: Any, new: Any) -> bool:
-            return old is not None and (new is None or new > old)
-
-        if (
-            raised(usd_before, usd_after)
-            or raised(before["limit_tokens"], after["limit_tokens"])
-            or (before["enabled"] and not after["enabled"])
-        ):
-            return "relaxing"
-        if (
-            raised(usd_after, usd_before)
-            or raised(after["limit_tokens"], before["limit_tokens"])
-            or (usd_before is None and usd_after is not None)
-            or (before["limit_tokens"] is None and after["limit_tokens"] is not None)
-            or (not before["enabled"] and after["enabled"])
-        ):
-            return "tightening"
-        return "neutral"
+        return classify_fields(before, after, _BUDGET_DIRECTIONS)[0]
 
     async def impact(
         self,
@@ -6148,8 +7595,79 @@ def _uuids(item_ids: Collection[str]) -> list[UUID]:
     return valid
 
 
+class _ProviderKeysResource:
+    name = "provider_keys"
+    permission: Permission = "settings.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        tenant = await session.get(Organization, organization_id)
+        return {"_": ProviderKeySettings.model_validate(tenant).model_dump()}
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        _only(proposed, ProviderKeySettings.model_fields)
+        return _validated(
+            ProviderKeySettings, {**(before or {}), **proposed}
+        ).model_dump()
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert after is not None
+        tenant = await session.get(Organization, organization_id)
+        assert tenant is not None
+        tenant.allow_customer_provider_keys = after["allow_customer_provider_keys"]
+        await _audit(
+            session,
+            actor,
+            "tenant.provider_key_policy_updated",
+            str(organization_id),
+            details={**change_details(before, after), **version_detail(policy_version)},
+        )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        return classify_fields(
+            before, after, {"allow_customer_provider_keys": toward(True)}
+        )[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+
 PRIVACY = _PrivacyResource()
+GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
 API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()
 BUDGETS = _BudgetResource()
+PROVIDER_KEYS = _ProviderKeysResource()

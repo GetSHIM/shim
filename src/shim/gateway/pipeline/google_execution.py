@@ -83,12 +83,18 @@ class GoogleExecution:
                 prepared.tenant_id,
                 invocation.provider_credential,
             )
+        except ProviderCallError:
+            raise
         except Exception:
             raise _error(503, "PROVIDER_UNAVAILABLE", False) from None
         if not api_key:
             raise _error(503, "PROVIDER_NOT_CONFIGURED", False)
         if not await circuit.acquire_call():
             raise _error(503, "PROVIDER_UNAVAILABLE", True)
+        if prepared.protocol == "embed_content":
+            return await self._embed(
+                prepared, api_key, circuit, provider_start_callback
+            )
 
         client: genai.Client | None = None
         try:
@@ -134,7 +140,7 @@ class GoogleExecution:
                     first_chunk = await anext(stream)
                 state = {"closed": False, "recorded": False}
                 restorer = GoogleStreamRestorer(
-                    prepared.privacy.verification_map,
+                    prepared.privacy.restore_map,
                     self.pii_scrubber,
                 )
                 expected_candidates = _expected_candidates(prepared.payload)
@@ -188,7 +194,7 @@ class GoogleExecution:
             received_at = perf_counter()
             payload = restore_google_payload(
                 _dump_sdk(result),
-                prepared.privacy.verification_map,
+                prepared.privacy.restore_map,
                 self.pii_scrubber,
             )
             if not _has_block_reason(payload) and len(
@@ -253,6 +259,50 @@ class GoogleExecution:
             yield _stream_error(_public_error(exc))
         finally:
             await close_stream()
+
+    async def _embed(
+        self,
+        prepared: PreparedInference,
+        api_key: str,
+        circuit: CircuitBreaker,
+        provider_start_callback: Callable[[], Awaitable[None]],
+    ) -> ProviderNonStream:
+        """The native embeddings call: the SDK turns `:embedContent` into a batch."""
+        method = (
+            "batchEmbedContents" if "requests" in prepared.payload else "embedContent"
+        )
+        try:
+            await provider_start_callback()
+        except BaseException:
+            await circuit.release_probe()
+            raise
+        try:
+            with prepared.timing.exclude():
+                response = await self.http_client.post(
+                    f"{self.settings.GOOGLE_BASE_URL.rstrip('/')}"
+                    f"/v1beta/models/{prepared.model}:{method}",
+                    headers={"x-goog-api-key": api_key},
+                    json=prepared.payload,
+                    timeout=self.settings.GOOGLE_TIMEOUT_SECONDS,
+                )
+                await errors.APIError.raise_for_async_response(response)
+            received_at = perf_counter()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise _error(502, "PROVIDER_UNAVAILABLE", False)
+        except asyncio.CancelledError:
+            await circuit.release_probe()
+            raise
+        except Exception as exc:
+            await self._record_error(exc, circuit)
+            raise _public_error(exc) from None
+        await circuit.record_success()
+        return ProviderNonStream(
+            payload=payload,
+            request_id=response.headers.get("x-request-id")
+            or response.headers.get("x-goog-request-id"),
+            received_at_monotonic=received_at,
+        )
 
     async def _record_error(self, exc: Exception, circuit: CircuitBreaker) -> None:
         status_code = exc.code if isinstance(exc, errors.APIError) else None

@@ -8,6 +8,7 @@ from itertools import islice
 import json
 from typing import TYPE_CHECKING, Literal
 
+from shim.billing.pricing import DATE_SUFFIX
 from shim.observability.metrics import RULE_MATCHES_TOTAL, bounded_label
 from shim.rules.model import Rule, RuleMatch, UnusableRule
 
@@ -34,12 +35,20 @@ def in_scope(
     checks: tuple[tuple[tuple[str, ...], str | None], ...] = (
         (scope.api_key_ids, key_id),
         (scope.team_ids, prepared.policy.team_id),
-        (scope.models, prepared.model),
         (scope.deployment_kinds, kind),
         (scope.endpoints, prepared.protocol),
     )
-    return all(not allowed or value in allowed for allowed, value in checks) and (
-        not scope.tags or not set(scope.tags).isdisjoint(tags)
+    # The model the request reaches, never the alias the caller named.
+    model = prepared.pricing_model.casefold()
+    return (
+        all(not allowed or value in allowed for allowed, value in checks)
+        and (not scope.tags or not set(scope.tags).isdisjoint(tags))
+        and (
+            not scope.models
+            or not {model, DATE_SUFFIX.sub("", model)}.isdisjoint(
+                entry.casefold() for entry in scope.models
+            )
+        )
     )
 
 
@@ -61,12 +70,18 @@ def match_records(prepared: PreparedInference) -> dict[str, object]:
     Absent unless a matcher ran; [] when one ran and nothing matched.
     """
 
-    if not prepared.rules_evaluated:
+    # A match means a matcher ran, also when the request was refused before the
+    # stage could say so.
+    if not (prepared.rules_evaluated or prepared.rule_matches):
         return {}
     ordered = ordered_matches(prepared.rule_matches)
     return {
         "rule_matches": [
-            match.model_dump(exclude={"error"} if not match.error else set())
+            match.model_dump(
+                exclude={
+                    key for key in ("error", "truncated") if not getattr(match, key)
+                }
+            )
             for match in ordered[:MAX_RECORDED_MATCHES]
         ],
         "rule_matches_truncated": len(ordered) > MAX_RECORDED_MATCHES,
@@ -151,7 +166,7 @@ def settle_matches(prepared: PreparedInference) -> tuple[list[str], list[str]]:
         unusable, ("deny", "RULE_BLOCKED")
     )
     record_rule_verdicts(prepared, blocks | verdicts)
-    if prepared.rules_evaluated:
+    if prepared.rules_evaluated or prepared.rule_matches:
         prepared.record_verdict(
             "rules.evaluated",
             stage="rules",

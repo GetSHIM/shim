@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -53,6 +54,11 @@ def effective_pii_config(config: Mapping[str, Any] | None = None) -> dict[str, b
 # this order is a relaxation.
 EntityAction = Literal["off", "monitor", "mask_last4", "mask", "block"]
 
+# Types no switch covers: off until an override turns them on.
+OPT_IN_ENTITY_TYPES: Mapping[str, EntityAction] = MappingProxyType(
+    {"PERSON_NAME_TR": "off"}
+)
+
 
 def effective_entity_actions(
     pii_config: Mapping[str, Any] | None = None,
@@ -63,7 +69,7 @@ def effective_entity_actions(
         entity_type: "mask" if switches[setting] else "off"
         for setting, entity_types in _PII_CONFIG_ENTITIES.items()
         for entity_type in entity_types
-    }
+    } | dict(OPT_IN_ENTITY_TYPES)
     for entity_type, action in (overrides or {}).items():
         if entity_type not in actions:
             raise ValueError(f"unknown entity type: {entity_type}")
@@ -78,6 +84,11 @@ def effective_entity_actions(
             )
         actions[entity_type] = cast(EntityAction, action)
     return dict(sorted(actions.items()))
+
+
+def placeholder_type(placeholder: str) -> str:
+    """The entity type or rule label of `<TYPE_hex>` or `<TYPE_hex~tail>`."""
+    return placeholder.strip("<>").partition("~")[0].rpartition("_")[0]
 
 
 def block_code(blocked_types: Iterable[str]) -> str | None:
@@ -115,10 +126,15 @@ class PrivacyOutcome:
     monitored_entities: Mapping[str, int] = field(default_factory=dict)
     blocked_entities: Mapping[str, int] = field(default_factory=dict)
     bulk_disclosure: Mapping[str, int] | None = None
+    # Tool results and documents carrying each marker; None when the scan is off,
+    # {"error": True} when it failed.
+    injection_markers: Mapping[str, int] | None = None
     # Held for the response-side scan only; never persisted or logged.
     monitored_values: frozenset[str] = field(
         default=frozenset(), repr=False, compare=False
     )
+    # Types this caller gets back as placeholders (enterprise restore permission).
+    restore_withheld: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         for name in (
@@ -132,6 +148,27 @@ class PrivacyOutcome:
     @property
     def block_code(self) -> str | None:
         return block_code(self.blocked_entities)
+
+    @property
+    def restore_map(self) -> Mapping[str, str]:
+        """The placeholders this caller gets back as values; the rest stay placeholders."""
+        if not self.restore_withheld:
+            return self.verification_map
+        return {
+            placeholder: value
+            for placeholder, value in self.verification_map.items()
+            if placeholder_type(placeholder) not in self.restore_withheld
+        }
+
+    @property
+    def withheld_counts(self) -> dict[str, int]:
+        return dict(
+            Counter(
+                kind
+                for placeholder in self.verification_map
+                if (kind := placeholder_type(placeholder)) in self.restore_withheld
+            )
+        )
 
     def trace_metadata(self) -> dict[str, str | bool]:
         """Return only metadata safe for a sanitized pipeline trace."""

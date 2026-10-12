@@ -964,3 +964,115 @@ async def test_a_request_the_sdk_refuses_is_a_client_error_never_sent(
     circuit.release_probe.assert_awaited_once()
     circuit.record_failure.assert_not_awaited()
     circuit.record_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    from dataclasses import replace
+
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://upstream.test")
+    text, mapping = PIIScrubberService().scrub(
+        "Kimlik 10000000146 e-posta alice@example.com", DEFAULT_ACTIONS
+    )
+    tckn = next(key for key in mapping if key.startswith("<TR_NATIONAL_ID_"))
+    arguments = json.dumps({"id": tckn})
+    split = text.index(tckn) + len(tckn) // 2
+    events = [
+        {
+            "type": "message_start",
+            "message": {**_message(""), "content": [], "stop_reason": None},
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text[:split]},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text[split:]},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {
+                "type": "tool_use",
+                "id": "t1",
+                "name": "lookup",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": arguments},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+            "usage": {"output_tokens": 2},
+        },
+        {"type": "message_stop"},
+    ]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if stream:
+            return httpx.Response(
+                200,
+                text="".join(
+                    f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                    for event in events
+                ),
+                headers={"content-type": "text/event-stream"},
+            )
+        message = _message(text)
+        message["content"].append(
+            {"type": "tool_use", "id": "t1", "name": "lookup", "input": {"id": tckn}}
+        )
+        return httpx.Response(200, json=message)
+
+    prepared = _prepared(
+        {
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": text}],
+            "stream": stream,
+        },
+        mapping,
+    )
+    prepared.privacy = replace(
+        prepared.privacy, restore_withheld=frozenset({"TR_NATIONAL_ID"})
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _execution(http).execute(
+            invocation=_invocation(),
+            prepared=prepared,
+            provider_start_callback=AsyncMock(),
+        )
+        wire = (
+            b"".join([chunk async for chunk in result.events]).decode()
+            if stream
+            else json.dumps(result.payload)
+        )
+
+    assert "alice@example.com" in wire and "<EMAIL_ADDRESS_" not in wire
+    assert "10000000146" not in wire
+    # Streamed, the text half is split over two deltas; the tool arguments hold it whole.
+    assert wire.count(tckn) == (1 if stream else 2)
+    if stream:
+        deltas = [
+            json.loads(line[6:])["delta"].get("text", "")
+            for line in wire.splitlines()
+            if line.startswith("data: ") and '"text_delta"' in line
+        ]
+        assert tckn in "".join(deltas)

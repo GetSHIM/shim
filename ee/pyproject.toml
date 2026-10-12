@@ -30,6 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+archive-s3 = ["boto3>=1.42,<2"]
 secrets-aws = ["boto3>=1.42,<2"]
 secrets-azure = [
   "azure-identity>=1.25,<2",

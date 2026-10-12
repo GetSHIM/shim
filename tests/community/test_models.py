@@ -55,7 +55,7 @@ async def test_openai_sdk_selects_openai_catalog_and_codex_selector() -> None:
         )
 
     assert page.object == "list"
-    assert {item.id for item in page.data} == set(DEFAULT_PRICE_BOOK.prices)
+    assert {item.id for item in page.data} == set(DEFAULT_PRICE_BOOK.models("openai"))
     assert model.id == "gpt-5.6-luna"
     assert model.object == "model"
     assert model.owned_by == "openai"

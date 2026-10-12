@@ -5,16 +5,21 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
-from sqlalchemy import desc, select
+from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.errors import ConfigurationError
 from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim.gateway.pipeline.provider_execution import ProviderCallError
+from shim.secrets.azure import EntraClientCredential, EntraTokenCache
 from shim.secrets.credentials import EphemeralProviderCredential
+
+if TYPE_CHECKING:
+    from shim_enterprise.tenants.models import ProviderSecret
 
 FERNET_V2_PREFIX = "fernet:v2:"
 GCP_V1_PREFIX = "gcpsm:v1:"
@@ -194,6 +199,38 @@ def get_secret_store() -> SecretStore:
     return _store_singleton
 
 
+def provider_secret_purpose(provider: str) -> str:
+    """The store purpose a provider secret is kept under."""
+    return (
+        "provider:openai:azure-entra-client"
+        if provider == "azure_entra"
+        else f"provider:{provider}:api-key"
+    )
+
+
+def provider_secret_query(
+    tenant_id: UUID, provider: str, reference: str | None
+) -> Select[tuple[ProviderSecret]]:
+    """The secret a request of `provider` uses: its deployment's own, else the newest
+    of the provider's. An Entra credential (provider azure_entra) serves its OpenAI
+    deployments only. The credential resolver and the spend policy both read this."""
+    from shim_enterprise.tenants.models import ProviderSecret
+
+    providers = (provider, "azure_entra") if provider == "openai" else (provider,)
+    return (
+        select(ProviderSecret)
+        .where(
+            ProviderSecret.organization_id == tenant_id,
+            ProviderSecret.provider.in_(providers)
+            & (ProviderSecret.id == UUID(reference))
+            if reference is not None
+            else ProviderSecret.provider == provider,
+        )
+        .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
+        .limit(1)
+    )
+
+
 class ManagedProviderCredentialResolver:
     """Resolve one invocation credential or a tenant-managed secret."""
 
@@ -202,12 +239,39 @@ class ManagedProviderCredentialResolver:
         provider: str,
         store: SecretStore,
         session_factory: async_sessionmaker[AsyncSession],
+        entra: EntraTokenCache | None = None,
     ) -> None:
         if provider not in {"openai", "anthropic", "google"}:
             raise ValueError("unsupported provider credential")
         self.provider = provider
         self.store = store
         self.session_factory = session_factory
+        self.entra = entra
+
+    async def resolve_row(self, tenant_id: TenantId, row: ProviderSecret) -> str:
+        """An API key as stored, or an Entra token for an Entra client credential."""
+        secret = await self.store.get_secret(
+            tenant_id,
+            SecretRef(row.secret_ref),
+            expected_purpose=provider_secret_purpose(row.provider),
+        )
+        if row.provider != "azure_entra":
+            return secret
+        if self.entra is None:
+            raise ProviderCallError(
+                503, "PROVIDER_NOT_CONFIGURED", False, provider=self.provider
+            )
+        stored = json.loads(secret)
+        credential = EntraClientCredential(
+            tenant=stored["tenant_id"],
+            client_id=stored["client_id"],
+            client_secret=stored["client_secret"],
+            scope=stored["scope"],
+        )
+        # A rotation changes the version, so a rotated secret never reuses a token.
+        return await self.entra.token(
+            (tenant_id, row.id, row.secret_version), credential
+        )
 
     async def resolve(
         self,
@@ -222,36 +286,16 @@ class ManagedProviderCredentialResolver:
         if injected and reference is None:
             return injected
 
-        from shim_enterprise.tenants.models import ProviderSecret
-
         async with self.session_factory() as session:
             row = (
                 (
                     await session.execute(
-                        select(ProviderSecret)
-                        .where(
-                            ProviderSecret.organization_id == tenant_id,
-                            ProviderSecret.provider == self.provider,
-                            *(
-                                [ProviderSecret.id == UUID(reference)]
-                                if reference is not None
-                                else []
-                            ),
-                        )
-                        .order_by(
-                            desc(ProviderSecret.created_at), desc(ProviderSecret.id)
-                        )
-                        .limit(1)
+                        provider_secret_query(tenant_id, self.provider, reference)
                     )
                 )
                 .scalars()
                 .first()
             )
-            secret_ref = SecretRef(row.secret_ref) if row is not None else None
-        if secret_ref is None:
+        if row is None:
             return None
-        return await self.store.get_secret(
-            tenant_id,
-            secret_ref,
-            expected_purpose=f"provider:{self.provider}:api-key",
-        )
+        return await self.resolve_row(tenant_id, row)

@@ -109,3 +109,122 @@ async def test_in_memory_rate_limiter_refuses_without_consuming() -> None:
     assert not await limiter.allow("fresh", limit=10, window_seconds=60, amount=11)
     assert "fresh" not in limiter._counters.windows
     assert await limiter.allow("fresh", limit=10, window_seconds=60, amount=10)
+
+
+@pytest.mark.asyncio
+async def test_the_loop_detector_counts_a_turn_key_beside_the_prompt() -> None:
+    from shim.gateway.admission import LoopDetectionResult
+
+    detector = InMemoryLoopDetector()
+
+    plain = await detector.check_exact_repeat("org", "a", limit=8, window_seconds=60)
+    turns = [
+        await detector.check_exact_repeat(
+            "org", f"prompt {i}", limit=8, window_seconds=60, turn_key="turn-1"
+        )
+        for i in range(3)
+    ]
+    other = await detector.check_exact_repeat(
+        "org", "b", limit=8, window_seconds=60, turn_key="turn-2"
+    )
+
+    assert plain == LoopDetectionResult("SAFE", 1, 0)
+    assert [result.turn_repeats for result in turns] == [1, 2, 3]
+    assert [result.chain_length for result in turns] == [1, 1, 1]
+    assert other.turn_repeats == 1
+
+
+@pytest.mark.asyncio
+async def test_the_task_counter_caps_calls_exactly_and_cost_after_it_lands() -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    now = [0.0]
+    counter = InMemoryTaskCounter(max_entries=2, clock=lambda: now[0])
+    admit = lambda key="t": counter.admit_call(  # noqa: E731
+        "org", key, max_calls=2, max_cost_micro_usd=500, window_seconds=60
+    )
+
+    first, second, third = [await admit() for _ in range(3)]
+    assert [(a.calls, a.allowed) for a in (first, second, third)] == [
+        (1, True),
+        (2, True),
+        (2, False),
+    ]
+    await counter.add_cost("org", "c", micro_usd=499, window_seconds=60)
+    assert (await admit("c")).allowed is True
+    await counter.add_cost("org", "c", micro_usd=1, window_seconds=60)
+    refused = await admit("c")
+    assert (refused.allowed, refused.cost_micro_usd) == (False, 500)
+    now[0] = 61.0
+    assert (await admit()).calls == 1, "a new window starts after expiry"
+
+
+@pytest.mark.asyncio
+async def test_throwaway_task_ids_never_reset_a_task_still_calling() -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    now = [0.0]
+    counter = InMemoryTaskCounter(max_entries=2, clock=lambda: now[0])
+
+    async def admit(key: str, window_seconds: int = 60):
+        return await counter.admit_call(
+            "org",
+            key,
+            max_calls=10,
+            max_cost_micro_usd=None,
+            window_seconds=window_seconds,
+        )
+
+    await admit("live")
+    await admit("short", window_seconds=5)
+    now[0] = 6.0
+    await admit("throwaway-1")  # the expired task goes, not the older live one
+    await admit("live")
+    await admit("throwaway-2")  # the least recently used, throwaway-1, goes
+
+    assert (await admit("live")).calls == 3
+
+
+@pytest.mark.asyncio
+async def test_the_inflight_registry_has_one_owner_per_tenant_and_digest() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+
+    assert registry.enter("t1", "d", "r1", "k", True) is None
+    leader = registry.enter("t1", "d", "r2", "k", True)
+    assert leader is not None and leader.request_id == "r1"
+    assert registry.enter("t2", "d", "r3", "k", True) is None, "tenants are apart"
+    registry.leave("t1", "d", "r2")
+    registry.publish("t1", "d", "r2", "not the owner's")
+    assert registry.enter("t1", "d", "r4", "k", True) is leader
+    assert leader.outcome is not None and not leader.outcome.done()
+    registry.publish("t1", "d", "r1", "answer")
+    registry.leave("t1", "d", "r1")
+    assert leader.outcome.result() == "answer", "leaving keeps a published answer"
+    assert registry.enter("t1", "d", "r5", "k", False) is None
+    assert registry.entries[("t1", "d")].outcome is None, "only a shareable one waits"
+    registry.leave("t2", "d", "r3")
+    assert tuple(registry.entries) == (("t1", "d"),)
+
+
+@pytest.mark.asyncio
+async def test_the_inflight_registry_is_bounded_and_expires_a_lost_leader() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    now = [0.0]
+    registry = InFlightRegistry(max_entries=2, expiry_seconds=900, clock=lambda: now[0])
+    registry.enter("t", "a", "r1", "k", True)
+    oldest = registry.entries[("t", "a")]
+    now[0] = 10.0
+    registry.enter("t", "b", "r2", "k", True)
+    newer = registry.entries[("t", "b")]
+    registry.enter("t", "c", "r3", "k", True)
+
+    assert tuple(registry.entries) == (("t", "b"), ("t", "c"))
+    assert oldest.outcome is not None and oldest.outcome.result() is None
+    now[0] = 910.0
+    assert registry.enter("t", "b", "r4", "k", True) is None, "r2 expired"
+    assert newer.outcome is not None and newer.outcome.result() is None
+    registry.leave("t", "b", "r2")
+    assert registry.entries[("t", "b")].request_id == "r4"

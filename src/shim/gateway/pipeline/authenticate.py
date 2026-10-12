@@ -38,7 +38,13 @@ class GatewayInvocation:
     payload: dict[str, Any]
     provider: Literal["openai", "anthropic", "google"]
     protocol: Literal[
-        "chat", "responses", "messages", "count_tokens", "generate_content"
+        "chat",
+        "responses",
+        "messages",
+        "count_tokens",
+        "generate_content",
+        "embeddings",
+        "embed_content",
     ]
     model: str
     stream: bool
@@ -106,7 +112,16 @@ class AuthenticateStage:
             bulk_threshold=policy.bulk_threshold,
             response_scan=policy.response_scan,
             response_analysis=policy.response_analysis,
+            injection_markers=policy.injection_markers,
+            price_tier_warning=policy.price_tier_warning,
+            model_retiring_warning=policy.model_retiring_warning,
+            embeddings_monitor_types=policy.embeddings_monitor_types,
+            restore_withheld=policy.restore_withheld,
+            task_caps=policy.task_caps,
+            agent_loop=policy.agent_loop,
+            inflight_sharing=policy.inflight_sharing,
             rules=policy.rules,
+            record_sets=policy.record_sets,
             tenant_gateway_settings=policy.tenant_gateway_settings,
             provider=ProviderId(value.provider),
             timing=value.timing,

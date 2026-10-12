@@ -314,6 +314,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
             "completion_outcome": "refused",
             "rule_matches": [],
             "rule_matches_truncated": False,
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=12,
         completion_tokens=4,
@@ -411,12 +412,17 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "monitored_entities",
         "blocked_entities",
         "bulk_disclosure",
+        "injection_markers",
+        "restore_withheld",
         "response_entities",
         "response_analysis",
         "rule_matches",
         "rule_matches_truncated",
+        "approval_id",
+        "content_archived",
     }
     assert page.items[0].response_entities == {"TR_NATIONAL_ID": 1}
+    assert str(page.items[0].approval_id) == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert page.items[0].rule_matches == []
     assert page.items[0].rule_matches_truncated is False
     assert page.items[0].response_analysis == {
@@ -672,6 +678,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
                     "count": 2,
                 }
             ],
+            "approval_id": "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10",
         },
         prompt_tokens=10,
         completion_tokens=2,
@@ -751,6 +758,7 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
             "count": 2,
         }
     ]
+    assert exported["approval_id"] == "0b3c3c4e-6a59-4c2f-9d68-6f4c6b1f2a10"
     assert exported["cached_input_tokens"] == "10"
     assert exported["warnings"] == "MODEL_DEPRECATED,CACHE_NOT_APPLIED"
     assert audit.await_args.args[2] == "tenant.requests_exported"
@@ -1272,13 +1280,20 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         await management.get_privacy_settings(test_user_with_org, db)
     )
     assert defaults.entity_actions == {}
-    assert set(defaults.effective_actions.values()) == {"mask"}
+    assert {
+        name for name, action in defaults.effective_actions.items() if action != "mask"
+    } == {"PERSON_NAME_TR"}
+    assert defaults.effective_actions["PERSON_NAME_TR"] == "off"
 
     updated = management.PrivacySettings.model_validate(
         await management.update_privacy_settings(
             management.PrivacyPatch(
                 block_email=False,
-                entity_actions={"SECRET": "block", "PHONE_NUMBER": "monitor"},
+                entity_actions={
+                    "SECRET": "block",
+                    "PHONE_NUMBER": "monitor",
+                    "PERSON_NAME_TR": "mask",
+                },
             ),
             request,
             test_user_with_org,
@@ -1299,7 +1314,12 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         )
     )
 
-    assert updated.entity_actions == {"SECRET": "block", "PHONE_NUMBER": "monitor"}
+    assert updated.entity_actions == {
+        "SECRET": "block",
+        "PHONE_NUMBER": "monitor",
+        "PERSON_NAME_TR": "mask",
+    }
+    assert updated.effective_actions["PERSON_NAME_TR"] == "mask"
     assert updated.effective_actions["SECRET"] == "block"
     assert updated.effective_actions["PHONE_NUMBER"] == "monitor"
     assert updated.effective_actions["EMAIL_ADDRESS"] == "off"
@@ -1316,6 +1336,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
     assert policy_updates[0]["after"]["entity_actions"] == {
         "SECRET": "block",
         "PHONE_NUMBER": "monitor",
+        "PERSON_NAME_TR": "mask",
     }
     assert "effective_actions" not in policy_updates[0]["after"]
 
@@ -1349,6 +1370,13 @@ def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
             {"IBAN_CODE": "mask_last4"},
             {"IBAN_CODE": "monitor"},
             ["entity_actions.IBAN_CODE"],
+        ),
+        ({}, {"PERSON_NAME_TR": "mask"}, None),
+        ({"PERSON_NAME_TR": "mask"}, {}, ["entity_actions.PERSON_NAME_TR"]),
+        (
+            {"PERSON_NAME_TR": "block"},
+            {"PERSON_NAME_TR": "monitor"},
+            ["entity_actions.PERSON_NAME_TR"],
         ),
     ],
 )
@@ -1783,6 +1811,28 @@ async def test_the_request_list_filters_on_one_rule_id() -> None:
     compiled = filters[-1].compile(dialect=postgresql.dialect())
     assert "request_logs.details @>" in str(compiled)
     assert {"rule_matches": [{"rule_id": "falcon"}]} in compiled.params.values()
+
+
+@pytest.mark.asyncio
+async def test_the_request_list_filters_on_one_approval_id() -> None:
+    approval_id = uuid4()
+    filters = await management._request_filters(
+        None,  # type: ignore[arg-type]
+        SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
+        start=None,
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        approval_id=approval_id,
+    )
+
+    compiled = filters[-1].compile(dialect=postgresql.dialect())
+    assert "request_logs.details @>" in str(compiled)
+    assert {"approval_id": str(approval_id)} in compiled.params.values()
 
 
 _HASH_A = "hmac-sha256:v1:" + "a" * 64
@@ -2293,3 +2343,832 @@ async def test_requests_filter_by_outcome_and_text_refusal(
     assert [row["request_id"] for row in member_soft_csv] == [ids[0]]
     assert {item["request_id"] for item in member["items"]} == {ids[1], ids[2]}
     assert member["summary"]["outcome_counts"]["truncated"] == 2
+
+
+@pytest.mark.asyncio
+async def test_model_retirements_list_who_uses_a_retiring_model(
+    db, test_user_with_org, test_api_key, test_tier, tmp_path, monkeypatch
+) -> None:
+    from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
+
+    user = test_user_with_org
+    tenant = user.organization_id
+    today = datetime.now(timezone.utc).date()
+    dates = tmp_path / "dates.json"
+    entry = {
+        "source": "https://developers.openai.com/api/docs/deprecations",
+        "checked_on": "2026-10-11",
+    }
+    dates.write_text(
+        json.dumps(
+            {
+                "format": "shim.model.lifecycle",
+                "version": 1,
+                "models": {
+                    "openai": {
+                        "gpt-4": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=10)),
+                            "replacement": "gpt-5.6-sol",
+                        },
+                        "gpt-4.1": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=400)),
+                        },
+                    },
+                    "registry": {
+                        "internal-llm": {
+                            **entry,
+                            "retires_on": str(today + timedelta(days=20)),
+                        }
+                    },
+                },
+            }
+        )
+    )
+    monkeypatch.setattr(management.settings, "SHIM_MODEL_LIFECYCLE_FILE", dates)
+    other = Organization(id=uuid4(), name="Other", slug=f"retire-{uuid4().hex}")
+    db.add(other)
+    await db.flush()
+    second = ApiKey(
+        id=uuid4(),
+        user_id=user.id,
+        organization_id=tenant,
+        key_hash=uuid4().hex,
+        prefix="sk-shim-ret",
+        name="batch",
+        tier=test_tier,
+        is_active=True,
+    )
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=tenant,
+        provider="openai",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add_all([second, secret])
+    await db.flush()
+    db.add_all(
+        ModelDeployment(
+            organization_id=tenant,
+            alias=alias,
+            provider="openai",
+            upstream_model=upstream,
+            base_url="https://a.internal/v1",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+        )
+        for alias, upstream in (("internal-llm", "llama"), ("cloud-gpt4", "gpt-4"))
+    )
+    team = uuid4()
+    now = datetime.now(timezone.utc)
+
+    def row(organization_id, key, model, *, age=timedelta(hours=1), **metadata):
+        return RequestLifecycle(
+            request_id=f"req_retire_{uuid4().hex}",
+            organization_id=organization_id,
+            actor_type="api_key" if key else "internal",
+            api_key_id=key.id if key else None,
+            source_endpoint="chat.completions",
+            status="completed",
+            provider="openai",
+            requested_model=model,
+            stream=False,
+            started_at=now - age,
+            lifecycle_metadata=metadata,
+        )
+
+    db.add_all(
+        [
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            row(tenant, test_api_key, "gpt-4", tags=["support"]),
+            # Caller text counts under the entry it matched, never as its own item.
+            row(tenant, test_api_key, "gpt-4-anything-goes"),
+            row(tenant, second, "gpt-4", team_id=str(team), tags=["support", "batch"]),
+            row(tenant, test_api_key, "internal-llm"),
+            row(tenant, test_api_key, "gpt-4.1"),
+            row(tenant, test_api_key, "gpt-5.6-luna"),
+            row(tenant, test_api_key, "gpt-4", age=timedelta(days=40)),
+            row(other.id, None, "gpt-4"),
+        ]
+    )
+    await db.flush()
+    statements: list[str] = []
+    read: list[object] = []
+
+    def listener(*args) -> None:
+        statements.append(args[2])
+        if "FROM request_lifecycle" in args[2]:
+            read.append(args[3])
+
+    event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application), base_url="http://test"
+        ) as client:
+            user.role = "owner"
+            soon = await client.get("/api/v1/management/model-retirements")
+            later = await client.get(
+                "/api/v1/management/model-retirements", params={"days": 730}
+            )
+            bounds = [
+                (
+                    await client.get(
+                        "/api/v1/management/model-retirements", params={"days": days}
+                    )
+                ).status_code
+                for days in (0, 731)
+            ]
+            monkeypatch.setattr(management, "_AFFECTED_LIMIT", 1)
+            capped = await client.get("/api/v1/management/model-retirements")
+            user.role = "member"
+            member = await client.get("/api/v1/management/model-retirements")
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", listener)
+
+    assert soon.status_code == 200, soon.text
+    items = soon.json()
+    assert [(item["provider"], item["model"]) for item in items] == [
+        ("openai", "gpt-4"),
+        ("registry", "internal-llm"),
+    ]
+    gpt4, internal = items
+    assert (gpt4["retires_on"], gpt4["replacement"]) == (
+        str(today + timedelta(days=10)),
+        "gpt-5.6-sol",
+    )
+    assert [
+        (key["id"], key["name"], key["requests"])
+        for key in gpt4["affected"]["api_keys"]
+    ] == [(str(test_api_key.id), test_api_key.name, 3), (str(second.id), "batch", 1)]
+    assert gpt4["affected"]["teams"] == [{"id": str(team), "requests": 1}]
+    assert gpt4["affected"]["tags"] == [
+        {"tag": "support", "requests": 3},
+        {"tag": "batch", "requests": 1},
+    ]
+    assert gpt4["affected"]["aliases"] == ["cloud-gpt4"]
+    assert [key["requests"] for key in internal["affected"]["api_keys"]] == [1]
+    assert internal["affected"]["aliases"] == ["internal-llm"]
+    assert [item["model"] for item in later.json()] == [
+        "gpt-4",
+        "internal-llm",
+        "gpt-4.1",
+    ]
+    assert bounds == [422, 422]
+    assert member.status_code == 403
+    assert any("l.started_at >= " in statement for statement in statements)
+    # Usage is read only for models retiring within the window, and lists are capped.
+    soon_names, later_names = (
+        next(value for value in parameters if isinstance(value, list))
+        for parameters in read[:2]
+    )
+    assert "gpt-4" in soon_names and "gpt-4.1" not in soon_names
+    assert "gpt-4.1" in later_names
+    [capped_gpt4, _] = capped.json()
+    assert [key["requests"] for key in capped_gpt4["affected"]["api_keys"]] == [3]
+    assert [tag["tag"] for tag in capped_gpt4["affected"]["tags"]] == ["support"]
+
+
+@pytest.mark.asyncio
+async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
+    db, test_user_with_org, audit_events
+) -> None:
+    from sqlalchemy import text
+
+    user = test_user_with_org
+    user.role = "admin"
+    tenant_id = user.organization_id
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
+    # The column default, as a row written before this setting existed reads it.
+    await db.execute(
+        text(
+            "INSERT INTO organization_pii_configs (id, organization_id) "
+            "VALUES (gen_random_uuid(), :tenant) ON CONFLICT DO NOTHING"
+        ),
+        {"tenant": tenant_id},
+    )
+    default = management.PrivacySettings.model_validate(
+        await management.get_privacy_settings(user, db)
+    )
+
+    async def relaxations() -> list[list[str]]:
+        return [
+            event["extra"]["relaxed"]
+            for event in await audit_events(tenant_id)
+            if event["endpoint"] == "tenant.privacy_protection_relaxed"
+        ]
+
+    added = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(
+                embeddings_monitor_types=["TR_NATIONAL_ID", "IBAN_CODE"]
+            ),
+            request,
+            user,
+            db,
+        )
+    )
+    after_adding = await relaxations()
+    removed = management.PrivacySettings.model_validate(
+        await management.update_privacy_settings(
+            management.PrivacyPatch(embeddings_monitor_types=["IBAN_CODE"]),
+            request,
+            user,
+            db,
+        )
+    )
+
+    assert default.embeddings_monitor_types == []
+    assert added.embeddings_monitor_types == ["IBAN_CODE", "TR_NATIONAL_ID"]
+    assert added.effective_actions["TR_NATIONAL_ID"] == "mask", "chat is unchanged"
+    assert after_adding == [
+        [
+            "embeddings_monitor_types.IBAN_CODE",
+            "embeddings_monitor_types.TR_NATIONAL_ID",
+        ]
+    ]
+    assert removed.embeddings_monitor_types == ["IBAN_CODE"]
+    assert await relaxations() == after_adding, "removing a type is no relaxation"
+    with pytest.raises(ValidationError, match="unknown entity type"):
+        management.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
+    with pytest.raises(ValidationError, match="must not be null"):
+        management.PrivacyPatch.model_validate({"embeddings_monitor_types": None})
+
+
+_ENTRA = {
+    "tenant_id": "contoso.onmicrosoft.com",
+    "client_id": "00000000-0000-0000-0000-0000000000a1",
+    "client_secret": "entra-secret-value",
+}
+
+
+def _entra_row(**fields: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            "id": uuid4(),
+            "organization_id": uuid4(),
+            "provider": "azure_entra",
+            "name": "Azure",
+            "monthly_limit_usd": None,
+            "secret_ref": "fernet:v2:entra",
+            "secret_backend": "fernet",
+            "secret_version": "v2",
+            "masked_key": "entra:000...00a1",
+            "verified_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(timezone.utc),
+            **fields,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    store = SimpleNamespace(put_secret=AsyncMock(return_value="fernet:v2:stored"))
+    session = SimpleNamespace(
+        add=lambda _row: None,
+        flush=AsyncMock(),
+        commit=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management, "_audit", audit)
+
+    row = await management.create_provider_secret(
+        management.ProviderSecretInput(provider="azure_entra", azure_entra=_ENTRA),
+        SimpleNamespace(organization_id=tenant_id, is_verified=True),
+        session,
+    )
+
+    stored = json.dumps(
+        {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    store.put_secret.assert_awaited_once_with(
+        TenantId(tenant_id),
+        "provider:openai:azure-entra-client",
+        stored,
+        {"provider": "azure_entra"},
+    )
+    assert (row.provider, row.masked_key) == ("azure_entra", "entra:000...00a1")
+    row.id, row.created_at = uuid4(), datetime.now(timezone.utc)
+    shown = management.ProviderSecretView.model_validate(row).model_dump_json()
+    details = audit.await_args.kwargs["details"]
+    assert details["provider"] == "azure_entra"
+    for text in (shown, json.dumps(details, default=str)):
+        assert "entra-secret-value" not in text and "contoso" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"provider": "azure_entra", "key": "sk-live-secret-value-1"},
+        {"provider": "openai", "azure_entra": _ENTRA},
+    ],
+)
+async def test_a_refused_body_is_never_echoed_back(
+    db, test_user_with_org, body
+) -> None:
+    from fastapi.exceptions import RequestValidationError
+
+    from shim.gateway.api.errors import gateway_exception_handler
+
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.add_exception_handler(RequestValidationError, gateway_exception_handler)
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: (
+        test_user_with_org
+    )
+    application.dependency_overrides[get_db] = lambda: db
+    test_user_with_org.role = "owner"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/v1/management/providers", json=body)
+
+    assert response.status_code == 422
+    for secret in ("sk-live-secret-value-1", "entra-secret-value", "contoso"):
+        assert secret not in response.text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"provider": "openai"},
+        {"provider": "openai", "key": "provider-api-key", "azure_entra": _ENTRA},
+        {"provider": "azure_entra"},
+        {"provider": "azure_entra", "azure_entra": _ENTRA, "key": "provider-api-key"},
+        {"provider": "anthropic", "azure_entra": _ENTRA},
+        {"provider": "azure_entra", "azure_entra": {**_ENTRA, "client_id": "app"}},
+    ],
+)
+def test_a_provider_secret_needs_exactly_the_field_of_its_kind(fields) -> None:
+    with pytest.raises(ValidationError):
+        management.ProviderSecretInput.model_validate(fields)
+
+
+@pytest.mark.asyncio
+async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row()
+    store = SimpleNamespace(
+        rotate_secret=AsyncMock(return_value="fernet:v2:rotated"),
+        delete_secret=AsyncMock(),
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    user = SimpleNamespace(organization_id=row.organization_id)
+    session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+    rotated = {**_ENTRA, "client_id": "00000000-0000-0000-0000-0000000000b2"}
+
+    await management.update_provider_secret(
+        row.id,
+        management.ProviderSecretPatch(
+            azure_entra={**rotated, "scope": "https://ai.azure.com/.default"}
+        ),
+        user,
+        session,
+    )
+
+    assert json.loads(store.rotate_secret.await_args.args[2]) == {
+        **rotated,
+        "scope": "https://ai.azure.com/.default",
+    }
+    assert store.rotate_secret.await_args.kwargs == {
+        "expected_purpose": "provider:openai:azure-entra-client"
+    }
+    assert (row.masked_key, row.verified_at) == ("entra:000...00b2", None)
+    assert audit.await_args.kwargs["details"]["key_rotated"] is True
+    for patch, provider in [
+        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra"),
+        (management.ProviderSecretPatch(azure_entra=_ENTRA), "openai"),
+    ]:
+        row.provider = provider
+        with pytest.raises(HTTPException) as error:
+            await management.update_provider_secret(row.id, patch, user, session)
+        assert error.value.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (
+            httpx.Response(
+                200,
+                json={"access_token": "t", "token_type": "Bearer", "expires_in": 3600},
+            ),
+            200,
+        ),
+        (httpx.Response(400, json={"error": "invalid_client"}), 400),
+        (httpx.Response(500), 503),
+    ],
+)
+async def test_an_entra_secret_is_verified_by_a_fresh_token(
+    monkeypatch: pytest.MonkeyPatch, answer: httpx.Response, outcome: int
+) -> None:
+    from fastapi import HTTPException
+
+    row = _entra_row(verified_at=None)
+    store = SimpleNamespace(
+        get_secret=AsyncMock(
+            return_value=json.dumps(
+                {**_ENTRA, "scope": "https://cognitiveservices.azure.com/.default"}
+            )
+        )
+    )
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        management, "_owned_provider_secret", AsyncMock(return_value=row)
+    )
+    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(
+        management.settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test"
+    )
+    seen = []
+
+    def entra(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return answer
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(entra)) as client:
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(http_client=client))
+        )
+        session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
+        if outcome == 200:
+            await management.verify_provider_secret(
+                row.id,
+                request,
+                SimpleNamespace(organization_id=row.organization_id),
+                session,
+            )
+        else:
+            with pytest.raises(HTTPException) as error:
+                await management.verify_provider_secret(
+                    row.id,
+                    request,
+                    SimpleNamespace(organization_id=row.organization_id),
+                    session,
+                )
+            assert error.value.status_code == outcome
+
+    assert seen == ["https://login.test/contoso.onmicrosoft.com/oauth2/v2.0/token"]
+    assert (row.verified_at is not None) is (outcome == 200)
+    actions = [call.args[2] for call in audit.await_args_list]
+    assert (
+        actions
+        == {
+            200: ["tenant.provider_secret_verified"],
+            400: ["tenant.provider_secret_rejected"],
+            503: [],
+        }[outcome]
+    )
+
+
+async def _archive_tenant(db) -> dict:
+    from shim_enterprise.tenants.models import Team, TeamMembership
+
+    organization = Organization(
+        id=uuid4(), name="Archive", slug=f"archive-{uuid4().hex}", tier="enterprise"
+    )
+    db.add(organization)
+    await db.flush()
+    users = {
+        name: User(
+            id=uuid4(),
+            organization_id=organization.id,
+            email=f"archive-{name}-{uuid4().hex}@example.com",
+            role=role,
+            kind=kind,
+            is_active=True,
+            is_verified=True,
+        )
+        for name, role, kind in (
+            ("owner", "owner", "human"),
+            ("admin", "admin", "human"),
+            ("member", "member", "human"),
+            ("other_member", "member", "human"),
+            ("auditor", "auditor", "human"),
+            ("team_admin", "member", "human"),
+            ("service", "admin", "service"),
+        )
+    }
+    team = Team(id=uuid4(), organization_id=organization.id, name="risk")
+    db.add_all([*users.values(), team])
+    await db.flush()
+    db.add(
+        TeamMembership(
+            organization_id=organization.id,
+            team_id=team.id,
+            user_id=users["team_admin"].id,
+            role="team_admin",
+        )
+    )
+    keys = {
+        name: ApiKey(
+            id=uuid4(),
+            organization_id=organization.id,
+            user_id=users[name].id,
+            key_hash=uuid4().hex,
+            prefix="sk-shim-arc",
+            name=name,
+            tier="enterprise",
+            is_active=True,
+        )
+        for name in ("member", "other_member")
+    }
+    db.add_all(keys.values())
+    await db.flush()
+    return {"organization": organization, "keys": keys, **users}
+
+
+async def _archived_request(db, tenant, key: str, monkeypatch, *, expires_in=None):
+    from cryptography.fernet import Fernet
+
+    from shim_enterprise.archive.models import RequestArchive
+    from shim_enterprise.core.config import settings
+
+    secret = Fernet.generate_key().decode()
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", secret)
+    cipher = Fernet(secret.encode())
+    masked = {
+        "messages": [{"role": "user", "content": "kimlik <TR_NATIONAL_ID_ff8d9819>"}]
+    }
+    row = RequestArchive(
+        organization_id=tenant["organization"].id,
+        request_id=f"req_arc_{uuid4().hex}",
+        api_key_id=tenant["keys"][key].id,
+        protocol="chat",
+        model="gpt-5-nano",
+        matched=[
+            {"kind": "entity", "id": "TR_NATIONAL_ID", "action": "mask", "count": 1}
+        ],
+        masked_payload=cipher.encrypt(json.dumps(masked).encode()),
+        edit_map=cipher.encrypt(
+            json.dumps({"<TR_NATIONAL_ID_ff8d9819>": "10000000146"}).encode()
+        ),
+        size_bytes=80,
+        expires_at=datetime.now(timezone.utc) + (expires_in or timedelta(days=90)),
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def _archive_call(
+    db, user, method: str, path: str, body: dict | None = None, **params
+) -> httpx.Response:
+    await db.flush()
+    app = FastAPI()
+    app.include_router(management_router, prefix="/api/v1")
+    app.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        return await client.request(
+            method, f"/api/v1/management{path}", params=params, json=body
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_admin_opens_archived_content_after_the_opening_is_recorded(
+    db, audit_events, monkeypatch
+) -> None:
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+
+    owner = await _archive_call(
+        db, tenant["owner"], "GET", f"/requests/{row.request_id}/content"
+    )
+    admin = await _archive_call(
+        db, tenant["admin"], "GET", f"/requests/{row.request_id}/content"
+    )
+
+    body = admin.json()
+    assert owner.status_code == admin.status_code == 200
+    assert admin.headers["cache-control"] == "no-store"
+    assert body["original_payload"] == {
+        "messages": [{"role": "user", "content": "kimlik 10000000146"}]
+    }
+    assert "10000000146" not in json.dumps(body["masked_payload"])
+    assert body["replacements"] == [
+        {"placeholder": "<TR_NATIONAL_ID_ff8d9819>", "original": "10000000146"}
+    ]
+    assert body["matched"][0]["id"] == "TR_NATIONAL_ID"
+    openings = [
+        (event["actor"], event["extra"])
+        for event in await audit_events(tenant["organization"].id)
+        if event["endpoint"] == "tenant.request_content_opened"
+    ]
+    assert [actor for actor, _ in openings] == [
+        str(tenant["owner"].id),
+        str(tenant["admin"].id),
+    ]
+    assert openings[0][1] == {
+        "subject_id": row.request_id,
+        "api_key_id": str(tenant["keys"]["member"].id),
+        "actor_type": "user_jwt",
+    }
+
+
+@pytest.mark.asyncio
+async def test_archived_content_is_refused_to_everyone_else(db, monkeypatch) -> None:
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+    expired = await _archived_request(
+        db, tenant, "member", monkeypatch, expires_in=-timedelta(seconds=1)
+    )
+    path = f"/requests/{row.request_id}/content"
+
+    refused = {
+        name: (await _archive_call(db, tenant[name], "GET", path)).status_code
+        for name in ("auditor", "member", "team_admin", "service")
+    }
+
+    assert refused == dict.fromkeys(refused, 403)
+    assert (await _archive_call(db, other["owner"], "GET", path)).status_code == 404
+    assert (
+        await _archive_call(
+            db, tenant["owner"], "GET", f"/requests/{expired.request_id}/content"
+        )
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_no_content_without_a_committed_opening_or_with_another_key(
+    db, monkeypatch
+) -> None:
+    from cryptography.fernet import Fernet
+
+    from shim_enterprise.core.config import settings
+
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+    path = f"/requests/{row.request_id}/content"
+    decrypted = AsyncMock()
+
+    async def failed_commit() -> None:
+        raise RuntimeError("commit failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "commit", failed_commit)
+        patch.setattr(management.asyncio, "to_thread", decrypted)
+        lost = await _archive_call(db, tenant["owner"], "GET", path)
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", Fernet.generate_key().decode())
+    rotated = await _archive_call(db, tenant["owner"], "GET", path)
+
+    assert lost.status_code == 500 and "10000000146" not in lost.text
+    decrypted.assert_not_awaited()
+    assert rotated.status_code == 410
+    assert "current ENCRYPTION_KEY" in rotated.json()["detail"]
+
+
+async def _opening(db, tenant, key: str, request_id: str, seq: int) -> None:
+    from shim_enterprise.ai_act.models import AIActAuditLog
+
+    db.add(
+        AIActAuditLog(
+            organization_id=tenant["organization"].id,
+            seq=seq,
+            event_type="management_action",
+            request_id=f"management:{uuid4()}",
+            actor=str(tenant["admin"].id),
+            endpoint="tenant.request_content_opened",
+            created_at=datetime.now(timezone.utc),
+            prev_hash=uuid4().hex,
+            row_hash=uuid4().hex,
+            extra={
+                "subject_id": request_id,
+                "api_key_id": str(tenant["keys"][key].id),
+                "actor_type": "user_jwt",
+            },
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_readers_see_every_opening_and_a_member_their_own_keys(db) -> None:
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    await _opening(db, tenant, "member", "req_mine", 1)
+    await _opening(db, tenant, "other_member", "req_theirs", 2)
+    await _opening(db, other, "member", "req_elsewhere", 1)
+
+    def ids(response: httpx.Response) -> set[str]:
+        return {item["request_id"] for item in response.json()["items"]}
+
+    read = {
+        name: await _archive_call(db, tenant[name], "GET", "/request-archive/openings")
+        for name in ("owner", "auditor", "member", "other_member")
+    }
+    too_long = await _archive_call(
+        db,
+        tenant["owner"],
+        "GET",
+        "/request-archive/openings",
+        start=(datetime.now(timezone.utc) - timedelta(days=40)).isoformat(),
+    )
+
+    assert ids(read["owner"]) == ids(read["auditor"]) == {"req_mine", "req_theirs"}
+    assert ids(read["member"]) == {"req_mine"}
+    assert ids(read["other_member"]) == {"req_theirs"}
+    assert read["owner"].json()["items"][0]["actor_user_id"] == str(tenant["admin"].id)
+    assert too_long.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_owner_purges_only_their_archive_and_it_is_audited(
+    db, audit_events, monkeypatch
+) -> None:
+    from shim_enterprise.archive.models import RequestArchive
+
+    tenant = await _archive_tenant(db)
+    other = await _archive_tenant(db)
+    for _ in range(2):
+        await _archived_request(db, tenant, "member", monkeypatch)
+    kept = await _archived_request(db, other, "member", monkeypatch)
+
+    refused = await _archive_call(db, tenant["admin"], "DELETE", "/request-archive")
+    purged = await _archive_call(db, tenant["owner"], "DELETE", "/request-archive")
+
+    assert refused.status_code == 403
+    assert purged.json() == {"rows_deleted": 2}
+    left = set(await db.scalars(select(RequestArchive.id)))
+    assert kept.id in left
+    assert [
+        event["extra"]["rows"]
+        for event in await audit_events(tenant["organization"].id)
+        if event["endpoint"] == "tenant.request_archive_purged"
+    ] == [2]
+
+
+@pytest.mark.asyncio
+async def test_archive_settings_merge_per_field_and_a_shorter_retention_moves_expiry(
+    db, monkeypatch
+) -> None:
+    from shim_enterprise.core.config import settings
+
+    monkeypatch.setattr(settings, "REQUEST_ARCHIVE_ENABLED", True)
+    tenant = await _archive_tenant(db)
+    row = await _archived_request(db, tenant, "member", monkeypatch)
+
+    turned_on = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"enabled": True}},
+    )
+    shortened = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"retention_days": 30}},
+    )
+    too_long = await _archive_call(
+        db,
+        tenant["admin"],
+        "PATCH",
+        "/gateway-settings",
+        {"request_archive": {"retention_days": 91}},
+    )
+
+    assert turned_on.json()["request_archive_state"] == "on"
+    assert "request_archive" not in turned_on.json()["unavailable"]
+    assert shortened.json()["settings"]["request_archive"] == {
+        "enabled": True,
+        "retention_days": 30,
+    }
+    assert too_long.status_code == 422
+    await db.refresh(row)
+    assert row.expires_at == row.created_at + timedelta(days=30)

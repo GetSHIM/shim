@@ -14,7 +14,10 @@ COPY ee/pyproject.toml ee/LICENSE ee/NOTICE ./ee/
 COPY ee/cloud/pyproject.toml ./ee/cloud/pyproject.toml
 COPY src ./src
 COPY ee/src ./ee/src
-RUN uv sync --locked --no-dev --package shim-enterprise --no-editable
+# Space-separated optional extras, e.g. archive-s3; the published image has none.
+ARG ENTERPRISE_EXTRAS=""
+RUN uv sync --locked --no-dev --package shim-enterprise --no-editable \
+    $(for extra in $ENTERPRISE_EXTRAS; do printf -- '--extra %s ' "$extra"; done)
 
 FROM builder AS test
 

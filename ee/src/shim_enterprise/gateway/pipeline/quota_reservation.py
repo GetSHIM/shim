@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from functools import cache
 import hashlib
-import hmac
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -16,8 +14,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import func, select, text
 
+from shim_enterprise.archive.service import archive_request
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.errors import PersistenceError
 from shim.privacy.classification import content_ref
@@ -51,7 +50,8 @@ from shim_enterprise.billing.ledger import (
     TerminalAction,
 )
 from shim_enterprise.billing.models import RequestLifecycle
-from shim_enterprise.cache.loop_detection import take_repeat_digest
+from shim_enterprise.cache.loop_detection import keyed_repeat_digest, take_repeat_digest
+from shim_enterprise.secrets.store import provider_secret_query
 from shim_enterprise.observability.lifecycle import RequestLifecycleRepository
 from shim_enterprise.gateway.pipeline.audit_intent import (
     AuditIntentPersistenceError,
@@ -65,7 +65,6 @@ from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
     Organization,
-    ProviderSecret,
     TierDefinition,
     Team,
     User,
@@ -276,19 +275,13 @@ class AccountingPolicyLoader:
                 monthly_limit_usd=None,
             )
 
+        # The secret the credential resolver calls with, so its cap is the one spent.
         statement = (
-            select(ProviderSecret)
-            .where(
-                ProviderSecret.organization_id == prepared.tenant_id,
-                ProviderSecret.provider == str(prepared.provider),
-                *(
-                    [ProviderSecret.id == UUID(prepared.target.credential_reference)]
-                    if prepared.target
-                    else []
-                ),
+            provider_secret_query(
+                prepared.tenant_id,
+                str(prepared.provider),
+                prepared.target.credential_reference if prepared.target else None,
             )
-            .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
-            .limit(1)
             .execution_options(populate_existing=True)
             .with_for_update(key_share=True)
         )
@@ -376,6 +369,11 @@ class DurableAccountingCoordinator:
                         maximum_output_tokens=admission.maximum_output_tokens,
                         cost_center=admission.cost_center,
                         tags=admission.tags,
+                        task_id=admission.task_id,
+                        trace_id=admission.trace_id,
+                        tool_call_repeats=admission.tool_call_repeats,
+                        task_calls=admission.task_calls,
+                        inflight_duplicate_of=admission.inflight_duplicate_of,
                         team=prepared.policy.team,
                         stream=prepared.stream,
                         repeat_chain_length=admission.repeat_chain_length,
@@ -588,7 +586,26 @@ class DurableAccountingCoordinator:
                             ),
                             "blocked_entities": dict(prepared.privacy.blocked_entities),
                             "bulk_disclosure": None if bulk is None else dict(bulk),
+                            **(
+                                {}
+                                if prepared.privacy.injection_markers is None
+                                else {
+                                    "injection_markers": dict(
+                                        prepared.privacy.injection_markers
+                                    )
+                                }
+                            ),
+                            **(
+                                {"restore_withheld": prepared.privacy.withheld_counts}
+                                if prepared.privacy.restore_withheld
+                                else {}
+                            ),
                             **match_records(prepared),
+                            **(
+                                {"approval_id": prepared.approval_id}
+                                if prepared.approval_id is not None
+                                else {}
+                            ),
                             # A keyed hash of raw prompt text is still a
                             # pseudonym of the personal data in it.
                             **(
@@ -970,6 +987,8 @@ class DurableUsageLifecycle:
     async def record_privacy(self, prepared: PreparedInference) -> None:
         async with self.session_factory() as session:
             await self.accounting.record_privacy(prepared, session)
+        # After the privacy facts committed; a failure here never fails the request.
+        await archive_request(self.session_factory, prepared)
 
     async def reserve_provider_spend(
         self,
@@ -1055,6 +1074,40 @@ class DurableUsageLifecycle:
                     type(exc).__name__,
                 )
             raise
+
+    async def finalize_shared(
+        self,
+        prepared: PreparedInference,
+        terminal: StreamFinalization,
+        inflight_share: Mapping[str, Any],
+    ) -> None:
+        # One request unit, no tokens and no spend: the leader's row carries the call.
+        usage = terminal.usage
+        async with self.session_factory() as session:
+            await self.accounting.finalize(
+                session,
+                FinalizationCommand(
+                    tenant_id=prepared.tenant_id,
+                    request_id=prepared.request_id,
+                    quota_action=TerminalAction.SETTLE,
+                    provider_model=usage.provider_model,
+                    lifecycle_status=terminal.terminal_status,
+                    output_hash=usage.output_hash,
+                    provider_finish_reasons=usage.provider_finish_reasons,
+                    completion_outcome=usage.completion_outcome,
+                    answer_characters=usage.answer_characters,
+                    tool_call_names=usage.tool_call_names,
+                    reasoning_seen=usage.reasoning_seen,
+                    warnings=tuple(prepared.warnings),
+                    shim_latency_ms=terminal.shim_latency_ms,
+                    completed_at=terminal.completed_at,
+                    policy_verdicts=tuple(
+                        verdict.model_dump(mode="json")
+                        for verdict in prepared.policy_verdicts
+                    ),
+                    inflight_share=dict(inflight_share),
+                ),
+            )
 
     async def fail(
         self,
@@ -1266,19 +1319,6 @@ def scan_usage_status(count: int, limit: int, now: datetime) -> ScanUsageStatus:
         scans_remaining=-1 if limit == -1 else max(0, limit - count),
         resets_at=None if limit == -1 else next_month.isoformat(),
     )
-
-
-@cache
-def _repeat_digest_key(base_key: bytes) -> bytes:
-    return hmac.new(base_key, b"shim-repeat-digest-v1", hashlib.sha256).digest()
-
-
-def keyed_repeat_digest(base_key: bytes, tenant_id: str, digest: str) -> str:
-    return hmac.new(
-        _repeat_digest_key(base_key),
-        f"{tenant_id}:{digest}".encode("ascii"),
-        hashlib.sha256,
-    ).hexdigest()
 
 
 def _provider_reconciliation_due_at(started_at: datetime, provider: str) -> datetime:

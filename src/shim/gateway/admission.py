@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from typing import Literal, Protocol
 class LoopDetectionResult:
     status: Literal["SAFE", "WARNING", "BLOCKED"]
     chain_length: int
+    # Times the latest tool call of this turn key was seen in the window.
+    turn_repeats: int = 0
 
 
 class LoopDetector(Protocol):
@@ -26,7 +29,105 @@ class LoopDetector(Protocol):
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAdmission:
+    calls: int
+    cost_micro_usd: int
+    allowed: bool
+    unavailable: bool = False
+
+
+class TaskCounter(Protocol):
+    async def admit_call(
+        self,
+        tenant_id: str,
+        task_key: str,
+        *,
+        max_calls: int | None,
+        max_cost_micro_usd: int | None,
+        window_seconds: int,
+    ) -> TaskAdmission: ...
+
+    async def add_cost(
+        self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
+    ) -> None: ...
+
+    async def release_call(self, tenant_id: str, task_key: str) -> None: ...
+
+
+@dataclass(slots=True)
+class InFlightEntry:
+    request_id: str
+    api_key_id: str
+    shareable: bool
+    expires_at: float
+    # A shareable entry's answer, or None once it ends without one.
+    outcome: asyncio.Future[object] | None = None
+
+    def close(self, value: object = None) -> None:
+        if self.outcome is not None and not self.outcome.done():
+            self.outcome.set_result(value)
+
+
+class InFlightRegistry:
+    """Identical requests in flight in this process; nothing is kept once one ends."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 10_000,
+        expiry_seconds: float = 900,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.max_entries = max_entries
+        self.expiry_seconds = expiry_seconds
+        self.clock = clock
+        # Insertion order is expiry order: every entry lives expiry_seconds.
+        self.entries: OrderedDict[tuple[str, str], InFlightEntry] = OrderedDict()
+
+    def enter(
+        self,
+        tenant_id: str,
+        digest: str,
+        request_id: str,
+        api_key_id: str,
+        shareable: bool,
+    ) -> InFlightEntry | None:
+        """The earlier identical request still in flight, else None and this one registers."""
+        now = self.clock()
+        while self.entries and next(iter(self.entries.values())).expires_at <= now:
+            self.entries.popitem(last=False)[1].close()
+        key = (tenant_id, digest)
+        earlier = self.entries.get(key)
+        if earlier is not None:
+            return earlier
+        while len(self.entries) >= self.max_entries:
+            self.entries.popitem(last=False)[1].close()
+        self.entries[key] = InFlightEntry(
+            request_id,
+            api_key_id,
+            shareable,
+            now + self.expiry_seconds,
+            asyncio.get_running_loop().create_future() if shareable else None,
+        )
+        return None
+
+    def publish(
+        self, tenant_id: str, digest: str, request_id: str, answer: object
+    ) -> None:
+        entry = self.entries.get((tenant_id, digest))
+        if entry is not None and entry.request_id == request_id:
+            entry.close(answer)
+
+    def leave(self, tenant_id: str, digest: str, request_id: str) -> None:
+        entry = self.entries.get((tenant_id, digest))
+        if entry is not None and entry.request_id == request_id:
+            del self.entries[(tenant_id, digest)]
+            entry.close()
 
 
 class _FixedWindowCounters:
@@ -68,6 +169,9 @@ class _FixedWindowCounters:
             return count
         count = current[0] + amount
         self.windows[key] = (count, current[1])
+        # Least recently updated goes first when full, so a stream of new keys
+        # cannot push out a window that is still in use.
+        self.windows.move_to_end(key)
         return count
 
     def add_within(
@@ -142,10 +246,20 @@ class InMemoryLoopDetector:
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult:
         _validate_repeat_window(organization_id, limit, window_seconds)
+        turns = (
+            self._counters.increment(
+                (organization_id, "turn", turn_key),
+                amount=1,
+                window_seconds=window_seconds,
+            )
+            if turn_key
+            else 0
+        )
         if not prompt:
-            return LoopDetectionResult("SAFE", 0)
+            return LoopDetectionResult("SAFE", 0, turns)
         digest = hashlib.sha256(prompt.encode()).hexdigest()
         count = self._counters.increment(
             (organization_id, digest),
@@ -153,7 +267,67 @@ class InMemoryLoopDetector:
             window_seconds=window_seconds,
         )
         status = "BLOCKED" if count > limit else "WARNING" if count == limit else "SAFE"
-        return LoopDetectionResult(status, count)
+        return LoopDetectionResult(status, count, turns)
+
+
+class InMemoryTaskCounter:
+    """Calls and settled cost per task in bounded, per-process windows from the first call."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = 10_000,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        # Two windows per task: its calls and its cost.
+        self._counters = _FixedWindowCounters(max_entries=2 * max_entries, clock=clock)
+
+    def _current(self, key: tuple[str, str, str]) -> int:
+        window = self._counters.windows.get(key)
+        return (
+            window[0]
+            if window is not None and window[1] > self._counters.clock()
+            else 0
+        )
+
+    async def admit_call(
+        self,
+        tenant_id: str,
+        task_key: str,
+        *,
+        max_calls: int | None,
+        max_cost_micro_usd: int | None,
+        window_seconds: int,
+    ) -> TaskAdmission:
+        calls_key, cost_key = (
+            (tenant_id, task_key, "calls"),
+            (tenant_id, task_key, "cost"),
+        )
+        calls, cost = self._current(calls_key), self._current(cost_key)
+        if (max_calls is not None and calls + 1 > max_calls) or (
+            max_cost_micro_usd is not None and cost >= max_cost_micro_usd
+        ):
+            return TaskAdmission(calls, cost, allowed=False)
+        calls = self._counters.increment(
+            calls_key, amount=1, window_seconds=window_seconds
+        )
+        # The cost window opens with the first call, as the calls window does.
+        self._counters.increment(cost_key, amount=0, window_seconds=window_seconds)
+        return TaskAdmission(calls, cost, allowed=True)
+
+    async def add_cost(
+        self, tenant_id: str, task_key: str, *, micro_usd: int, window_seconds: int
+    ) -> None:
+        self._counters.increment(
+            (tenant_id, task_key, "cost"),
+            amount=micro_usd,
+            window_seconds=window_seconds,
+        )
+
+    async def release_call(self, tenant_id: str, task_key: str) -> None:
+        key = (tenant_id, task_key, "calls")
+        if calls := self._current(key):
+            self._counters.windows[key] = (calls - 1, self._counters.windows[key][1])
 
 
 def _validate_rate_window(

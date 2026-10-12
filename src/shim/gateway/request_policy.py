@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
-from pydantic import SecretBytes
+from pydantic import Field, SecretBytes
 
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
@@ -27,6 +28,21 @@ class RequestPolicyContext:
     team_id: str | None = None
 
 
+class TaskCaps(FrozenContractModel):
+    """Calls and settled cost one agent task may use; off until a cap is set."""
+
+    max_calls: int | None = Field(default=None, ge=1, le=100_000)
+    max_cost_usd: Decimal | None = Field(default=None, gt=0, le=100_000)
+    window_seconds: int = Field(default=3600, ge=60, le=86_400)
+
+
+class AgentLoop(FrozenContractModel):
+    """What a tool call repeated in one task's history does: counted by default."""
+
+    action: Literal["off", "count", "block"] = "count"
+    repeats: int = Field(default=5, ge=3, le=100)
+
+
 class ResolvedRequestPolicy(FrozenContractModel):
     tenant_id: TenantId
     tenant_policy: TenantPolicy
@@ -40,7 +56,20 @@ class ResolvedRequestPolicy(FrozenContractModel):
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
+    injection_markers: Literal["off", "count", "warn"] = "off"
+    price_tier_warning: bool = False
+    model_retiring_warning: Literal["record", "header"] = "record"
+    # Types an embeddings request only counts, where chat masks or blocks them.
+    embeddings_monitor_types: frozenset[str] = frozenset()
+    # Enterprise: entity types this caller's key and team may not see restored.
+    restore_withheld: frozenset[str] = frozenset()
+    task_caps: TaskCaps = TaskCaps()
+    agent_loop: AgentLoop = AgentLoop()
+    # The request's key may share an identical in-flight answer (S48).
+    inflight_sharing: bool = False
     rules: RuleSet | None = None
+    # Enterprise: the loaded record sets the rules reference, by set id.
+    record_sets: Mapping[str, Any] | None = None
     # Enterprise: the tenant's resolved gateway settings, read by its strategies; core never reads it.
     tenant_gateway_settings: object | None = None
 
@@ -56,13 +85,20 @@ class LocalRequestPolicyResolver:
     """Resolve the fixed single-user community policy."""
 
     __slots__ = (
+        "_agent_loop",
         "_bulk_threshold",
+        "_embeddings_monitor_types",
         "_entity_actions",
+        "_inflight_sharing",
+        "_model_retiring_warning",
+        "_injection_markers",
         "_placeholder_key",
+        "_price_tier_warning",
         "_rate_limit_rpm",
         "_rate_limit_tpm",
         "_response_analysis",
         "_response_scan",
+        "_task_caps",
     )
 
     def __init__(
@@ -75,6 +111,13 @@ class LocalRequestPolicyResolver:
         bulk_threshold: int | None = None,
         response_scan: Literal["off", "count"] = "off",
         response_analysis: tuple[str, ...] = (),
+        injection_markers: Literal["off", "count", "warn"] = "off",
+        price_tier_warning: bool = False,
+        task_caps: TaskCaps = TaskCaps(),
+        agent_loop: AgentLoop = AgentLoop(),
+        inflight_sharing: bool = False,
+        model_retiring_warning: Literal["record", "header"] = "record",
+        embeddings_monitor_types: frozenset[str] = frozenset(),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -83,6 +126,15 @@ class LocalRequestPolicyResolver:
         self._bulk_threshold = bulk_threshold
         self._response_scan: Literal["off", "count"] = response_scan
         self._response_analysis = response_analysis
+        self._injection_markers: Literal["off", "count", "warn"] = injection_markers
+        self._price_tier_warning = price_tier_warning
+        self._task_caps = task_caps
+        self._agent_loop = agent_loop
+        self._inflight_sharing = inflight_sharing
+        self._model_retiring_warning: Literal["record", "header"] = (
+            model_retiring_warning
+        )
+        self._embeddings_monitor_types = embeddings_monitor_types
 
     async def resolve(
         self,
@@ -114,4 +166,11 @@ class LocalRequestPolicyResolver:
             bulk_threshold=self._bulk_threshold,
             response_scan=self._response_scan,
             response_analysis=self._response_analysis,
+            injection_markers=self._injection_markers,
+            price_tier_warning=self._price_tier_warning,
+            task_caps=self._task_caps,
+            agent_loop=self._agent_loop,
+            inflight_sharing=self._inflight_sharing,
+            model_retiring_warning=self._model_retiring_warning,
+            embeddings_monitor_types=self._embeddings_monitor_types,
         )

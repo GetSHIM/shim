@@ -3,28 +3,50 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+from functools import cache
 import hashlib
+import hmac
 import logging
 
 from shim_enterprise.cache.redis_index import CacheService
+from shim_enterprise.core.config import settings
 from shim.gateway.admission import LoopDetectionResult
 
 
 logger = logging.getLogger(__name__)
 
+# With a second key, the agent-loop turn is counted in the same round trip.
 _INCREMENT_WINDOW = """
-local value = redis.call('INCR', KEYS[1])
-local ttl = redis.call('TTL', KEYS[1])
-if ttl < 0 then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+local counts = {}
+for index, key in ipairs(KEYS) do
+    counts[index] = redis.call('INCR', key)
+    if redis.call('TTL', key) < 0 then
+        redis.call('EXPIRE', key, ARGV[1])
+    end
 end
-return value
+if #KEYS == 1 then
+    return counts[1]
+end
+return counts
 """
 
 # Carries the digest to the quota reservation in the same task without a core contract.
 _REPEAT_DIGEST: ContextVar[tuple[str, str] | None] = ContextVar(
     "_REPEAT_DIGEST", default=None
 )
+
+
+@cache
+def _repeat_digest_key(base_key: bytes) -> bytes:
+    return hmac.new(base_key, b"shim-repeat-digest-v1", hashlib.sha256).digest()
+
+
+def keyed_repeat_digest(base_key: bytes, tenant_id: str, digest: str) -> str:
+    return hmac.new(
+        _repeat_digest_key(base_key),
+        f"{tenant_id}:{digest}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def take_repeat_digest(organization_id: str) -> str | None:
@@ -48,6 +70,7 @@ class LoopDetectionService:
         *,
         limit: int,
         window_seconds: int,
+        turn_key: str | None = None,
     ) -> LoopDetectionResult:
         if not organization_id.strip():
             raise ValueError("repeat window requires a tenant identity")
@@ -63,17 +86,24 @@ class LoopDetectionService:
         if redis is None:
             logger.warning("Repeat window unavailable; admission continues")
             return LoopDetectionResult("SAFE", 0)
+        keys = [key]
+        if turn_key:
+            # Tool arguments can carry personal data: the key is the tenant's keyed
+            # digest, never a bare hash of them.
+            salt = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode()
+            turn = keyed_repeat_digest(salt, organization_id, turn_key)
+            keys.append(f"turn:{organization_id}:{turn}")
         try:
-            count = int(
-                await redis.eval(
-                    _INCREMENT_WINDOW,
-                    1,
-                    key,
-                    window_seconds,
-                )
+            counted = await redis.eval(
+                _INCREMENT_WINDOW, len(keys), *keys, window_seconds
+            )
+            count, turns = (
+                (int(counted[0]), int(counted[1]))
+                if isinstance(counted, list)
+                else (int(counted), 0)
             )
         except Exception as exc:
             logger.error("Repeat window failed open type=%s", type(exc).__name__)
             return LoopDetectionResult("SAFE", 0)
         status = "BLOCKED" if count > limit else "WARNING" if count == limit else "SAFE"
-        return LoopDetectionResult(status, count)
+        return LoopDetectionResult(status, count, turns)

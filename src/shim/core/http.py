@@ -55,6 +55,9 @@ def install_http_middleware(
                 "x-shim-approval-id",
                 "x-shim-key",
                 "x-shim-tag",
+                "x-shim-task-id",
+                "traceparent",
+                "tracestate",
             ],
             expose_headers=[
                 "Content-Disposition",

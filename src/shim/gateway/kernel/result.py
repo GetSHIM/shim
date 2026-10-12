@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
@@ -22,9 +22,11 @@ from shim.billing.pricing import (
 from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.ids import ProviderId
+from shim.gateway.request_policy import AgentLoop, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
+from shim.privacy.record_match import RecordSetIndex
 from shim.rules.model import Rule, RuleMatch, RuleSet
 
 
@@ -108,16 +110,30 @@ class ProviderTarget:
     input_per_million: Decimal | None = None
     output_per_million: Decimal | None = None
     context_window: int | None = None
+    # The catalog model priced and limited by when the upstream name is none (Azure).
+    price_model: str | None = None
+    cache_read_per_million: Decimal | None = None
+    cache_write_per_million: Decimal | None = None
 
     def __post_init__(self) -> None:
         if (self.input_per_million is None) != (self.output_per_million is None):
             raise ValueError("a deployment price needs both input and output")
+        for cache in (self.cache_read_per_million, self.cache_write_per_million):
+            if cache is not None and self.input_per_million is None:
+                raise ValueError("a cache price needs the input and output prices")
+            if cache is not None and (not cache.is_finite() or cache < 0):
+                raise ValueError("a cache price is a nonnegative number")
 
     @property
     def price(self) -> ModelPrice | None:
         if self.input_per_million is None or self.output_per_million is None:
             return None
-        return ModelPrice(self.input_per_million, self.output_per_million)
+        return ModelPrice(
+            self.input_per_million,
+            self.output_per_million,
+            cache_read_per_million=self.cache_read_per_million,
+            cache_write_per_million=self.cache_write_per_million,
+        )
 
 
 @dataclass(frozen=True)
@@ -127,6 +143,13 @@ class AdmissionState:
     cost_center: str
     tags: tuple[str, ...]
     repeat_chain_length: int | None = None
+    task_id: str | None = None
+    trace_id: str | None = None
+    tool_call_repeats: int | None = None
+    task_calls: int | None = None
+    request_digest: str | None = None
+    # The identical request already in flight when this one was admitted.
+    inflight_duplicate_of: str | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
@@ -137,7 +160,14 @@ ResponseWarning = Literal[
     "CACHE_NOT_APPLIED",
     "RULE_WARN",
     "SEMANTIC_WARN",
+    "INJECTION_MARKERS",
+    "PRICE_TIER_CROSSED",
+    "MODEL_RETIRING",
+    "MODEL_RETIRED",
 ]
+EMBEDDINGS_PROTOCOLS = frozenset({"embeddings", "embed_content"})
+# Written to the record; in X-Shim-Warnings only when the tenant asks for the header.
+RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
 
 
 @dataclass(frozen=True)
@@ -148,7 +178,13 @@ class PreparedInference:
     payload: dict[str, Any]
     provider: ProviderId
     protocol: Literal[
-        "chat", "responses", "messages", "count_tokens", "generate_content"
+        "chat",
+        "responses",
+        "messages",
+        "count_tokens",
+        "generate_content",
+        "embeddings",
+        "embed_content",
     ]
     model: str
     stream: bool
@@ -160,10 +196,22 @@ class PreparedInference:
     bulk_threshold: int | None = None
     response_scan: Literal["off", "count"] = "off"
     response_analysis: tuple[str, ...] = ()
+    injection_markers: Literal["off", "count", "warn"] = "off"
+    price_tier_warning: bool = False
+    model_retiring_warning: Literal["record", "header"] = "record"
+    embeddings_monitor_types: frozenset[str] = frozenset()
+    restore_withheld: frozenset[str] = frozenset()
+    task_caps: TaskCaps = field(default_factory=TaskCaps)
+    agent_loop: AgentLoop = field(default_factory=AgentLoop)
+    inflight_sharing: bool = False
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
     rules: RuleSet | None = field(default=None, repr=False, compare=False)
+    # Enterprise: the loaded record sets the request's rules reference, by set id.
+    record_sets: Mapping[str, RecordSetIndex] | None = field(
+        default=None, repr=False, compare=False
+    )
     # Whether a rule matcher ran for this request; records say nothing about rules otherwise.
     rules_evaluated: bool = False
     # Request-local, shared by stage replacements like policy_verdicts.
@@ -213,11 +261,17 @@ class PreparedInference:
             )
         )
 
-    def record_rule_match(self, rule: Rule, count: int, *, error: bool = False) -> None:
+    def record_rule_match(
+        self, rule: Rule, count: int, *, error: bool = False, truncated: bool = False
+    ) -> None:
         for index, match in enumerate(self.rule_matches):
             if match.rule_id == rule.id:
                 self.rule_matches[index] = match.model_copy(
-                    update={"count": match.count + count, "error": match.error or error}
+                    update={
+                        "count": match.count + count,
+                        "error": match.error or error,
+                        "truncated": match.truncated or truncated,
+                    }
                 )
                 return
         self.rule_matches.append(
@@ -228,17 +282,31 @@ class PreparedInference:
                 state=rule.state,
                 count=count,
                 error=error,
+                truncated=truncated,
             )
         )
 
     @property
     def pricing_model(self) -> str:
-        return self.target.upstream_model if self.target is not None else self.model
+        if self.target is None:
+            return self.model
+        return self.target.price_model or self.target.upstream_model
 
     @property
     def deployment_price(self) -> ModelPrice | None:
-        # The operator's stated price wins over a catalog match for the upstream model.
-        return self.target.price if self.target is not None else None
+        """The operator's stated price; it wins over a catalog entry."""
+        price = self.target.price if self.target is not None else None
+        if price is None or self.provider != "anthropic":
+            return price
+        # Anthropic's own multipliers: a one-hour write at 2x, a write at 1.25x by default.
+        return replace(
+            price,
+            one_hour_write_multiplier=Decimal("2"),
+            # A stated price stays, 0 included.
+            cache_write_per_million=price.cache_write_per_million
+            if price.cache_write_per_million is not None
+            else price.input_per_million * Decimal("1.25"),
+        )
 
     @property
     def unpriced(self) -> bool:
@@ -268,4 +336,8 @@ class PreparedInference:
             "messages": "messages",
             "count_tokens": "messages.count_tokens",
             "generate_content": "generateContent",
+            "embeddings": "embeddings",
+            "embed_content": "batchEmbedContents"
+            if "requests" in self.payload
+            else "embedContent",
         }[self.protocol]

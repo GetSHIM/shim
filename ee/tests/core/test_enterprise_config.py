@@ -147,3 +147,41 @@ def test_findings_evaluation_interval_defaults_to_fifteen_minutes(
         ).FINDINGS_EVALUATION_INTERVAL_SECONDS
         == 900
     )
+
+
+def test_origin_suffixes_are_dotted_lowercase_with_two_labels() -> None:
+    configured = Settings(
+        **ENTERPRISE_REQUIRED_VALUES,
+        MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".openai.azure.com", ".azure.com"],
+        _env_file=None,
+    )
+
+    assert configured.MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES == [
+        ".openai.azure.com",
+        ".azure.com",
+    ]
+    for suffix in ["openai.azure.com", ".com", ".OpenAI.azure.com", ".azure..com"]:
+        with pytest.raises(ValidationError, match="ORIGIN_SUFFIXES"):
+            Settings(
+                **ENTERPRISE_REQUIRED_VALUES,
+                MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[suffix],
+                _env_file=None,
+            )
+
+
+def test_enterprise_ignores_community_azure_settings_but_checks_the_scope() -> None:
+    configured = Settings(
+        **ENTERPRISE_REQUIRED_VALUES,
+        SHIM_AZURE_OPENAI_ENDPOINT="http://bank.example",
+        SHIM_AZURE_TENANT_ID="contoso.com",
+        SHIM_AZURE_AUTHORITY_HOST="https://login.example",
+        _env_file=None,
+    )
+
+    assert configured.SHIM_AZURE_AUTHORITY_HOST == "https://login.example"
+    with pytest.raises(ValidationError, match="SHIM_AZURE_TOKEN_SCOPE"):
+        Settings(
+            **ENTERPRISE_REQUIRED_VALUES,
+            SHIM_AZURE_TOKEN_SCOPE="https://ai.azure.com/",
+            _env_file=None,
+        )

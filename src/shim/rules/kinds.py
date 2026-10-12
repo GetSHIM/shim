@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from shim.rules.content import PatternMatch, TermMatch
+from shim.rules.destination import DestinationMatch
+from shim.rules.record_set import RecordSetMatch
+from shim.rules.request_limit import RequestLimitMatch
 from shim.rules.model import (
     LIMITS,
     Rule,
@@ -39,9 +42,15 @@ KINDS: dict[RuleKind, KindSpec] = {
         ("monitor", "warn", "mask", "block", "require_approval"),
         PatternMatch,
     ),
-    "record_set": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
-    "destination": KindSpec("privacy", ("monitor", "warn", "mask", "block")),
-    "request_limit": KindSpec("admission", ("monitor", "warn", "block")),
+    "record_set": KindSpec(
+        "privacy", ("monitor", "warn", "mask", "block"), RecordSetMatch
+    ),
+    "destination": KindSpec(
+        "privacy", ("monitor", "warn", "mask", "block"), DestinationMatch
+    ),
+    "request_limit": KindSpec(
+        "admission", ("monitor", "warn", "block"), RequestLimitMatch
+    ),
     "parameter_pin": KindSpec("settings", ("monitor", "warn", "set", "block")),
     "route": KindSpec("resolver", ("route",)),
 }
@@ -96,23 +105,42 @@ def validate_rule_set(
                 f"rules[{index}].action",
                 f"action {rule.action} is not available for kind {rule.kind}",
             )
+        # Unscoped, it would only repeat the tenant's base action for the type. A
+        # block scoped only by what the caller sends (tags, endpoint) is one the
+        # caller can step around.
+        scope = rule.scope
+        decided_by_server = (
+            scope.api_key_ids
+            or scope.team_ids
+            or scope.models
+            or scope.deployment_kinds
+        )
+        if rule.kind == "destination" and (
+            scope == RuleScope() or (rule.action == "block" and not decided_by_server)
+        ):
+            raise RuleSetError(
+                "RULE_SCOPE_REQUIRED",
+                f"rules[{index}].scope",
+                "a destination rule needs a scope list; a block needs a key, team, "
+                "model or deployment kind",
+            )
         try:
             match = spec.match.model_validate(rule.match, context={"stored": stored})
         except ValidationError as error:
             raise _refusal(
                 "RULE_MATCH_INVALID", f"rules[{index}].match", error
             ) from None
-        stored = match.model_dump(mode="json")
+        dumped = match.model_dump(mode="json")
         for name, kind, key in _SET_LIMITS:
             if rule.kind == kind:
-                totals[name] += len(stored[key])
+                totals[name] += len(dumped[key])
                 if totals[name] > LIMITS[name]:
                     raise RuleSetError(
                         "RULE_SET_INVALID",
                         f"rules[{index}].match.{key}",
                         f"a rule set holds at most {LIMITS[name]:,} {key}",
                     )
-        rules.append(rule.model_copy(update={"match": stored}))
+        rules.append(rule.model_copy(update={"match": dumped}))
     return RuleSet(revision=rule_set.revision, rules=tuple(rules))
 
 

@@ -14,6 +14,7 @@ from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
+from shim.gateway.request_policy import TaskCaps
 from shim.gateway.kernel.result import InferenceTiming
 from shim.gateway.pipeline.postprocess import ResponsePostprocessor
 from shim.gateway.pipeline.provider_execution import ProviderStream
@@ -141,6 +142,7 @@ def _stream_prepared() -> SimpleNamespace:
         warnings=[],
         timing=InferenceTiming(),
         admission=SimpleNamespace(estimated_input_tokens=5),
+        task_caps=TaskCaps(),
     )
 
 
@@ -173,6 +175,12 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
     prepared = SimpleNamespace(
         stream=False,
         protocol="chat",
+        provider="openai",
+        tenant_id="tenant-1",
+        request_id="request-1",
+        admission=SimpleNamespace(
+            task_id=None, request_digest="digest", inflight_duplicate_of=None
+        ),
         privacy=PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
         policy_verdicts=[],
         payload={},
@@ -180,7 +188,9 @@ def _stubbed_kernel(monkeypatch, provider_output, postprocess) -> GatewayKernel:
     )
 
     def stage(name: str):
-        return lambda *_args, **_kwargs: SimpleNamespace(name=name, reserved=False)
+        return lambda *_args, **_kwargs: SimpleNamespace(
+            name=name, reserved=False, leader=None
+        )
 
     for class_name, name in (
         ("AuthenticateStage", "authenticate"),

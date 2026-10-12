@@ -1,7 +1,9 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -9,7 +11,11 @@ from uuid import UUID
 import pytest
 from fastapi import HTTPException
 
-from shim.gateway.admission import InMemoryRateLimiter, LoopDetectionResult
+from shim.gateway.admission import (
+    InFlightRegistry,
+    InMemoryRateLimiter,
+    LoopDetectionResult,
+)
 from shim.gateway.contracts.context import (
     AuditPolicy,
     GatewayContext,
@@ -97,6 +103,7 @@ async def test_admission_blocks_repeat_before_durable_reservation() -> None:
     assert loop_detector.check_exact_repeat.await_args.kwargs == {
         "limit": 8,
         "window_seconds": 300,
+        "turn_key": None,
     }
 
 
@@ -464,6 +471,7 @@ def _catalog(monkeypatch, **facts) -> None:
         SimpleNamespace(
             version=DEFAULT_PRICE_BOOK.version,
             supports=lambda *_: True,
+            resolve=lambda *_: entry,
             maximum_output_tokens=lambda *_: 1_000,
             exact=lambda *_: entry,
         ),
@@ -711,13 +719,15 @@ def _target(**fields) -> object:
     from shim.gateway.kernel.result import ProviderTarget
 
     return ProviderTarget(
-        deployment_id="dep",
-        base_url="https://llm.internal/v1",
-        upstream_model="gpt-4",
-        credential_reference="secret",
-        timeout_seconds=5,
-        declared_version="v1",
-        **fields,
+        **{
+            "deployment_id": "dep",
+            "base_url": "https://llm.internal/v1",
+            "upstream_model": "gpt-4",
+            "credential_reference": "secret",
+            "timeout_seconds": 5,
+            "declared_version": "v1",
+            **fields,
+        }
     )
 
 
@@ -781,3 +791,947 @@ async def test_a_target_is_checked_against_its_own_window_only(window, refused) 
     with pytest.raises(HTTPException) as error:
         await _stage(InMemoryRateLimiter()).run(prepared)
     assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"cache_read_per_million": Decimal("0.1")},
+        {
+            "input_per_million": Decimal("1"),
+            "output_per_million": Decimal("2"),
+            "cache_write_per_million": Decimal("-1"),
+        },
+        {
+            "input_per_million": Decimal("1"),
+            "output_per_million": Decimal("2"),
+            "cache_read_per_million": Decimal("NaN"),
+        },
+    ],
+)
+def test_a_target_refuses_a_cache_price_without_prices_or_below_zero(fields) -> None:
+    with pytest.raises(ValueError):
+        _target(**fields)
+
+
+def test_a_price_model_prices_a_deployment_unless_its_own_prices_are_set() -> None:
+    from dataclasses import replace
+
+    from shim.billing.pricing import compute_cost_usd
+
+    azure = replace(
+        _prepared("hi"),
+        target=_target(upstream_model="kurum-mini", price_model="gpt-5.6-luna"),
+    )
+    entered = replace(
+        azure,
+        target=replace(
+            azure.target,
+            input_per_million=Decimal("1"),
+            output_per_million=Decimal("2"),
+            cache_read_per_million=Decimal("0.1"),
+        ),
+    )
+
+    assert (azure.pricing_model, azure.unpriced, azure.deployment_price) == (
+        "gpt-5.6-luna",
+        False,
+        None,
+    )
+    # 400 uncached at 1, 600 cached at 0.1, 100 output at 2, per million.
+    assert compute_cost_usd(
+        entered.pricing_model,
+        1_000,
+        100,
+        cache=(600, 0, 0),
+        price=entered.deployment_price,
+    ) == Decimal("0.00066")
+
+
+def test_an_anthropic_deployment_price_takes_anthropic_cache_multipliers() -> None:
+    from dataclasses import replace
+
+    prepared = replace(
+        _prepared("hi", model="claude-sonnet-4-5", provider="anthropic"),
+        target=_target(
+            input_per_million=Decimal("3"), output_per_million=Decimal("15")
+        ),
+    )
+    written = replace(
+        prepared,
+        target=replace(prepared.target, cache_write_per_million=Decimal("4")),
+    )
+    openai = replace(_prepared("hi"), target=prepared.target)
+
+    assert prepared.deployment_price.rates(1) == (
+        Decimal("3"),
+        Decimal("15"),
+        Decimal("3"),
+        Decimal("3.75"),
+        Decimal("6"),
+    )
+    assert written.deployment_price.rates(1)[3] == Decimal("4")
+    free = replace(
+        prepared, target=replace(prepared.target, cache_write_per_million=Decimal("0"))
+    )
+    assert free.deployment_price.rates(1)[3] == Decimal("0"), "a stated 0 stays 0"
+    assert openai.deployment_price.rates(1)[3:] == (Decimal("3"), Decimal("3"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("window", "refused"), [(None, True), (10_000, False)])
+async def test_a_price_model_lends_its_window_and_output_limit(window, refused) -> None:
+    from dataclasses import replace
+
+    # gpt-4's catalog window and output limit are both 8,192.
+    target = _target(
+        upstream_model="kurum-mini", price_model="gpt-4", context_window=window
+    )
+    short = replace(_prepared("hello", model="gpt-4"), target=target)
+    prepared = replace(_prepared(" ".join(["w"] * 9_000), model="gpt-4"), target=target)
+
+    admitted = await _stage(InMemoryRateLimiter()).run(short)
+    assert admitted.admission.maximum_output_tokens == 8_192
+    if not refused:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+        return
+    with pytest.raises(HTTPException) as error:
+        await _stage(InMemoryRateLimiter()).run(prepared)
+    assert error.value.detail["code"] == "MODEL_CONTEXT_EXCEEDED"
+
+
+def _limit_rule(match: dict, *, action="block", state="enforced", scope=None):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "tool_cap",
+                    "name": "Tool cap",
+                    "kind": "request_limit",
+                    "action": action,
+                    "state": state,
+                    "scope": scope or {},
+                    "match": match,
+                }
+            ],
+        }
+    )
+
+
+def _limit_stage(headers=None):
+    usage = SimpleNamespace(admit=AsyncMock())
+    rate_limiter = SimpleNamespace(allow=AsyncMock(return_value=True))
+    stage = AdmissionStage(
+        SimpleNamespace(headers=headers or {}),
+        usage,
+        rate_limiter=rate_limiter,
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+    return stage, usage, rate_limiter
+
+
+def _with_tools(prepared: PreparedInference, count: int, **values) -> PreparedInference:
+    tools = [{"type": "function", "function": {"name": f"f{i}"}} for i in range(count)]
+    return replace(prepared, payload={**prepared.payload, "tools": tools}, **values)
+
+
+@pytest.mark.asyncio
+async def test_an_enforced_cap_refuses_before_any_rate_capacity_or_reservation() -> (
+    None
+):
+    stage, usage, rate_limiter = _limit_stage()
+    prepared = _with_tools(
+        _prepared("six tools"), 6, rules=_limit_rule({"max_tools": 5})
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await stage.run(prepared)
+
+    assert refused.value.status_code == 400
+    assert refused.value.detail["code"] == "RULE_BLOCKED"
+    assert refused.value.headers == {"X-Shim-Rule-Id": "tool_cap"}
+    rate_limiter.allow.assert_not_awaited()
+    usage.admit.assert_not_awaited()
+    verdicts = {v.rule_id: v.reason_code for v in prepared.policy_verdicts}
+    assert verdicts["rule.tool_cap"] == "RULE_BLOCKED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tools", "matched"), [(5, False), (6, True)])
+async def test_a_monitor_cap_records_what_it_would_do_and_admits(
+    tools, matched
+) -> None:
+    stage, usage, _ = _limit_stage()
+
+    admitted = await stage.run(
+        _with_tools(
+            _prepared("tools"),
+            tools,
+            rules=_limit_rule({"max_tools": 5}, state="monitor"),
+        )
+    )
+
+    usage.admit.assert_awaited_once()
+    assert admitted.rules_evaluated is True
+    assert [(m.rule_id, m.state, m.action, m.count) for m in admitted.rule_matches] == (
+        [("tool_cap", "monitor", "block", 1)] if matched else []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("header", "refused"), [("batch", True), ("other", False)])
+async def test_a_cap_scoped_by_tag_reads_the_resolved_tags(header, refused) -> None:
+    stage, _, _ = _limit_stage({"x-shim-tag": f"Kampanya,{header}"})
+    prepared = _with_tools(
+        _prepared("tools"),
+        6,
+        rules=_limit_rule({"max_tools": 5}, scope={"tags": ["batch"]}),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException):
+            await stage.run(prepared)
+    else:
+        assert (await stage.run(prepared)).rule_matches == []
+
+
+@pytest.mark.asyncio
+async def test_token_counting_is_never_capped_and_records_nothing() -> None:
+    stage, _, _ = _limit_stage()
+    prepared = _with_tools(
+        _prepared(
+            "count",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            protocol="count_tokens",
+        ),
+        10,
+        rules=_limit_rule({"max_tools": 1}),
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.rule_matches == [] and admitted.rules_evaluated is False
+    assert not any(v.rule_id.startswith("rule.") for v in admitted.policy_verdicts)
+
+
+_CERTAIN = "a " * 272_001
+_POSSIBLE = "x" * 1_100_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "action", "refused", "warned"),
+    [
+        (_CERTAIN, "block", True, False),
+        (_POSSIBLE, "warn", False, True),
+        ("a short question", None, False, False),
+    ],
+)
+async def test_the_price_tier_rule_refuses_only_a_certain_crossing(
+    prompt, action, refused, warned
+) -> None:
+    stage, usage, _ = _limit_stage()
+    prepared = replace(
+        _prepared(prompt, model="gpt-5.4"),
+        rules=_limit_rule({"below_price_tier": True}),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.detail["code"] == "RULE_BLOCKED"
+        return
+    admitted = await stage.run(prepared)
+    assert [m.action for m in admitted.rule_matches] == ([action] if action else [])
+    assert "PRICE_TIER_CROSSED" not in admitted.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_registry_target_never_matches_the_price_tier_rule() -> None:
+    from shim.gateway.kernel.result import ProviderTarget
+
+    stage, _, _ = _limit_stage()
+    prepared = replace(
+        _prepared(_CERTAIN, model="gpt-5.4"),
+        rules=_limit_rule({"below_price_tier": True}),
+        target=ProviderTarget(
+            deployment_id="d1",
+            base_url="https://models.internal/v1",
+            upstream_model="gpt-5.4",
+            credential_reference="c1",
+            timeout_seconds=60,
+            declared_version="v1",
+        ),
+        price_tier_warning=True,
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.rule_matches == [] and admitted.warnings == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "prompt", "switch", "protocol", "warned"),
+    [
+        ("gpt-5.4", _POSSIBLE, True, "chat", True),
+        ("gpt-5.4", _POSSIBLE, False, "chat", False),
+        ("gpt-5.4", "a short question", True, "chat", False),
+        ("claude-sonnet-4-6", _POSSIBLE, True, "messages", False),
+        ("claude-sonnet-4-6", _POSSIBLE, True, "count_tokens", False),
+    ],
+)
+async def test_the_price_tier_warning_needs_the_switch_a_tier_and_the_size(
+    model, prompt, switch, protocol, warned
+) -> None:
+    stage, _, _ = _limit_stage()
+    provider = "openai" if model.startswith("gpt") else "anthropic"
+    prepared = replace(
+        _prepared(prompt, model=model, provider=provider, protocol=protocol),
+        price_tier_warning=switch,
+    )
+    if provider == "anthropic":
+        prepared = replace(prepared, payload={**prepared.payload, "max_tokens": 16})
+
+    admitted = await stage.run(prepared)
+
+    assert ("PRICE_TIER_CROSSED" in admitted.warnings) is warned
+
+
+_TRACE = "0af7651916cd43dd8448eb211c80319c"
+_PARENT = f"00-{_TRACE}-b7ad6b7169203331-01"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "task_id", "trace_id"),
+    [
+        ({"x-shim-task-id": "t" * 128}, "t" * 128, None),
+        ({"x-shim-task-id": "t" * 129}, None, None),
+        ({"x-shim-task-id": "  task-7/step:2  "}, "task-7/step:2", None),
+        ({"x-shim-task-id": "two words"}, None, None),
+        ({"x-shim-task-id": "a@b"}, None, None),
+        # Digits alone, ten or more, look like a national id or a phone number.
+        ({"x-shim-task-id": "10000000146"}, None, None),
+        ({"x-shim-task-id": "05321234567"}, None, None),
+        ({"x-shim-task-id": "123456789"}, "123456789", None),
+        ({"x-shim-task-id": "run-10000000146"}, "run-10000000146", None),
+        ({"x-shim-task-id": "-leading"}, None, None),
+        ({"x-shim-task-id": ""}, None, None),
+        ({"traceparent": _PARENT}, _TRACE, _TRACE),
+        ({"traceparent": _PARENT.upper()}, None, None),
+        ({"traceparent": f"00-{'0' * 32}-b7ad6b7169203331-01"}, None, None),
+        ({"traceparent": f"00-{_TRACE}-{'0' * 16}-01"}, None, None),
+        ({"traceparent": f"ff-{_TRACE}-b7ad6b7169203331-01"}, None, None),
+        ({"traceparent": "garbage"}, None, None),
+        ({"traceparent": _PARENT, "x-shim-task-id": "task-1"}, "task-1", _TRACE),
+        ({"traceparent": _PARENT, "x-shim-task-id": "bad id"}, _TRACE, _TRACE),
+        ({}, None, None),
+    ],
+)
+async def test_the_task_id_comes_from_its_header_else_the_incoming_trace(
+    headers, task_id, trace_id
+) -> None:
+    from prometheus_client import REGISTRY
+
+    stage, _, _ = _limit_stage(headers)
+    rejected = REGISTRY.get_sample_value("shim_task_id_rejected_total") or 0
+
+    admitted = await stage.run(_prepared("a task"))
+
+    assert admitted.admission is not None
+    assert (admitted.admission.task_id, admitted.admission.trace_id) == (
+        task_id,
+        trace_id,
+    )
+    sent = (headers.get("x-shim-task-id") or "").strip()
+    assert (
+        REGISTRY.get_sample_value("shim_task_id_rejected_total") or 0
+    ) - rejected == (1 if sent and task_id != sent else 0)
+
+
+def _history(protocol: str, arguments: str | dict, name: str = "read_file") -> dict:
+    if protocol == "chat":
+        return {
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            ]
+        }
+    if protocol == "responses":
+        return {
+            "input": [
+                {"role": "user", "content": "go"},
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": name,
+                    "arguments": arguments,
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+            ]
+        }
+    if protocol == "messages":
+        return {
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": name,
+                            "input": arguments,
+                        }
+                    ],
+                },
+            ]
+        }
+    return {
+        "contents": [
+            {"role": "user", "parts": [{"text": "go"}]},
+            {
+                "role": "model",
+                "parts": [{"functionCall": {"name": name, "args": arguments}}],
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("protocol", "first", "second"),
+    [
+        ("chat", '{"path": "a", "line": 1}', '{"line": 1, "path": "a"}'),
+        ("chat", "not json at all", "not json at all"),
+        ("responses", '{"path": "a"}', '{ "path" : "a" }'),
+        ("messages", {"path": "a", "line": 1}, {"line": 1, "path": "a"}),
+        ("generate_content", {"path": "a"}, {"path": "a"}),
+    ],
+)
+def test_the_tool_signature_reads_the_latest_call_and_ignores_key_order(
+    protocol, first, second
+) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    signature = _tool_signature(_history(protocol, first), protocol)
+
+    assert signature is not None and len(signature) == 64
+    assert _tool_signature(_history(protocol, second), protocol) == signature
+    assert (
+        _tool_signature(_history(protocol, first, name="write_file"), protocol)
+        != signature
+    )
+
+
+@pytest.mark.parametrize(
+    "protocol", ["chat", "responses", "messages", "generate_content"]
+)
+def test_a_plain_answer_after_a_tool_call_ends_the_signature(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    history = _history(protocol, '{"path": "a"}')
+    if protocol == "responses":
+        history["input"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+    elif protocol == "generate_content":
+        history["contents"] += [
+            {"role": "model", "parts": [{"text": "done"}]},
+            {"role": "user", "parts": [{"text": "again"}]},
+        ]
+    else:
+        history["messages"] += [
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "again"},
+        ]
+
+    assert _tool_signature(history, protocol) is None
+
+
+@pytest.mark.parametrize("protocol", ["chat", "responses"])
+def test_deeply_nested_arguments_are_hashed_as_text_in_linear_time(protocol) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    def best_of_three(arguments: str) -> float:
+        timings = []
+        for _ in range(3):
+            started = time.perf_counter()
+            signature = _tool_signature(_history(protocol, arguments), protocol)
+            timings.append(time.perf_counter() - started)
+            assert signature is not None
+        return min(timings)
+
+    assert best_of_three("[" * 200_000) < 4 * best_of_three('"' + "a" * 199_998 + '"')
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"messages": [{"role": "user", "content": "no tools"}]},
+        {"messages": "x", "input": "plain", "contents": None},
+        {},
+    ],
+)
+def test_a_history_without_a_tool_call_has_no_signature(payload) -> None:
+    from shim.gateway.pipeline.admission import _tool_signature
+
+    for protocol in ("chat", "responses", "messages", "generate_content"):
+        assert _tool_signature(payload, protocol) is None
+
+
+def _loop_stage(turn_repeats: int):
+    detector = SimpleNamespace(
+        check_exact_repeat=AsyncMock(
+            return_value=LoopDetectionResult("SAFE", 1, turn_repeats)
+        )
+    )
+    stage = AdmissionStage(
+        SimpleNamespace(headers={"x-shim-task-id": "task-1"}),
+        SimpleNamespace(admit=AsyncMock()),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=detector,
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+    )
+    return stage, detector
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "repeats", "verdict", "refused"),
+    [
+        ("count", 4, None, False),
+        ("count", 5, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("count", 9, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("block", 5, ("allow", "AGENT_LOOP_SUSPECTED"), False),
+        ("block", 6, ("deny", "AGENT_LOOP_DETECTED"), True),
+    ],
+)
+async def test_a_repeated_tool_call_is_counted_and_blocked_only_when_asked(
+    action, repeats, verdict, refused
+) -> None:
+    from shim.gateway.request_policy import AgentLoop
+
+    stage, detector = _loop_stage(repeats)
+    prepared = replace(
+        _prepared("x"),
+        payload={"model": "gpt-5.6-luna", **_history("chat", '{"path": "a"}')},
+        agent_loop=AgentLoop(action=action),
+    )
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.status_code == 429
+        assert error.value.detail["code"] == "AGENT_LOOP_DETECTED"
+        assert error.value.headers == {"x-should-retry": "false"}
+    else:
+        assert (await stage.run(prepared)).admission.tool_call_repeats == repeats
+    verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
+    assert verdicts.get("task.agent_loop") == verdict
+    assert detector.check_exact_repeat.await_args.kwargs["turn_key"] is not None
+
+
+@pytest.mark.asyncio
+async def test_with_the_loop_signal_off_nothing_is_computed() -> None:
+    from shim.gateway.request_policy import AgentLoop
+
+    stage, detector = _loop_stage(9)
+    prepared = replace(
+        _prepared("x"),
+        payload={"model": "gpt-5.6-luna", **_history("chat", "{}")},
+        agent_loop=AgentLoop(action="off"),
+    )
+
+    admitted = await stage.run(prepared)
+
+    assert admitted.admission.tool_call_repeats is None
+    assert detector.check_exact_repeat.await_args.kwargs["turn_key"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("headers", "refused_on"), [({"x-shim-task-id": "t-1"}, 3), ({}, None)]
+)
+async def test_a_task_past_its_calls_cap_is_refused_and_untasked_calls_pass(
+    headers, refused_on
+) -> None:
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, _, _ = _limit_stage(headers)
+    outcomes = []
+    for _ in range(3):
+        prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=2))
+        try:
+            admitted = await stage.run(prepared)
+            outcomes.append(admitted.admission.task_calls)
+        except HTTPException as error:
+            assert error.detail["code"] == "TASK_LIMIT_EXCEEDED"
+            assert error.headers == {"x-should-retry": "false"}
+            assert error.detail["message"] == (
+                "This task reached its limit of 2 calls within 3600 seconds."
+            )
+            outcomes.append("refused")
+
+    assert outcomes == ([1, 2, "refused"] if refused_on else [None, None, None])
+
+
+@pytest.mark.asyncio
+async def test_a_call_the_quota_refuses_gives_its_task_call_back() -> None:
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, usage, _ = _limit_stage({"x-shim-task-id": "t-1"})
+    usage.admit.side_effect = [HTTPException(429, detail="quota"), None]
+    prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
+
+    with pytest.raises(HTTPException):
+        await stage.run(prepared)
+    admitted = await stage.run(replace(prepared, policy_verdicts=[]))
+
+    assert admitted.admission is not None and admitted.admission.task_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_task_counter_fails_open_with_an_error_verdict() -> None:
+    from shim.gateway.admission import TaskAdmission
+    from shim.gateway.request_policy import TaskCaps
+
+    stage, _, _ = _limit_stage({"x-shim-task-id": "t-1"})
+    stage.task_counter = SimpleNamespace(
+        admit_call=AsyncMock(return_value=TaskAdmission(0, 0, True, unavailable=True))
+    )
+    prepared = replace(_prepared("x"), task_caps=TaskCaps(max_calls=1))
+
+    from prometheus_client import REGISTRY
+
+    before = REGISTRY.get_sample_value("shim_task_counter_unavailable_total") or 0
+
+    await stage.run(prepared)
+
+    verdicts = {v.rule_id: (v.outcome, v.reason_code) for v in prepared.policy_verdicts}
+    assert verdicts["task.limit"] == ("error", "TASK_COUNTER_UNAVAILABLE")
+    assert REGISTRY.get_sample_value("shim_task_counter_unavailable_total") == (
+        before + 1
+    )
+
+
+def _inflight_stage(registry, admit=None) -> AdmissionStage:
+    return AdmissionStage(
+        SimpleNamespace(headers={}),
+        SimpleNamespace(admit=admit or AsyncMock()),
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+        inflight=registry,
+    )
+
+
+def _twin(
+    request_id: str,
+    *,
+    key: str = "22222222-2222-2222-2222-222222222222",
+    protocol: str = "chat",
+    model: str = "gpt-5.6-luna",
+    provider: str = "openai",
+    **values,
+) -> PreparedInference:
+    prepared = _prepared(
+        "the same question", protocol=protocol, model=model, provider=provider
+    )
+    payload = {**prepared.payload, **values.pop("payload", {})}
+    values.setdefault("inflight_sharing", True)
+    return replace(
+        prepared,
+        context=prepared.context.model_copy(
+            update={
+                "request_id": RequestId(request_id),
+                "api_key_id": ApiKeyId(UUID(key)),
+            }
+        ),
+        payload=payload,
+        **values,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_request_digest_hashes_the_bytes_as_sent_with_the_route() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    async def digest(prepared: PreparedInference) -> str | None:
+        admitted = await _inflight_stage(InFlightRegistry()).run(prepared)
+        assert admitted.admission is not None
+        return admitted.admission.request_digest
+
+    base = _twin("req_1")
+    reordered = replace(base, payload=dict(reversed(base.payload.items())))
+
+    assert await digest(base) == await digest(_twin("req_2"))
+    assert (
+        len(
+            {
+                await digest(base),
+                await digest(replace(base, model="gpt-5-nano")),
+                await digest(replace(base, stream=True)),
+                await digest(reordered),
+            }
+        )
+        == 4
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_a_request_admitted_while_its_twin_is_in_flight_names_it() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    first = await _inflight_stage(registry).run(_twin("req_1"))
+    second = await _inflight_stage(registry).run(_twin("req_2"))
+    assert first.admission is not None and second.admission is not None
+    registry.leave(str(first.tenant_id), str(first.admission.request_digest), "req_1")
+    later = await _inflight_stage(registry).run(_twin("req_3"))
+
+    assert first.admission.inflight_duplicate_of is None
+    assert second.admission.inflight_duplicate_of == "req_1"
+    assert later.admission is not None
+    assert later.admission.inflight_duplicate_of is None, "sequential, not overlapping"
+
+
+_OTHER_KEY = "33333333-3333-3333-3333-333333333333"
+_CLAUDE = {
+    "protocol": "messages",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+}
+_GEMINI = {
+    "protocol": "generate_content",
+    "provider": "google",
+    "model": "gemini-3.5-flash",
+    "payload": {"generationConfig": {"temperature": 0}},
+}
+_HOT_GEMINI = {**_GEMINI, "payload": {"generationConfig": {"temperature": 0.9}}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("leader", "follower", "follows"),
+    [
+        ({}, {}, True),
+        ({"payload": {"temperature": 0}}, {"payload": {"temperature": 0}}, True),
+        (_CLAUDE, _CLAUDE, True),
+        (_GEMINI, _GEMINI, True),
+        ({}, {"key": _OTHER_KEY}, False),
+        ({}, {"inflight_sharing": False}, False),
+        ({"inflight_sharing": False}, {}, False),
+        ({"payload": {"temperature": 0.7}}, {"payload": {"temperature": 0.7}}, False),
+        ({"payload": {"n": 2}}, {"payload": {"n": 2}}, False),
+        ({"stream": True}, {"stream": True}, False),
+        ({"protocol": "responses"}, {"protocol": "responses"}, False),
+        (_HOT_GEMINI, _HOT_GEMINI, False),
+    ],
+)
+async def test_only_a_shareable_twin_of_the_same_key_follows(
+    leader, follower, follows
+) -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    await _inflight_stage(registry).run(_twin("req_1", **leader))
+    stage = _inflight_stage(registry)
+    admitted = await stage.run(_twin("req_2", **follower))
+
+    assert admitted.admission is not None
+    assert admitted.admission.inflight_duplicate_of == "req_1"
+    assert (stage.leader is not None) is follows
+
+
+@pytest.mark.asyncio
+async def test_a_twin_arriving_after_the_answer_was_published_calls_itself() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    first = await _inflight_stage(registry).run(_twin("req_1"))
+    assert first.admission is not None
+    # The leader has its answer and is still finalizing: it has not left yet.
+    registry.publish(
+        str(first.tenant_id), str(first.admission.request_digest), "req_1", "answer"
+    )
+    stage = _inflight_stage(registry)
+    late = await stage.run(_twin("req_2"))
+
+    assert late.admission is not None
+    assert late.admission.inflight_duplicate_of == "req_1"
+    assert stage.leader is None
+
+
+@pytest.mark.asyncio
+async def test_a_token_count_and_a_refused_reservation_leave_nothing_behind() -> None:
+    from shim.gateway.admission import InFlightRegistry
+
+    registry = InFlightRegistry()
+    counted = await _inflight_stage(registry).run(
+        _twin(
+            "req_1",
+            protocol="count_tokens",
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+        )
+    )
+    with pytest.raises(RuntimeError):
+        await _inflight_stage(registry, AsyncMock(side_effect=RuntimeError)).run(
+            _twin("req_2")
+        )
+
+    assert counted.admission is not None
+    assert counted.admission.inflight_duplicate_of is None
+    assert not registry.entries
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retires_on", "warning"),
+    [
+        ("2026-10-20", "MODEL_RETIRING"),
+        ("2026-10-21", None),
+        ("2026-07-21", "MODEL_RETIRED"),
+    ],
+)
+async def test_a_retiring_model_is_warned_ninety_days_ahead_and_still_admitted(
+    retires_on, warning
+) -> None:
+    from shim.billing.lifecycle import ModelLifecycle, Retirement
+
+    lifecycle = ModelLifecycle(
+        {
+            "openai": {
+                "gpt-5.6-luna": Retirement(
+                    retires_on=retires_on,
+                    source="https://developers.openai.com/api/docs/deprecations",
+                    checked_on="2026-07-01",
+                )
+            }
+        }
+    )
+    usage = SimpleNamespace(admit=AsyncMock())
+    stage = AdmissionStage(
+        SimpleNamespace(headers={}),
+        usage,
+        rate_limiter=SimpleNamespace(allow=AsyncMock(return_value=True)),
+        loop_detector=SimpleNamespace(
+            check_exact_repeat=AsyncMock(return_value=LoopDetectionResult("SAFE", 1))
+        ),
+        loop_repeat_limit=8,
+        loop_window_seconds=300,
+        cost_tag_max_length=64,
+        model_lifecycle=lifecycle,
+    )
+
+    # The request starts on 2026-07-22: 2026-10-20 is 90 days ahead, 2026-10-21 is 91.
+    admitted = await stage.run(_prepared("a question"))
+
+    assert admitted.warnings == ([warning] if warning else [])
+    usage.admit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "model", "admitted"),
+    [
+        ("embeddings", "text-embedding-3-small", True),
+        ("embeddings", "gpt-5.6-luna", False),
+        ("chat", "text-embedding-3-small", False),
+    ],
+)
+async def test_an_embeddings_model_answers_only_the_embeddings_routes(
+    protocol, model, admitted
+) -> None:
+    stage = _inflight_stage(InFlightRegistry())
+    huge = "word " * 50_000  # far above an 8,191-token window, never refused here
+    prepared = replace(
+        _prepared(huge, protocol=protocol, model=model),
+        payload={"model": model, "input": huge}
+        if protocol == "embeddings"
+        else {"model": model, "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    if not admitted:
+        with pytest.raises(HTTPException) as error:
+            await stage.run(prepared)
+        assert error.value.detail["code"] == "MODEL_NOT_PRICED"
+        return
+    result = await stage.run(prepared)
+    assert result.admission is not None
+    assert result.admission.maximum_output_tokens == 0
+    assert "CONTEXT_MAY_EXCEED" not in result.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_registry_target_embeds_without_the_catalog() -> None:
+    from shim.gateway.kernel.result import ProviderTarget
+
+    prepared = replace(
+        _prepared("hello", protocol="embeddings", model="internal-embedder"),
+        payload={"model": "internal-embedder", "input": "hello"},
+        target=ProviderTarget(
+            deployment_id="dep-1",
+            base_url="https://embed.internal/v1",
+            upstream_model="bge-m3",
+            credential_reference="ref",
+            timeout_seconds=5,
+            declared_version="v1",
+        ),
+    )
+
+    result = await _inflight_stage(InFlightRegistry()).run(prepared)
+
+    assert result.admission is not None and result.admission.maximum_output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_embeddings_model_is_still_warned(monkeypatch) -> None:
+    _catalog(monkeypatch, status="deprecated", kind="embedding")
+    prepared = replace(
+        _prepared("x", protocol="embeddings", model="text-embedding-3-small"),
+        payload={"model": "text-embedding-3-small", "input": "x"},
+    )
+
+    result = await _inflight_stage(InFlightRegistry()).run(prepared)
+
+    assert result.warnings == ["MODEL_DEPRECATED"]
+
+
+def test_the_embeddings_routes_name_their_source_endpoint() -> None:
+    chat = _prepared("x")
+    single = replace(chat, protocol="embed_content", payload={"content": {}})
+    batch = replace(chat, protocol="embed_content", payload={"requests": []})
+
+    assert [
+        replace(chat, protocol="embeddings").source_endpoint,
+        single.source_endpoint,
+        batch.source_endpoint,
+    ] == ["embeddings", "embedContent", "batchEmbedContents"]

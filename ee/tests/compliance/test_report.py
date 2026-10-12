@@ -223,6 +223,8 @@ async def test_forward_target_rotation_rebinds_queued_delivery_before_cleanup(
         execute=AsyncMock(
             return_value=SimpleNamespace(scalars=lambda: (queued,)),
         ),
+        # No gateway settings stored: four eyes is off.
+        scalar=AsyncMock(return_value=None),
         commit=AsyncMock(
             side_effect=RuntimeError("commit failed") if fail_commit else None
         ),
@@ -1111,6 +1113,7 @@ async def test_connector_and_forward_target_changes_runs_and_reports_are_audited
         "before": {"min_severity": "high"},
         "after": {"min_severity": "critical"},
         "destination_rotated": False,
+        "policy_version": 1,
     }
     assert extra["compliance.forward_target_deleted"]["before"]["min_severity"] == (
         "critical"

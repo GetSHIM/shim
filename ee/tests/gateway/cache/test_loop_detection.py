@@ -146,3 +146,41 @@ async def test_the_digest_survives_a_redis_outage(redis) -> None:
     assert take_repeat_digest("tenant-1") == (
         hashlib.sha256(b"normalized prompt").hexdigest()
     )
+
+
+@pytest.mark.asyncio
+async def test_the_turn_key_rides_the_same_eval_and_fails_open(monkeypatch) -> None:
+    from shim_enterprise.core.config import settings
+
+    redis = SimpleNamespace(eval=AsyncMock(return_value=[1, 6]))
+    detector = LoopDetectionService(SimpleNamespace(redis=redis))
+
+    async def turn_key(tenant: str) -> str:
+        await detector.check_exact_repeat(
+            tenant, "prompt", limit=8, window_seconds=300, turn_key="abc"
+        )
+        return redis.eval.await_args.args[3]
+
+    result = await detector.check_exact_repeat(
+        "tenant-1", "prompt", limit=8, window_seconds=300, turn_key="abc"
+    )
+
+    assert (result.chain_length, result.turn_repeats) == (1, 6)
+    redis.eval.assert_awaited_once()
+    arguments = redis.eval.await_args.args
+    assert arguments[1] == 2
+    assert arguments[2].startswith("loop:tenant-1:")
+    assert arguments[4] == 300
+    # Keyed per tenant and installation: the bare digest never reaches Redis.
+    stored = arguments[3]
+    assert stored.startswith("turn:tenant-1:") and "abc" not in stored
+    assert await turn_key("tenant-2") != stored.replace("tenant-1", "tenant-2")
+    monkeypatch.setattr(settings, "COMPLIANCE_HASH_SALT", "another-installation-salt")
+    assert await turn_key("tenant-1") != stored
+    failing = LoopDetectionService(
+        SimpleNamespace(redis=SimpleNamespace(eval=AsyncMock(side_effect=OSError())))
+    )
+    failed = await failing.check_exact_repeat(
+        "tenant-1", "prompt", limit=8, window_seconds=300, turn_key="abc"
+    )
+    assert (failed.status, failed.turn_repeats) == ("SAFE", 0)

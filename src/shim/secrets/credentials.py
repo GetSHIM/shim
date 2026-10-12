@@ -61,6 +61,12 @@ class EphemeralProviderCredential:
 
 
 class ProviderCredentialResolver(Protocol):
+    """A provider key for one invocation.
+
+    A `ProviderCallError` raised here reaches the client with its own code (an Entra
+    refusal is 401 INVALID_PROVIDER_CREDENTIAL); any other exception is 503.
+    """
+
     async def resolve(
         self,
         tenant_id: TenantId,

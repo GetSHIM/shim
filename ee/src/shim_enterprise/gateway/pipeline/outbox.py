@@ -220,8 +220,12 @@ _DIAGNOSTIC_FIELDS = (
     "monitored_entities",
     "blocked_entities",
     "bulk_disclosure",
+    "injection_markers",
+    "restore_withheld",
     "rule_matches",
     "rule_matches_truncated",
+    "approval_id",
+    "request_archive",
 )
 
 
