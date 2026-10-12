@@ -72,8 +72,8 @@ async def _admin(db, organization_id: UUID, role: str = "admin") -> User:
 
 
 async def _put(db, user: User, revision: int, rules: list[dict], cache=None):
-    return await management.replace_rules(
-        management.RuleSetPut(revision=revision, rules=rules),
+    return await management.configuration.replace_rules(
+        management.configuration.RuleSetPut(revision=revision, rules=rules),
         _request(cache),
         user,
         db,
@@ -100,7 +100,7 @@ async def test_a_new_row_holds_an_empty_set_at_revision_zero(db, test_org) -> No
 async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
     db, test_user_with_org
 ) -> None:
-    view = await management.get_rules(test_user_with_org, db)
+    view = await management.configuration.get_rules(test_user_with_org, db)
 
     assert (view.revision, view.rules, view.updated_by, view.updated_at) == (
         0,
@@ -135,7 +135,7 @@ async def test_put_round_trip_audits_ids_kinds_and_counts_but_no_term(
     cache = _DeletingCache()
 
     view = await _put(db, admin, 0, [_rule()], cache)
-    again = await management.get_rules(admin, db)
+    again = await management.configuration.get_rules(admin, db)
     changed = await _put(
         db,
         admin,
@@ -335,7 +335,7 @@ async def test_a_body_over_the_size_limit_is_refused_while_it_arrives(
 def test_readers_read_and_admins_write() -> None:
     guards = {
         (method, route.path): inspect.getclosurevars(dependency.call).nonlocals
-        for route in management.router.routes
+        for route in management.configuration.router.routes
         if route.path == "/rules"
         for method in route.methods
         for dependency in route.dependant.dependencies
@@ -594,7 +594,7 @@ async def test_a_rule_this_release_cannot_run_is_shown_kept_and_never_unavailabl
     await db.flush()
     service = policy_module.TenantPolicyService(_PolicyCache())
 
-    view = await management.get_rules(admin, db)
+    view = await management.configuration.get_rules(admin, db)
     resolved = await service.resolve(_key(test_org.id), db)
     await service.resolve(_key(test_org.id), db)
     updated = await _put(db, admin, 5, [_rule(state="enforced")])

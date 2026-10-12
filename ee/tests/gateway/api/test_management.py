@@ -52,15 +52,15 @@ async def test_profile_patch_can_clear_full_name(
     )
     session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
     expected = object()
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.members, "_audit", AsyncMock())
     monkeypatch.setattr(
-        management,
+        management.members,
         "_user_view",
         AsyncMock(return_value=expected),
     )
 
-    result = await management.update_profile(
-        management.UserPatch(full_name=None),
+    result = await management.members.update_profile(
+        management.members.UserPatch(full_name=None),
         user,
         session,
     )
@@ -86,15 +86,15 @@ async def test_provider_patch_can_clear_nullable_metadata(
     user = SimpleNamespace(organization_id=tenant_id)
     session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
     monkeypatch.setattr(
-        management,
+        management.providers,
         "_owned_provider_secret",
         AsyncMock(return_value=row),
     )
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.providers, "_audit", AsyncMock())
 
-    result = await management.update_provider_secret(
+    result = await management.providers.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(name=None, monthly_limit_usd=None),
+        management.providers.ProviderSecretPatch(name=None, monthly_limit_usd=None),
         user,
         session,
     )
@@ -131,14 +131,15 @@ async def test_provider_key_rotation_clears_verification(
     )
     session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
     monkeypatch.setattr(
-        management, "_owned_provider_secret", AsyncMock(return_value=row)
+        management.providers, "_owned_provider_secret", AsyncMock(return_value=row)
     )
-    monkeypatch.setattr(management, "_audit", AsyncMock())
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", AsyncMock())
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
 
-    await management.update_provider_secret(
+    await management.providers.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(key="sk-replacement-key"),
+        management.providers.ProviderSecretPatch(key="sk-replacement-key"),
         SimpleNamespace(organization_id=tenant_id),
         session,
     )
@@ -167,11 +168,14 @@ async def test_provider_secret_creation_uses_provider_purpose(
         commit=AsyncMock(),
         refresh=AsyncMock(),
     )
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", AsyncMock())
 
-    row = await management.create_provider_secret(
-        management.ProviderSecretInput(provider=provider, key="provider-api-key"),
+    row = await management.providers.create_provider_secret(
+        management.providers.ProviderSecretInput(
+            provider=provider, key="provider-api-key"
+        ),
         SimpleNamespace(organization_id=tenant_id, is_verified=True),
         session,
     )
@@ -205,9 +209,9 @@ async def test_admin_can_revoke_a_pending_member_invite(
         commit=AsyncMock(),
     )
     audit = AsyncMock()
-    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management.members, "_audit", audit)
 
-    await management.revoke_team_invite(
+    await management.members.revoke_team_invite(
         invite.id,
         SimpleNamespace(custom_role_id=None, organization_id=tenant_id, role="admin"),
         session,
@@ -245,7 +249,7 @@ async def test_invite_revocation_preserves_role_and_acceptance_boundaries(
     )
 
     with pytest.raises(management.HTTPException) as error:
-        await management.revoke_team_invite(
+        await management.members.revoke_team_invite(
             invite.id,
             SimpleNamespace(
                 custom_role_id=None, organization_id=tenant_id, role=user_role
@@ -260,17 +264,22 @@ async def test_invite_revocation_preserves_role_and_acceptance_boundaries(
 @pytest.mark.parametrize("field", ["notify_targets", "enabled"])
 def test_budget_patch_rejects_null_for_non_nullable_fields(field: str) -> None:
     with pytest.raises(ValidationError, match="field cannot be null"):
-        management.BudgetPatch.model_validate({field: None})
+        management.budgets.BudgetPatch.model_validate({field: None})
 
 
 @pytest.mark.parametrize("details", [{}, None, {"lifecycle_status": "legacy"}])
 def test_request_activity_marks_missing_or_legacy_status_unknown(details) -> None:
-    assert management._request_activity_status(details) == "unknown"
+    assert management.activity._request_activity_status(details) == "unknown"
 
 
 def test_request_activity_recognizes_estimated_usage() -> None:
-    assert management._request_usage_estimated({"usage_estimated": True}) is True
-    assert management._request_usage_estimated({"usage_estimated": False}) is False
+    assert (
+        management.activity._request_usage_estimated({"usage_estimated": True}) is True
+    )
+    assert (
+        management.activity._request_usage_estimated({"usage_estimated": False})
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -345,7 +354,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)
 
-    page = await management.list_requests(
+    page = await management.activity.list_requests(
         start=start,
         end=end,
         status_filter="completed",
@@ -382,7 +391,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
     )
     assert page.items[0].cost_usd == Decimal("0.12500000")
     assert page.items[0].model_dump(mode="json")["cost_usd"] == "0.12500000"
-    assert set(management.RequestActivityView.model_fields) == {
+    assert set(management.activity.RequestActivityView.model_fields) == {
         "request_id",
         "created_at",
         "endpoint",
@@ -491,7 +500,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
 def test_request_activity_summary_has_null_technical_metrics_without_denominator() -> (
     None
 ):
-    summary = management._request_activity_summary(
+    summary = management.activity._request_activity_summary(
         SimpleNamespace(
             requests=2,
             completed=0,
@@ -528,7 +537,7 @@ def test_request_activity_summary_has_null_technical_metrics_without_denominator
 @pytest.mark.asyncio
 async def test_request_activity_rejects_an_inverted_period() -> None:
     with pytest.raises(management.HTTPException) as exc_info:
-        await management.list_requests(
+        await management.activity.list_requests(
             start=datetime(2026, 7, 2, tzinfo=timezone.utc),
             end=datetime(2026, 7, 1, tzinfo=timezone.utc),
             status_filter=None,
@@ -611,13 +620,14 @@ async def test_provider_verification_updates_only_conclusive_results(
     )
     store = SimpleNamespace(get_secret=AsyncMock(return_value="sk-sensitive"))
     monkeypatch.setattr(
-        management, "_owned_provider_secret", AsyncMock(return_value=row)
+        management.providers, "_owned_provider_secret", AsyncMock(return_value=row)
     )
-    monkeypatch.setattr(management, "_audit", AsyncMock())
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
-    monkeypatch.setattr(management.settings, setting_name, base_url)
+    monkeypatch.setattr(management.providers, "_audit", AsyncMock())
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers.settings, setting_name, base_url)
 
-    await management.verify_provider_secret(row.id, request, user, session)
+    await management.providers.verify_provider_secret(row.id, request, user, session)
 
     assert row.verified_at is not None
     client.get.assert_awaited_once_with(
@@ -633,13 +643,17 @@ async def test_provider_verification_updates_only_conclusive_results(
     row.verified_at = datetime.now(timezone.utc)
     client.get.return_value = SimpleNamespace(status_code=429)
     with pytest.raises(management.HTTPException) as unavailable:
-        await management.verify_provider_secret(row.id, request, user, session)
+        await management.providers.verify_provider_secret(
+            row.id, request, user, session
+        )
     assert unavailable.value.status_code == 503
     assert row.verified_at is not None
 
     client.get.return_value = SimpleNamespace(status_code=401)
     with pytest.raises(management.HTTPException) as rejected:
-        await management.verify_provider_secret(row.id, request, user, session)
+        await management.providers.verify_provider_secret(
+            row.id, request, user, session
+        )
     assert rejected.value.status_code == 400
     assert row.verified_at is None
 
@@ -705,9 +719,9 @@ async def test_request_export_streams_all_filtered_rows_and_neutralizes_formulas
         commit=AsyncMock(),
     )
     audit = AsyncMock()
-    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management.activity, "_audit", audit)
 
-    response = await management.export_requests(
+    response = await management.activity.export_requests(
         start=None,
         end=None,
         status_filter="completed",
@@ -784,7 +798,7 @@ async def test_request_export_rejects_oversized_window_before_query() -> None:
     session = SimpleNamespace(scalar=AsyncMock(), execute=AsyncMock())
 
     with pytest.raises(management.HTTPException, match="31 days") as error:
-        await management.export_requests(
+        await management.activity.export_requests(
             start=end - timedelta(days=32),
             end=end,
             status_filter=None,
@@ -811,7 +825,7 @@ async def test_request_export_rejects_more_than_10000_rows() -> None:
     )
 
     with pytest.raises(management.HTTPException, match="10000 rows") as error:
-        await management.export_requests(
+        await management.activity.export_requests(
             start=None,
             end=None,
             status_filter=None,
@@ -878,11 +892,11 @@ def test_billing_exports_render_safe_csv_and_pdf() -> None:
     start = datetime(2026, 7, 1, tzinfo=timezone.utc)
     end = datetime(2026, 7, 2, tzinfo=timezone.utc)
 
-    exported = management._billing_breakdown_csv(
+    exported = management.usage._billing_breakdown_csv(
         [record], {"=formula": "=team"}
     ).decode("utf-8-sig")
     assert "'=formula" in exported and "'=team" in exported
-    assert management._billing_breakdown_pdf(
+    assert management.usage._billing_breakdown_pdf(
         [record], {}, "provider", start, end
     ).startswith(b"%PDF")
 
@@ -893,7 +907,7 @@ async def test_billing_export_rejects_more_than_31_days_before_query() -> None:
     session = SimpleNamespace(execute=AsyncMock())
 
     with pytest.raises(management.HTTPException, match="31 days") as error:
-        await management.export_billing_breakdown(
+        await management.usage.export_billing_breakdown(
             start_date=end - timedelta(days=32),
             end_date=end,
             group_by="model",
@@ -910,8 +924,8 @@ async def test_billing_export_rejects_more_than_31_days_before_query() -> None:
 @pytest.mark.parametrize(
     ("operation", "extra"),
     [
-        (management.billing_usage, {}),
-        (management.billing_breakdown, {"group_by": "model", "limit": 100}),
+        (management.usage.billing_usage, {}),
+        (management.usage.billing_breakdown, {"group_by": "model", "limit": 100}),
     ],
 )
 async def test_synchronous_billing_views_reject_more_than_31_days_before_query(
@@ -942,7 +956,7 @@ async def test_billing_usage_rejects_more_than_500_rows(
     monkeypatch.setattr(BillingReadModels, "daily_usage", daily_usage)
 
     with pytest.raises(management.HTTPException, match="500 rows") as error:
-        await management.billing_usage(
+        await management.usage.billing_usage(
             start_date=None,
             end_date=None,
             user=SimpleNamespace(organization_id=uuid4()),
@@ -961,9 +975,9 @@ async def test_billing_export_caps_grouped_results(
         execute=AsyncMock(return_value=SimpleNamespace(all=lambda: [])),
         commit=AsyncMock(),
     )
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.usage, "_audit", AsyncMock())
 
-    response = await management.export_billing_breakdown(
+    response = await management.usage.export_billing_breakdown(
         start_date=end - timedelta(days=30),
         end_date=end,
         group_by="model",
@@ -994,7 +1008,7 @@ async def test_billing_export_rejects_more_than_500_groups(
     monkeypatch.setattr(BillingReadModels, "breakdown", breakdown)
 
     with pytest.raises(management.HTTPException, match="500 groups") as error:
-        await management.export_billing_breakdown(
+        await management.usage.export_billing_breakdown(
             start_date=None,
             end_date=None,
             group_by="model",
@@ -1008,7 +1022,7 @@ async def test_billing_export_rejects_more_than_500_groups(
 
 def test_budget_thresholds_are_fractions_and_say_so() -> None:
     with pytest.raises(ValidationError, match="thresholds are fractions") as refused:
-        management.BudgetInput(
+        management.budgets.BudgetInput(
             scope_type="org",
             limit_usd=1,
             alert_thresholds=[50],
@@ -1016,14 +1030,14 @@ def test_budget_thresholds_are_fractions_and_say_so() -> None:
         )
     assert "50 is outside (0, 5]" in str(refused.value)
 
-    accepted = management.BudgetInput(
+    accepted = management.budgets.BudgetInput(
         scope_type="org",
         limit_usd=1,
         alert_thresholds=[0.5, 1.0],
         notify_targets=[{"kind": "slack", "endpoint": "https://hooks.example"}],
     )
     assert accepted.alert_thresholds == [0.5, 1.0]
-    schema = management.BudgetInput.model_json_schema()["properties"]
+    schema = management.budgets.BudgetInput.model_json_schema()["properties"]
     assert "0.8 means 80 percent" in schema["alert_thresholds"]["description"]
 
 
@@ -1069,7 +1083,7 @@ async def test_plan_upgrade_error_names_the_eligible_plans(db) -> None:
     await db.flush()
 
     with pytest.raises(management.HTTPException) as refused:
-        await management._require_entitlement(db, organization.id, "team_rbac")
+        await management._common._require_entitlement(db, organization.id, "team_rbac")
 
     assert refused.value.status_code == 403
     assert refused.value.detail == {
@@ -1177,8 +1191,8 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
     await db.flush()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
 
-    await management.update_privacy_settings(
-        management.PrivacyPatch(
+    await management.configuration.update_privacy_settings(
+        management.configuration.PrivacyPatch(
             block_email=False, block_phone=False, block_secrets=True
         ),
         request,
@@ -1197,8 +1211,8 @@ async def test_relaxing_privacy_records_before_after_and_forwards_once_per_targe
         )
     ).all()
     deliveries = [event.payload for event in delivery_events]
-    await management.update_privacy_settings(
-        management.PrivacyPatch(block_email=True),
+    await management.configuration.update_privacy_settings(
+        management.configuration.PrivacyPatch(block_email=True),
         request,
         test_user_with_org,
         db,
@@ -1268,7 +1282,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
     tenant_id = test_user_with_org.organization_id
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
 
-    row = await management.ensure_privacy_defaults(db, tenant_id)
+    row = await management.configuration.ensure_privacy_defaults(db, tenant_id)
     await db.refresh(row)
     assert (
         row.entity_actions,
@@ -1276,8 +1290,8 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
         row.bulk_threshold,
         row.response_scan,
     ) == ({}, "random", 50, "off")
-    defaults = management.PrivacySettings.model_validate(
-        await management.get_privacy_settings(test_user_with_org, db)
+    defaults = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.get_privacy_settings(test_user_with_org, db)
     )
     assert defaults.entity_actions == {}
     assert {
@@ -1285,9 +1299,9 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
     } == {"PERSON_NAME_TR"}
     assert defaults.effective_actions["PERSON_NAME_TR"] == "off"
 
-    updated = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(
+    updated = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(
                 block_email=False,
                 entity_actions={
                     "SECRET": "block",
@@ -1300,14 +1314,17 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
             db,
         )
     )
-    unchanged = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(block_phone=True), request, test_user_with_org, db
+    unchanged = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(block_phone=True),
+            request,
+            test_user_with_org,
+            db,
         )
     )
-    cleared = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(entity_actions={}),
+    cleared = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(entity_actions={}),
             request,
             test_user_with_org,
             db,
@@ -1353,7 +1370,7 @@ async def test_privacy_defaults_and_entity_actions_round_trip(
 )
 def test_privacy_patch_rejects_null_and_unknown_entity_actions(body) -> None:
     with pytest.raises(ValidationError):
-        management.PrivacyPatch.model_validate(body)
+        management.configuration.PrivacyPatch.model_validate(body)
 
 
 @pytest.mark.asyncio
@@ -1386,13 +1403,19 @@ async def test_lowering_an_entity_action_is_a_relaxation(
     test_user_with_org.role = "admin"
     tenant_id = test_user_with_org.organization_id
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
-    await management.update_privacy_settings(
-        management.PrivacyPatch(entity_actions=before), request, test_user_with_org, db
+    await management.configuration.update_privacy_settings(
+        management.configuration.PrivacyPatch(entity_actions=before),
+        request,
+        test_user_with_org,
+        db,
     )
     seen = {event["request_id"] for event in await audit_events(tenant_id)}
 
-    await management.update_privacy_settings(
-        management.PrivacyPatch(entity_actions=after), request, test_user_with_org, db
+    await management.configuration.update_privacy_settings(
+        management.configuration.PrivacyPatch(entity_actions=after),
+        request,
+        test_user_with_org,
+        db,
     )
 
     events = {
@@ -1414,16 +1437,21 @@ async def test_profile_key_budget_run_and_exports_record_one_audit_event_each(
     assert organization is not None
     previous_name = organization.name
 
-    await management.update_profile(
-        management.UserPatch(full_name="Renamed User", organization_name="Renamed"),
+    await management.members.update_profile(
+        management.members.UserPatch(
+            full_name="Renamed User", organization_name="Renamed"
+        ),
         user,
         db,
     )
-    await management.update_api_key(
-        test_api_key.id, management.ApiKeyPatch(cost_center="finance"), user, db
+    await management.api_keys.update_api_key(
+        test_api_key.id,
+        management.api_keys.ApiKeyPatch(cost_center="finance"),
+        user,
+        db,
     )
-    await management.evaluate_budgets(user, db)
-    exported = await management.export_requests(
+    await management.budgets.evaluate_budgets(user, db)
+    exported = await management.activity.export_requests(
         start=None,
         end=None,
         status_filter=None,
@@ -1437,7 +1465,9 @@ async def test_profile_key_budget_run_and_exports_record_one_audit_event_each(
         session=db,
     )
     content = b"".join([chunk async for chunk in exported.body_iterator])
-    await management.export_billing_breakdown(None, None, "model", "csv", user, db)
+    await management.usage.export_billing_breakdown(
+        None, None, "model", "csv", user, db
+    )
 
     events = await audit_events(tenant_id)
     extra = {event["endpoint"]: event["extra"] for event in events}
@@ -1492,16 +1522,16 @@ async def test_budget_changes_record_changed_fields_and_target_origins(
     db.add(budget)
     await db.flush()
     audit = AsyncMock()
-    monkeypatch.setattr(management, "_audit", audit)
-    monkeypatch.setattr(management, "_delete_budget_targets", AsyncMock())
+    monkeypatch.setattr(management.budgets, "_audit", audit)
+    monkeypatch.setattr(management.budgets, "_delete_budget_targets", AsyncMock())
 
-    await management.update_budget(
+    await management.budgets.update_budget(
         budget.id,
-        management.BudgetPatch(limit_usd=Decimal("20"), enabled=False),
+        management.budgets.BudgetPatch(limit_usd=Decimal("20"), enabled=False),
         test_user_with_org,
         db,
     )
-    await management.delete_budget(budget.id, test_user_with_org, db)
+    await management.budgets.delete_budget(budget.id, test_user_with_org, db)
 
     updated, deleted = (call.kwargs["details"] for call in audit.await_args_list)
     assert updated == {
@@ -1540,14 +1570,15 @@ async def test_provider_key_rotation_records_the_rotation_and_never_the_key(
     )
     audit = AsyncMock()
     monkeypatch.setattr(
-        management, "_owned_provider_secret", AsyncMock(return_value=row)
+        management.providers, "_owned_provider_secret", AsyncMock(return_value=row)
     )
-    monkeypatch.setattr(management, "_audit", audit)
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", audit)
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
 
-    await management.update_provider_secret(
+    await management.providers.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(key=secret, name="Renamed"),
+        management.providers.ProviderSecretPatch(key=secret, name="Renamed"),
         SimpleNamespace(organization_id=row.organization_id),
         SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
     )
@@ -1622,21 +1653,21 @@ async def test_turning_stable_placeholders_on_is_a_relaxation_and_off_is_not(
     test_user_with_org.role = "admin"
     tenant_id = test_user_with_org.organization_id
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
-    defaults = management.PrivacySettings.model_validate(
-        await management.get_privacy_settings(test_user_with_org, db)
+    defaults = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.get_privacy_settings(test_user_with_org, db)
     )
 
-    stable = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(placeholder_mode="stable"),
+    stable = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(placeholder_mode="stable"),
             request,
             test_user_with_org,
             db,
         )
     )
-    random = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(placeholder_mode="random"),
+    random = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(placeholder_mode="random"),
             request,
             test_user_with_org,
             db,
@@ -1664,19 +1695,21 @@ async def test_turning_stable_placeholders_on_is_a_relaxation_and_off_is_not(
 @pytest.mark.parametrize("mode", [None, "fixed"])
 def test_privacy_patch_rejects_an_unknown_placeholder_mode(mode) -> None:
     with pytest.raises(ValidationError):
-        management.PrivacyPatch.model_validate({"placeholder_mode": mode})
+        management.configuration.PrivacyPatch.model_validate({"placeholder_mode": mode})
 
 
 @pytest.mark.parametrize("field", ["placeholder_mode", "response_scan"])
 def test_the_privacy_patch_contract_advertises_no_value_for_an_absent_mode(
     field,
 ) -> None:
-    schema = management.PrivacyPatch.model_json_schema()["properties"][field]
+    schema = management.configuration.PrivacyPatch.model_json_schema()["properties"][
+        field
+    ]
 
     # A generated client sends an advertised default on every PUT.
     assert schema.get("default") is None
     with pytest.raises(ValidationError):
-        management.PrivacyPatch.model_validate({field: None})
+        management.configuration.PrivacyPatch.model_validate({field: None})
 
 
 @pytest.mark.asyncio
@@ -1696,17 +1729,17 @@ async def test_raising_or_clearing_the_bulk_threshold_is_a_relaxation(
     test_user_with_org.role = "admin"
     tenant_id = test_user_with_org.organization_id
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
-    await management.update_privacy_settings(
-        management.PrivacyPatch(bulk_threshold=before),
+    await management.configuration.update_privacy_settings(
+        management.configuration.PrivacyPatch(bulk_threshold=before),
         request,
         test_user_with_org,
         db,
     )
     seen = {event["request_id"] for event in await audit_events(tenant_id)}
 
-    updated = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(bulk_threshold=after),
+    updated = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(bulk_threshold=after),
             request,
             test_user_with_org,
             db,
@@ -1729,7 +1762,9 @@ async def test_raising_or_clearing_the_bulk_threshold_is_a_relaxation(
 @pytest.mark.parametrize("threshold", [1, 0, -5, "many", 2**31])
 def test_privacy_patch_rejects_a_bulk_threshold_outside_its_range(threshold) -> None:
     with pytest.raises(ValidationError):
-        management.PrivacyPatch.model_validate({"bulk_threshold": threshold})
+        management.configuration.PrivacyPatch.model_validate(
+            {"bulk_threshold": threshold}
+        )
 
 
 @pytest.mark.asyncio
@@ -1739,14 +1774,14 @@ async def test_turning_the_response_scan_off_is_a_relaxation_and_on_is_not(
     test_user_with_org.role = "admin"
     tenant_id = test_user_with_org.organization_id
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
-    defaults = management.PrivacySettings.model_validate(
-        await management.get_privacy_settings(test_user_with_org, db)
+    defaults = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.get_privacy_settings(test_user_with_org, db)
     )
 
     modes = [
-        management.PrivacySettings.model_validate(
-            await management.update_privacy_settings(
-                management.PrivacyPatch(response_scan=mode),
+        management.configuration.PrivacySettings.model_validate(
+            await management.configuration.update_privacy_settings(
+                management.configuration.PrivacyPatch(response_scan=mode),
                 request,
                 test_user_with_org,
                 db,
@@ -1768,12 +1803,12 @@ async def test_turning_the_response_scan_off_is_a_relaxation_and_on_is_not(
         if event["endpoint"] == "tenant.privacy_policy_updated"
     ] == ["count", "off"]
     with pytest.raises(ValidationError):
-        management.PrivacyPatch.model_validate({"response_scan": "mask"})
+        management.configuration.PrivacyPatch.model_validate({"response_scan": "mask"})
 
 
 @pytest.mark.asyncio
 async def test_the_request_list_filters_on_one_warning_code() -> None:
-    filters = await management._request_filters(
+    filters = await management.activity._request_filters(
         None,  # type: ignore[arg-type]
         SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
         start=None,
@@ -1794,7 +1829,7 @@ async def test_the_request_list_filters_on_one_warning_code() -> None:
 
 @pytest.mark.asyncio
 async def test_the_request_list_filters_on_one_rule_id() -> None:
-    filters = await management._request_filters(
+    filters = await management.activity._request_filters(
         None,  # type: ignore[arg-type]
         SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
         start=None,
@@ -1816,7 +1851,7 @@ async def test_the_request_list_filters_on_one_rule_id() -> None:
 @pytest.mark.asyncio
 async def test_the_request_list_filters_on_one_approval_id() -> None:
     approval_id = uuid4()
-    filters = await management._request_filters(
+    filters = await management.activity._request_filters(
         None,  # type: ignore[arg-type]
         SimpleNamespace(custom_role_id=None, role="owner", organization_id=uuid4()),
         start=None,
@@ -1922,7 +1957,9 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
 
     event.listen(connection, "before_cursor_execute", count)
     try:
-        page = await management.list_prompt_versions(None, None, None, None, owner, db)
+        page = await management.activity.list_prompt_versions(
+            None, None, None, None, owner, db
+        )
     finally:
         event.remove(connection, "before_cursor_execute", count)
 
@@ -1949,8 +1986,10 @@ async def test_prompt_versions_group_by_hash_in_one_query(db, test_api_key) -> N
     assert (newest.requests, newest.failed, newest.p95_shim_latency_ms) == (2, 1, 10)
     assert newest.api_keys == []
     assert unhashed.requests == 1
-    by_key = await management.list_prompt_versions(None, None, uuid4(), None, owner, db)
-    by_model = await management.list_prompt_versions(
+    by_key = await management.activity.list_prompt_versions(
+        None, None, uuid4(), None, owner, db
+    )
+    by_model = await management.activity.list_prompt_versions(
         None, None, None, "NANO", owner, db
     )
     assert by_key.items == []
@@ -1986,7 +2025,9 @@ async def test_prompt_versions_count_budget_denials_as_policy_not_failure(
     )
 
     (version,) = (
-        await management.list_prompt_versions(None, None, None, None, owner, db)
+        await management.activity.list_prompt_versions(
+            None, None, None, None, owner, db
+        )
     ).items
 
     # The same rule as the request summary's technical failures.
@@ -2006,7 +2047,9 @@ async def test_prompt_versions_say_when_no_model_was_named(db, test_org) -> None
     )
 
     (version,) = (
-        await management.list_prompt_versions(None, None, None, None, owner, db)
+        await management.activity.list_prompt_versions(
+            None, None, None, None, owner, db
+        )
     ).items
 
     assert sorted(version.models) == ["gpt-5-mini", UNSPECIFIED_MODEL]
@@ -2028,14 +2071,18 @@ async def test_prompt_versions_stop_at_200_and_bound_the_window(db, test_org) ->
         custom_role_id=None, role="owner", organization_id=test_org.id
     )
 
-    page = await management.list_prompt_versions(None, None, None, None, owner, db)
+    page = await management.activity.list_prompt_versions(
+        None, None, None, None, owner, db
+    )
 
     assert (len(page.items), page.truncated) == (200, True)
     assert page.items[0].system_prompt_hash == f"hmac-sha256:v1:{200:064x}"
     now = datetime.now(timezone.utc)
     for window in ((now, now - timedelta(seconds=1)), (now - timedelta(days=32), now)):
         with pytest.raises(management.HTTPException) as refused:
-            await management.list_prompt_versions(*window, None, None, owner, db)
+            await management.activity.list_prompt_versions(
+                *window, None, None, owner, db
+            )
         assert refused.value.status_code == 422
 
 
@@ -2386,7 +2433,9 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
             }
         )
     )
-    monkeypatch.setattr(management.settings, "SHIM_MODEL_LIFECYCLE_FILE", dates)
+    monkeypatch.setattr(
+        management.deployments.settings, "SHIM_MODEL_LIFECYCLE_FILE", dates
+    )
     other = Organization(id=uuid4(), name="Other", slug=f"retire-{uuid4().hex}")
     db.add(other)
     await db.flush()
@@ -2490,7 +2539,7 @@ async def test_model_retirements_list_who_uses_a_retiring_model(
                 ).status_code
                 for days in (0, 731)
             ]
-            monkeypatch.setattr(management, "_AFFECTED_LIMIT", 1)
+            monkeypatch.setattr(management.deployments, "_AFFECTED_LIMIT", 1)
             capped = await client.get("/api/v1/management/model-retirements")
             user.role = "member"
             member = await client.get("/api/v1/management/model-retirements")
@@ -2558,8 +2607,8 @@ async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
         ),
         {"tenant": tenant_id},
     )
-    default = management.PrivacySettings.model_validate(
-        await management.get_privacy_settings(user, db)
+    default = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.get_privacy_settings(user, db)
     )
 
     async def relaxations() -> list[list[str]]:
@@ -2569,9 +2618,9 @@ async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
             if event["endpoint"] == "tenant.privacy_protection_relaxed"
         ]
 
-    added = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(
+    added = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(
                 embeddings_monitor_types=["TR_NATIONAL_ID", "IBAN_CODE"]
             ),
             request,
@@ -2580,9 +2629,11 @@ async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
         )
     )
     after_adding = await relaxations()
-    removed = management.PrivacySettings.model_validate(
-        await management.update_privacy_settings(
-            management.PrivacyPatch(embeddings_monitor_types=["IBAN_CODE"]),
+    removed = management.configuration.PrivacySettings.model_validate(
+        await management.configuration.update_privacy_settings(
+            management.configuration.PrivacyPatch(
+                embeddings_monitor_types=["IBAN_CODE"]
+            ),
             request,
             user,
             db,
@@ -2601,9 +2652,11 @@ async def test_an_embeddings_relaxation_is_stored_and_recorded_by_type(
     assert removed.embeddings_monitor_types == ["IBAN_CODE"]
     assert await relaxations() == after_adding, "removing a type is no relaxation"
     with pytest.raises(ValidationError, match="unknown entity type"):
-        management.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
+        management.configuration.PrivacyPatch(embeddings_monitor_types=["NOT_A_TYPE"])
     with pytest.raises(ValidationError, match="must not be null"):
-        management.PrivacyPatch.model_validate({"embeddings_monitor_types": None})
+        management.configuration.PrivacyPatch.model_validate(
+            {"embeddings_monitor_types": None}
+        )
 
 
 _ENTRA = {
@@ -2645,11 +2698,14 @@ async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
         refresh=AsyncMock(),
     )
     audit = AsyncMock()
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
-    monkeypatch.setattr(management, "_audit", audit)
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", audit)
 
-    row = await management.create_provider_secret(
-        management.ProviderSecretInput(provider="azure_entra", azure_entra=_ENTRA),
+    row = await management.providers.create_provider_secret(
+        management.providers.ProviderSecretInput(
+            provider="azure_entra", azure_entra=_ENTRA
+        ),
         SimpleNamespace(organization_id=tenant_id, is_verified=True),
         session,
     )
@@ -2667,7 +2723,9 @@ async def test_an_entra_secret_is_stored_as_canonical_json_and_never_shown(
     )
     assert (row.provider, row.masked_key) == ("azure_entra", "entra:000...00a1")
     row.id, row.created_at = uuid4(), datetime.now(timezone.utc)
-    shown = management.ProviderSecretView.model_validate(row).model_dump_json()
+    shown = management.providers.ProviderSecretView.model_validate(
+        row
+    ).model_dump_json()
     details = audit.await_args.kwargs["details"]
     assert details["provider"] == "azure_entra"
     for text in (shown, json.dumps(details, default=str)):
@@ -2720,7 +2778,7 @@ async def test_a_refused_body_is_never_echoed_back(
 )
 def test_a_provider_secret_needs_exactly_the_field_of_its_kind(fields) -> None:
     with pytest.raises(ValidationError):
-        management.ProviderSecretInput.model_validate(fields)
+        management.providers.ProviderSecretInput.model_validate(fields)
 
 
 @pytest.mark.asyncio
@@ -2736,17 +2794,18 @@ async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
     )
     audit = AsyncMock()
     monkeypatch.setattr(
-        management, "_owned_provider_secret", AsyncMock(return_value=row)
+        management.providers, "_owned_provider_secret", AsyncMock(return_value=row)
     )
-    monkeypatch.setattr(management, "_audit", audit)
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", audit)
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
     user = SimpleNamespace(organization_id=row.organization_id)
     session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
     rotated = {**_ENTRA, "client_id": "00000000-0000-0000-0000-0000000000b2"}
 
-    await management.update_provider_secret(
+    await management.providers.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(
+        management.providers.ProviderSecretPatch(
             azure_entra={**rotated, "scope": "https://ai.azure.com/.default"}
         ),
         user,
@@ -2763,12 +2822,17 @@ async def test_an_entra_rotation_replaces_all_four_and_a_kind_never_changes(
     assert (row.masked_key, row.verified_at) == ("entra:000...00b2", None)
     assert audit.await_args.kwargs["details"]["key_rotated"] is True
     for patch, provider in [
-        (management.ProviderSecretPatch(key="provider-api-key"), "azure_entra"),
-        (management.ProviderSecretPatch(azure_entra=_ENTRA), "openai"),
+        (
+            management.providers.ProviderSecretPatch(key="provider-api-key"),
+            "azure_entra",
+        ),
+        (management.providers.ProviderSecretPatch(azure_entra=_ENTRA), "openai"),
     ]:
         row.provider = provider
         with pytest.raises(HTTPException) as error:
-            await management.update_provider_secret(row.id, patch, user, session)
+            await management.providers.update_provider_secret(
+                row.id, patch, user, session
+            )
         assert error.value.status_code == 422
 
 
@@ -2802,12 +2866,13 @@ async def test_an_entra_secret_is_verified_by_a_fresh_token(
     )
     audit = AsyncMock()
     monkeypatch.setattr(
-        management, "_owned_provider_secret", AsyncMock(return_value=row)
+        management.providers, "_owned_provider_secret", AsyncMock(return_value=row)
     )
-    monkeypatch.setattr(management, "_audit", audit)
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.providers, "_audit", audit)
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
     monkeypatch.setattr(
-        management.settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test"
+        management.providers.settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test"
     )
     seen = []
 
@@ -2821,7 +2886,7 @@ async def test_an_entra_secret_is_verified_by_a_fresh_token(
         )
         session = SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock())
         if outcome == 200:
-            await management.verify_provider_secret(
+            await management.providers.verify_provider_secret(
                 row.id,
                 request,
                 SimpleNamespace(organization_id=row.organization_id),
@@ -2829,7 +2894,7 @@ async def test_an_entra_secret_is_verified_by_a_fresh_token(
             )
         else:
             with pytest.raises(HTTPException) as error:
-                await management.verify_provider_secret(
+                await management.providers.verify_provider_secret(
                     row.id,
                     request,
                     SimpleNamespace(organization_id=row.organization_id),
@@ -3040,7 +3105,7 @@ async def test_no_content_without_a_committed_opening_or_with_another_key(
 
     with monkeypatch.context() as patch:
         patch.setattr(db, "commit", failed_commit)
-        patch.setattr(management.asyncio, "to_thread", decrypted)
+        patch.setattr(management.archive.asyncio, "to_thread", decrypted)
         lost = await _archive_call(db, tenant["owner"], "GET", path)
     monkeypatch.setattr(settings, "ENCRYPTION_KEY", Fernet.generate_key().decode())
     rotated = await _archive_call(db, tenant["owner"], "GET", path)

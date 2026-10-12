@@ -44,15 +44,15 @@ async def _admin(db, organization_id: UUID, role: str = "admin") -> User:
     return user
 
 
-def _customers(name: str = "customers") -> management.RecordSetCreate:
-    return management.RecordSetCreate(
+def _customers(name: str = "customers") -> management.record_sets.RecordSetCreate:
+    return management.record_sets.RecordSetCreate(
         name=name,
         kind="records",
         fields=[
-            management.RecordSetFieldSpec(
+            management.record_sets.RecordSetFieldSpec(
                 name="Müşteri No", kind="token", primary=True
             ),
-            management.RecordSetFieldSpec(name="Ad Soyad", kind="name"),
+            management.record_sets.RecordSetFieldSpec(name="Ad Soyad", kind="name"),
         ],
     )
 
@@ -69,14 +69,14 @@ def _row(key: bytes, number: int, name: str) -> list[str]:
 
 
 async def _activate(db, admin, set_id, key: bytes, count: int) -> int:
-    revision = (await management.open_record_set_revision(set_id, admin, db))[
-        "revision"
-    ]
-    await management.put_record_set_chunk(
+    revision = (
+        await management.record_sets.open_record_set_revision(set_id, admin, db)
+    )["revision"]
+    await management.record_sets.put_record_set_chunk(
         set_id,
         revision,
         0,
-        management.RecordSetChunkPut(
+        management.record_sets.RecordSetChunkPut(
             records=[
                 _row(key, number, _NAMES[number % len(_NAMES)])
                 for number in range(count)
@@ -85,7 +85,7 @@ async def _activate(db, admin, set_id, key: bytes, count: int) -> int:
         admin,
         db,
     )
-    await management.activate_record_set_revision(
+    await management.record_sets.activate_record_set_revision(
         set_id, revision, _request(), admin, db
     )
     return revision
@@ -95,13 +95,20 @@ async def _activate(db, admin, set_id, key: bytes, count: int) -> int:
 async def test_a_set_shows_its_key_once_and_only_metadata_after(db, test_org) -> None:
     admin = await _admin(db, test_org.id)
 
-    created = await management.create_record_set(_customers(), _request(), admin, db)
-    listed = await management.list_record_sets(admin, db)
-    read = await management.get_record_set(UUID(str(created["id"])), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
+    listed = await management.record_sets.list_record_sets(admin, db)
+    read = await management.record_sets.get_record_set(
+        UUID(str(created["id"])), admin, db
+    )
 
     assert len(base64.urlsafe_b64decode(created["hash_key"])) == 32
     assert [row.id for row in listed] == [created["id"]]
-    assert "hash_key" not in management.RecordSetView.model_validate(read).model_dump()
+    assert (
+        "hash_key"
+        not in management.record_sets.RecordSetView.model_validate(read).model_dump()
+    )
     assert created["fields"][0] == {
         "name": "Müşteri No",
         "kind": "token",
@@ -113,12 +120,14 @@ async def test_a_set_shows_its_key_once_and_only_metadata_after(db, test_org) ->
 async def test_an_organization_holds_ten_sets(db, test_org) -> None:
     admin = await _admin(db, test_org.id)
     for number in range(10):
-        await management.create_record_set(
+        await management.record_sets.create_record_set(
             _customers(f"set-{number}"), _request(), admin, db
         )
 
     with pytest.raises(HTTPException) as refused:
-        await management.create_record_set(_customers("set-10"), _request(), admin, db)
+        await management.record_sets.create_record_set(
+            _customers("set-10"), _request(), admin, db
+        )
 
     assert (refused.value.status_code, refused.value.detail["code"]) == (
         422,
@@ -157,24 +166,26 @@ async def test_an_organization_holds_ten_sets(db, test_org) -> None:
 )
 def test_a_set_definition_is_refused_when_it_cannot_be_matched(payload) -> None:
     with pytest.raises(ValidationError):
-        management.RecordSetCreate.model_validate(payload)
+        management.record_sets.RecordSetCreate.model_validate(payload)
 
 
 @pytest.mark.asyncio
 async def test_chunk_limits_hold_at_their_bound(db, test_org) -> None:
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
-    revision = (await management.open_record_set_revision(set_id, admin, db))[
-        "revision"
-    ]
+    revision = (
+        await management.record_sets.open_record_set_revision(set_id, admin, db)
+    )["revision"]
 
     async def put(index: int, records: list[list[str]]):
-        return await management.put_record_set_chunk(
+        return await management.record_sets.put_record_set_chunk(
             set_id,
             revision,
             index,
-            management.RecordSetChunkPut(records=records),
+            management.record_sets.RecordSetChunkPut(records=records),
             admin,
             db,
         )
@@ -201,7 +212,9 @@ async def test_activation_keeps_one_revision_back_and_rolls_back(
     db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
 
     first = await _activate(db, admin, set_id, key, 3)
@@ -214,15 +227,15 @@ async def test_activation_keeps_one_revision_back_and_rolls_back(
             )
         )
     )
-    rolled = await management.activate_record_set_revision(
+    rolled = await management.record_sets.activate_record_set_revision(
         set_id, second, _request(), admin, db
     )
     with pytest.raises(HTTPException) as sealed:
-        await management.put_record_set_chunk(
+        await management.record_sets.put_record_set_chunk(
             set_id,
             third,
             1,
-            management.RecordSetChunkPut(records=[_row(key, 9, "Ad")]),
+            management.record_sets.RecordSetChunkPut(records=[_row(key, 9, "Ad")]),
             admin,
             db,
         )
@@ -248,24 +261,26 @@ async def test_a_revision_with_fewer_values_to_match_is_a_relaxation(
     db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
     await _activate(db, admin, set_id, key, 3)
-    revision = (await management.open_record_set_revision(set_id, admin, db))[
-        "revision"
-    ]
+    revision = (
+        await management.record_sets.open_record_set_revision(set_id, admin, db)
+    )["revision"]
     # As many records, but the names are gone: none can match two fields any more.
-    await management.put_record_set_chunk(
+    await management.record_sets.put_record_set_chunk(
         set_id,
         revision,
         0,
-        management.RecordSetChunkPut(
+        management.record_sets.RecordSetChunkPut(
             records=[[_row(key, number, "Ad")[0], "0" * 16] for number in range(3)]
         ),
         admin,
         db,
     )
-    await management.activate_record_set_revision(
+    await management.record_sets.activate_record_set_revision(
         set_id, revision, _request(), admin, db
     )
 
@@ -281,30 +296,36 @@ async def test_a_same_size_revision_of_other_entries_is_a_relaxation(
     db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
-    records = await management.create_record_set(_customers(), _request(), admin, db)
-    prints = await management.create_record_set(
-        management.RecordSetCreate(name="docs", kind="fingerprints"),
+    records = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
+    prints = await management.record_sets.create_record_set(
+        management.record_sets.RecordSetCreate(name="docs", kind="fingerprints"),
         _request(),
         admin,
         db,
     )
 
-    async def activate(set_id: UUID, chunk: management.RecordSetChunkPut) -> None:
-        revision = (await management.open_record_set_revision(set_id, admin, db))[
-            "revision"
-        ]
-        await management.put_record_set_chunk(set_id, revision, 0, chunk, admin, db)
-        await management.activate_record_set_revision(
+    async def activate(
+        set_id: UUID, chunk: management.record_sets.RecordSetChunkPut
+    ) -> None:
+        revision = (
+            await management.record_sets.open_record_set_revision(set_id, admin, db)
+        )["revision"]
+        await management.record_sets.put_record_set_chunk(
+            set_id, revision, 0, chunk, admin, db
+        )
+        await management.record_sets.activate_record_set_revision(
             set_id, revision, _request(), admin, db
         )
 
-    def rows(first: int) -> management.RecordSetChunkPut:
-        return management.RecordSetChunkPut(
+    def rows(first: int) -> management.record_sets.RecordSetChunkPut:
+        return management.record_sets.RecordSetChunkPut(
             records=[[f"{first + n:016x}", f"{first + n + 99:016x}"] for n in range(3)]
         )
 
-    def documents(first: int) -> management.RecordSetChunkPut:
-        return management.RecordSetChunkPut(
+    def documents(first: int) -> management.record_sets.RecordSetChunkPut:
+        return management.record_sets.RecordSetChunkPut(
             documents=[[f"{first + n:016x}" for n in range(8)]]
         )
 
@@ -328,12 +349,16 @@ async def test_deleting_a_set_locks_the_rule_set_it_is_checked_against(
     from sqlalchemy import event
 
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     statements: list[str] = []
     listener = lambda *args: statements.append(args[2])  # noqa: E731
     event.listen(db.bind.sync_engine, "before_cursor_execute", listener)
     try:
-        await management.delete_record_set(created["id"], _request(), admin, db)
+        await management.record_sets.delete_record_set(
+            created["id"], _request(), admin, db
+        )
     finally:
         event.remove(db.bind.sync_engine, "before_cursor_execute", listener)
 
@@ -346,7 +371,9 @@ async def test_deleting_a_set_locks_the_rule_set_it_is_checked_against(
 @pytest.mark.asyncio
 async def test_a_set_in_use_cannot_be_deleted(db, test_org, audit_events) -> None:
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     set_id = created["id"]
     db.add(
         OrganizationRuleSet(
@@ -364,17 +391,17 @@ async def test_a_set_in_use_cannot_be_deleted(db, test_org, audit_events) -> Non
     await db.flush()
 
     with pytest.raises(HTTPException) as in_use:
-        await management.delete_record_set(set_id, _request(), admin, db)
+        await management.record_sets.delete_record_set(set_id, _request(), admin, db)
     rule_set = await db.get(OrganizationRuleSet, test_org.id)
     rule_set.rules = []
     await db.flush()
-    await management.delete_record_set(set_id, _request(), admin, db)
+    await management.record_sets.delete_record_set(set_id, _request(), admin, db)
 
     assert (in_use.value.status_code, in_use.value.detail["code"]) == (
         409,
         "RECORD_SET_IN_USE",
     )
-    assert await management.list_record_sets(admin, db) == []
+    assert await management.record_sets.list_record_sets(admin, db) == []
     assert "tenant.record_set_deleted" in {
         event["endpoint"] for event in await audit_events(test_org.id)
     }
@@ -383,9 +410,11 @@ async def test_a_set_in_use_cannot_be_deleted(db, test_org, audit_events) -> Non
 @pytest.mark.asyncio
 async def test_a_record_set_rule_needs_an_active_set_of_its_kind(db, test_org) -> None:
     admin = await _admin(db, test_org.id)
-    records = await management.create_record_set(_customers(), _request(), admin, db)
-    prints = await management.create_record_set(
-        management.RecordSetCreate(name="docs", kind="fingerprints"),
+    records = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
+    prints = await management.record_sets.create_record_set(
+        management.record_sets.RecordSetCreate(name="docs", kind="fingerprints"),
         _request(),
         admin,
         db,
@@ -395,10 +424,10 @@ async def test_a_record_set_rule_needs_an_active_set_of_its_kind(db, test_org) -
     )
 
     async def put(match: dict, action: str = "block") -> int:
-        current = await management.get_rules(admin, db)
+        current = await management.configuration.get_rules(admin, db)
         try:
-            await management.replace_rules(
-                management.RuleSetPut(
+            await management.configuration.replace_rules(
+                management.configuration.RuleSetPut(
                     revision=current.revision,
                     rules=[
                         {
@@ -426,20 +455,20 @@ async def test_a_record_set_rule_needs_an_active_set_of_its_kind(db, test_org) -
     assert await put({"set_id": str(uuid4())}) == 422
     assert await put({"set_id": str(prints["id"])}) == 422, "not activated"
     assert await put({"set_id": str(records["id"]), "min_shared": 6}) == 422
-    revision = (await management.open_record_set_revision(prints["id"], admin, db))[
-        "revision"
-    ]
-    await management.put_record_set_chunk(
+    revision = (
+        await management.record_sets.open_record_set_revision(prints["id"], admin, db)
+    )["revision"]
+    await management.record_sets.put_record_set_chunk(
         prints["id"],
         revision,
         0,
-        management.RecordSetChunkPut(
+        management.record_sets.RecordSetChunkPut(
             documents=[[f"{value:016x}" for value in range(1, 9)]]
         ),
         admin,
         db,
     )
-    await management.activate_record_set_revision(
+    await management.record_sets.activate_record_set_revision(
         prints["id"], revision, _request(), admin, db
     )
     assert await put({"set_id": str(prints["id"]), "min_shared": 6}, "warn") == 200
@@ -453,7 +482,9 @@ async def test_a_loaded_set_matches_and_the_cache_evicts_the_oldest(
     db, test_org, monkeypatch
 ) -> None:
     admin = await _admin(db, test_org.id)
-    created = await management.create_record_set(_customers(), _request(), admin, db)
+    created = await management.record_sets.create_record_set(
+        _customers(), _request(), admin, db
+    )
     set_id, key = created["id"], base64.urlsafe_b64decode(created["hash_key"])
     revision = await _activate(db, admin, set_id, key, 4)
 

@@ -102,14 +102,14 @@ def test_a_custom_role_cannot_carry_a_reserved_or_unknown_permission(
     permission: str,
 ) -> None:
     with pytest.raises(ValidationError, match=permission):
-        management.CustomRoleInput(
+        management.members.CustomRoleInput(
             slug="viewer", name="Viewer", permissions=[permission]
         )
 
 
 def test_keys_manage_stays_with_owners_and_admins() -> None:
     with pytest.raises(ValidationError, match="keys.manage"):
-        management.CustomRoleInput(
+        management.members.CustomRoleInput(
             slug="keys", name="Keys", permissions=["keys.own", "keys.manage"]
         )
     stored = OrganizationRole(permissions=["keys.own", "keys.manage"])
@@ -127,7 +127,7 @@ def test_keys_manage_stays_with_owners_and_admins() -> None:
 @pytest.mark.parametrize("slug", ["owner", "a", "Viewer", "1viewer", "v" * 33])
 def test_a_custom_role_slug_is_short_lowercase_and_not_built_in(slug: str) -> None:
     with pytest.raises(ValidationError):
-        management.CustomRoleInput(slug=slug, name="Viewer", permissions=[])
+        management.members.CustomRoleInput(slug=slug, name="Viewer", permissions=[])
 
 
 def unguarded_routes(app: FastAPI) -> list[str]:
@@ -618,8 +618,8 @@ async def test_a_key_is_created_only_while_its_owner_holds_keys_own_under_the_lo
 
     for holder in (demoted, reassigned):
         with pytest.raises(HTTPException) as refused:
-            await management.create_api_key(
-                management.ApiKeyInput(name="k"), holder, db
+            await management.api_keys.create_api_key(
+                management.api_keys.ApiKeyInput(name="k"), holder, db
             )
         assert (refused.value.status_code, refused.value.detail) == (
             403,

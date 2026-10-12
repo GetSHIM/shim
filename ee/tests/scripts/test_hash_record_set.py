@@ -121,15 +121,15 @@ async def test_tool_output_reaches_the_api_and_matches_in_the_index(
     db.add(admin)
     await db.flush()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cache=None)))
-    created = await management.create_record_set(
-        management.RecordSetCreate(
+    created = await management.record_sets.create_record_set(
+        management.record_sets.RecordSetCreate(
             name="customers",
             kind="records",
             fields=[
-                management.RecordSetFieldSpec(
+                management.record_sets.RecordSetFieldSpec(
                     name="Müşteri No", kind="token", primary=True
                 ),
-                management.RecordSetFieldSpec(name="Ad Soyad", kind="name"),
+                management.record_sets.RecordSetFieldSpec(name="Ad Soyad", kind="name"),
             ],
         ),
         request,
@@ -147,19 +147,23 @@ async def test_tool_output_reaches_the_api_and_matches_in_the_index(
         ]
     )  # fmt: skip
     set_id = created["id"]
-    revision = (await management.open_record_set_revision(set_id, admin, db))[
-        "revision"
-    ]
+    revision = (
+        await management.record_sets.open_record_set_revision(set_id, admin, db)
+    )["revision"]
     for index, part in enumerate(sorted((tmp_path / "out").glob("chunk-*.json"))):
-        await management.put_record_set_chunk(
+        await management.record_sets.put_record_set_chunk(
             set_id,
             revision,
             index,
-            management.RecordSetChunkPut.model_validate_json(part.read_text()),
+            management.record_sets.RecordSetChunkPut.model_validate_json(
+                part.read_text()
+            ),
             admin,
             db,
         )
-    await management.activate_record_set_revision(set_id, revision, request, admin, db)
+    await management.record_sets.activate_record_set_revision(
+        set_id, revision, request, admin, db
+    )
 
     index = await load_index(lambda: nullcontext(db), test_org.id, set_id, revision)
 

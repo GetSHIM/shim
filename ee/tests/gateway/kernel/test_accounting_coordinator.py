@@ -533,7 +533,7 @@ async def test_a_privacy_block_is_listed_as_rejected_with_its_counts(
     ).scalar_one()
     monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
     await analytics_projection.project_request(OutboxMessage.from_event(event))
-    page = await management.list_requests(
+    page = await management.activity.list_requests(
         start=started_at - timedelta(minutes=1),
         end=None,
         status_filter=None,
@@ -628,7 +628,7 @@ async def test_the_approval_id_is_recorded_listed_and_filtered(
     await analytics_projection.project_request(OutboxMessage.from_event(event))
 
     async def listed(**filters) -> list:
-        page = await management.list_requests(
+        page = await management.activity.list_requests(
             start=started_at - timedelta(minutes=1),
             end=None,
             status_filter=None,
@@ -1770,7 +1770,7 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
     assert values["details"]["pricing_resolution"] == pricing_resolution
     db.add(analytics_projection.RequestLog(**values))
     await db.flush()
-    page = await management.list_requests(
+    page = await management.activity.list_requests(
         start=None,
         end=None,
         status_filter=None,
@@ -1829,17 +1829,19 @@ async def test_spend_pricing_metadata_survives_terminal_fallback(
         organization_id=test_api_key.organization_id,
         kind="human",
     )
-    billing = await management.billing_usage(start, end, user, db)
+    billing = await management.usage.billing_usage(start, end, user, db)
     expected_cost = None if pricing_resolution == "unknown" else 0.00004
     assert billing.total_cost == expected_cost
     assert billing.daily_usage[0].cost_usd == expected_cost
     assert billing.cost_complete is (pricing_resolution != "unknown")
     assert billing.unpriced_requests == (pricing_resolution == "unknown")
-    breakdown = await management.billing_breakdown(start, end, "model", 100, user, db)
+    breakdown = await management.usage.billing_breakdown(
+        start, end, "model", 100, user, db
+    )
     assert breakdown.rows[0].cost_usd == (
         None if pricing_resolution == "unknown" else Decimal("0.00004")
     )
-    exported = await management.export_billing_breakdown(
+    exported = await management.usage.export_billing_breakdown(
         start, end, "model", "csv", user, db
     )
     csv_row = next(
@@ -2551,7 +2553,7 @@ async def test_shim_latency_percentiles_exclude_historical_durations(db, test_ap
     ).one()
     request_row = (
         await db.execute(
-            management._request_summary_statement(
+            management.activity._request_summary_statement(
                 test_api_key.organization_id,
                 [
                     analytics_projection.RequestLog.organization_id
@@ -3144,8 +3146,8 @@ async def test_a_blocked_bulk_disclosure_writes_one_intent_beside_the_lifecycle(
         ),
         session=db,
     )
-    page = await management.list_requests(**filters, limit=1, offset=0)
-    exported = await management.export_requests(**filters)
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
     rows = list(
         csv.DictReader(
             io.StringIO(
@@ -3239,8 +3241,8 @@ async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
         ),
         session=db,
     )
-    page = await management.list_requests(**filters, limit=1, offset=0)
-    exported = await management.export_requests(**filters)
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
     [row] = csv.DictReader(
         io.StringIO(
             b"".join([chunk async for chunk in exported.body_iterator]).decode(
@@ -3339,8 +3341,8 @@ async def test_restore_withheld_counts_reach_the_lifecycle_the_request_list_and_
         ),
         session=db,
     )
-    page = await management.list_requests(**filters, limit=1, offset=0)
-    exported = await management.export_requests(**filters)
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
     [row] = csv.DictReader(
         io.StringIO(
             b"".join([chunk async for chunk in exported.body_iterator]).decode(

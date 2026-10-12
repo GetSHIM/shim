@@ -135,7 +135,7 @@ async def test_lifecycle_create_allows_replay_after_mutable_state_progresses() -
 async def test_spend_denial_audit_matches_every_audit_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from shim_enterprise.api.v1.management import _request_summary_statement
+    from shim_enterprise.api.v1.management.activity import _request_summary_statement
     from shim_enterprise.billing import ledger
     from shim_enterprise.observability.overview import _spend_denied
 

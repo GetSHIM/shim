@@ -130,15 +130,17 @@ def test_billing_breakdown_index_matches_tenant_reconciliation_filter() -> None:
 def test_budget_patch_reuses_create_threshold_validation() -> None:
     for thresholds in ([0], [5.01], [float("nan")], None):
         with pytest.raises(ValidationError, match=r"\(0, 5\]"):
-            management.BudgetPatch(alert_thresholds=thresholds)
+            management.budgets.BudgetPatch(alert_thresholds=thresholds)
 
-    assert management.BudgetInput(
+    assert management.budgets.BudgetInput(
         scope_type="org", limit_tokens=1, notify_targets=[_TARGET]
     ).alert_thresholds == [0.8, 1.0]
-    assert management.BudgetPatch(alert_thresholds=[5]).alert_thresholds == [5]
+    assert management.budgets.BudgetPatch(alert_thresholds=[5]).alert_thresholds == [5]
 
 
-@pytest.mark.parametrize("model", [management.BudgetInput, management.BudgetPatch])
+@pytest.mark.parametrize(
+    "model", [management.budgets.BudgetInput, management.budgets.BudgetPatch]
+)
 @pytest.mark.parametrize(
     "values",
     [
@@ -159,14 +161,16 @@ def test_budget_patch_reuses_create_threshold_validation() -> None:
     ],
 )
 def test_budget_notification_fanout_is_bounded(model, values) -> None:
-    if model is management.BudgetInput:
+    if model is management.budgets.BudgetInput:
         values = {"scope_type": "org", "limit_tokens": 1, **values}
 
     with pytest.raises(ValidationError):
         model.model_validate(values)
 
 
-@pytest.mark.parametrize("model", [management.BudgetInput, management.BudgetPatch])
+@pytest.mark.parametrize(
+    "model", [management.budgets.BudgetInput, management.budgets.BudgetPatch]
+)
 def test_budget_notification_fanout_accepts_ten_unique_entries(model) -> None:
     values = {
         "alert_thresholds": [index / 10 for index in range(1, 11)],
@@ -175,7 +179,7 @@ def test_budget_notification_fanout_accepts_ten_unique_entries(model) -> None:
             for index in range(10)
         ],
     }
-    if model is management.BudgetInput:
+    if model is management.budgets.BudgetInput:
         values = {"scope_type": "org", "limit_tokens": 1, **values}
 
     assert (
@@ -313,17 +317,19 @@ async def test_legacy_unbounded_targets_require_migration_before_cleanup(
     session = SimpleNamespace(
         delete=AsyncMock(), execute=AsyncMock(), scalar=AsyncMock(side_effect=[0, None])
     )
-    monkeypatch.setattr(management, "_owned_budget", AsyncMock(return_value=row))
+    monkeypatch.setattr(
+        management.budgets, "_owned_budget", AsyncMock(return_value=row)
+    )
 
     with pytest.raises(HTTPException, match="require migration"):
-        await management.update_budget(
+        await management.budgets.update_budget(
             row.id,
-            management.BudgetPatch(notify_targets=[_TARGET]),
+            management.budgets.BudgetPatch(notify_targets=[_TARGET]),
             user,
             session,
         )
     with pytest.raises(HTTPException, match="require migration"):
-        await management.delete_budget(row.id, user, session)
+        await management.budgets.delete_budget(row.id, user, session)
 
     session.delete.assert_not_awaited()
 
@@ -346,7 +352,7 @@ async def test_budget_evaluation_returns_422_for_oversized_persisted_config() ->
     )
 
     with pytest.raises(HTTPException, match="notification configuration") as error:
-        await management.evaluate_budgets(
+        await management.budgets.evaluate_budgets(
             SimpleNamespace(organization_id=uuid4()),
             session,
         )
@@ -371,7 +377,7 @@ async def test_budget_evaluation_rejects_more_than_100_budgets() -> None:
     )
 
     with pytest.raises(HTTPException, match="100 budgets") as error:
-        await management.evaluate_budgets(
+        await management.budgets.evaluate_budgets(
             SimpleNamespace(organization_id=uuid4()),
             session,
         )
@@ -409,7 +415,7 @@ async def test_budget_evaluation_caps_total_delivery_fanout() -> None:
     )
 
     with pytest.raises(HTTPException, match="100 potential deliveries") as error:
-        await management.evaluate_budgets(
+        await management.budgets.evaluate_budgets(
             SimpleNamespace(organization_id=uuid4()),
             session,
         )
@@ -430,7 +436,7 @@ async def test_budget_list_is_stably_paginated() -> None:
     )
 
     assert (
-        await management.list_budgets(
+        await management.budgets.list_budgets(
             limit=100,
             offset=200,
             user=SimpleNamespace(organization_id=uuid4()),
@@ -458,7 +464,7 @@ async def test_budget_list_returns_422_for_invalid_persisted_config() -> None:
     )
 
     with pytest.raises(HTTPException) as error:
-        await management.list_budgets(
+        await management.budgets.list_budgets(
             limit=100,
             offset=0,
             user=SimpleNamespace(organization_id=uuid4()),
@@ -489,8 +495,8 @@ async def test_budget_patch_distinguishes_omitted_and_null_limits(
     await db.flush()
 
     async def apply(**values):
-        return await management.update_budget(
-            row.id, management.BudgetPatch(**values), test_user_with_org, db
+        return await management.budgets.update_budget(
+            row.id, management.budgets.BudgetPatch(**values), test_user_with_org, db
         )
 
     assert (await apply(enabled=False)).id == row.id
@@ -949,8 +955,8 @@ async def test_concurrent_scheduled_evaluations_enqueue_each_alert_once(
 
 @pytest.mark.parametrize("scope_type", ["tag", "team"])
 def test_budget_scope_uses_the_ingest_label_normalization(scope_type: str) -> None:
-    def budget(value: str) -> management.BudgetInput:
-        return management.BudgetInput(
+    def budget(value: str) -> management.budgets.BudgetInput:
+        return management.budgets.BudgetInput(
             scope_type=scope_type,
             scope_value=value,
             limit_usd=1,
@@ -975,11 +981,11 @@ def test_budget_scope_uses_the_ingest_label_normalization(scope_type: str) -> No
 )
 def test_budget_settings_that_could_never_alert_are_rejected(values) -> None:
     with pytest.raises(ValidationError):
-        management.BudgetInput.model_validate(
+        management.budgets.BudgetInput.model_validate(
             {"scope_type": "org", "limit_usd": 1, "notify_targets": [_TARGET]} | values
         )
     with pytest.raises(ValidationError):
-        management.BudgetPatch.model_validate(values)
+        management.budgets.BudgetPatch.model_validate(values)
 
 
 @pytest.mark.asyncio
@@ -1041,7 +1047,7 @@ async def test_mixed_case_scopes_match_normalized_request_labels(db) -> None:
 
     fired = []
     for scope_type in ("tag", "team"):
-        payload = management.BudgetInput(
+        payload = management.budgets.BudgetInput(
             scope_type=scope_type,
             scope_value="Payments",
             limit_tokens=10,
@@ -1091,7 +1097,7 @@ async def test_legacy_budget_without_limits_or_thresholds_still_evaluates(db) ->
 
 
 def test_budget_view_shows_thresholds_as_percent_and_signed_targets() -> None:
-    view = management.BudgetView.model_validate(
+    view = management.budgets.BudgetView.model_validate(
         SimpleNamespace(
             id=uuid4(),
             organization_id=uuid4(),
@@ -1130,20 +1136,21 @@ async def test_budget_signing_secrets_live_in_the_secret_store(monkeypatch) -> N
         put_secret=AsyncMock(side_effect=lambda *args: f"ref:{args[1]}:{args[2]}"),
         delete_secret=AsyncMock(),
     )
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management.budgets, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
     tenant_id = uuid4()
     secret = "s" * 32
 
-    stored = await management._store_budget_targets(
+    stored = await management.budgets._store_budget_targets(
         tenant_id,
         [
-            management.NotificationTargetInput(**_TARGET, secret=secret),
-            management.NotificationTargetInput(
+            management.budgets.NotificationTargetInput(**_TARGET, secret=secret),
+            management.budgets.NotificationTargetInput(
                 kind="slack", endpoint="https://hooks.slack.com/services/x"
             ),
         ],
     )
-    await management._delete_budget_targets(tenant_id, stored)
+    await management._common._delete_budget_targets(tenant_id, stored)
 
     assert stored[0]["signing_secret_ref"] == f"ref:budget-alert-signing:{secret}"
     assert "signing_secret_ref" not in stored[1]
@@ -1151,11 +1158,11 @@ async def test_budget_signing_secrets_live_in_the_secret_store(monkeypatch) -> N
         call.kwargs["expected_purpose"] for call in store.delete_secret.await_args_list
     ) == ["budget-alert-endpoint", "budget-alert-endpoint", "budget-alert-signing"]
     with pytest.raises(ValidationError, match="webhook"):
-        management.NotificationTargetInput(
+        management.budgets.NotificationTargetInput(
             kind="slack", endpoint="https://hooks.slack.com/services/x", secret=secret
         )
     with pytest.raises(ValidationError):
-        management.NotificationTargetInput(**_TARGET, secret="short")
+        management.budgets.NotificationTargetInput(**_TARGET, secret="short")
 
 
 _RISK = UUID("00000000-0000-4000-8000-0000000000a1")
@@ -1219,7 +1226,7 @@ async def test_team_id_budgets_name_their_team_and_refuse_other_teams(
     db, test_user_with_org, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     test_user_with_org.role = "admin"
-    monkeypatch.setattr(management, "assert_safe_forward_url", AsyncMock())
+    monkeypatch.setattr(management.budgets, "assert_safe_forward_url", AsyncMock())
     elsewhere = Organization(id=uuid4(), name="Elsewhere", slug=f"else-{uuid4()}")
     db.add(elsewhere)
     await db.flush()
