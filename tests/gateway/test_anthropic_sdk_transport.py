@@ -1076,3 +1076,77 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
             if line.startswith("data: ") and '"text_delta"' in line
         ]
         assert tckn in "".join(deltas)
+
+
+_STREAM = (
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_s",'
+    '"type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6",'
+    '"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn",'
+    '"stop_sequence":null},"usage":{"output_tokens":1}}\n\n'
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream", "headers", "query"),
+    [
+        (False, {}, ""),
+        (True, {}, ""),
+        (False, {"anthropic-beta": "context-1m-2025-08-07"}, ""),
+        (True, {}, "?beta=true"),
+    ],
+)
+async def test_the_band_breakpoint_reaches_anthropic_through_the_sdk(
+    stream, headers, query
+) -> None:
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200, text=_STREAM, headers={"content-type": "text/event-stream"}
+            )
+        return httpx.Response(200, json=_message("ok"))
+
+    events = StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                BACKEND_CORS_ORIGINS=[],
+                SHIM_ANTHROPIC_AUTO_CACHE="1h",
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as client,
+        ):
+            response = await client.post(
+                f"/v1/messages{query}",
+                headers={"x-provider-key": "sk-ant-tenant", **headers},
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 16,
+                    "stream": stream,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+
+    assert response.status_code == 200
+    [sent] = seen
+    assert sent["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert sent["messages"] == [{"role": "user", "content": "hello"}]
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["settings_applied"] == [{"id": "anthropic_auto_cache", "version": 1}]

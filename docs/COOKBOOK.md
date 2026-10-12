@@ -19,6 +19,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Count instructions hidden in tool results](#count-instructions-hidden-in-tool-results)
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Check structured output](#check-structured-output)
+- [Use the provider's cache discount](#use-the-providers-cache-discount)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -753,6 +754,41 @@ when nesting or `$ref` chains pass 32 levels (`depth`) or 10,000 values
 never changed, retried or refused; the check runs after it was delivered.
 `error_path` names schema properties and array indices only, never a value or
 an unexpected key (that path ends in `/*`).
+
+## Use the provider's cache discount
+
+Let a repeated prompt prefix be billed at the provider's cache-read rate, without
+changing your application.
+
+1. For Anthropic, set `SHIM_ANTHROPIC_AUTO_CACHE=5m` (or `1h`). A messages request
+   that carries no `cache_control` anywhere (top level, `system`, `tools`, message
+   content, content inside a `tool_result`) gets one top-level
+   `"cache_control": {"type": "ephemeral"}` (`"ttl": "1h"` with `1h`); Anthropic
+   places the breakpoint on the last cacheable block and moves it as the
+   conversation grows. A request with your own breakpoints is sent as it is.
+2. For OpenAI, set `SHIM_OPENAI_PROMPT_CACHE_KEY=key` (one routing key per shim key)
+   or `tenant` (shared by every key). A chat or Responses request without a
+   `prompt_cache_key` gets `shim-` and 32 hex characters, derived from the scope,
+   the model and the request's leading `system` and `developer` messages (and
+   Responses `instructions`) and `tools`, so requests with the same prefix share
+   a key and different prefixes do not. The value says nothing the prompt does
+   not; `prompt_cache_retention` is never set.
+3. Read `cache_read_tokens` and `cache_write_tokens` on the usage event; its
+   `settings_applied` lists `anthropic_auto_cache` or `openai_prompt_cache_key` when
+   the step changed the request.
+
+Notes: Anthropic bills a cache write at 1.25 times the input price (2 times for
+`1h`) and a read at 0.1 times, so a prompt sent once above the model's minimum
+cacheable length (512 to 4,096 tokens) costs more, and a repeated one less; a
+shorter prompt is not cached and costs no write. With random placeholders
+(`PII_PLACEHOLDER_MODE=random`, the default) a request that masked a value
+changes on every send, so the Anthropic step leaves it alone; set
+`PII_PLACEHOLDER_MODE=stable` to cache such prompts. OpenAI caches automatically
+above 1,024 tokens and the key only steers routing; it guarantees no hit.
+`CACHE_NOT_APPLIED` is raised only for breakpoints you placed. Gemini requests and
+token counting are never changed. Leave both off when
+`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at something other than the
+provider: another server may refuse a parameter it does not know.
 
 ## Stream long generations and read usage
 

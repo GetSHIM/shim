@@ -314,6 +314,24 @@ def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
             CommunitySettings(_env_file=None, SHIM_INFLIGHT_SHARING=value)
 
 
+@pytest.mark.parametrize(
+    ("name", "values"),
+    [
+        ("SHIM_ANTHROPIC_AUTO_CACHE", ("off", "5m", "1h")),
+        ("SHIM_OPENAI_PROMPT_CACHE_KEY", ("off", "key", "tenant")),
+    ],
+)
+def test_provider_cache_settings_are_off_unless_set(name, values) -> None:
+    assert getattr(CommunitySettings(_env_file=None), name) == "off"
+    for value in values:
+        assert (
+            getattr(CommunitySettings(_env_file=None, **{name: value}), name) == value
+        )
+    for value in ("on", "1d", ""):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
 def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
     settings = CommunitySettings(_env_file=None)
 

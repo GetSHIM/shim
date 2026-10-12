@@ -347,10 +347,12 @@ rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 
 `settings_applied` lists the settings band steps that set a provider parameter on
 the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
-is `parameter_pin.<rule id>` with the rule set's revision. It is written with the
+is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
+are `anthropic_auto_cache` and `openai_prompt_cache_key`, version 1. It is written with the
 privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
-`warn` pin, a refused request), and absent when the band did not run: no pin in
-scope for the request's protocol, and token counting. Ids and versions only, never
+`warn` pin, a provider-cache step with nothing to do, a refused request), and absent
+when the band did not run: no pin in scope for the request's protocol and every
+band setting off, and token counting. Ids and versions only, never
 a parameter value. The request list and its CSV (compact JSON) show it; the
 community JSONL event carries it only when a step was applied.
 

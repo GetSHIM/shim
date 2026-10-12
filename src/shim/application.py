@@ -33,7 +33,12 @@ from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
-from shim.gateway.request_policy import AgentLoop, LocalRequestPolicyResolver, TaskCaps
+from shim.gateway.request_policy import (
+    AgentLoop,
+    BandSettings,
+    LocalRequestPolicyResolver,
+    TaskCaps,
+)
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
@@ -191,6 +196,10 @@ def create_community_app(
                     model_retiring_warning=configured.SHIM_MODEL_RETIRING_WARNING,
                     embeddings_monitor_types=frozenset(
                         configured.PII_EMBEDDINGS_MONITOR
+                    ),
+                    band=BandSettings(
+                        anthropic_auto_cache=configured.SHIM_ANTHROPIC_AUTO_CACHE,
+                        openai_prompt_cache_key=configured.SHIM_OPENAI_PROMPT_CACHE_KEY,
                     ),
                 ),
                 rate_limiter=rate_limiter,

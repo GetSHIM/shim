@@ -597,12 +597,17 @@ def warn_after_answer(
     if (
         prepared.provider == "anthropic"
         and split == (0, 0, 0)
-        and _has_cache_control(prepared.payload)
+        and has_cache_control(prepared.payload)
+        # The band's own breakpoint costs no write below the model's minimum.
+        and not any(
+            step["id"] == "anthropic_auto_cache"
+            for step in prepared.settings_applied or ()
+        )
     ):
         prepared.warn("CACHE_NOT_APPLIED")
 
 
-def _has_cache_control(payload: Mapping[str, object]) -> bool:
+def has_cache_control(payload: Mapping[str, object]) -> bool:
     """Top-level, system, tool and message-content breakpoints; not a tool schema's keys."""
 
     def blocks(value: object) -> list[object]:

@@ -25,6 +25,7 @@ from shim.gateway.contracts.ids import TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim_enterprise.gateway.pipeline.audit_intent import resolve_audit_policy
 from shim.gateway.request_policy import (
+    BandSettings,
     RequestPolicyContext,
     ResolvedRequestPolicy,
 )
@@ -436,6 +437,13 @@ class TenantRequestPolicyResolver:
                 agent_loop=tenant_settings.gateway_settings.agent_loop,
                 inflight_sharing=api_key.id
                 in tenant_settings.gateway_settings.inflight_sharing_api_key_ids,
+                band=BandSettings(
+                    anthropic_auto_cache=tenant_settings.gateway_settings.provider_cache.anthropic_auto_cache,
+                    openai_prompt_cache_key=tenant_settings.gateway_settings.provider_cache.openai_prompt_cache_key,
+                    provider_cache_deployments=tuple(
+                        tenant_settings.gateway_settings.provider_cache.deployments
+                    ),
+                ),
                 restore_withheld=frozenset(
                     kind
                     for kind, grant in tenant_settings.gateway_settings.restore_withheld.items()

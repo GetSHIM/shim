@@ -126,6 +126,11 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "four_eyes": "off",
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
+            "provider_cache": {
+                "anthropic_auto_cache": "off",
+                "openai_prompt_cache_key": "off",
+                "deployments": [],
+            },
         },
         "revision": 0,
         "updated_at": None,
@@ -884,3 +889,146 @@ async def test_inflight_sharing_names_only_this_organizations_keys(
         GatewaySettingsPatch.model_validate(
             {"inflight_sharing_api_key_ids": [str(uuid4()) for _ in range(1001)]}
         )
+
+
+async def _deployment(db, organization_id: UUID, alias: str, upstream: str) -> None:
+    from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
+
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=organization_id,
+        provider="anthropic",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(secret)
+    await db.flush()
+    db.add(
+        ModelDeployment(
+            organization_id=organization_id,
+            alias=alias,
+            provider="anthropic",
+            upstream_model="claude-sonnet-4-6",
+            base_url="https://models.internal.test",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+            upstream=upstream,
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_provider_cache_round_trips_and_names_only_known_deployments(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    await _deployment(db, test_org.id, "support-llm", "generic")
+
+    with pytest.raises(HTTPException) as unknown:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"provider_cache": {"deployments": ["nobody-llm"]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {
+                "provider_cache": {
+                    "anthropic_auto_cache": "5m",
+                    "deployments": ["support-llm"],
+                }
+            }
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    merged = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"provider_cache": {"openai_prompt_cache_key": "key"}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert unknown.value.status_code == 422
+    assert "provider_cache.deployments" in unknown.value.detail
+    assert changed.settings.provider_cache.model_dump() == {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "off",
+        "deployments": ["support-llm"],
+    }
+    assert merged.settings.provider_cache.model_dump() == {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "key",
+        "deployments": ["support-llm"],
+    }
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(test_org.id)
+    ), "the provider cache is neutral"
+    for bad in (
+        {"anthropic_auto_cache": "1d"},
+        {"openai_prompt_cache_key": "user"},
+        {"deployments": ["bad alias"]},
+        {"deployments": [f"a{n}" for n in range(101)]},
+    ):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"provider_cache": bad})
+
+
+@pytest.mark.asyncio
+async def test_a_bedrock_deployment_cannot_take_automatic_cache_placement(
+    db, test_org
+) -> None:
+    admin = await _admin(db, test_org.id)
+    # Bedrock deployments arrive with PRD-E58; the row is seeded past today's check.
+    await db.execute(
+        text(
+            "ALTER TABLE model_deployments DROP CONSTRAINT ck_model_deployments_upstream"
+        )
+    )
+    await _deployment(db, test_org.id, "bedrock-claude", "aws_bedrock")
+
+    with pytest.raises(HTTPException) as refused:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"provider_cache": {"deployments": ["bedrock-claude"]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+
+    assert refused.value.status_code == 422
+    assert (
+        refused.value.detail
+        == "Bedrock deployments cannot use automatic cache placement yet"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({}, {"anthropic_auto_cache": "1h"}),
+        ({"openai_prompt_cache_key": "key"}, {}),
+        ({}, {"deployments": ["support-llm"]}),
+    ],
+)
+def test_provider_cache_changes_are_neutral(before, after) -> None:
+    from shim_enterprise.tenants.gateway_settings import ProviderCacheSettings
+
+    assert classify_change(
+        GatewaySettings(provider_cache=ProviderCacheSettings(**before)),
+        GatewaySettings(provider_cache=ProviderCacheSettings(**after)),
+    ) == ("neutral", [])

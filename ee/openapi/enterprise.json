@@ -5776,6 +5776,14 @@
             "title": "Price Tier Warning",
             "type": "boolean"
           },
+          "provider_cache": {
+            "$ref": "#/components/schemas/ProviderCacheSettings",
+            "default": {
+              "anthropic_auto_cache": "off",
+              "deployments": [],
+              "openai_prompt_cache_key": "off"
+            }
+          },
           "request_archive": {
             "$ref": "#/components/schemas/RequestArchiveSettings",
             "default": {
@@ -5913,6 +5921,16 @@
               }
             ],
             "title": "Price Tier Warning"
+          },
+          "provider_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderCachePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "request_archive": {
             "anyOf": [
@@ -11237,6 +11255,103 @@
           "p95_shim_latency_ms"
         ],
         "title": "PromptVersionView",
+        "type": "object"
+      },
+      "ProviderCachePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_auto_cache": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "5m",
+                  "1h"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Auto Cache"
+          },
+          "deployments": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployments"
+          },
+          "openai_prompt_cache_key": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "key",
+                  "tenant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Prompt Cache Key"
+          }
+        },
+        "title": "ProviderCachePatch",
+        "type": "object"
+      },
+      "ProviderCacheSettings": {
+        "additionalProperties": false,
+        "description": "The providers' own prompt-cache discount: two settings band steps (S54).",
+        "properties": {
+          "anthropic_auto_cache": {
+            "default": "off",
+            "enum": [
+              "off",
+              "5m",
+              "1h"
+            ],
+            "title": "Anthropic Auto Cache",
+            "type": "string"
+          },
+          "deployments": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Deployments",
+            "type": "array"
+          },
+          "openai_prompt_cache_key": {
+            "default": "off",
+            "enum": [
+              "off",
+              "key",
+              "tenant"
+            ],
+            "title": "Openai Prompt Cache Key",
+            "type": "string"
+          }
+        },
+        "title": "ProviderCacheSettings",
         "type": "object"
       },
       "ProviderKeySettings": {

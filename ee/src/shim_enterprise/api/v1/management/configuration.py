@@ -56,6 +56,7 @@ from shim_enterprise.tenants.gateway_settings import (
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
+    ModelDeployment,
     OrganizationGatewaySettings,
     Organization,
     OrganizationPIIConfig,
@@ -763,6 +764,26 @@ class _GatewaySettingsResource:
             if ids - known:
                 raise HTTPException(
                     422, detail=f"{setting} names {field} this organization lacks"
+                )
+        aliases = set(after.provider_cache.deployments)
+        if aliases and "provider_cache" in changes:
+            rows = await session.execute(
+                select(ModelDeployment.alias, ModelDeployment.upstream).where(
+                    ModelDeployment.organization_id == tenant_id,
+                    ModelDeployment.alias.in_(aliases),
+                )
+            )
+            upstreams = {alias: upstream for alias, upstream in rows}
+            if aliases - upstreams.keys():
+                raise HTTPException(
+                    422,
+                    detail="provider_cache.deployments names a deployment this "
+                    "organization lacks",
+                )
+            if "aws_bedrock" in upstreams.values():
+                raise HTTPException(
+                    422,
+                    detail="Bedrock deployments cannot use automatic cache placement yet",
                 )
         return after.model_dump(mode="json")
 

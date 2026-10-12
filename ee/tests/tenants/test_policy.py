@@ -475,6 +475,60 @@ async def test_restore_permission_and_inflight_sharing_follow_the_key(
 
 
 @pytest.mark.asyncio
+async def test_the_provider_cache_setting_reaches_the_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shim.gateway.request_policy import BandSettings
+    from shim_enterprise.tenants.gateway_settings import (
+        GatewaySettings,
+        ProviderCacheSettings,
+    )
+
+    api_key = SimpleNamespace(
+        id=UUID(int=7),
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+        team_id=None,
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+
+    async def band(gateway: GatewaySettings) -> BandSettings:
+        service = SimpleNamespace(
+            resolve=AsyncMock(
+                return_value=ResolvedTenantSettings(
+                    tenant_id=UUID(int=1),
+                    pii_config=None,
+                    tier_definition=None,
+                    gateway_settings=gateway,
+                )
+            )
+        )
+        resolver = TenantRequestPolicyResolver(
+            service, Mock(return_value=SessionContext(object()))
+        )
+        return (await resolver.resolve(SimpleNamespace())).band
+
+    assert await band(GatewaySettings()) == BandSettings()
+    assert await band(
+        GatewaySettings(
+            provider_cache=ProviderCacheSettings(
+                anthropic_auto_cache="1h",
+                openai_prompt_cache_key="tenant",
+                deployments=["support-llm"],
+            )
+        )
+    ) == BandSettings(
+        anthropic_auto_cache="1h",
+        openai_prompt_cache_key="tenant",
+        provider_cache_deployments=("support-llm",),
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cached", "monitored"),
     [({}, frozenset()), ({"embeddings_monitor_types": ["IBAN_CODE"]}, {"IBAN_CODE"})],

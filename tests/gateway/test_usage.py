@@ -954,6 +954,27 @@ def test_warnings_known_only_after_the_answer(
     assert prepared.warnings == warnings
 
 
+@pytest.mark.parametrize(
+    ("applied", "warnings"),
+    [
+        (({"id": "anthropic_auto_cache", "version": 1},), []),
+        (({"id": "parameter_pin.temp", "version": 2},), ["CACHE_NOT_APPLIED"]),
+        (None, ["CACHE_NOT_APPLIED"]),
+    ],
+)
+def test_cache_not_applied_is_only_for_breakpoints_the_client_placed(applied, warnings):
+    from shim.gateway.pipeline.postprocess import warn_after_answer
+
+    prepared = _prepared(model="claude-haiku-4-5")
+    prepared.provider = "anthropic"
+    prepared.payload = {"cache_control": {"type": "ephemeral"}}
+    prepared.settings_applied = applied
+
+    warn_after_answer(prepared, 900, (0, 0, 0))
+
+    assert prepared.warnings == warnings
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 async def test_the_warnings_header_carries_what_is_known_when_headers_are_sent(stream):

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 import copy
+from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 import json
 from typing import Any
 from uuid import UUID
 
+from pydantic import SecretBytes
 import pytest
 
 from shim.gateway.contracts.context import (
@@ -16,9 +19,18 @@ from shim.gateway.contracts.context import (
     TierPolicy,
 )
 from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
-from shim.gateway.kernel.result import AdmissionState, PreparedInference
-from shim.gateway.pipeline.settings_band import SettingsBandStage, pins_in_scope
-from shim.gateway.request_policy import RequestPolicyContext
+from shim.gateway.kernel.result import (
+    AdmissionState,
+    PreparedInference,
+    ProviderTarget,
+)
+from shim.gateway.pipeline.settings_band import (
+    STEPS,
+    SettingsBandStage,
+    pins_in_scope,
+)
+from shim.gateway.request_policy import BandSettings, RequestPolicyContext
+from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.rules import RuleSet, validate_rule_set
 
 _CONTENT_FIELDS = (
@@ -340,3 +352,274 @@ async def test_the_span_counts_applied_steps_and_the_record_is_json() -> None:
     assert json.loads(json.dumps(banded.settings_applied)) == [
         {"id": "parameter_pin.pin", "version": 7}
     ]
+
+
+# Provider cache steps (S54).
+
+
+def _cached(
+    protocol: str,
+    *,
+    band: dict[str, Any],
+    key: str = "22222222-2222-2222-2222-222222222222",
+    **fields: Any,
+) -> PreparedInference:
+    prepared = _prepared(protocol, None, **fields)
+    return replace(
+        prepared,
+        band=BandSettings(**band),
+        context=prepared.context.model_copy(update={"api_key_id": ApiKeyId(UUID(key))}),
+    )
+
+
+async def _band(prepared: PreparedInference) -> PreparedInference:
+    before = copy.deepcopy(prepared.payload)
+    banded, blocked = await SettingsBandStage([]).run(prepared)
+    assert blocked is None and prepared.payload == before
+    assert_content_untouched(before, banded.payload)
+    return banded
+
+
+_BREAKPOINT = {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ttl", "marker"),
+    [("5m", {"type": "ephemeral"}), ("1h", {"type": "ephemeral", "ttl": "1h"})],
+)
+async def test_auto_cache_adds_one_top_level_breakpoint(ttl, marker) -> None:
+    prepared = _cached("messages", band={"anthropic_auto_cache": ttl})
+
+    banded = await _band(prepared)
+
+    assert banded.payload == {**prepared.payload, "cache_control": marker}
+    assert banded.settings_applied == ({"id": "anthropic_auto_cache", "version": 1},)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"cache_control": _BREAKPOINT},
+        {"system": [{"type": "text", "text": "s", "cache_control": _BREAKPOINT}]},
+        {"tools": [{"name": "t", "input_schema": {}, "cache_control": _BREAKPOINT}]},
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "x", "cache_control": _BREAKPOINT}
+                    ],
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "x",
+                                    "cache_control": _BREAKPOINT,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    ],
+)
+async def test_a_client_breakpoint_anywhere_keeps_full_control(fields) -> None:
+    prepared = _cached("messages", band={"anthropic_auto_cache": "5m"}, **fields)
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload and banded.settings_applied == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("placeholder_key", "mapping", "applied"),
+    [
+        (None, {"<EMAIL_ADDRESS_a1>": "a@example.com"}, False),
+        (None, {}, True),
+        (SecretBytes(b"k" * 32), {"<EMAIL_ADDRESS_a1>": "a@example.com"}, True),
+    ],
+)
+async def test_random_placeholders_with_a_detection_skip_auto_cache(
+    placeholder_key, mapping, applied
+) -> None:
+    prepared = replace(
+        _cached("messages", band={"anthropic_auto_cache": "5m"}),
+        placeholder_key=placeholder_key,
+        privacy=PrivacyOutcome(
+            action=PrivacyAction.SCRUBBED if mapping else PrivacyAction.DETECTED,
+            pii_detected=bool(mapping),
+            verification_map=mapping,
+        ),
+    )
+
+    banded = await _band(prepared)
+
+    assert ("cache_control" in banded.payload) is applied
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["generate_content", "chat"])
+async def test_auto_cache_touches_messages_only(protocol) -> None:
+    prepared = _cached(protocol, band={"anthropic_auto_cache": "5m"})
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload and banded.settings_applied == ()
+
+
+def test_token_counting_never_runs_a_band_step() -> None:
+    assert all("count_tokens" not in protocols for _, _, protocols, _ in STEPS)
+    assert [step[0] for step in STEPS] == [
+        "anthropic_auto_cache",
+        "openai_prompt_cache_key",
+    ]
+
+
+_TARGET = ProviderTarget(
+    deployment_id="d",
+    base_url="https://models.internal.test/v1",
+    upstream_model="m",
+    credential_reference="c",
+    timeout_seconds=30,
+    declared_version="1",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "listed", "applied"),
+    [(None, (), True), (_TARGET, (), False), (_TARGET, ("claude-sonnet-4-6",), True)],
+)
+async def test_registry_targets_take_the_steps_only_when_listed(
+    target, listed, applied
+) -> None:
+    band = {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "key",
+        "provider_cache_deployments": listed,
+    }
+    messages = replace(_cached("messages", band=band), target=target)
+    chat = replace(
+        _cached("chat", band={**band, "provider_cache_deployments": ()}), target=target
+    )
+
+    assert ("cache_control" in (await _band(messages)).payload) is applied
+    assert ("prompt_cache_key" in (await _band(chat)).payload) is (target is None)
+
+
+def _key(prepared: PreparedInference) -> str:
+    return prepared.payload["prompt_cache_key"]
+
+
+_OTHER_KEY = "33333333-3333-3333-3333-333333333333"
+
+
+@pytest.mark.asyncio
+async def test_the_prompt_cache_key_follows_the_prefix_and_the_scope() -> None:
+    system = [{"role": "system", "content": "be brief"}]
+    chat = {
+        "messages": [*system, {"role": "user", "content": "one"}],
+    }
+
+    first = await _band(
+        _cached("chat", band={"openai_prompt_cache_key": "key"}, **chat)
+    )
+    material = "\x1f".join(
+        (
+            "shim.prompt_cache_key.v1",
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+            "gpt-5-nano",
+            sha256(
+                json.dumps(
+                    {"messages": system, "tools": first.payload["tools"]},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        )
+    )
+    assert _key(first) == "shim-" + sha256(material.encode()).hexdigest()[:32]
+    assert first.settings_applied == ({"id": "openai_prompt_cache_key", "version": 1},)
+
+    later_turn = await _band(
+        _cached(
+            "chat",
+            band={"openai_prompt_cache_key": "key"},
+            messages=[*system, {"role": "user", "content": "two"}],
+        )
+    )
+    other_key = await _band(
+        _cached("chat", band={"openai_prompt_cache_key": "key"}, key=_OTHER_KEY, **chat)
+    )
+    tenant_wide = [
+        _key(
+            await _band(
+                _cached(
+                    "chat", band={"openai_prompt_cache_key": "tenant"}, key=key, **chat
+                )
+            )
+        )
+        for key in ("22222222-2222-2222-2222-222222222222", _OTHER_KEY)
+    ]
+    other_prefix = await _band(
+        _cached(
+            "chat",
+            band={"openai_prompt_cache_key": "key"},
+            messages=[
+                {"role": "developer", "content": "be long"},
+                {"role": "user", "content": "one"},
+            ],
+        )
+    )
+
+    assert _key(later_turn) == _key(first)
+    assert _key(other_key) != _key(first)
+    assert tenant_wide[0] == tenant_wide[1] != _key(first)
+    assert _key(other_prefix) != _key(first)
+
+
+@pytest.mark.asyncio
+async def test_responses_keys_read_instructions_and_leading_input_items() -> None:
+    band = {"openai_prompt_cache_key": "key"}
+    base = await _band(_cached("responses", band=band))
+    other = await _band(_cached("responses", band=band, instructions="be long"))
+    leading = await _band(
+        _cached(
+            "responses",
+            band=band,
+            input=[
+                {"role": "developer", "content": "rules"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+    )
+
+    assert _key(base).startswith("shim-") and len(_key(base)) == 37
+    assert len({_key(base), _key(other), _key(leading)}) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sent", ["client-key", "<EMAIL_ADDRESS_a1>"])
+async def test_a_client_prompt_cache_key_is_left_as_privacy_left_it(sent) -> None:
+    prepared = _cached(
+        "chat", band={"openai_prompt_cache_key": "key"}, prompt_cache_key=sent
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload and banded.settings_applied == ()

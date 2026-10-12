@@ -46,6 +46,11 @@ class AgentLoop(FrozenContractModel):
 class BandSettings(FrozenContractModel):
     """The tenant's settings band switches, each off by default."""
 
+    anthropic_auto_cache: Literal["off", "5m", "1h"] = "off"
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] = "off"
+    # Enterprise: registry aliases the provider-cache steps may touch.
+    provider_cache_deployments: tuple[str, ...] = Field(default=(), max_length=100)
+
 
 class ResolvedRequestPolicy(FrozenContractModel):
     tenant_id: TenantId
@@ -91,6 +96,7 @@ class LocalRequestPolicyResolver:
 
     __slots__ = (
         "_agent_loop",
+        "_band",
         "_bulk_threshold",
         "_embeddings_monitor_types",
         "_entity_actions",
@@ -123,6 +129,7 @@ class LocalRequestPolicyResolver:
         inflight_sharing: bool = False,
         model_retiring_warning: Literal["record", "header"] = "record",
         embeddings_monitor_types: frozenset[str] = frozenset(),
+        band: BandSettings = BandSettings(),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -140,6 +147,7 @@ class LocalRequestPolicyResolver:
             model_retiring_warning
         )
         self._embeddings_monitor_types = embeddings_monitor_types
+        self._band = band
 
     async def resolve(
         self,
@@ -178,4 +186,5 @@ class LocalRequestPolicyResolver:
             inflight_sharing=self._inflight_sharing,
             model_retiring_warning=self._model_retiring_warning,
             embeddings_monitor_types=self._embeddings_monitor_types,
+            band=self._band,
         )

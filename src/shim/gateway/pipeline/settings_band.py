@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from hashlib import sha256
+import json
 from typing import Any
 
 from shim.gateway.kernel.result import PreparedInference
 from shim.gateway.kernel.stage import TraceValue
+from shim.gateway.pipeline.postprocess import has_cache_control
 from shim.rules.evaluate import in_scope, settle_pins
 from shim.rules.model import Rule
 from shim.rules.parameter_pin import PIN_PATHS
@@ -34,7 +37,10 @@ def pins_in_scope(prepared: PreparedInference) -> list[Rule]:
 
 
 class SettingsBandStage:
-    """Applies the pins on the masked payload; returns it with the id of a blocking pin."""
+    """Applies the pins, then STEPS, on the masked payload.
+
+    Returns it with the id of a blocking pin.
+    """
 
     name = "settings_band"
 
@@ -44,54 +50,188 @@ class SettingsBandStage:
     async def run(
         self, value: PreparedInference
     ) -> tuple[PreparedInference, str | None]:
-        assert value.rules is not None
-        revision = value.rules.revision
-        value = replace(value, rules_evaluated=True)
-        payload = value.payload
-        thinking = payload.get("thinking") if value.protocol == "messages" else None
-        thinking_on = isinstance(thinking, Mapping) and thinking.get("type") in {
-            "enabled",
-            "adaptive",
-        }
-        winners: dict[str, str] = {}
-        for rule in self.pins:
-            if rule.state == "enforced":
-                winners.setdefault(rule.match["parameter"], rule.id)
-        skipped: dict[str, str] = {}
-        sets: list[Rule] = []
-        for rule in self.pins:
-            parameter, pinned = rule.match["parameter"], rule.match["value"]
-            current = _read(payload, PIN_PATHS[parameter][value.protocol])
-            # JSON equality: 0 equals 0.0, true is not 1.
-            if not isinstance(current, bool) and current == pinned:
-                continue
-            if thinking_on and parameter in {"temperature", "top_k"}:
-                skipped[rule.id] = "RULE_PIN_INCOMPATIBLE"
-            elif rule.state == "enforced" and winners[parameter] != rule.id:
-                skipped[rule.id] = "RULE_PIN_SHADOWED"
-            else:
-                value.record_rule_match(rule, 1)
-                if (rule.state, rule.action) == ("enforced", "set"):
-                    sets.append(rule)
-        pins = {rule.id for rule in self.pins}
-        blocked = settle_pins(
-            value,
-            [match for match in value.rule_matches if match.rule_id in pins],
-            skipped,
-        )
-        if blocked:
-            return replace(value, settings_applied=()), blocked[0]
-        applied = []
-        for rule in sets:
-            path = PIN_PATHS[rule.match["parameter"]][value.protocol]
-            payload = _write(payload, path, rule.match["value"])
-            applied.append({"id": f"parameter_pin.{rule.id}", "version": revision})
+        payload, applied = value.payload, []
+        if self.pins:
+            value, payload, applied, blocked = _apply_pins(value, self.pins)
+            if blocked is not None:
+                return replace(value, settings_applied=()), blocked
+        for step_id, version, protocols, apply in STEPS:
+            if value.protocol in protocols:
+                changed = apply(value, payload)
+                if changed is not None:
+                    payload = changed
+                    applied.append({"id": step_id, "version": version})
         return replace(value, payload=payload, settings_applied=tuple(applied)), None
 
     def trace_metadata(
         self, output: tuple[PreparedInference, str | None]
     ) -> Mapping[str, TraceValue]:
         return {"settings_applied": len(output[0].settings_applied or ())}
+
+
+def _apply_pins(
+    value: PreparedInference, pins: Sequence[Rule]
+) -> tuple[PreparedInference, dict[str, Any], list[dict[str, object]], str | None]:
+    assert value.rules is not None
+    revision = value.rules.revision
+    value = replace(value, rules_evaluated=True)
+    payload = value.payload
+    thinking = payload.get("thinking") if value.protocol == "messages" else None
+    thinking_on = isinstance(thinking, Mapping) and thinking.get("type") in {
+        "enabled",
+        "adaptive",
+    }
+    winners: dict[str, str] = {}
+    for rule in pins:
+        if rule.state == "enforced":
+            winners.setdefault(rule.match["parameter"], rule.id)
+    skipped: dict[str, str] = {}
+    sets: list[Rule] = []
+    for rule in pins:
+        parameter, pinned = rule.match["parameter"], rule.match["value"]
+        current = _read(payload, PIN_PATHS[parameter][value.protocol])
+        # JSON equality: 0 equals 0.0, true is not 1.
+        if not isinstance(current, bool) and current == pinned:
+            continue
+        if thinking_on and parameter in {"temperature", "top_k"}:
+            skipped[rule.id] = "RULE_PIN_INCOMPATIBLE"
+        elif rule.state == "enforced" and winners[parameter] != rule.id:
+            skipped[rule.id] = "RULE_PIN_SHADOWED"
+        else:
+            value.record_rule_match(rule, 1)
+            if (rule.state, rule.action) == ("enforced", "set"):
+                sets.append(rule)
+    ids = {rule.id for rule in pins}
+    blocked = settle_pins(
+        value, [match for match in value.rule_matches if match.rule_id in ids], skipped
+    )
+    if blocked:
+        return value, payload, [], blocked[0]
+    applied: list[dict[str, object]] = []
+    for rule in sets:
+        path = PIN_PATHS[rule.match["parameter"]][value.protocol]
+        payload = _write(payload, path, rule.match["value"])
+        applied.append({"id": f"parameter_pin.{rule.id}", "version": revision})
+    return value, payload, applied, None
+
+
+def _cache_target(prepared: PreparedInference) -> bool:
+    # An on-prem server behind a provider-compatible API may refuse a parameter it
+    # does not know, so only listed deployments are touched.
+    return (
+        prepared.target is None
+        or prepared.model in prepared.band.provider_cache_deployments
+    )
+
+
+def _client_breakpoint(payload: Mapping[str, Any]) -> bool:
+    if has_cache_control(payload):
+        return True
+    return any(
+        isinstance(block, Mapping)
+        and block.get("type") == "tool_result"
+        and any(
+            isinstance(nested, Mapping) and "cache_control" in nested
+            for nested in _list(block.get("content"))
+        )
+        for message in _list(payload.get("messages"))
+        if isinstance(message, Mapping)
+        for block in _list(message.get("content"))
+    )
+
+
+def _anthropic_auto_cache(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    ttl = prepared.band.anthropic_auto_cache
+    if ttl == "off" or not _cache_target(prepared) or _client_breakpoint(payload):
+        return None
+    # A random placeholder changes the prompt on every request: a write, never a read.
+    if (
+        prepared.placeholder_key is None
+        and prepared.privacy is not None
+        and prepared.privacy.verification_map
+    ):
+        return None
+    marker = (
+        {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral", "ttl": "1h"}
+    )
+    return {**payload, "cache_control": marker}
+
+
+def _leading_instructions(items: object) -> list[object]:
+    leading = []
+    for item in _list(items):
+        if not (
+            isinstance(item, Mapping) and item.get("role") in {"system", "developer"}
+        ):
+            break
+        leading.append(item)
+    return leading
+
+
+def _openai_prompt_cache_key(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    scope = prepared.band.openai_prompt_cache_key
+    if (
+        scope == "off"
+        or not _cache_target(prepared)
+        or payload.get("prompt_cache_key") is not None
+    ):
+        return None
+    if prepared.protocol == "chat":
+        prefix = {
+            "messages": _leading_instructions(payload.get("messages")),
+            "tools": payload.get("tools"),
+        }
+    else:
+        prefix = {
+            "instructions": payload.get("instructions"),
+            "input": _leading_instructions(payload.get("input")),
+            "tools": payload.get("tools"),
+        }
+    prefix_digest = sha256(
+        json.dumps(prefix, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    material = "\x1f".join(
+        (
+            "shim.prompt_cache_key.v1",
+            str(prepared.tenant_id),
+            str(prepared.api_key_id) if scope == "key" else "",
+            prepared.model,
+            prefix_digest,
+        )
+    )
+    return {
+        **payload,
+        "prompt_cache_key": "shim-" + sha256(material.encode()).hexdigest()[:32],
+    }
+
+
+# (id, version, protocols, apply), in order after the pins. A step adds, changes or
+# removes provider parameters and structural markers only, never a content string.
+STEPS: tuple[
+    tuple[
+        str,
+        int,
+        frozenset[str],
+        Callable[[PreparedInference, dict[str, Any]], dict[str, Any] | None],
+    ],
+    ...,
+] = (
+    ("anthropic_auto_cache", 1, frozenset({"messages"}), _anthropic_auto_cache),
+    (
+        "openai_prompt_cache_key",
+        1,
+        frozenset({"chat", "responses"}),
+        _openai_prompt_cache_key,
+    ),
+)
+
+
+def _list(value: object) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def _read(payload: Mapping[str, Any], path: tuple[str, ...]) -> object:

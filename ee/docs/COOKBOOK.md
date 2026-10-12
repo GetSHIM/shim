@@ -289,6 +289,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
+| `provider_cache` | off, off, `[]` | `anthropic_auto_cache` (`off`, `5m`, `1h`) and `openai_prompt_cache_key` (`off`, `key`, `tenant`), the [community recipe](../../docs/COOKBOOK.md#use-the-providers-cache-discount)'s two switches, for catalog routes and the registry aliases in `deployments` (at most 100 of this organization; a Bedrock deployment is 422). A PATCH changes only the fields it names. |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -311,13 +312,15 @@ a task cap, shortening its window, raising `agent_loop.repeats` or moving
 `agent_loop.action` down from `block` are relaxing; listing a key in
 `inflight_sharing_api_key_ids` is neutral, because each request still passes its
 own limits and privacy and an answer never crosses keys, and an id this
-organization lacks is 422; turning `four_eyes` off is relaxing, and a field
+organization lacks is 422; `provider_cache` changes what a request costs, not what
+it may carry, so every change to it is neutral; turning `four_eyes` off is relaxing, and a field
 without a direction counts as relaxing. Every change records a
 [policy version](#plan-apply-and-undo-a-change). Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
-`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
-and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`,
+`SHIM_INFLIGHT_SHARING`, `SHIM_ANTHROPIC_AUTO_CACHE` and `SHIM_OPENAI_PROMPT_CACHE_KEY`
+variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
 the task id}`); when Redis fails, task caps are not applied: calls go on with a
 `TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
 `shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are

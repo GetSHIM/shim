@@ -81,6 +81,8 @@ class CommunitySettings(BaseSettings):
     SHIM_AGENT_LOOP: Literal["off", "count", "block"] = "count"
     SHIM_AGENT_LOOP_REPEATS: int = Field(default=5, ge=3, le=100)
     SHIM_INFLIGHT_SHARING: Literal["off", "on"] = "off"
+    SHIM_ANTHROPIC_AUTO_CACHE: Literal["off", "5m", "1h"] = "off"
+    SHIM_OPENAI_PROMPT_CACHE_KEY: Literal["off", "key", "tenant"] = "off"
     SHIM_MODEL_LIFECYCLE_FILE: Path | None = None
     SHIM_MODEL_RETIRING_WARNING: Literal["record", "header"] = "record"
     # Azure OpenAI v1 for catalog routes: an Azure key or an Entra app (S52).

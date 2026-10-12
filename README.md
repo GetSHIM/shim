@@ -112,7 +112,9 @@ request it:
 - **Changes a request in three bands, each opt-in.** The settings band sets the
   provider's own parameters and never touches content; a transform band changes
   content only under published, switchable rules; a report band only shows. shim
-  writes a parameter such as `temperature` only when an enterprise tenant pins it.
+  writes a parameter such as `temperature` only when an enterprise tenant pins it,
+  and asks for the providers' own prompt-cache discount (an Anthropic breakpoint,
+  an OpenAI `prompt_cache_key`) only when the operator turns it on.
 
 It does not translate payloads. When a provider ships a new field, a new model,
 or changes streaming behaviour, you are not waiting on shim to catch up.

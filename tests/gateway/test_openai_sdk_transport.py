@@ -2247,3 +2247,92 @@ async def test_azure_routes_reach_the_v1_api_with_the_mapped_deployment(
         "gpt-5.6-terra",
     ]
     assert logged[0]["estimated_cost_usd"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/v1/chat/completions",
+            {
+                "messages": [
+                    {"role": "system", "content": "s"},
+                    {"role": "user", "content": "hi"},
+                ]
+            },
+        ),
+        (
+            "/v1/chat/completions",
+            {"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        ),
+        ("/v1/responses", {"instructions": "s", "input": "hi"}),
+    ],
+)
+async def test_the_band_prompt_cache_key_reaches_openai_through_the_sdk(
+    path, body
+) -> None:
+    seen: list[dict] = []
+    chat = _usage_aware_upstream(seen)
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/responses"):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json=_response("resp_cache_key"))
+        if json.loads(request.content).get("stream"):
+            return chat(request)
+        seen.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat_key",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5.6-luna",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    events = StringIO()
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1",
+            BACKEND_CORS_ORIGINS=[],
+            SHIM_OPENAI_PROMPT_CACHE_KEY="tenant",
+            _env_file=None,
+        ),
+        http_client=outbound,
+        event_stream=events,
+    )
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            path,
+            headers={"x-openai-api-key": "sk-provider"},
+            json={"model": "gpt-5.6-luna", **body},
+        )
+    await outbound.aclose()
+
+    assert response.status_code == 200
+    [sent] = seen
+    assert sent["prompt_cache_key"].startswith("shim-")
+    assert len(sent["prompt_cache_key"]) == 37
+    line = json.loads(events.getvalue().splitlines()[-1])
+    assert line["settings_applied"] == [{"id": "openai_prompt_cache_key", "version": 1}]

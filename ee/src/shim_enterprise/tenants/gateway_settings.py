@@ -5,10 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import logging
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.gateway.request_policy import AgentLoop, TaskCaps
@@ -90,6 +97,33 @@ class RequestArchivePatch(BaseModel):
     retention_days: int | None = Field(default=None, ge=1, le=90)
 
 
+_Alias = Annotated[
+    str,
+    StringConstraints(
+        min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    ),
+]
+
+
+class ProviderCacheSettings(BaseModel):
+    """The providers' own prompt-cache discount: two settings band steps (S54)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    anthropic_auto_cache: Literal["off", "5m", "1h"] = "off"
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] = "off"
+    # Registry aliases the steps may touch; catalog routes always may.
+    deployments: list[_Alias] = Field(default=[], max_length=100)
+
+
+class ProviderCachePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    anthropic_auto_cache: Literal["off", "5m", "1h"] | None = None
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] | None = None
+    deployments: list[_Alias] | None = Field(default=None, max_length=100)
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -108,6 +142,7 @@ class GatewaySettings(BaseModel):
     # Per finding rule, how far shim may go; a rule left out observes.
     finding_modes: dict[str, FindingMode] = {}
     request_archive: RequestArchiveSettings = RequestArchiveSettings()
+    provider_cache: ProviderCacheSettings = ProviderCacheSettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -133,6 +168,7 @@ class GatewaySettingsPatch(BaseModel):
     four_eyes: FourEyes | None = None
     finding_modes: dict[str, FindingMode] | None = None
     request_archive: RequestArchivePatch | None = None
+    provider_cache: ProviderCachePatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -306,6 +342,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # A key's identical in-flight requests share one answer after each passes its own
     # limits and privacy; an answer never crosses keys.
     "inflight_sharing_api_key_ids": neutral,
+    # A provider's own cache: what the request costs, not what it may carry.
+    "provider_cache": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

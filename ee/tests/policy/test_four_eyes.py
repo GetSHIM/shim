@@ -225,6 +225,11 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             },
             "agent_loop": {"action": "count", "repeats": 5},
             "inflight_sharing_api_key_ids": [],
+            "provider_cache": {
+                "anthropic_auto_cache": "off",
+                "openai_prompt_cache_key": "off",
+                "deployments": [],
+            },
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -246,6 +251,11 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 },
                 "agent_loop": {"action": "count", "repeats": 5},
                 "inflight_sharing_api_key_ids": [],
+                "provider_cache": {
+                    "anthropic_auto_cache": "off",
+                    "openai_prompt_cache_key": "off",
+                    "deployments": [],
+                },
             }
         }
     }

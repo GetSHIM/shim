@@ -283,7 +283,11 @@ is in scope for the request's protocol or a band setting is on, sets
 provider parameters on the masked payload, copying only the objects it changes,
 and never a content string. Its verdicts carry stage `settings`; an enforced block
 records the privacy facts and then refuses with `RULE_BLOCKED`. Applied steps are
-recorded as `settings_applied`. The `route` kind ships no matcher yet.
+recorded as `settings_applied`. After the pins the band runs its fixed `STEPS`,
+each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) and
+`openai_prompt_cache_key` (an OpenAI routing key derived from the prompt prefix),
+for catalog routes and the registry aliases the tenant lists. The `route` kind
+ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`
 (after the date) from `src/shim/billing/lifecycle.py`, which reads the reviewed
