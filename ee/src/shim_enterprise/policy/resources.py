@@ -9,16 +9,16 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.ai_act.api import OVERSIGHT_POLICIES
-from shim_enterprise.api.v1.management import (
-    API_KEYS,
-    BUDGETS,
-    DEPLOYMENTS,
+from shim_enterprise.api.v1.management.api_keys import API_KEYS
+from shim_enterprise.api.v1.management.budgets import BUDGETS
+from shim_enterprise.api.v1.management.configuration import (
     GATEWAY_SETTINGS,
     PRIVACY,
     PROVIDER_KEYS,
-    RECORD_SETS,
-    TEAMS,
 )
+from shim_enterprise.api.v1.management.deployments import DEPLOYMENTS
+from shim_enterprise.api.v1.management.record_sets import RECORD_SETS
+from shim_enterprise.api.v1.management.teams import TEAMS
 from shim_enterprise.compliance.api import FORWARD_TARGETS
 from shim_enterprise.policy.plans import Impact, Risk, State
 from shim_enterprise.rules.resource import RULES

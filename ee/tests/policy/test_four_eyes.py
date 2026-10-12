@@ -1025,7 +1025,7 @@ async def test_replacing_budget_alert_targets_is_versioned_and_relaxes(
         return None
 
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.assert_safe_forward_url", safe
+        "shim_enterprise.api.v1.management.budgets.assert_safe_forward_url", safe
     )
     users = await _organization(db, "admin")
     owner, admin = users["owner"], users["admin"]

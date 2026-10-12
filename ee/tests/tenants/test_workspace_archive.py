@@ -85,21 +85,21 @@ async def _personal(session) -> User:
 
 
 async def _invite(session, owner: User, email: str) -> str:
-    created = await management.create_team_invite(
-        management.TeamInviteInput(email=email, role="member"), owner, session
+    created = await management.members.create_team_invite(
+        management.members.TeamInviteInput(email=email, role="member"), owner, session
     )
     return created.token
 
 
 def _secret_store(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     store = SimpleNamespace(delete_secret=AsyncMock())
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
     return store
 
 
 async def _accept(session, token: str, user: User) -> User:
-    return await management.accept_team_invite(
-        management.AcceptTeamInvite(token=token), user, session
+    return await management.members.accept_team_invite(
+        management.members.AcceptTeamInvite(token=token), user, session
     )
 
 
@@ -247,8 +247,10 @@ async def test_archiving_deletes_the_workspace_service_accounts(
     owner = await _destination(db)
     analyst = await _personal(db)
     workspace_id = analyst.organization_id
-    service = await management.create_service_account(
-        management.ServiceAccountInput(name="ci", role="admin", expires_in_days=30),
+    service = await management.members.create_service_account(
+        management.members.ServiceAccountInput(
+            name="ci", role="admin", expires_in_days=30
+        ),
         analyst,
         db,
     )
@@ -346,7 +348,7 @@ async def test_secrets_survive_when_the_acceptance_rolls_back(
     await _configure(db, analyst)
     token = await _invite(db, owner, analyst.email)
     monkeypatch.setattr(
-        management, "_audit", AsyncMock(side_effect=RuntimeError("audit down"))
+        management.members, "_audit", AsyncMock(side_effect=RuntimeError("audit down"))
     )
 
     with pytest.raises(RuntimeError, match="audit down"):

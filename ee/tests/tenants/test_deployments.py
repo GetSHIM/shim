@@ -27,7 +27,7 @@ from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.request_policy import RequestPolicyContext, ResolvedRequestPolicy
 from shim_enterprise.api.enterprise_deps import DatabaseGatewayAuthenticator
-from shim_enterprise.api.v1.management import (
+from shim_enterprise.api.v1.management.deployments import (
     ModelDeploymentInput,
     ModelDeploymentView,
     create_model_deployment,
@@ -482,7 +482,7 @@ async def test_health_headers_are_bounded_and_output_view_survives_policy_change
     rows = await _deployments(db, test_api_key)
     store = SimpleNamespace(get_secret=AsyncMock(return_value="health-key"))
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+        "shim_enterprise.api.v1.management._common.get_secret_store", lambda: store
     )
 
     def upstream(request):
@@ -520,13 +520,15 @@ async def test_health_headers_are_bounded_and_output_view_survives_policy_change
 async def test_deployment_writes_reread_the_row_under_a_lock(
     db, test_api_key, test_user_with_org, origins, monkeypatch
 ):
-    from shim_enterprise.api.v1.management import _owned_model_deployment as owned
+    from shim_enterprise.api.v1.management.deployments import (
+        _owned_model_deployment as owned,
+    )
 
     row = (await _deployments(db, test_api_key))[0]
     test_user_with_org.role = "admin"
     store = SimpleNamespace(get_secret=AsyncMock(return_value="health-key"))
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+        "shim_enterprise.api.v1.management._common.get_secret_store", lambda: store
     )
     locks: list[bool] = []
 
@@ -535,7 +537,8 @@ async def test_deployment_writes_reread_the_row_under_a_lock(
         return await owned(*args, for_update=for_update)
 
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management._owned_model_deployment", recording
+        "shim_enterprise.api.v1.management.deployments._owned_model_deployment",
+        recording,
     )
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _request: httpx.Response(200))
@@ -895,7 +898,7 @@ async def test_health_probe_has_a_wall_clock_deadline(
     rows = await _deployments(db, test_api_key)
     real_timeout = asyncio.timeout
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.asyncio.timeout",
+        "shim_enterprise.api.v1.management.deployments.asyncio.timeout",
         lambda seconds: real_timeout(0.01),
     )
 
@@ -904,7 +907,7 @@ async def test_health_probe_has_a_wall_clock_deadline(
         pytest.fail("health deadline was not enforced")
 
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.get_secret_store",
+        "shim_enterprise.api.v1.management._common.get_secret_store",
         lambda: SimpleNamespace(get_secret=delayed_secret),
     )
     request = SimpleNamespace(
@@ -1778,7 +1781,7 @@ async def test_an_azure_health_check_counts_a_404_as_reachable(
     row, _ = await _azure_row(db, test_api_key, upstream=upstream)
     store = SimpleNamespace(get_secret=AsyncMock(return_value="azure-key"))
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+        "shim_enterprise.api.v1.management._common.get_secret_store", lambda: store
     )
     seen = []
 
@@ -1815,7 +1818,7 @@ async def test_an_entra_backed_health_check_sends_the_entra_token(
     )
     store = SimpleNamespace(get_secret=AsyncMock(return_value=stored))
     monkeypatch.setattr(
-        "shim_enterprise.api.v1.management.get_secret_store", lambda: store
+        "shim_enterprise.api.v1.management._common.get_secret_store", lambda: store
     )
     monkeypatch.setattr(settings, "SHIM_AZURE_AUTHORITY_HOST", "https://login.test")
     seen = []

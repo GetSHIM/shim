@@ -477,13 +477,16 @@ async def test_provider_rotation_cleans_the_unreferenced_managed_secret(
     async def audit(*args, **kwargs) -> None:
         return None
 
-    monkeypatch.setattr(management, "_owned_provider_secret", owned_provider_secret)
-    monkeypatch.setattr(management, "_audit", audit)
-    monkeypatch.setattr(management, "get_secret_store", lambda: store)
+    monkeypatch.setattr(
+        management.providers, "_owned_provider_secret", owned_provider_secret
+    )
+    monkeypatch.setattr(management.providers, "_audit", audit)
+    monkeypatch.setattr(management.providers, "get_secret_store", lambda: store)
+    monkeypatch.setattr(management._common, "get_secret_store", lambda: store)
 
-    operation = management.update_provider_secret(
+    operation = management.providers.update_provider_secret(
         row.id,
-        management.ProviderSecretPatch(key="sk-provider-rotated"),
+        management.providers.ProviderSecretPatch(key="sk-provider-rotated"),
         user,
         session,
     )

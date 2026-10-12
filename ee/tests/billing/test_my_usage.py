@@ -136,8 +136,8 @@ async def _settle(
     await db.flush()
 
 
-async def _mine(db, user: User) -> management.MyUsageView:
-    return await management.my_usage(None, None, user, db)
+async def _mine(db, user: User) -> management.usage.MyUsageView:
+    return await management.usage.my_usage(None, None, user, db)
 
 
 @pytest.mark.asyncio
@@ -256,10 +256,10 @@ async def test_usage_mine_window_defaults_to_this_month_and_is_bounded(db) -> No
         (now - timedelta(days=31, seconds=1), now),
     ):
         with pytest.raises(HTTPException) as refused:
-            await management.my_usage(start, end, member, db)
+            await management.usage.my_usage(start, end, member, db)
         assert refused.value.status_code == 422
     assert (
-        await management.my_usage(now - timedelta(days=31), now, member, db)
+        await management.usage.my_usage(now - timedelta(days=31), now, member, db)
     ).totals.requests == 0
 
 
@@ -269,7 +269,7 @@ async def test_usage_mine_default_start_is_the_utc_month_of_a_zoned_end(db) -> N
     # 01:00 on 1 October at +03:00 is still September in UTC.
     end = datetime(2026, 10, 1, 1, tzinfo=timezone(timedelta(hours=3)))
 
-    usage = await management.my_usage(None, end, member, db)
+    usage = await management.usage.my_usage(None, end, member, db)
 
     assert usage.period.start == datetime(2026, 9, 1, tzinfo=timezone.utc)
 
@@ -283,7 +283,7 @@ async def test_usage_mine_daily_series_uses_the_window_of_the_totals(db) -> None
     # The ledger rows predate the window; the request reconciled inside it.
     await _settle(db, key, tokens=10, cost="0.25", ledger_at=now - timedelta(days=3))
 
-    usage = await management.my_usage(
+    usage = await management.usage.my_usage(
         now - timedelta(days=2), now + timedelta(minutes=1), member, db
     )
 

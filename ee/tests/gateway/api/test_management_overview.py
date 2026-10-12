@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.dialects import postgresql
 
+from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1 import management
 from shim_enterprise.core.database import get_db
 from shim_enterprise.observability.overview import (
@@ -197,8 +198,8 @@ async def test_overview_uses_authenticated_users_tenant(
 ) -> None:
     tenant_id = uuid4()
     application = _application()
-    application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(custom_role_id=None, organization_id=tenant_id, role="auditor")
+    application.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        custom_role_id=None, organization_id=tenant_id, role="auditor"
     )
     projection = OverviewProjection(
         current=_empty_summary(),
@@ -236,8 +237,8 @@ async def test_overview_normalizes_offset_boundaries_to_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     application = _application()
-    application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(custom_role_id=None, organization_id=uuid4(), role="auditor")
+    application.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        custom_role_id=None, organization_id=uuid4(), role="auditor"
     )
     projection = OverviewProjection(
         current=_empty_summary(),
@@ -271,8 +272,8 @@ async def test_overview_rejects_invalid_windows_before_query(
     days: int,
 ) -> None:
     application = _application()
-    application.dependency_overrides[management.get_current_user] = lambda: (
-        SimpleNamespace(custom_role_id=None, organization_id=uuid4(), role="auditor")
+    application.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        custom_role_id=None, organization_id=uuid4(), role="auditor"
     )
     read = AsyncMock()
     monkeypatch.setattr(OverviewReadModel, "read", read)

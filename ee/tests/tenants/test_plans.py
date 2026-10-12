@@ -106,7 +106,7 @@ async def test_operator_transition_preserves_access_accounting_and_history(
     assert (quota.reserved_requests, quota.reserved_tokens) == (1, 100)
     _, new_key = await create_api_key(db, user_id=test_user_with_org.id, name="New key")
     assert new_key.tier == target_tier
-    view = await management.get_subscription(test_user_with_org, db)
+    view = await management.members.get_subscription(test_user_with_org, db)
     assert view.plan == target_tier
     assert set(view.model_dump()) == {"plan", "status", "source", "entitlements"}
 
@@ -168,10 +168,10 @@ async def test_invite_acceptance_moves_only_an_empty_verified_bootstrap(
     db.add_all([temporary_org, invited])
     await db.flush()
     await ensure_privacy_defaults(db, temporary_org.id)
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.members, "_audit", AsyncMock())
 
-    created = await management.create_team_invite(
-        management.TeamInviteInput(email=invited.email, role="member"),
+    created = await management.members.create_team_invite(
+        management.members.TeamInviteInput(email=invited.email, role="member"),
         test_user_with_org,
         db,
     )
@@ -184,8 +184,8 @@ async def test_invite_acceptance_moves_only_an_empty_verified_bootstrap(
     db.add(receipt)
     await db.flush()
     with pytest.raises(management.HTTPException, match="Leave or empty"):
-        await management.accept_team_invite(
-            management.AcceptTeamInvite(token=created.token),
+        await management.members.accept_team_invite(
+            management.members.AcceptTeamInvite(token=created.token),
             invited,
             db,
         )
@@ -193,8 +193,8 @@ async def test_invite_acceptance_moves_only_an_empty_verified_bootstrap(
     await db.delete(receipt)
     await db.flush()
 
-    accepted = await management.accept_team_invite(
-        management.AcceptTeamInvite(token=created.token),
+    accepted = await management.members.accept_team_invite(
+        management.members.AcceptTeamInvite(token=created.token),
         invited,
         db,
     )
@@ -203,8 +203,8 @@ async def test_invite_acceptance_moves_only_an_empty_verified_bootstrap(
     assert accepted.role == "member"
     assert await db.get(Organization, temporary_org.id) is None
     with pytest.raises(management.HTTPException, match="invalid or expired"):
-        await management.accept_team_invite(
-            management.AcceptTeamInvite(token=created.token),
+        await management.members.accept_team_invite(
+            management.members.AcceptTeamInvite(token=created.token),
             invited,
             db,
         )
@@ -244,12 +244,12 @@ async def test_invite_acceptance_locks_destination_before_revalidating_invite(
         refresh=AsyncMock(),
     )
     move = AsyncMock(return_value=(user, [], []))
-    monkeypatch.setattr(management, "_require_entitlement", AsyncMock())
-    monkeypatch.setattr(management, "move_user_from_bootstrap", move)
-    monkeypatch.setattr(management, "_audit", AsyncMock())
+    monkeypatch.setattr(management.members, "_require_entitlement", AsyncMock())
+    monkeypatch.setattr(management.members, "move_user_from_bootstrap", move)
+    monkeypatch.setattr(management.members, "_audit", AsyncMock())
 
-    accepted = await management.accept_team_invite(
-        management.AcceptTeamInvite(token="x" * 32),
+    accepted = await management.members.accept_team_invite(
+        management.members.AcceptTeamInvite(token="x" * 32),
         user,
         session,
     )
@@ -275,7 +275,7 @@ async def test_invite_acceptance_locks_destination_before_revalidating_invite(
 async def test_last_owner_cannot_be_removed(db, test_org, test_user_with_org) -> None:
     test_user_with_org.role = "owner"
     with pytest.raises(management.HTTPException, match="needs an owner"):
-        await management._protect_last_owner(db, test_org.id)
+        await management.members._protect_last_owner(db, test_org.id)
 
 
 @pytest.mark.asyncio
@@ -285,8 +285,8 @@ async def test_free_plan_cannot_add_team_members(
 ) -> None:
     test_user_with_org.role = "owner"
     with pytest.raises(management.HTTPException, match="PLAN_UPGRADE_REQUIRED"):
-        await management.create_team_invite(
-            management.TeamInviteInput(email="new-member@example.com"),
+        await management.members.create_team_invite(
+            management.members.TeamInviteInput(email="new-member@example.com"),
             test_user_with_org,
             db,
         )

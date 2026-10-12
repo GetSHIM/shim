@@ -93,7 +93,7 @@ async def test_identity_binding_role_removal_and_email_collision(
     ):
         with pytest.raises(HTTPException):
             await oidc.synchronize_user(db, claims | changed)
-    from shim_enterprise.api.v1.management import remove_team_member
+    from shim_enterprise.api.v1.management.members import remove_team_member
     from shim_enterprise.tenants.service import authenticate_api_key, create_api_key
 
     plaintext, _ = await create_api_key(db, user_id=user.id, name="workload")
@@ -579,9 +579,9 @@ async def test_an_oidc_members_custom_role_is_set_in_the_identity_provider(
 
     test_user_with_org.role = "owner"
     with pytest.raises(HTTPException) as refused:
-        await management.update_team_member(
+        await management.members.update_team_member(
             uuid4(),
-            management.TeamRolePatch(role="member", custom_role_id=None),
+            management.members.TeamRolePatch(role="member", custom_role_id=None),
             test_user_with_org,
             db,
         )

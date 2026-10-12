@@ -11,7 +11,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import require
-from shim_enterprise.api.v1.management import bounded_body
+from shim_enterprise.api.v1.management._common import bounded_body
 from shim_enterprise.core.database import get_db
 from shim_enterprise.policy.api import PlanView, new_plan, planned_change
 from shim_enterprise.policy.plans import current_version, lock_tenant

@@ -137,7 +137,7 @@ def origins(monkeypatch):
         settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGINS", ["https://a.internal"]
     )
     # Budget targets are checked by DNS; these tests never deliver to them.
-    monkeypatch.setattr(management, "assert_safe_forward_url", AsyncMock())
+    monkeypatch.setattr(management.budgets, "assert_safe_forward_url", AsyncMock())
 
 
 @pytest.mark.asyncio
@@ -221,7 +221,7 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
     resources = state["resources"]
     assert set(resources) == set(REGISTRY)
     assert set(resources["privacy"]["_"]) == set(
-        management.PrivacySettings.model_fields
+        management.configuration.PrivacySettings.model_fields
     )
     assert resources["teams"][team.json()["id"]] == {
         "name": "risk",
@@ -234,7 +234,7 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
         "team_id": None,
     }
     stored = resources["deployments"][deployment.json()["id"]]
-    assert set(stored) == set(management.ModelDeploymentInput.model_fields)
+    assert set(stored) == set(management.deployments.ModelDeploymentInput.model_fields)
     assert (stored["input_price_per_million"], stored["provider_secret_id"]) == (
         "0.5",
         str(secret.id),
@@ -1433,7 +1433,7 @@ async def test_a_privacy_plan_invalidates_the_policy_cache_after_commit(
             )
             invalidated.append((tenant, committed == 1))
 
-    monkeypatch.setattr(management, "CacheManager", Recorder)
+    monkeypatch.setattr(management.configuration, "CacheManager", Recorder)
     app = _app(db, owner)
     app.state.cache = object()
     async with httpx.AsyncClient(

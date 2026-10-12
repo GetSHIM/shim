@@ -149,14 +149,16 @@ async def test_service_account_downgrade_survives_their_request_history(
     from shim_enterprise.billing.models import RequestLifecycle
 
     test_user_with_org.role = "owner"
-    created = await management.create_service_account(
-        management.ServiceAccountInput(name="ci", role="admin", expires_in_days=30),
+    created = await management.members.create_service_account(
+        management.members.ServiceAccountInput(
+            name="ci", role="admin", expires_in_days=30
+        ),
         test_user_with_org,
         db,
     )
     account = await db.get(User, created.id)
-    key = await management.create_api_key(
-        management.ApiKeyInput(name="pipeline"), account, db
+    key = await management.api_keys.create_api_key(
+        management.api_keys.ApiKeyInput(name="pipeline"), account, db
     )
     now = datetime.now(timezone.utc)
     db.add(

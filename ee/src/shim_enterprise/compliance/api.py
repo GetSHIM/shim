@@ -22,7 +22,7 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     require,
 )
-from shim_enterprise.api.v1.management import _only, _uuids, _validated
+from shim_enterprise.api.v1.management._common import _only, _uuids, _validated
 from shim_enterprise.compliance.classification import SEVERITY_ORDER
 from shim_enterprise.compliance.adapters import (
     ProviderConfigError,

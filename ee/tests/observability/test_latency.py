@@ -669,7 +669,7 @@ async def test_the_read_runs_under_a_statement_timeout_and_a_slow_one_is_503(
         await session.execute(text("SET LOCAL statement_timeout = '50ms'"))
         await session.execute(text("SELECT pg_sleep(1)"))
 
-    monkeypatch.setattr(management, "latency_by_group", slow)
+    monkeypatch.setattr(management.analytics, "latency_by_group", slow)
     refused = await _read(db, user)
 
     assert answered.status_code == 200

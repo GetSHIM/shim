@@ -53,8 +53,8 @@ async def _owner(session) -> User:
 
 
 async def _create(session, owner: User, role: str = "admin", days: int = 30):
-    created = await management.create_service_account(
-        management.ServiceAccountInput(
+    created = await management.members.create_service_account(
+        management.members.ServiceAccountInput(
             name=f"ci-{role}", role=role, expires_in_days=days
         ),
         owner,
@@ -104,7 +104,7 @@ async def test_every_failed_service_key_gets_the_same_401(db, failure: str) -> N
     created, account = await _create(db, owner)
     token = created.plaintext
     if failure == "revoked":
-        await management.rotate_service_account(account.id, owner, db)
+        await management.members.rotate_service_account(account.id, owner, db)
     elif failure == "expired":
         await db.execute(
             update(ServiceAccountCredential)
@@ -194,18 +194,18 @@ async def test_service_accounts_cannot_take_human_powers(db) -> None:
         await enterprise_deps.get_org_owner(admin)
     assert manage.value.status_code == 403
     for call in (
-        management.update_team_member(
-            admin.id, management.TeamRolePatch(role="owner"), owner, db
+        management.members.update_team_member(
+            admin.id, management.members.TeamRolePatch(role="owner"), owner, db
         ),
-        management.remove_team_member(admin.id, owner, db),
+        management.members.remove_team_member(admin.id, owner, db),
     ):
         with pytest.raises(HTTPException) as hidden:
             await call
         assert hidden.value.status_code == 404
     with pytest.raises(HTTPException) as listing:
-        await management.list_service_accounts(admin, db)
+        await management.members.list_service_accounts(admin, db)
     assert listing.value.status_code == 403
-    members = await management.list_team_members(owner, db)
+    members = await management.members.list_team_members(owner, db)
     assert {member.id for member in members} == {owner.id}
     with pytest.raises(HTTPException) as read_only:
         await _resolve(
@@ -214,8 +214,8 @@ async def test_service_accounts_cannot_take_human_powers(db) -> None:
     assert read_only.value.status_code == 403
     assert (await _resolve(db, auditor_created.plaintext)).id == auditor.id
 
-    key = await management.create_api_key(
-        management.ApiKeyInput(name="pipeline"), admin, db
+    key = await management.api_keys.create_api_key(
+        management.api_keys.ApiKeyInput(name="pipeline"), admin, db
     )
     assert (await db.get(ApiKey, key.id)).user_id == admin.id
 
@@ -225,11 +225,11 @@ async def test_a_service_account_issues_a_key_that_expires(db) -> None:
     owner = await _owner(db)
     _, admin = await _create(db, owner)
 
-    lasting = await management.create_api_key(
-        management.ApiKeyInput(name="lasting"), admin, db
+    lasting = await management.api_keys.create_api_key(
+        management.api_keys.ApiKeyInput(name="lasting"), admin, db
     )
-    demo = await management.create_api_key(
-        management.ApiKeyInput(name="demo", expires_in_days=7), admin, db
+    demo = await management.api_keys.create_api_key(
+        management.api_keys.ApiKeyInput(name="demo", expires_in_days=7), admin, db
     )
 
     assert lasting.expires_at is None
@@ -244,7 +244,7 @@ async def test_a_service_account_issues_a_key_that_expires(db) -> None:
     assert await authenticate_api_key(db, demo.plaintext) is None
     for days in (0, 366):
         with pytest.raises(ValidationError):
-            management.ApiKeyInput(name="demo", expires_in_days=days)
+            management.api_keys.ApiKeyInput(name="demo", expires_in_days=days)
 
 
 @pytest.mark.asyncio
@@ -266,13 +266,13 @@ async def test_a_service_account_cannot_accept_an_invitation(db) -> None:
     owner = await _owner(db)
     _, account = await _create(db, owner)
     other = await _owner(db)
-    invite = await management.create_team_invite(
-        management.TeamInviteInput(email=account.email, role="admin"), other, db
+    invite = await management.members.create_team_invite(
+        management.members.TeamInviteInput(email=account.email, role="admin"), other, db
     )
 
     with pytest.raises(HTTPException) as refused:
-        await management.accept_team_invite(
-            management.AcceptTeamInvite(token=invite.token), account, db
+        await management.members.accept_team_invite(
+            management.members.AcceptTeamInvite(token=invite.token), account, db
         )
 
     assert refused.value.status_code == 403
@@ -285,26 +285,26 @@ async def test_service_account_lifecycle_is_audited_with_its_actor_type(
 ) -> None:
     owner = await _owner(db)
     created, account = await _create(db, owner)
-    await management.create_api_key(
-        management.ApiKeyInput(name="pipeline"), account, db
+    await management.api_keys.create_api_key(
+        management.api_keys.ApiKeyInput(name="pipeline"), account, db
     )
 
-    listed = await management.list_service_accounts(owner, db)
+    listed = await management.members.list_service_accounts(owner, db)
     assert [item.model_dump() for item in listed] == [
         created.model_dump(exclude={"plaintext"})
     ]
     assert "plaintext" not in listed[0].model_dump()
-    rotated = await management.rotate_service_account(account.id, owner, db)
+    rotated = await management.members.rotate_service_account(account.id, owner, db)
     assert rotated.expires_at == created.expires_at
     assert rotated.prefix != created.prefix
     assert (await _refused(db, created.plaintext)).status_code == 401
     assert (await _resolve(db, rotated.plaintext)).id == account.id
-    await management.delete_service_account(account.id, owner, db)
+    await management.members.delete_service_account(account.id, owner, db)
     assert (await _refused(db, rotated.plaintext)).status_code == 401
-    assert await management.list_service_accounts(owner, db) == []
+    assert await management.members.list_service_accounts(owner, db) == []
     assert not (await db.get(User, account.id)).is_active
     with pytest.raises(HTTPException) as gone:
-        await management.rotate_service_account(account.id, owner, db)
+        await management.members.rotate_service_account(account.id, owner, db)
     assert gone.value.status_code == 404
 
     events = await audit_events(owner.organization_id)
@@ -343,7 +343,7 @@ async def test_an_expired_service_account_cannot_be_rotated(db) -> None:
     )
 
     with pytest.raises(HTTPException) as refused:
-        await management.rotate_service_account(account.id, owner, db)
+        await management.members.rotate_service_account(account.id, owner, db)
 
     assert refused.value.status_code == 409
     assert "create a new service account" in refused.value.detail
@@ -375,18 +375,22 @@ async def test_an_admin_service_account_cannot_change_memberships_or_invite(
     team = Team(organization_id=owner.organization_id, name="platform")
     db.add_all([member, team])
     await db.flush()
-    await management.set_membership(
-        team.id, member.id, management.MembershipInput(), owner, db
+    await management.teams.set_membership(
+        team.id, member.id, management.teams.MembershipInput(), owner, db
     )
 
     for call in (
-        management.set_membership(
-            team.id, member.id, management.MembershipInput(role="team_admin"), admin, db
+        management.teams.set_membership(
+            team.id,
+            member.id,
+            management.teams.MembershipInput(role="team_admin"),
+            admin,
+            db,
         ),
-        management.remove_membership(team.id, member.id, admin, db),
-        management.remove_team_member(member.id, admin, db),
-        management.create_team_invite(
-            management.TeamInviteInput(email="new@example.com", role="member"),
+        management.teams.remove_membership(team.id, member.id, admin, db),
+        management.members.remove_team_member(member.id, admin, db),
+        management.members.create_team_invite(
+            management.members.TeamInviteInput(email="new@example.com", role="member"),
             admin,
             db,
         ),

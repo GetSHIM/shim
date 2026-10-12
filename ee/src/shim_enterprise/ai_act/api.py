@@ -79,7 +79,7 @@ from shim_enterprise.api.enterprise_deps import (
     READER_REQUIRED,
     require,
 )
-from shim_enterprise.api.v1.management import (
+from shim_enterprise.api.v1.management._common import (
     _only,
     _require_entitlement,
     _uuids,

@@ -52,7 +52,7 @@ def registry(monkeypatch):
     names = frozenset(analyzer.name for analyzer in analyzers)
     monkeypatch.setattr(gateway_settings, "ANALYZERS", analyzers)
     monkeypatch.setattr(gateway_settings, "ANALYZER_NAMES", names)
-    monkeypatch.setattr(management, "ANALYZERS", analyzers)
+    monkeypatch.setattr(management.configuration, "ANALYZERS", analyzers)
     return analyzers
 
 
@@ -106,7 +106,7 @@ async def test_a_new_row_has_empty_settings_and_revision_zero(db, test_org) -> N
 async def test_get_without_a_row_gives_defaults_and_writes_nothing(
     db, test_user_with_org, registry
 ) -> None:
-    view = await management.get_gateway_settings(test_user_with_org, db)
+    view = await management.configuration.get_gateway_settings(test_user_with_org, db)
 
     assert view.settings == GatewaySettings()
     assert view.model_dump(mode="json") == {
@@ -147,13 +147,13 @@ async def test_patch_round_trip_in_registry_order_with_audit(
     admin = await _admin(db, test_org.id)
     cache = _DeletingCache()
 
-    view = await management.update_gateway_settings(
+    view = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["language", "shape"]),
         _request(cache),
         admin,
         db,
     )
-    again = await management.get_gateway_settings(admin, db)
+    again = await management.configuration.get_gateway_settings(admin, db)
 
     assert view.settings.response_analysis == ["shape", "language"]
     assert (view.revision, view.updated_by) == (1, admin.id)
@@ -167,7 +167,7 @@ async def test_patch_round_trip_in_registry_order_with_audit(
     assert event["extra"]["before"] == {"response_analysis": []}
     assert event["extra"]["after"] == {"response_analysis": ["shape", "language"]}
 
-    cleared = await management.update_gateway_settings(
+    cleared = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=[]), _request(cache), admin, db
     )
     assert (cleared.revision, cleared.settings.response_analysis) == (2, [])
@@ -180,20 +180,20 @@ async def test_a_patch_that_changes_nothing_writes_nothing(
 ) -> None:
     admin = await _admin(db, test_org.id)
 
-    first = await management.update_gateway_settings(
+    first = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=[]),
         _request(_DeletingCache()),
         admin,
         db,
     )
     assert first.revision == 0 and await _rows(db, test_org.id) == 0
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
-    same = await management.update_gateway_settings(
+    same = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
-    empty = await management.update_gateway_settings(
+    empty = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(), _request(), admin, db
     )
 
@@ -224,7 +224,7 @@ def test_a_patch_refuses_unknown_names_duplicates_nulls_and_fields(
 def test_the_routes_ask_settings_read_to_read_and_settings_write_to_write() -> None:
     guards = {
         (method, route.path): inspect.getclosurevars(dependency.call).nonlocals
-        for route in management.router.routes
+        for route in management.configuration.router.routes
         if route.path.endswith("/gateway-settings")
         for method in route.methods
         for dependency in route.dependant.dependencies
@@ -251,7 +251,7 @@ async def test_a_relaxing_change_writes_the_relaxed_event(
     )
     admin = await _admin(db, test_org.id)
 
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
 
@@ -305,10 +305,10 @@ async def test_turning_injection_markers_down_writes_the_relaxed_event(
     db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(injection_markers="warn"), _request(), admin, db
     )
-    view = await management.update_gateway_settings(
+    view = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(injection_markers="count"), _request(), admin, db
     )
 
@@ -326,10 +326,10 @@ async def test_the_price_tier_warning_round_trips_and_is_never_a_relaxation(
     db, test_org, audit_events
 ) -> None:
     admin = await _admin(db, test_org.id)
-    on = await management.update_gateway_settings(
+    on = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(price_tier_warning=True), _request(), admin, db
     )
-    off = await management.update_gateway_settings(
+    off = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(price_tier_warning=False), _request(), admin, db
     )
 
@@ -376,7 +376,7 @@ def test_a_stored_restore_type_this_build_does_not_know_still_loads() -> None:
 
 
 async def _restore_patch(db, admin, value):
-    return await management.update_gateway_settings(
+    return await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate({"restore_withheld": value}),
         _request(),
         admin,
@@ -505,7 +505,7 @@ async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_priv
     await db.flush()
 
     with pytest.raises(HTTPException) as refused:
-        await management.update_gateway_settings(
+        await management.configuration.update_gateway_settings(
             GatewaySettingsPatch.model_validate(
                 {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(uuid4())]}}}
             ),
@@ -513,7 +513,7 @@ async def test_restore_grants_name_only_this_organizations_ids_and_relax_as_priv
             admin,
             db,
         )
-    granted = await management.update_gateway_settings(
+    granted = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate(
             {"restore_withheld": {"TR_NATIONAL_ID": {"team_ids": [str(team.id)]}}}
         ),
@@ -571,7 +571,7 @@ def test_raising_a_task_cap_or_easing_the_loop_action_relaxes(
 @pytest.mark.asyncio
 async def test_a_task_caps_patch_changes_only_the_fields_it_names(db, test_org) -> None:
     admin = await _admin(db, test_org.id)
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate(
             {"task_caps": {"max_calls": 10, "window_seconds": 600}}
         ),
@@ -579,13 +579,13 @@ async def test_a_task_caps_patch_changes_only_the_fields_it_names(db, test_org) 
         admin,
         db,
     )
-    view = await management.update_gateway_settings(
+    view = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate({"task_caps": {"max_cost_usd": "0.5"}}),
         _request(),
         admin,
         db,
     )
-    cleared = await management.update_gateway_settings(
+    cleared = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate({"task_caps": {"max_calls": None}}),
         _request(),
         admin,
@@ -695,11 +695,11 @@ async def test_one_tenants_patch_leaves_another_tenant_alone(
     await db.flush()
     admin, stranger = await _admin(db, test_org.id), await _admin(db, other.id)
 
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
 
-    untouched = await management.get_gateway_settings(stranger, db)
+    untouched = await management.configuration.get_gateway_settings(stranger, db)
     assert (untouched.revision, untouched.settings) == (0, GatewaySettings())
 
 
@@ -796,13 +796,13 @@ async def test_a_patch_keeps_keys_a_newer_build_wrote(db, test_org, registry) ->
     await db.flush()
     admin = await _admin(db, test_org.id)
 
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
     row = await db.get(OrganizationGatewaySettings, test_org.id)
     assert row.settings == {"future_switch": True, "response_analysis": ["shape"]}
 
-    await management.update_gateway_settings(
+    await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=[]), _request(), admin, db
     )
     assert row.settings == {"future_switch": True}
@@ -833,11 +833,11 @@ async def test_a_stored_analyzer_this_build_does_not_have_breaks_nothing(
     resolved = await policy_module.TenantPolicyService(_PolicyCache(stored)).resolve(
         SimpleNamespace(organization_id=test_org.id, tier="managed"), db
     )
-    read = await management.get_gateway_settings(admin, db)
-    same = await management.update_gateway_settings(
+    read = await management.configuration.get_gateway_settings(admin, db)
+    same = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["shape"]), _request(), admin, db
     )
-    changed = await management.update_gateway_settings(
+    changed = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch(response_analysis=["language"]), _request(), admin, db
     )
 
@@ -856,7 +856,7 @@ async def test_inflight_sharing_names_only_this_organizations_keys(
     admin = await _admin(db, organization_id)
 
     with pytest.raises(HTTPException) as refused:
-        await management.update_gateway_settings(
+        await management.configuration.update_gateway_settings(
             GatewaySettingsPatch.model_validate(
                 {"inflight_sharing_api_key_ids": [str(uuid4())]}
             ),
@@ -864,7 +864,7 @@ async def test_inflight_sharing_names_only_this_organizations_keys(
             admin,
             db,
         )
-    listed = await management.update_gateway_settings(
+    listed = await management.configuration.update_gateway_settings(
         GatewaySettingsPatch.model_validate(
             {"inflight_sharing_api_key_ids": [str(test_api_key.id)]}
         ),
