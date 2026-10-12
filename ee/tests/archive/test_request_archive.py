@@ -304,6 +304,25 @@ async def test_opening_restores_what_was_sent_for_each_protocol(
     assert {item["original"] for item in opened["replacements"]} >= {TCKN}
 
 
+@pytest.mark.asyncio
+async def test_a_lone_surrogate_is_kept_and_opens_as_sent(
+    db, factory, test_api_key, installed
+) -> None:
+    # Reachable with privacy disabled: nothing reads the text before the archive.
+    payload = {
+        "model": "gpt-5-nano",
+        "messages": [{"role": "user", "content": "<P_1> \ud83d"}],
+    }
+    prepared = _prepared(test_api_key, payload, pii_entities={"EMAIL_ADDRESS": 1})
+    await _lifecycle(db, prepared)
+
+    await service.archive_request(factory, prepared)
+
+    row, _ = await _archived(db, prepared)
+    assert row is not None
+    assert service.opened(row)["masked_payload"] == payload
+
+
 @pytest.mark.parametrize("failure", ["encryption", "insert"])
 @pytest.mark.asyncio
 async def test_a_failed_write_is_counted_and_never_marked_stored(
