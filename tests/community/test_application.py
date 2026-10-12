@@ -4,6 +4,7 @@ from importlib.metadata import version
 from io import StringIO
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -134,6 +135,76 @@ async def test_community_chat_json_scrubs_and_restores_without_leaking_keys() ->
     assert EMAIL not in lines[0]
     assert GATEWAY_KEY not in lines[0]
     assert PROVIDER_KEY not in lines[0]
+
+
+_IDENTIFIERS = {
+    "TR_NATIONAL_ID": "10000000146",
+    "TR_VKN": "Vergi no 1234567890",
+    "IBAN_CODE": "TR33 0006 1005 1978 6457 8413 26",
+    "CREDIT_CARD": "4111 1111 1111 1111",
+    "PHONE_NUMBER": "+90 532 123 45 67",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "zero",
+    [0x0660, 0x06F0, 0x0966, 0x09E6, 0xFF10],
+    ids=["arabic-indic", "extended-arabic-indic", "devanagari", "bengali", "fullwidth"],
+)
+async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
+    zero: int,
+) -> None:
+    def written(value: str) -> str:
+        return "".join(chr(zero + int(c)) if c.isdigit() else c for c in value)
+
+    values = [written(value) for value in _IDENTIFIERS.values()]
+    prompt = "Müşteri: " + ", ".join(values) + "."
+    sent: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][0]["content"]
+        sent.append(content)
+        return httpx.Response(200, json=_completion(content))
+
+    events = StringIO()
+    upstream = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    application = create_community_app(
+        _settings(
+            PII_ENTITY_ACTIONS=json.dumps({kind: "mask" for kind in _IDENTIFIERS})
+        ),
+        http_client=upstream,
+        event_stream=events,
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                },
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 200, response.text
+    [upstream_text] = sent
+    assert (
+        re.sub(r"<[A-Z_]+_[0-9a-f]{32}>", "", upstream_text)
+        == "Müşteri: , Vergi no , , , ."
+    ), upstream_text
+    # Masked at the right offsets: the answer restores the original characters.
+    assert response.json()["choices"][0]["message"]["content"] == prompt
+    assert json.loads(events.getvalue())["privacy_counts"] == dict.fromkeys(
+        _IDENTIFIERS, 1
+    )
 
 
 class _SplitStream(httpx.AsyncByteStream):

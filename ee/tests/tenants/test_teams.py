@@ -114,6 +114,8 @@ async def test_team_admin_isolation_auditor_and_immediate_rotation(
                 f"/teams/{first.id}/members/{owner.id}", json={"role": "team_admin"}
             )
         ).status_code == 403
+        assert (await client.post(f"/api-keys/{key.id}/rotate")).status_code == 403
+        current = owner
         rotated = await client.post(f"/api-keys/{key.id}/rotate")
         assert rotated.status_code == 200, rotated.text
         payload = rotated.json()

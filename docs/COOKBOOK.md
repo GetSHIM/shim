@@ -318,6 +318,9 @@ The types shim detects are `EMAIL_ADDRESS`, `PHONE_NUMBER`, `CREDIT_CARD`,
 `IP_ADDRESS`, `MAC_ADDRESS`, `DB_URI` and `FILE_PATH`, plus the opt-in
 `PERSON_NAME_TR` when its action is not `off`. The
 [README](../README.md#what-it-does) gives examples and known false positives.
+Digits of any script count as the number they are: a TCKN, IBAN, card or phone
+number written in Arabic-Indic, Devanagari or fullwidth digits is found and
+masked like one written in 0-9, and so is a rule term or template.
 
 Each entity also carries its `action` (see the next recipe); a type whose action
 is `off` is not reported. Enterprise names the list `entities_found` and gives

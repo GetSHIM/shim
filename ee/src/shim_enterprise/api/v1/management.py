@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from array import array
-
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -231,6 +229,7 @@ from shim_enterprise.tenants.record_sets import (
     KEY_PURPOSE as RECORD_SET_KEY_PURPOSE,
     pack_documents,
     pack_records,
+    unpack_documents,
 )
 from shim_enterprise.tenants.deployments import (
     internal_origin_approved,
@@ -2236,6 +2235,12 @@ async def rotate_api_key(
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
     api_key = await _owned_api_key(session, user, api_key_id)
+    # Whoever holds the plaintext must never approve the key's held requests.
+    if api_key.user_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the key's owner can rotate it; an administrator can revoke it.",
+        )
     if not api_key.is_active or (
         api_key.expires_at is not None
         and _aware(api_key.expires_at) <= datetime.now(timezone.utc)
@@ -3039,6 +3044,64 @@ router.add_api_route(
 )
 
 
+async def _revision_chunks(
+    session: AsyncSession, set_id: UUID, revision: int
+) -> list[tuple[int, bytes]]:
+    return list(
+        (
+            await session.execute(
+                select(RecordSetChunk.entry_count, RecordSetChunk.data).where(
+                    RecordSetChunk.record_set_id == set_id,
+                    RecordSetChunk.revision == revision,
+                )
+            )
+        ).tuples()
+    )
+
+
+def _entries(row: RecordSet, chunks: list[tuple[int, bytes]]) -> set[bytes]:
+    """Each record or document of a revision, byte for byte."""
+    if row.kind == "records":
+        size = 8 * len(row.fields)
+        return {
+            data[start : start + size]
+            for _, data in chunks
+            for start in range(0, len(data), size)
+        }
+    return {
+        document.tobytes() for _, data in chunks for document in unpack_documents(data)
+    }
+
+
+async def _activatable(
+    session: AsyncSession, row: RecordSet, revision: int
+) -> list[tuple[int, bytes]]:
+    chunks = await _revision_chunks(session, row.id, revision)
+    if revision == row.active_revision or not chunks:
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_EMPTY",
+            "That revision is active or holds no chunks.",
+        )
+    entries = sum(count for count, _ in chunks)
+    limits = _RECORD_SET_LIMITS
+    # Fingerprints after each document's 4-byte count.
+    prints = sum(len(data) - 4 * count for count, data in chunks) // 8
+    too_many = (
+        entries > limits["records"]
+        if row.kind == "records"
+        else entries > limits["documents"] or prints > limits["prints"]
+    )
+    if too_many:
+        raise _record_set_error(
+            422,
+            "RECORD_SET_TOO_LARGE",
+            "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
+            "fingerprints.",
+        )
+    return chunks
+
+
 @router.post(
     "/record-sets/{set_id}/revisions/{revision}/activate", response_model=RecordSetView
 )
@@ -3049,87 +3112,23 @@ async def activate_record_set_revision(
     user: User = Depends(require("rules.write", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
-    tenant_id = _tenant_id(user)
-    row = await _record_set(session, tenant_id, set_id)
-
-    async def chunks_of(number: int) -> list[tuple[int, bytes]]:
-        return list(
-            (
-                await session.execute(
-                    select(RecordSetChunk.entry_count, RecordSetChunk.data).where(
-                        RecordSetChunk.record_set_id == set_id,
-                        RecordSetChunk.revision == number,
-                    )
-                )
-            ).tuples()
-        )
-
-    def matchable(stored: list[tuple[int, bytes]]) -> int:
-        """Hashes a revision can match with: record fields that are not empty, or
-        fingerprints after each document's 4-byte count."""
-        if row.kind == "records":
-            return sum(len(data) // 8 - array("Q", data).count(0) for _, data in stored)
-        return sum(len(data) - 4 * count for count, data in stored) // 8
-
-    chunks = await chunks_of(revision)
-    if revision == row.active_revision or not chunks:
-        raise _record_set_error(
-            409,
-            "RECORD_SET_REVISION_EMPTY",
-            "That revision is active or holds no chunks.",
-        )
-    entries = sum(count for count, _ in chunks)
-    limits = _RECORD_SET_LIMITS
-    too_many = (
-        entries > limits["records"]
-        if row.kind == "records"
-        else entries > limits["documents"] or matchable(chunks) > limits["prints"]
+    tenant_id, item = _tenant_id(user), str(set_id)
+    await lock_tenant(session, tenant_id)
+    before = (await RECORD_SETS.snapshot(session, tenant_id, [item])).get(item)
+    if before is None:
+        raise _record_set_error(404, "RECORD_SET_NOT_FOUND", "No such record set.")
+    after = await RECORD_SETS.validate(
+        session, user, item, before, {"active_revision": revision}
     )
-    if too_many:
-        raise _record_set_error(
-            422,
-            "RECORD_SET_TOO_LARGE",
-            "A set holds at most 250,000 records, or 2,000 documents and 2,000,000 "
-            "fingerprints.",
-        )
-    # Fewer records or documents, or fewer values to find them by, relaxes the set.
-    fewer = row.active_revision > 0 and (
-        entries < row.entry_count
-        or matchable(chunks) < matchable(await chunks_of(row.active_revision))
-    )
-    row.previous_revision, row.active_revision, row.entry_count = (
-        row.active_revision,
-        revision,
-        entries,
-    )
-    # One revision back stays for a rollback; every other one goes.
-    await session.execute(
-        sql_delete(RecordSetChunk).where(
-            RecordSetChunk.record_set_id == set_id,
-            RecordSetChunk.revision.not_in(
-                {row.active_revision, row.previous_revision}
-            ),
-        )
-    )
-    await _audit(
-        session,
-        user,
-        "tenant.record_set_revision_activated",
-        str(tenant_id),
-        details={
-            "record_set_id": str(set_id),
-            "revision": revision,
-            "entry_count": entries,
-        },
-    )
-    if fewer:
-        await _record_privacy_relaxed(
-            session, user, tenant_id, [f"record_sets.{set_id}"], None
+    async with record_managed_write(
+        session, user, tenant_id, [(RECORD_SETS, item, before, after)], source="api"
+    ) as version:
+        await RECORD_SETS.apply(
+            session, user, tenant_id, item, before, after, policy_version=version
         )
     await session.commit()
     await _invalidate_policy(request, tenant_id)
-    await session.refresh(row)
-    return row
+    return await session.get(RecordSet, set_id, populate_existing=True)
 
 
 @router.delete("/record-sets/{set_id}", status_code=204)
@@ -7546,6 +7545,149 @@ class _ProviderKeysResource:
         return no_impact(window_days)
 
 
+class _RecordSetRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active_revision: int = Field(ge=1, le=2_147_483_647)
+    enforced: bool
+
+
+class _RecordSetResource:
+    """A set's active revision; `enforced` says whether an enforced rule uses it."""
+
+    name = "record_sets"
+    permission: Permission = "rules.write"
+    creatable = False
+    deletable = False
+
+    async def snapshot(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_ids: Collection[str] | None,
+    ) -> dict[str, State]:
+        statement = select(RecordSet.id, RecordSet.active_revision).where(
+            RecordSet.organization_id == organization_id
+        )
+        if item_ids is not None:
+            statement = statement.where(RecordSet.id.in_(_uuids(item_ids)))
+        rule_set = await session.get(OrganizationRuleSet, organization_id)
+        enforced = {
+            (rule.get("match") or {}).get("set_id")
+            for rule in (rule_set.rules if rule_set is not None else [])
+            if rule.get("kind") == "record_set" and rule.get("state") == "enforced"
+        }
+        return {
+            str(set_id): {
+                "active_revision": revision,
+                "enforced": str(set_id) in enforced,
+            }
+            for set_id, revision in (await session.execute(statement)).tuples()
+        }
+
+    async def validate(
+        self,
+        session: AsyncSession,
+        actor: User,
+        item_id: str | None,
+        before: State | None,
+        proposed: State,
+    ) -> State:
+        assert item_id is not None and before is not None
+        _only(proposed, _RecordSetRevision.model_fields)
+        # Whether a rule enforces the set is the rule set's to change, not this one's.
+        after = _validated(
+            _RecordSetRevision, {**before, **proposed, "enforced": before["enforced"]}
+        ).model_dump()
+        if "active_revision" in proposed:
+            row = await _record_set(session, _tenant_id(actor), UUID(item_id))
+            await _activatable(session, row, after["active_revision"])
+        return after
+
+    async def apply(
+        self,
+        session: AsyncSession,
+        actor: User,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        *,
+        policy_version: int | None,
+    ) -> None:
+        assert before is not None and after is not None
+        revision = after["active_revision"]
+        if revision == before["active_revision"]:
+            return
+        row = await _record_set(session, organization_id, UUID(item_id))
+        chunks = await _activatable(session, row, revision)
+        entries = sum(count for count, _ in chunks)
+        # Any record or document the active revision has and this one lacks
+        # can no longer be found.
+        shrinks = row.active_revision > 0 and not _entries(
+            row, await _revision_chunks(session, row.id, row.active_revision)
+        ) <= _entries(row, chunks)
+        row.previous_revision, row.active_revision, row.entry_count = (
+            row.active_revision,
+            revision,
+            entries,
+        )
+        # One revision back stays for a rollback; every other one goes.
+        await session.execute(
+            sql_delete(RecordSetChunk).where(
+                RecordSetChunk.record_set_id == row.id,
+                RecordSetChunk.revision.not_in(
+                    {row.active_revision, row.previous_revision}
+                ),
+            )
+        )
+        await _audit(
+            session,
+            actor,
+            "tenant.record_set_revision_activated",
+            str(organization_id),
+            details={
+                "record_set_id": item_id,
+                "revision": revision,
+                "entry_count": entries,
+                **version_detail(policy_version),
+            },
+        )
+        if shrinks:
+            await _record_privacy_relaxed(
+                session,
+                actor,
+                organization_id,
+                [f"record_sets.{item_id}"],
+                policy_version,
+            )
+
+    def classify(self, before: State | None, after: State | None) -> Risk:
+        assert before is not None and after is not None
+        # Another revision can drop any record, so swapping the set of an
+        # enforced rule relaxes; an unlisted field relaxes.
+        directions: Directions = (
+            {"enforced": neutral}
+            if before["enforced"]
+            else {"enforced": neutral, "active_revision": neutral}
+        )
+        return classify_fields(before, after, directions)[0]
+
+    async def impact(
+        self,
+        session: AsyncSession,
+        organization_id: UUID,
+        item_id: str,
+        before: State | None,
+        after: State | None,
+        window_days: int,
+    ) -> Impact:
+        return no_impact(window_days)
+
+    async def after_commit(self, request: Request, organization_id: UUID) -> None:
+        await _invalidate_policy(request, organization_id)
+
+
 PRIVACY = _PrivacyResource()
 GATEWAY_SETTINGS = _GatewaySettingsResource()
 TEAMS = _TeamResource()
@@ -7553,3 +7695,4 @@ API_KEYS = _ApiKeyResource()
 DEPLOYMENTS = _DeploymentResource()
 BUDGETS = _BudgetResource()
 PROVIDER_KEYS = _ProviderKeysResource()
+RECORD_SETS = _RecordSetResource()

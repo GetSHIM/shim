@@ -62,6 +62,9 @@ _LETTERS = re.compile(r"[^\W\d_]+")
 # Between the words of one name: spaces, and at most one dash or apostrophe.
 _NAME_GAP = re.compile(r"\s*[-'’‐‑‒–—]?\s*")
 _NOT_WORD = re.compile(r"[^\w]+|_+")
+# Turkish letters as typed without their marks, so "Ayse Yilmaz" is "Ayşe Yılmaz". Part
+# of the hashed normal form: pinned here, never shared with another fold.
+_TURKISH_ASCII = str.maketrans("şçğöüâîû", "scgouaiu")
 
 
 def _fold(text: str) -> str:
@@ -101,7 +104,7 @@ def normalize(
         return text.upper() if _TOKEN.fullmatch(text) else None
     # Letter words only, so "Ayşe-Nur" and "Ayşe Nur" are one name; text never puts
     # a digit in a name, so a value with one is not a name.
-    words = _LETTERS.findall(_fold(text))
+    words = _LETTERS.findall(_fold(text).translate(_TURKISH_ASCII))
     return (
         " ".join(words)
         if 1 <= len(words) <= 3 and not any(map(str.isdigit, text))

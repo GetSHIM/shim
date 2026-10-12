@@ -16,6 +16,7 @@ from shim_enterprise.api.v1.management import (
     GATEWAY_SETTINGS,
     PRIVACY,
     PROVIDER_KEYS,
+    RECORD_SETS,
     TEAMS,
 )
 from shim_enterprise.compliance.api import FORWARD_TARGETS
@@ -92,5 +93,6 @@ REGISTRY: Mapping[str, ManagedResource] = {
         RULES,
         PROVIDER_KEYS,
         FORWARD_TARGETS,
+        RECORD_SETS,
     )
 }

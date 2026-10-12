@@ -266,7 +266,9 @@ arrives as `rules` on the resolved policy, which enterprise reads from
 with the rules themselves only in process memory. A stored rule this build
 cannot run is kept aside as unusable (`load_rule_set`): enforced, it blocks the
 requests in its scope. The `term` and `pattern` kinds (`src/shim/rules/content.py`)
-are searched by `PIIScrubberService` on its normalized text: terms through a
+are searched by `PIIScrubberService` on its normalized text (percent-decoded,
+invisible characters dropped, NFKC, every script's decimal digits as 0-9, each
+character mapped back to its source offsets for masking): terms through a
 word index and pattern regexes, both built once per `RuleSet` object
 (`RuleSet.matchers`), the Turkish endings from a grammar
 (`src/shim/rules/tr_suffixes.py`). The `destination` kind (`src/shim/rules/destination.py`)

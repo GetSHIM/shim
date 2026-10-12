@@ -1098,7 +1098,7 @@ Make every change that loosens protection wait for a second administrator.
 2. A direct write that loosens protection (masking off, a raised limit, a
    model added to a key, a new deployment, a deleted budget, an enforced rule
    removed, customer provider keys allowed, a forward target disabled or
-   deleted, ...) now answers 409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the
+   deleted, a new revision of a record set an enforced rule uses, ...) now answers 409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the
    `resource.item.field` names it would loosen, and writes nothing. A new API
    key needs `allowed_models`; widen it later with a plan. Tightening and
    neutral writes are unchanged.
@@ -1192,13 +1192,16 @@ Notes:
   body, field for field; key order and whitespace do not matter. Change
   anything and it needs its own approval.
 - A pending approval lives 24 hours; at most 200 wait per tenant and 50 per
-  key, after which new ones answer 403 `APPROVAL_QUEUE_FULL`. Rows are deleted
-  30 days after they were held. An approval is used up when the
+  key, after which new ones answer 403 `APPROVAL_QUEUE_FULL`. The ai_act worker
+  expires overdue rows each pass (hourly by default) and drops their request
+  digest; rows are deleted 30 days after they were held. An approval is used up when the
   request is sent, even if the provider then fails.
 - Token counting (`/v1/messages/count_tokens`) with a held term answers 403
   `APPROVAL_REQUIRED` and creates no approval: a count sends the content too.
 - The key's owner, whoever created or rotated the key of a service account that
-  owns it, and service accounts cannot decide (403 `APPROVER_NOT_ELIGIBLE`); an auditor can read the list. Only a pending,
+  owns it, and service accounts cannot decide (403 `APPROVER_NOT_ELIGIBLE`); an auditor can read the list.
+  Only a key's owner can rotate it, so an approver never holds the plaintext of
+  someone else's key; an administrator revokes a key instead. Only a pending,
   unexpired approval can be decided (409 `APPROVAL_STATE_CONFLICT` otherwise).
 - The request list shows `approval_id` on the held, refused and sending
   requests, and `GET /api/v1/management/requests?approval_id=<id>` finds them.
