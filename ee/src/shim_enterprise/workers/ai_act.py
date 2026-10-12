@@ -79,6 +79,15 @@ class AuditMaintenanceWorker:
         # Expired archived requests go whatever the switches say, in bounded batches.
         deleted = await delete_expired(self.session_factory)
         approvals_deleted = await delete_old_approvals(self.session_factory)
+        # Each organization's file is its own transaction, after the anchors commit.
+        monthly, failed = await generate_due_monthly_evidence(
+            self.session_factory, now=datetime.now(timezone.utc)
+        )
+        # One short transaction per organization, like the monthly files.
+        reminders, reminder_failures = await remind_incident_deadlines(
+            self.session_factory, now=datetime.now(timezone.utc)
+        )
+        # Last: a slow bucket may take the whole timeout, and nothing waits for it.
         worm, worm_failures = 0, 0
         if unavailable_reason() is None:
             try:
@@ -89,14 +98,6 @@ class AuditMaintenanceWorker:
                 logger.error(
                     "Write-once archive pass failed type=%s", type(exc).__name__
                 )
-        # Each organization's file is its own transaction, after the anchors commit.
-        monthly, failed = await generate_due_monthly_evidence(
-            self.session_factory, now=datetime.now(timezone.utc)
-        )
-        # One short transaction per organization, like the monthly files.
-        reminders, reminder_failures = await remind_incident_deadlines(
-            self.session_factory, now=datetime.now(timezone.utc)
-        )
         return MaintenanceSummary(
             anchored_tenants=anchored,
             errors=errors + failed + reminder_failures + worm_failures,
