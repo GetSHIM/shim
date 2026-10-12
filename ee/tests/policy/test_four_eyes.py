@@ -1396,6 +1396,27 @@ async def test_a_restore_names_a_deleted_record_set_as_deleted(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_restore_names_a_deleted_forward_target_as_deleted(db) -> None:
+    owner = (await _organization(db))["owner"]
+    target = await _destination_target(db, owner.organization_id)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+    lowered = await _call(db, owner, "PATCH", forward, json={"min_severity": "critical"})
+    deleted = await _call(db, owner, "DELETE", forward)
+
+    restored = await _call(db, owner, "POST", f"{POLICY}/versions/1/restore", json={})
+
+    assert (lowered.status_code, deleted.status_code) == (200, 204)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["not_restored"] == [
+        {
+            "resource": "forward_targets",
+            "item": str(target.id),
+            "reason": "forward_target_deleted",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_approved_restore_rolls_back_only_plans_it_undid(db) -> None:
     users = await _organization(db, "admin")
     owner, admin = users["owner"], users["admin"]

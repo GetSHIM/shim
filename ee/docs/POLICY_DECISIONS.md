@@ -438,9 +438,11 @@ creates a rule with `{"resource": "rules", "item": null, "set": {"id": ...}}`;
 its impact is the [rule preview](#rule-previews).
 
 Restoring a version applies a plan with source `restore` that puts every item a
-version touched back to its state at that version. A revoked key, a team
-created after it (teams cannot be deleted) and a re-created budget's
-notification targets are listed in `not_restored`, and so is an item whose own
+version touched back to its state at that version. A revoked key
+(`key_revoked`), a deleted record set (`record_set_deleted`) or forward target
+(`forward_target_deleted`), a team created after it (teams cannot be deleted)
+and a re-created budget's notification targets are listed in `not_restored`,
+and so is an item whose own
 route would refuse that state now (a deleted provider secret, a disabled model
 alias, a deployment origin no longer allowed, a team name another team took),
 with the route's message as the reason; the rest is restored. A deployment
