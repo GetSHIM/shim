@@ -1397,11 +1397,8 @@ async def _byok_usage(
         .group_by(RequestLifecycle.api_key_id, RequestLifecycle.provider)
         .order_by(RequestLifecycle.api_key_id, RequestLifecycle.provider)
     )
-    by_key: dict[UUID, list[Any]] = {}
-    for row in rows:
-        by_key.setdefault(row.api_key_id, []).append(row)
     detections = []
-    for key_id, providers in by_key.items():
+    for key_id, providers in _per_key(rows).items():
         requests = sum(row.requests for row in providers)
         if requests < BYOK_USAGE_MIN_REQUESTS:
             continue
@@ -1503,11 +1500,8 @@ async def _outcome_rates(
 ) -> list[Detection]:
     outcome, settled, counts = _outcome_counts()
     unanswered = outcome.in_(("refused", "filtered", "empty"))
-    window = (
-        RequestLifecycle.organization_id == tenant_id,
-        RequestLifecycle.started_at >= now - timedelta(hours=OUTCOME_RATE_WINDOW_HOURS),
-        RequestLifecycle.started_at <= now,
-        RequestLifecycle.api_key_id.is_not(None),
+    window = _key_window(
+        tenant_id, now - timedelta(hours=OUTCOME_RATE_WINDOW_HOURS), now
     )
     keys = {
         row.api_key_id: row
@@ -1525,15 +1519,15 @@ async def _outcome_rates(
     }
     if not keys:
         return []
-    models: dict[UUID, list[Any]] = {}
     model = shown_model(RequestLifecycle.requested_model)
-    for row in await session.execute(
-        select(RequestLifecycle.api_key_id, model.label("model"), *counts)
-        .where(*window, RequestLifecycle.api_key_id.in_(list(keys)))
-        .group_by(RequestLifecycle.api_key_id, model)
-        .order_by(RequestLifecycle.api_key_id, settled.desc(), model)
-    ):
-        models.setdefault(row.api_key_id, []).append(row)
+    models = _per_key(
+        await session.execute(
+            select(RequestLifecycle.api_key_id, model.label("model"), *counts)
+            .where(*window, RequestLifecycle.api_key_id.in_(list(keys)))
+            .group_by(RequestLifecycle.api_key_id, model)
+            .order_by(RequestLifecycle.api_key_id, settled.desc(), model)
+        )
+    )
     detections = []
     for key_id, row in sorted(keys.items()):
         top = models[key_id][:EVIDENCE_MODELS_PER_KEY]
@@ -1586,13 +1580,18 @@ async def _outcome_rates(
     return detections
 
 
-def _quality_scope(tenant_id: UUID, now: datetime) -> tuple[Any, ...]:
+def _key_window(tenant_id: UUID, start: datetime, now: datetime) -> tuple[Any, ...]:
+    """A tenant's requests made with an API key in [start, now]."""
     return (
         RequestLifecycle.organization_id == tenant_id,
-        RequestLifecycle.started_at >= now - timedelta(hours=QUALITY_WINDOW_HOURS),
+        RequestLifecycle.started_at >= start,
         RequestLifecycle.started_at <= now,
         RequestLifecycle.api_key_id.is_not(None),
     )
+
+
+def _quality_scope(tenant_id: UUID, now: datetime) -> tuple[Any, ...]:
+    return _key_window(tenant_id, now - timedelta(hours=QUALITY_WINDOW_HOURS), now)
 
 
 def _per_key(rows: Any) -> dict[UUID, list[Any]]:
@@ -1847,10 +1846,7 @@ def _shape(field: str) -> Any:
 
 def _shape_window(tenant_id: UUID, start: datetime, now: datetime) -> tuple[Any, ...]:
     return (
-        RequestLifecycle.organization_id == tenant_id,
-        RequestLifecycle.started_at >= start,
-        RequestLifecycle.started_at <= now,
-        RequestLifecycle.api_key_id.is_not(None),
+        *_key_window(tenant_id, start, now),
         RequestLifecycle.lifecycle_metadata["response_analysis"].has_key("shape"),
     )
 
