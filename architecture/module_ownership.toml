@@ -366,7 +366,7 @@ enterprise = [
   "ee/src/shim_enterprise/api/__init__.py",
   "ee/src/shim_enterprise/api/enterprise_deps.py",
   "ee/src/shim_enterprise/api/v1/__init__.py",
-  "ee/src/shim_enterprise/api/v1/management.py",
+  "ee/src/shim_enterprise/api/v1/management/__init__.py",
   "ee/src/shim_enterprise/api/v1/router.py",
   "ee/src/shim_enterprise/api/v1/scan.py",
   "ee/src/shim_enterprise/application.py",
