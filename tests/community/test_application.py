@@ -148,15 +148,42 @@ _IDENTIFIERS = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "zero",
-    [0x0660, 0x06F0, 0x0966, 0x09E6, 0xFF10],
-    ids=["arabic-indic", "extended-arabic-indic", "devanagari", "bengali", "fullwidth"],
+    ("zero", "mark"),
+    [
+        (0x0660, ""),
+        (0x06F0, ""),
+        (0x0966, ""),
+        (0x09E6, ""),
+        (0xFF10, ""),
+        (0x30, "\u0301"),
+        (0x30, "\u0301\u0323"),
+        (0x30, "\ufe0f"),
+        (0x30, "\ufe0f\u20e3"),
+        (0x30, "\u034f"),
+        (0x30, "\u200d"),
+        (0x0660, "\u0301"),
+    ],
+    ids=[
+        "arabic-indic",
+        "extended-arabic-indic",
+        "devanagari",
+        "bengali",
+        "fullwidth",
+        "acute-on-each-digit",
+        "two-marks-on-each-digit",
+        "variation-selector",
+        "keycap",
+        "grapheme-joiner",
+        "zero-width-joiner",
+        "arabic-indic-with-acute",
+    ],
 )
 async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
     zero: int,
+    mark: str,
 ) -> None:
     def written(value: str) -> str:
-        return "".join(chr(zero + int(c)) if c.isdigit() else c for c in value)
+        return "".join(chr(zero + int(c)) + mark if c.isdigit() else c for c in value)
 
     values = [written(value) for value in _IDENTIFIERS.values()]
     prompt = "Müşteri: " + ", ".join(values) + "."

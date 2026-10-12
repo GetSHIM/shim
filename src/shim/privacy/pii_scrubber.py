@@ -151,6 +151,19 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
     visible_characters: list[str] = []
     visible_spans: list[_SourceSpan] = []
     for character, span in zip(decoded, spans):
+        # A mark or an invisible character on a digit (an accent, a variation selector,
+        # a keycap, a joiner) would split an identifier: it is dropped for detection
+        # and masked with its digit.
+        if (
+            visible_characters
+            and visible_characters[-1].isdigit()
+            and (
+                unicodedata.category(character)[0] == "M"
+                or _INVISIBLE.fullmatch(character)
+            )
+        ):
+            visible_spans[-1] = (visible_spans[-1][0], span[1])
+            continue
         # A lower-cased İ is i and a combining dot (JavaScript and Python lower()).
         dotted_i = character == "\u0307" and visible_characters[-1:] == ["i"]
         if not dotted_i and not _INVISIBLE.fullmatch(character):
