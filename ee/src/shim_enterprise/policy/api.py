@@ -764,9 +764,8 @@ async def restore_version(
             if target == now:
                 continue
             if now is None and not resource.creatable:
-                not_restored.append(
-                    Unrestored(resource=name, item=item, reason="key_revoked")
-                )
+                gone = "record_set_deleted" if name == "record_sets" else "key_revoked"
+                not_restored.append(Unrestored(resource=name, item=item, reason=gone))
                 continue
             if target is None and now is not None and not resource.deletable:
                 if name == "teams":

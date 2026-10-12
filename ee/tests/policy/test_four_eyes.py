@@ -1356,6 +1356,46 @@ async def test_a_record_set_an_enforced_rule_uses_changes_only_through_a_plan(
 
 
 @pytest.mark.asyncio
+async def test_a_restore_names_a_deleted_record_set_as_deleted(db) -> None:
+    owner = (await _organization(db))["owner"]
+    created = await _call(
+        db,
+        owner,
+        "POST",
+        f"{MANAGEMENT}/record-sets",
+        json={"name": "gone", "kind": "fingerprints"},
+    )
+    set_id = created.json()["id"]
+    for _ in range(2):
+        opened = await _call(
+            db, owner, "POST", f"{MANAGEMENT}/record-sets/{set_id}/revisions"
+        )
+        revision = opened.json()["revision"]
+        await _call(
+            db,
+            owner,
+            "PUT",
+            f"{MANAGEMENT}/record-sets/{set_id}/revisions/{revision}/chunks/0",
+            json={"documents": [[f"{n:016x}" for n in range(8)]]},
+        )
+        await _call(
+            db,
+            owner,
+            "POST",
+            f"{MANAGEMENT}/record-sets/{set_id}/revisions/{revision}/activate",
+        )
+    deleted = await _call(db, owner, "DELETE", f"{MANAGEMENT}/record-sets/{set_id}")
+
+    restored = await _call(db, owner, "POST", f"{POLICY}/versions/1/restore", json={})
+
+    assert deleted.status_code == 204
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["not_restored"] == [
+        {"resource": "record_sets", "item": set_id, "reason": "record_set_deleted"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_approved_restore_rolls_back_only_plans_it_undid(db) -> None:
     users = await _organization(db, "admin")
     owner, admin = users["owner"], users["admin"]
