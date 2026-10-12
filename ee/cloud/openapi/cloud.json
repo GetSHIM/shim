@@ -740,6 +740,12 @@
           "tier": {
             "title": "Tier",
             "type": "string"
+          },
+          "user_id": {
+            "description": "The key's owner: only they may rotate it.",
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
           }
         },
         "required": [
@@ -753,7 +759,8 @@
           "cost_center",
           "team",
           "team_id",
-          "allowed_models"
+          "allowed_models",
+          "user_id"
         ],
         "title": "ApiKeyView",
         "type": "object"
@@ -3685,6 +3692,12 @@
           "tier": {
             "title": "Tier",
             "type": "string"
+          },
+          "user_id": {
+            "description": "The key's owner: only they may rotate it.",
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
           }
         },
         "required": [
@@ -3699,6 +3712,7 @@
           "team",
           "team_id",
           "allowed_models",
+          "user_id",
           "plaintext"
         ],
         "title": "CreatedApiKey",

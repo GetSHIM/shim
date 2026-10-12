@@ -193,7 +193,9 @@ Only the key's owner can rotate it: anyone else, an organization or team
 administrator included, gets 403 "Only the key's owner can rotate it; an
 administrator can revoke it." and can revoke it (`DELETE /api/v1/management/api-keys/{id}`)
 instead, so nobody who may [approve a held request](COOKBOOK.md#hold-a-request-for-approval)
-can obtain the plaintext of another user's key.
+can obtain the plaintext of another user's key. Every key view carries the owner as
+`user_id` (a service account's key names the account), so a client offers Rotate
+only where `user_id` is the viewer's own id.
 
 `allowed_models` contains exact, case-sensitive public model identifiers
 (deployment aliases for registered models). `null` adds no key restriction;

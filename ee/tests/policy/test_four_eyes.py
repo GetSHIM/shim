@@ -1356,6 +1356,89 @@ async def test_a_record_set_an_enforced_rule_uses_changes_only_through_a_plan(
 
 
 @pytest.mark.asyncio
+async def test_a_revision_a_pending_plan_names_takes_no_more_chunks(db) -> None:
+    users = await _organization(db, "admin", "admin2")
+    owner, admin, admin2 = users["owner"], users["admin"], users["admin2"]
+    created = await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/record-sets",
+        json={
+            "name": "customers",
+            "kind": "records",
+            "fields": [
+                {"name": "no", "kind": "token", "primary": True},
+                {"name": "ad", "kind": "name"},
+            ],
+        },
+    )
+    set_id = created.json()["id"]
+    first = await _record_set_revision(db, admin, set_id, 1)
+    await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/record-sets/{set_id}/revisions/{first}/activate",
+    )
+    db.add(
+        OrganizationRuleSet(
+            organization_id=owner.organization_id,
+            revision=1,
+            rules=[
+                {
+                    "id": "customers",
+                    "name": "customers",
+                    "kind": "record_set",
+                    "action": "block",
+                    "state": "enforced",
+                    "match": {"set_id": set_id},
+                }
+            ],
+        )
+    )
+    await _turn_on(db, owner)
+    proposed = await _record_set_revision(db, admin, set_id, 500)
+    change = {
+        "resource": "record_sets",
+        "item": set_id,
+        "set": {"active_revision": proposed},
+    }
+    chunks = f"{MANAGEMENT}/record-sets/{set_id}/revisions/{proposed}/chunks"
+    record = {"records": [[f"{900:016x}", f"{999:016x}"]]}
+
+    plan = await _plan(db, admin, change)
+    in_draft = await _call(db, admin, "PUT", f"{chunks}/1", json=record)
+    submitted = await _call(db, admin, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    in_review = await _call(db, admin, "PUT", f"{chunks}/1", json=record)
+    rejected = await _call(
+        db, admin2, "POST", f"{POLICY}/plans/{plan['id']}/reject", json={}
+    )
+    after_rejection = await _call(db, admin, "PUT", f"{chunks}/1", json=record)
+    second = await _plan(db, admin, change)
+    (await db.get(PolicyPlan, UUID(second["id"]))).expires_at = datetime.now(
+        timezone.utc
+    ) - timedelta(seconds=1)
+    await db.flush()
+    after_expiry = await _call(db, admin, "PUT", f"{chunks}/2", json=record)
+
+    for locked in (in_draft, in_review):
+        assert locked.status_code == 409
+        assert locked.json()["detail"]["code"] == "RECORD_SET_REVISION_PLANNED"
+    assert (submitted.status_code, rejected.status_code) == (202, 200)
+    assert (after_rejection.status_code, after_expiry.status_code) == (200, 200)
+    assert [plan["changes"][0]["impact"], second["changes"][0]["impact"]] == [
+        {
+            "requests": None,
+            "basis": "metadata",
+            "window_days": 7,
+            "note": f"3 records now, {count} in revision {proposed}",
+        }
+        for count in (3, 4)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_restore_names_a_deleted_record_set_as_deleted(db) -> None:
     owner = (await _organization(db))["owner"]
     created = await _call(
@@ -1392,6 +1475,29 @@ async def test_a_restore_names_a_deleted_record_set_as_deleted(db) -> None:
     assert restored.status_code == 200, restored.text
     assert restored.json()["not_restored"] == [
         {"resource": "record_sets", "item": set_id, "reason": "record_set_deleted"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_restore_names_a_deleted_forward_target_as_deleted(db) -> None:
+    owner = (await _organization(db))["owner"]
+    target = await _destination_target(db, owner.organization_id)
+    forward = f"/api/v1/compliance/forward-targets/{target.id}"
+    lowered = await _call(
+        db, owner, "PATCH", forward, json={"min_severity": "critical"}
+    )
+    deleted = await _call(db, owner, "DELETE", forward)
+
+    restored = await _call(db, owner, "POST", f"{POLICY}/versions/1/restore", json={})
+
+    assert (lowered.status_code, deleted.status_code) == (200, 204)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["not_restored"] == [
+        {
+            "resource": "forward_targets",
+            "item": str(target.id),
+            "reason": "forward_target_deleted",
+        }
     ]
 
 

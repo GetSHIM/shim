@@ -57,8 +57,12 @@ of the `record_sets` resource. While [four eyes](POLICY_DECISIONS.md#four-eyes) 
 activating another revision of a set that an enforced rule uses answers 409
 `CHANGE_REQUIRES_APPROVAL` (`record_sets.<id>.active_revision`): plan it instead
 (`{"resource": "record_sets", "item": "<id>", "set": {"active_revision": <n>}}`) and
-have a second administrator approve it. A set only `monitor` rules use, or none,
-activates directly. A set a rule references
+have a second administrator approve it. The plan's impact note gives the entry counts
+of the active and the proposed revision (`3 records now, 4 in revision 2`). While a
+draft or pending plan names a revision, that revision takes no more chunks (409
+`RECORD_SET_REVISION_PLANNED`), so the approval activates what the reviewer saw; it
+opens again when the plan is rejected or expires. A set only `monitor` rules use, or
+none, activates directly. A set a rule references
 cannot be deleted (409 `RECORD_SET_IN_USE`; the rule set is locked while it is checked);
 deleting removes the row,
 its chunks and its key. `GET /record-sets` and `GET /record-sets/{id}` show metadata and
