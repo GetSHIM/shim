@@ -2236,6 +2236,12 @@ async def rotate_api_key(
     session: AsyncSession = Depends(get_db),
 ) -> CreatedApiKey:
     api_key = await _owned_api_key(session, user, api_key_id)
+    # Whoever holds the plaintext must never approve the key's held requests.
+    if api_key.user_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the key's owner can rotate it; an administrator can revoke it.",
+        )
     if not api_key.is_active or (
         api_key.expires_at is not None
         and _aware(api_key.expires_at) <= datetime.now(timezone.utc)

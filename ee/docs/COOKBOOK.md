@@ -1198,7 +1198,9 @@ Notes:
 - Token counting (`/v1/messages/count_tokens`) with a held term answers 403
   `APPROVAL_REQUIRED` and creates no approval: a count sends the content too.
 - The key's owner, whoever created or rotated the key of a service account that
-  owns it, and service accounts cannot decide (403 `APPROVER_NOT_ELIGIBLE`); an auditor can read the list. Only a pending,
+  owns it, and service accounts cannot decide (403 `APPROVER_NOT_ELIGIBLE`); an auditor can read the list.
+  Only a key's owner can rotate it, so an approver never holds the plaintext of
+  someone else's key; an administrator revokes a key instead. Only a pending,
   unexpired approval can be decided (409 `APPROVAL_STATE_CONFLICT` otherwise).
 - The request list shows `approval_id` on the held, refused and sending
   requests, and `GET /api/v1/management/requests?approval_id=<id>` finds them.

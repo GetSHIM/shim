@@ -762,3 +762,51 @@ async def test_stored_special_use_domain_emails_are_served(db) -> None:
     assert me.status_code == 200 and me.json()["email"] == owner.email
     assert members.status_code == 200
     assert [row["email"] for row in members.json()] == [owner.email]
+
+
+@pytest.mark.asyncio
+async def test_only_the_key_owner_rotates_a_key_and_an_administrator_revokes_it(
+    db, monkeypatch
+) -> None:
+    organization = await _organization(db)
+    team = Team(id=uuid4(), organization_id=organization.id, name="ledger")
+    db.add(team)
+    holder = await _user(db, organization, "member")
+    admin = await _user(db, organization, "admin")
+    owner = await _user(db, organization, "owner")
+    team_admin = await _user(db, organization, "member")
+    db.add_all(
+        TeamMembership(
+            organization_id=organization.id, team_id=team.id, user_id=user.id, role=role
+        )
+        for user, role in ((holder, "member"), (team_admin, "team_admin"))
+    )
+    await db.flush()
+    plaintext = await _key(db, holder)
+    key = await db.scalar(select(ApiKey).where(ApiKey.user_id == holder.id))
+    key.team_id = team.id
+    await db.flush()
+
+    async def call(caller: User, method: str, path: str) -> httpx.Response:
+        return await _signed_in(db, monkeypatch, caller, method, path)
+
+    # A plaintext held by anyone but the owner would let an approver approve
+    # a held request they sent themselves.
+    refused = [
+        await call(caller, "POST", f"/api-keys/{key.id}/rotate")
+        for caller in (admin, owner, team_admin)
+    ]
+    still = await authenticate_api_key(db, plaintext)
+    rotated = await call(holder, "POST", f"/api-keys/{key.id}/rotate")
+    revoked = await call(admin, "DELETE", f"/api-keys/{key.id}")
+
+    for response in refused:
+        assert (response.status_code, response.json()["detail"]) == (
+            403,
+            "Only the key's owner can rotate it; an administrator can revoke it.",
+        )
+    assert still is not None and still.id == key.id
+    assert rotated.status_code == 200 and rotated.json()["plaintext"] != plaintext
+    assert revoked.status_code == 204
+    await db.refresh(key)
+    assert key.is_active is False

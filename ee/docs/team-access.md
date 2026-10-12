@@ -189,6 +189,11 @@ in the same database row. The old secret stops authenticating when the
 transaction commits. The response shows the new plaintext once. The key ID,
 owner, team, expiry, tier, model policy and accumulated usage stay unchanged.
 Already admitted requests can finish. Revoked or expired keys cannot rotate.
+Only the key's owner can rotate it: anyone else, an organization or team
+administrator included, gets 403 "Only the key's owner can rotate it; an
+administrator can revoke it." and can revoke it (`DELETE /api/v1/management/api-keys/{id}`)
+instead, so nobody who may [approve a held request](COOKBOOK.md#hold-a-request-for-approval)
+can obtain the plaintext of another user's key.
 
 `allowed_models` contains exact, case-sensitive public model identifiers
 (deployment aliases for registered models). `null` adds no key restriction;
