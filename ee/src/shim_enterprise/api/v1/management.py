@@ -26,7 +26,7 @@ import json
 import logging
 import re
 import secrets
-from typing import Annotated, Any, Literal, cast, get_args
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast, get_args
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -62,9 +62,8 @@ from sqlalchemy import (
     text,
     update,
 )
-from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy.dialects.postgresql import JSONB, array as sql_array, insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.dialects.postgresql import array as sql_array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
@@ -184,8 +183,11 @@ from shim_enterprise.secrets.store import (
     get_secret_store,
     provider_secret_purpose,
 )
-from shim_enterprise.tenants.audit import change_details, export_details
-from shim_enterprise.tenants.audit import record_management_action as _audit
+from shim_enterprise.tenants.audit import (
+    change_details,
+    export_details,
+    record_management_action as _audit,
+)
 from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.rules.preview import checked_set
 from shim_enterprise.rules.resource import (
@@ -255,21 +257,25 @@ from shim_enterprise.tenants.permissions import (
     Permission,
     user_permissions,
 )
-from shim_enterprise.tenants.service import create_api_key as create_tenant_api_key
 from shim_enterprise.tenants.teams import (
     may_hold_team_key,
     member_team_ids,
     plausible_email,
     require_team,
 )
-from shim_enterprise.tenants.service import rotate_api_key as rotate_tenant_api_key
-from shim_enterprise.tenants.service import ensure_privacy_defaults
 from shim_enterprise.tenants.service import (
     SERVICE_ACCOUNT_EMAIL_DOMAIN,
     WorkspaceHasRequestHistory,
+    create_api_key as create_tenant_api_key,
+    ensure_privacy_defaults,
     issue_service_account_key,
     move_user_from_bootstrap,
+    rotate_api_key as rotate_tenant_api_key,
 )
+
+
+if TYPE_CHECKING:
+    from shim_enterprise.policy.resources import ManagedResource
 
 
 router = APIRouter()
@@ -297,31 +303,25 @@ _PROVIDER_VERIFICATION_REQUESTS: dict[str, tuple[str, str, str, dict[str, str]]]
         {"x-goog-api-key": "{credential}"},
     ),
 }
+_BINARY = {"schema": {"type": "string", "format": "binary"}}
+_ATTACHMENT = {
+    "Content-Disposition": {
+        "description": "Attachment disposition and filename.",
+        "schema": {"type": "string"},
+    }
+}
 _CSV_EXPORT_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": "CSV attachment.",
-        "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
-        "headers": {
-            "Content-Disposition": {
-                "description": "Attachment disposition and filename.",
-                "schema": {"type": "string"},
-            }
-        },
+        "content": {"text/csv": _BINARY},
+        "headers": _ATTACHMENT,
     }
 }
 _BILLING_EXPORT_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "description": "CSV or PDF attachment.",
-        "content": {
-            "application/pdf": {"schema": {"type": "string", "format": "binary"}},
-            "text/csv": {"schema": {"type": "string", "format": "binary"}},
-        },
-        "headers": {
-            "Content-Disposition": {
-                "description": "Attachment disposition and filename.",
-                "schema": {"type": "string"},
-            }
-        },
+        "content": {"application/pdf": _BINARY, "text/csv": _BINARY},
+        "headers": _ATTACHMENT,
     }
 }
 _MAX_SYNC_WINDOW = timedelta(days=31)
@@ -1044,6 +1044,56 @@ RequestActivityStatus = Literal[
 CompletionOutcomeFilter = Literal[CompletionOutcome, "none"]
 
 
+# Query filters the request and prompt-version routes share.
+_ModelFilter = Annotated[
+    str | None,
+    Query(
+        min_length=1, max_length=255, description="Case-insensitive model substring."
+    ),
+]
+_TagFilter = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=settings.COST_TAG_MAX_LENGTH,
+        description="Case-insensitive substring of any request tag.",
+    ),
+]
+_CostCenterFilter = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=settings.COST_TAG_MAX_LENGTH,
+        description="Case-insensitive cost center substring.",
+    ),
+]
+_WarningFilter = Annotated[
+    ResponseWarning | None,
+    Query(description="Only requests that carried this warning code."),
+]
+_SystemPromptHashFilter = Annotated[
+    str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
+]
+_ApprovalFilter = Annotated[
+    UUID | None, Query(description="Only requests this request approval decided.")
+]
+_OutcomeFilter = Annotated[
+    CompletionOutcomeFilter | None,
+    Query(
+        description="How the answer ended; none is a request without a "
+        "recorded outcome (failed, rejected or older rows)."
+    ),
+]
+_SoftRefusalFilter = Annotated[
+    bool | None,
+    Query(
+        description="Whether the refusal analyzer found a text refusal in the "
+        "answer. The field exists only when the tenant enabled the refusal "
+        "analyzer; answers it did not read match neither value."
+    ),
+]
+
+
 class RequestActivityView(BaseModel):
     request_id: str
     created_at: datetime
@@ -1368,9 +1418,7 @@ async def update_profile(
     after: dict[str, Any] = {}
     if patch.organization_name is not None:
         await _require_permission(session, user, "settings.write")
-        tenant = await session.get(Organization, _tenant_id(user))
-        if tenant is None:
-            raise HTTPException(status_code=403, detail="Tenant does not exist")
+        tenant = await _tenant(session, user)
         before["organization_name"] = tenant.name
         tenant.name = patch.organization_name.strip()
         after["organization_name"] = tenant.name
@@ -1394,9 +1442,7 @@ async def get_subscription(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> SubscriptionView:
-    organization = await session.get(Organization, _tenant_id(user))
-    if organization is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    organization = await _tenant(session, user)
     tier = await session.get(TierDefinition, organization.tier)
     if tier is None:
         raise HTTPException(
@@ -1476,11 +1522,7 @@ async def create_team_invite(
         raise HTTPException(status_code=403, detail="Only owners can invite admins")
     tenant_id = _tenant_id(user)
     await _require_entitlement(session, tenant_id, "team_rbac")
-    await session.execute(
-        select(Organization)
-        .where(Organization.id == tenant_id)
-        .with_for_update(of=Organization)
-    )
+    await lock_tenant(session, tenant_id)
     normalized_email = payload.email
     member = (
         await session.execute(
@@ -1535,11 +1577,7 @@ async def revoke_team_invite(
     session: AsyncSession = Depends(get_db),
 ) -> None:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        select(Organization.id)
-        .where(Organization.id == tenant_id)
-        .with_for_update(of=Organization)
-    )
+    await lock_tenant(session, tenant_id)
     invite = (
         await session.execute(
             select(OrganizationInvite)
@@ -1582,11 +1620,7 @@ async def accept_team_invite(
     )
     if destination_organization_id is None:
         raise HTTPException(status_code=400, detail="Invitation is invalid or expired")
-    await session.execute(
-        select(Organization.id)
-        .where(Organization.id == destination_organization_id)
-        .with_for_update(of=Organization)
-    )
+    await lock_tenant(session, destination_organization_id)
     invite = (
         await session.execute(
             select(OrganizationInvite)
@@ -1984,19 +2018,10 @@ async def create_team(
     user: User = Depends(require("teams.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Team:
-    tenant_id, item = _tenant_id(user), str(uuid4())
-    after = payload.model_dump()
-    async with record_managed_write(
-        session, user, tenant_id, [(TEAMS, item, None, after)], source="api"
-    ) as version:
-        await TEAMS.apply(
-            session, user, tenant_id, item, None, after, policy_version=version
-        )
+    item = str(uuid4())
+    await _managed_write(session, user, TEAMS, item, None, payload.model_dump())
     await session.commit()
-    team = await session.get(Team, UUID(item))
-    assert team is not None
-    await session.refresh(team)
-    return team
+    return await _refreshed(session, Team, UUID(item))
 
 
 @router.put("/teams/{team_id}", response_model=TeamView)
@@ -2009,18 +2034,9 @@ async def update_team(
     tenant_id, item = _tenant_id(user), str(team_id)
     await require_team(session, user, team_id, administer=True)
     before = (await TEAMS.snapshot(session, tenant_id, [item]))[item]
-    after = payload.model_dump()
-    async with record_managed_write(
-        session, user, tenant_id, [(TEAMS, item, before, after)], source="api"
-    ) as version:
-        await TEAMS.apply(
-            session, user, tenant_id, item, before, after, policy_version=version
-        )
+    await _managed_write(session, user, TEAMS, item, before, payload.model_dump())
     await session.commit()
-    team = await session.get(Team, team_id)
-    assert team is not None
-    await session.refresh(team)
-    return team
+    return await _refreshed(session, Team, team_id)
 
 
 @router.get("/teams/{team_id}/members", response_model=list[MembershipView])
@@ -2581,12 +2597,7 @@ async def update_privacy_settings(
     await lock_tenant(session, tenant_id)
     before = (await PRIVACY.snapshot(session, tenant_id, None))["_"]
     after = {**before, **patch.model_dump(mode="json", exclude_unset=True)}
-    async with record_managed_write(
-        session, user, tenant_id, [(PRIVACY, "_", before, after)], source="api"
-    ) as version:
-        await PRIVACY.apply(
-            session, user, tenant_id, "_", before, after, policy_version=version
-        )
+    await _managed_write(session, user, PRIVACY, "_", before, after)
     await session.commit()
     await PRIVACY.after_commit(request, tenant_id)
     row = await ensure_privacy_defaults(session, tenant_id)
@@ -3112,21 +3123,8 @@ async def activate_record_set_revision(
         },
     )
     if fewer:
-        relaxed = [f"record_sets.{set_id}"]
-        event_id = await _audit(
-            session,
-            user,
-            "tenant.privacy_protection_relaxed",
-            str(tenant_id),
-            details={"relaxed": relaxed},
-        )
-        await ComplianceForwarderService().send_privacy_protection_relaxed(
-            session,
-            TenantId(tenant_id),
-            fields=relaxed,
-            actor=str(user.id),
-            actor_email=user.email,
-            event_id=event_id,
+        await _record_privacy_relaxed(
+            session, user, tenant_id, [f"record_sets.{set_id}"], None
         )
     await session.commit()
     await _invalidate_policy(request, tenant_id)
@@ -3247,10 +3245,7 @@ async def get_provider_key_settings(
     user: User = Depends(require("settings.read")),
     session: AsyncSession = Depends(get_db),
 ) -> Any:
-    tenant = await session.get(Organization, _tenant_id(user))
-    if tenant is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
-    return tenant
+    return await _tenant(session, user)
 
 
 @router.put("/settings/provider-keys", response_model=ProviderKeySettings)
@@ -3262,13 +3257,9 @@ async def update_provider_key_settings(
     tenant_id = _tenant_id(user)
     await lock_tenant(session, tenant_id)
     before = (await PROVIDER_KEYS.snapshot(session, tenant_id, None))["_"]
-    after = payload.model_dump()
-    async with record_managed_write(
-        session, user, tenant_id, [(PROVIDER_KEYS, "_", before, after)], source="api"
-    ) as version:
-        await PROVIDER_KEYS.apply(
-            session, user, tenant_id, "_", before, after, policy_version=version
-        )
+    await _managed_write(
+        session, user, PROVIDER_KEYS, "_", before, payload.model_dump()
+    )
     await session.commit()
     return await session.get(Organization, tenant_id)
 
@@ -4010,9 +4001,7 @@ async def outcome_rates(
     user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> OutcomeRatesPage:
-    end_at = _aware(end or datetime.now(timezone.utc))
-    start_at = _aware(start or end_at - timedelta(days=7))
-    _validate_sync_window(start_at, end_at)
+    start_at, end_at = _sync_window(start, end, days=7)
     report = await OutcomeRatesReadModel().read(
         session,
         tenant_id=_tenant_id(user),
@@ -4039,54 +4028,18 @@ async def list_requests(
         default=None,
         alias="status",
     ),
-    model: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=255,
-        description="Case-insensitive model substring.",
-    ),
+    model: _ModelFilter = None,
     request_id: str | None = Query(default=None, min_length=1, max_length=255),
     api_key_id: Annotated[UUID | None, Query()] = None,
     pii_detected: bool | None = Query(default=None),
-    tag: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=settings.COST_TAG_MAX_LENGTH,
-        description="Case-insensitive substring of any request tag.",
-    ),
-    cost_center: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=settings.COST_TAG_MAX_LENGTH,
-        description="Case-insensitive cost center substring.",
-    ),
-    warning: Annotated[
-        ResponseWarning | None,
-        Query(description="Only requests that carried this warning code."),
-    ] = None,
-    system_prompt_hash: Annotated[
-        str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
-    ] = None,
+    tag: _TagFilter = None,
+    cost_center: _CostCenterFilter = None,
+    warning: _WarningFilter = None,
+    system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
-    approval_id: Annotated[
-        UUID | None,
-        Query(description="Only requests this request approval decided."),
-    ] = None,
-    completion_outcome: Annotated[
-        CompletionOutcomeFilter | None,
-        Query(
-            description="How the answer ended; none is a request without a "
-            "recorded outcome (failed, rejected or older rows)."
-        ),
-    ] = None,
-    soft_refusal: Annotated[
-        bool | None,
-        Query(
-            description="Whether the refusal analyzer found a text refusal in the "
-            "answer. The field exists only when the tenant enabled the refusal "
-            "analyzer; answers it did not read match neither value."
-        ),
-    ] = None,
+    approval_id: _ApprovalFilter = None,
+    completion_outcome: _OutcomeFilter = None,
+    soft_refusal: _SoftRefusalFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -4163,18 +4116,11 @@ async def list_prompt_versions(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     api_key_id: UUID | None = Query(default=None),
-    model: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=255,
-        description="Case-insensitive model substring.",
-    ),
+    model: _ModelFilter = None,
     user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> PromptVersionPage:
-    end_at = _aware(end or datetime.now(timezone.utc))
-    start_at = _aware(start or end_at - timedelta(days=7))
-    _validate_sync_window(start_at, end_at)
+    start_at, end_at = _sync_window(start, end, days=7)
     metadata = RequestLifecycle.lifecycle_metadata
     prompt_hash = metadata["system_prompt_hash"].as_string()
     outcome = metadata["completion_outcome"].as_string()
@@ -4483,61 +4429,23 @@ async def export_requests(
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     status_filter: RequestActivityStatus | None = Query(default=None, alias="status"),
-    model: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=255,
-        description="Case-insensitive model substring.",
-    ),
+    model: _ModelFilter = None,
     request_id: str | None = Query(default=None, min_length=1, max_length=255),
     api_key_id: Annotated[UUID | None, Query()] = None,
     pii_detected: bool | None = Query(default=None),
-    tag: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=settings.COST_TAG_MAX_LENGTH,
-        description="Case-insensitive substring of any request tag.",
-    ),
-    cost_center: str | None = Query(
-        default=None,
-        min_length=1,
-        max_length=settings.COST_TAG_MAX_LENGTH,
-        description="Case-insensitive cost center substring.",
-    ),
-    warning: Annotated[
-        ResponseWarning | None,
-        Query(description="Only requests that carried this warning code."),
-    ] = None,
-    system_prompt_hash: Annotated[
-        str | None, Query(pattern=_SYSTEM_PROMPT_HASH_PATTERN)
-    ] = None,
+    tag: _TagFilter = None,
+    cost_center: _CostCenterFilter = None,
+    warning: _WarningFilter = None,
+    system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
-    approval_id: Annotated[
-        UUID | None,
-        Query(description="Only requests this request approval decided."),
-    ] = None,
-    completion_outcome: Annotated[
-        CompletionOutcomeFilter | None,
-        Query(
-            description="How the answer ended; none is a request without a "
-            "recorded outcome (failed, rejected or older rows)."
-        ),
-    ] = None,
-    soft_refusal: Annotated[
-        bool | None,
-        Query(
-            description="Whether the refusal analyzer found a text refusal in the "
-            "answer. The field exists only when the tenant enabled the refusal "
-            "analyzer; answers it did not read match neither value."
-        ),
-    ] = None,
+    approval_id: _ApprovalFilter = None,
+    completion_outcome: _OutcomeFilter = None,
+    soft_refusal: _SoftRefusalFilter = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     tenant_id = _tenant_id(user)
-    end_at = _aware(end or datetime.now(timezone.utc))
-    start_at = _aware(start or end_at - timedelta(days=30))
-    _validate_sync_window(start_at, end_at)
+    start_at, end_at = _sync_window(start, end, days=30)
     filters = await _request_filters(
         session,
         user,
@@ -4657,11 +4565,7 @@ async def export_requests(
                     ",".join(row.tags or []),
                     row.cost_center,
                     row.team,
-                    (
-                        json.dumps(details["provider_finish_reasons"], sort_keys=True)
-                        if details.get("provider_finish_reasons") is not None
-                        else None
-                    ),
+                    _json(details.get("provider_finish_reasons")),
                     details.get("completion_outcome"),
                     details.get("repeat_chain_length"),
                     details.get("ttft_ms"),
@@ -4672,9 +4576,7 @@ async def export_requests(
                     details.get("deployment_kind"),
                     cost_usd is not None,
                     *(
-                        json.dumps(details[field], sort_keys=True)
-                        if details.get(field) is not None
-                        else None
+                        _json(details.get(field))
                         for field in (
                             "pii_entities",
                             "monitored_entities",
@@ -4682,21 +4584,13 @@ async def export_requests(
                             "bulk_disclosure",
                         )
                     ),
-                    json.dumps(response_entities, sort_keys=True)
-                    if response_entities is not None
-                    else None,
+                    _json(response_entities),
                     json.dumps(response_analysis, sort_keys=True, separators=(",", ":"))
                     if response_analysis is not None
                     else None,
-                    json.dumps(details["rule_matches"], sort_keys=True)
-                    if details.get("rule_matches") is not None
-                    else None,
-                    *(
-                        json.dumps(details[field], sort_keys=True)
-                        if details.get(field) is not None
-                        else None
-                        for field in ("injection_markers", "restore_withheld")
-                    ),
+                    _json(details.get("rule_matches")),
+                    _json(details.get("injection_markers")),
+                    _json(details.get("restore_withheld")),
                     details.get("approval_id"),
                     details.get("request_archive") == "stored",
                 )
@@ -4796,9 +4690,7 @@ async def billing_usage(
     user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BillingUsageView:
-    end = _aware(end_date or datetime.now(timezone.utc))
-    start = _aware(start_date or end - timedelta(days=30))
-    _validate_sync_window(start, end)
+    start, end = _sync_window(start_date, end_date, days=30)
     records = await BillingReadModels().daily_usage(
         session,
         tenant_id=TenantId(_tenant_id(user)),
@@ -4845,9 +4737,7 @@ async def billing_breakdown(
     user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> BillingBreakdownView:
-    end = _aware(end_date or datetime.now(timezone.utc))
-    start = _aware(start_date or end - timedelta(days=30))
-    _validate_sync_window(start, end)
+    start, end = _sync_window(start_date, end_date, days=30)
     records = await BillingReadModels().breakdown(
         session,
         tenant_id=TenantId(_tenant_id(user)),
@@ -4883,9 +4773,7 @@ async def export_billing_breakdown(
     user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    end = _aware(end_date or datetime.now(timezone.utc))
-    start = _aware(start_date or end - timedelta(days=30))
-    _validate_sync_window(start, end)
+    start, end = _sync_window(start_date, end_date, days=30)
     records = await BillingReadModels().breakdown(
         session,
         tenant_id=TenantId(_tenant_id(user)),
@@ -4945,16 +4833,14 @@ def _budget_facts(row: CostBudget) -> dict[str, Any]:
     }
 
 
-def _provider_secret_details(
-    row: ProviderSecret, *, key_rotated: bool = False
-) -> dict[str, object]:
+def _provider_secret_details(row: ProviderSecret) -> dict[str, object]:
     return {
         "provider": row.provider,
         "name": row.name,
         "monthly_limit_usd": (
             str(row.monthly_limit_usd) if row.monthly_limit_usd is not None else None
         ),
-        "key_rotated": key_rotated,
+        "key_rotated": False,
     }
 
 
@@ -5259,6 +5145,10 @@ def _request_rows_statement(tenant_id: UUID, filters: list[Any]):
     )
 
 
+def _json(value: Any) -> str | None:
+    return None if value is None else json.dumps(value, sort_keys=True)
+
+
 def _request_provider(row: RequestLog) -> str | None:
     provider = (row.details or {}).get("provider")
     return provider if isinstance(provider, str) else None
@@ -5346,9 +5236,7 @@ def _billing_breakdown_pdf(
 
 
 async def _user_view(session: AsyncSession, user: User) -> UserView:
-    tenant = await session.get(Organization, _tenant_id(user))
-    if tenant is None:
-        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    tenant = await _tenant(session, user)
     role = (
         await session.get(OrganizationRole, user.custom_role_id)
         if user.custom_role_id is not None
@@ -5376,11 +5264,7 @@ async def _owned_api_key(
     permissions = await user_permissions(session, user)
     if not {"keys.own", "keys.manage"} & permissions:
         raise HTTPException(status_code=403, detail=ADMIN_REQUIRED)
-    await session.scalar(
-        select(Organization.id)
-        .where(Organization.id == _tenant_id(user))
-        .with_for_update()
-    )
+    await lock_tenant(session, _tenant_id(user))
     statement = (
         select(ApiKey)
         .where(
@@ -5489,11 +5373,7 @@ async def _roles_by_id(
 ) -> dict[UUID, OrganizationRole]:
     if lock:
         # Role writes take the tenant lock that member and key changes take.
-        await session.execute(
-            select(Organization.id)
-            .where(Organization.id == tenant_id)
-            .with_for_update(of=Organization)
-        )
+        await lock_tenant(session, tenant_id)
     roles = await session.scalars(
         select(OrganizationRole).where(OrganizationRole.organization_id == tenant_id)
     )
@@ -5540,11 +5420,7 @@ async def _owned_member(
     member_id: UUID,
 ) -> User:
     tenant_id = _tenant_id(user)
-    await session.execute(
-        select(Organization.id)
-        .where(Organization.id == tenant_id)
-        .with_for_update(of=Organization)
-    )
+    await lock_tenant(session, tenant_id)
     row = (
         await session.execute(
             select(User)
@@ -5563,11 +5439,7 @@ async def _owned_member(
 
 
 async def _protect_last_owner(session: AsyncSession, tenant_id: UUID) -> None:
-    await session.execute(
-        select(Organization.id)
-        .where(Organization.id == tenant_id)
-        .with_for_update(of=Organization)
-    )
+    await lock_tenant(session, tenant_id)
     owners = int(
         await session.scalar(
             select(func.count(User.id)).where(
@@ -5804,6 +5676,13 @@ def _endpoint_origin(endpoint: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+async def _tenant(session: AsyncSession, user: User) -> Organization:
+    tenant = await session.get(Organization, _tenant_id(user))
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant does not exist")
+    return tenant
+
+
 def _tenant_id(user: User) -> UUID:
     if user.organization_id is None:
         raise HTTPException(status_code=403, detail="Authenticated user has no tenant")
@@ -5829,6 +5708,16 @@ def _request_lifecycle_status_expression() -> Any:
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _sync_window(
+    start: datetime | None, end: datetime | None, *, days: int
+) -> tuple[datetime, datetime]:
+    """The asked window: ending now and starting `days` before its end by default."""
+    end_at = _aware(end or datetime.now(timezone.utc))
+    start_at = _aware(start or end_at - timedelta(days=days))
+    _validate_sync_window(start_at, end_at)
+    return start_at, end_at
 
 
 def _validate_sync_window(start: datetime, end: datetime) -> None:
@@ -6237,9 +6126,7 @@ async def model_inventory(
     user: User = Depends(require("deployments.read", legacy_detail=READER_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ) -> ModelInventoryView:
-    end_at = _aware(end or datetime.now(timezone.utc))
-    start_at = _aware(start or end_at - timedelta(days=30))
-    _validate_sync_window(start_at, end_at)
+    start_at, end_at = _sync_window(start, end, days=30)
     inventory = await ModelInventoryReadModel().read(
         session, tenant_id=_tenant_id(user), start_at=start_at, end_at=end_at
     )
@@ -6254,16 +6141,11 @@ async def create_model_deployment(
     user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
-    tenant_id, item = _tenant_id(user), str(uuid4())
+    item = str(uuid4())
     after = await DEPLOYMENTS.validate(session, user, None, None, payload.model_dump())
-    async with record_managed_write(
-        session, user, tenant_id, [(DEPLOYMENTS, item, None, after)], source="api"
-    ) as version:
-        await DEPLOYMENTS.apply(
-            session, user, tenant_id, item, None, after, policy_version=version
-        )
+    await _managed_write(session, user, DEPLOYMENTS, item, None, after)
     await session.commit()
-    return await _refreshed_deployment(session, UUID(item))
+    return await _refreshed(session, ModelDeployment, UUID(item))
 
 
 @router.put("/model-deployments/{deployment_id}", response_model=ModelDeploymentView)
@@ -6286,14 +6168,9 @@ async def update_model_deployment(
         before,
         payload.model_dump(exclude=set(_KEPT_WHEN_ABSENT - payload.model_fields_set)),
     )
-    async with record_managed_write(
-        session, user, tenant_id, [(DEPLOYMENTS, item, before, after)], source="api"
-    ) as version:
-        await DEPLOYMENTS.apply(
-            session, user, tenant_id, item, before, after, policy_version=version
-        )
+    await _managed_write(session, user, DEPLOYMENTS, item, before, after)
     await session.commit()
-    return await _refreshed_deployment(session, deployment_id)
+    return await _refreshed(session, ModelDeployment, deployment_id)
 
 
 @router.post(
@@ -6364,10 +6241,8 @@ async def check_model_deployment_health(
     return row
 
 
-async def _refreshed_deployment(
-    session: AsyncSession, deployment_id: UUID
-) -> ModelDeployment:
-    row = await session.get(ModelDeployment, deployment_id)
+async def _refreshed[M](session: AsyncSession, model: type[M], row_id: UUID) -> M:
+    row = await session.get(model, row_id)
     assert row is not None
     await session.refresh(row)
     return row
@@ -6394,6 +6269,49 @@ async def _owned_model_deployment(
     if row is None:
         raise HTTPException(404, detail="Model deployment not found")
     return row
+
+
+async def _managed_write(
+    session: AsyncSession,
+    user: User,
+    resource: ManagedResource,
+    item: str,
+    before: State | None,
+    after: State | None,
+) -> None:
+    """One API write of one managed item, recorded in a policy version."""
+    tenant_id = _tenant_id(user)
+    async with record_managed_write(
+        session, user, tenant_id, [(resource, item, before, after)], source="api"
+    ) as version:
+        await resource.apply(
+            session, user, tenant_id, item, before, after, policy_version=version
+        )
+
+
+async def _record_privacy_relaxed(
+    session: AsyncSession,
+    actor: User,
+    organization_id: UUID,
+    relaxed: list[str],
+    policy_version: int | None,
+) -> None:
+    """Audit a privacy relaxation and forward it to the compliance sinks."""
+    event_id = await _audit(
+        session,
+        actor,
+        "tenant.privacy_protection_relaxed",
+        str(organization_id),
+        details={"relaxed": relaxed, **version_detail(policy_version)},
+    )
+    await ComplianceForwarderService().send_privacy_protection_relaxed(
+        session,
+        TenantId(organization_id),
+        fields=relaxed,
+        actor=str(actor.id),
+        actor_email=actor.email,
+        event_id=event_id,
+    )
 
 
 # Managed resources (ee/src/shim_enterprise/policy): the write paths a version records.
@@ -6598,20 +6516,8 @@ class _PrivacyResource:
         )
         relaxed = _privacy_relaxed(previous, current)
         if relaxed:
-            event_id = await _audit(
-                session,
-                actor,
-                "tenant.privacy_protection_relaxed",
-                str(organization_id),
-                details={"relaxed": relaxed, **version_detail(policy_version)},
-            )
-            await ComplianceForwarderService().send_privacy_protection_relaxed(
-                session,
-                TenantId(organization_id),
-                fields=relaxed,
-                actor=str(actor.id),
-                actor_email=actor.email,
-                event_id=event_id,
+            await _record_privacy_relaxed(
+                session, actor, organization_id, relaxed, policy_version
             )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
@@ -6844,20 +6750,8 @@ class _GatewaySettingsResource:
             previous.restore_withheld, current.restore_withheld
         )
         if privacy_relaxed:
-            event_id = await _audit(
-                session,
-                actor,
-                "tenant.privacy_protection_relaxed",
-                str(organization_id),
-                details={"relaxed": privacy_relaxed, **version_detail(policy_version)},
-            )
-            await ComplianceForwarderService().send_privacy_protection_relaxed(
-                session,
-                TenantId(organization_id),
-                fields=privacy_relaxed,
-                actor=str(actor.id),
-                actor_email=actor.email,
-                event_id=event_id,
+            await _record_privacy_relaxed(
+                session, actor, organization_id, privacy_relaxed, policy_version
             )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
@@ -7358,20 +7252,8 @@ class _DeploymentResource:
             and before[field] != after[field]
         ]
         if relaxed:
-            event_id = await _audit(
-                session,
-                actor,
-                "tenant.privacy_protection_relaxed",
-                str(organization_id),
-                details={"relaxed": relaxed, **version_detail(policy_version)},
-            )
-            await ComplianceForwarderService().send_privacy_protection_relaxed(
-                session,
-                TenantId(organization_id),
-                fields=relaxed,
-                actor=str(actor.id),
-                actor_email=actor.email,
-                event_id=event_id,
+            await _record_privacy_relaxed(
+                session, actor, organization_id, relaxed, policy_version
             )
 
     def classify(self, before: State | None, after: State | None) -> Risk:
