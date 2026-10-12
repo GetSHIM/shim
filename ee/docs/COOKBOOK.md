@@ -1127,7 +1127,9 @@ Notes:
 - The creator, the submitter, whoever created or rotated the key of a service
   account that created or submitted the plan, and service accounts get 403
   `APPROVER_NOT_ELIGIBLE`. The note is kept on the plan (`context.decision_note`),
-  never in the audit chain.
+  never in the audit chain. With exactly two approvers, one of them both creates
+  and applies the plan: a plan one created and the other applied has nobody left
+  to approve or reject it, and waits until it expires.
 - Turning four eyes off is itself loosening, so it needs approval too. When
   fewer than two people can approve (an administrator left), an owner may turn
   it off directly; that write is audited as
