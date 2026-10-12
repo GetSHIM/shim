@@ -14,7 +14,10 @@ or the `.txt`/`.md` documents, and writes or uploads only:
   set's 32-byte key over the field's normal form). A field is `tckn`, `vkn`, `iban`,
   `email`, `phone`, `digits` (with a length range), `token` (a customer number) or `name`
   (one to three letter words, so "Ayşe-Nur Yılmaz" and "Ayşe Nur Yılmaz" are the same name;
-  a value with a digit is no name); a row without a primary value is dropped;
+  a value with a digit is no name; case is folded and so are Turkish letters, the four I
+  letters as `i` and ş ç ğ ö ü â î û as s c g o u a i u, so "AYSE YILMAZ", "Ayse Yilmaz"
+  and "Ayşe Yılmaz" are one name, while "Aysel Yilmaz" or "Ayşe Yıldız" are not); a row
+  without a primary value is dropped;
 - for a fingerprints set, every document's winnowed fingerprints: 8-word shingles hashed
   with the key, keeping the smallest of every window of 4 (fingerprint version 1).
 
@@ -70,7 +73,7 @@ fingerprints set (2 to 200 shared fingerprints). In the privacy stage, for every
 - records: values shaped like the set's primary fields are hashed and looked up; for each
   candidate record the other fields are looked for within 300 characters of the hit
   (names: every one to three letter words apart by spaces and at most one dash or
-  apostrophe; phones also written with dots or brackets; a TCKN or VKN also grouped by
+  apostrophe, in the folded form above, so a name typed without Turkish letters matches; phones also written with dots or brackets; a TCKN or VKN also grouped by
   spaces or hyphens; digits of any script, such as Arabic-Indic, count as the number they
   are). Fields are matched within one string: a record split across messages or content
   parts is not matched. At most 2,000 candidates per string; beyond, the match says

@@ -166,6 +166,10 @@ async def test_tool_output_reaches_the_api_and_matches_in_the_index(
     assert index is not None
     assert index.match_records("MUS000012 numaralı Çağrı Öztürk aradı", 2)[0] == {12}
     assert index.match_records("MUS000012 numaralı Ayşe Yılmaz aradı", 2)[0] == set()
+    # Typed without Turkish letters, the tool's names still match; another does not.
+    assert index.match_records("MUS000012 numaralı Cagri Ozturk aradı", 2)[0] == {12}
+    assert index.match_records("MUS000010 numarali AYSE YILMAZ", 2)[0] == {10}
+    assert index.match_records("MUS000010 numarali Aysel Yilmaz", 2)[0] == set()
 
 
 def test_an_upload_checks_the_sets_fields_and_reads_the_token_from_the_environment(

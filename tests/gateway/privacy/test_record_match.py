@@ -43,7 +43,7 @@ KEY = bytes(range(32))
         ("phone", "+90 (532) 123 45 67", "5321234567", 11734157253286110798),
         ("digits", "00123456", "00123456", 5871788764937944296),
         ("token", "mus-000123", "MUS-000123", 3636328146560824745),
-        ("name", "  İSMAİL   Işık ", "ismail işik", 12488803229028907849),
+        ("name", "  İSMAİL   Işık ", "ismail isik", 2541342517721953418),
     ],
 )
 def test_each_kind_has_one_normal_form_and_a_stable_hash(
@@ -411,3 +411,39 @@ def test_separators_never_join_a_digit_run_to_its_neighbour() -> None:
     assert index.match_records("12 10000000146 Ali Veli", 2)[0] == {0}
     # A run that takes the record's first digits does not hide the record.
     assert index.match_records("99 100 000 001 46 Ali Veli", 2)[0] == {0}
+
+
+@pytest.mark.parametrize(
+    ("listed", "written"),
+    [
+        ("Ayşe Yılmaz", "Ayse Yilmaz"),
+        ("Ayse Yilmaz", "Ayşe Yılmaz"),
+        ("Işık Çelik", "Isik Celik"),
+        ("İsmail Öğüt", "ismail ogut"),
+        ("Gülşen Ünal", "GULSEN UNAL"),
+        ("ISIK CELIK", "ışık çelik"),
+    ],
+)
+def test_a_name_typed_without_turkish_letters_is_the_same_name(
+    listed, written
+) -> None:
+    index = _index(
+        RecordField("token", primary=True),
+        RecordField("name"),
+        rows=[[("token", "MUS000001"), ("name", listed)]],
+    )
+
+    assert index.match_records(f"MUS000001 için {written} aradı", 2)[0] == {0}
+
+
+@pytest.mark.parametrize(
+    "written", ["Aysel Yilmaz", "Ayşe Yıldız", "Ayse Yilmazer", "Aişe Yılmaz"]
+)
+def test_folding_keeps_other_names_apart(written) -> None:
+    index = _index(
+        RecordField("token", primary=True),
+        RecordField("name"),
+        rows=[[("token", "MUS000001"), ("name", "Ayşe Yılmaz")]],
+    )
+
+    assert index.match_records(f"MUS000001 için {written} aradı", 2)[0] == set()
