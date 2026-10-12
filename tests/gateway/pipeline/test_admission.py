@@ -1378,7 +1378,10 @@ async def test_a_token_count_is_neither_an_agent_turn_nor_a_task_call() -> None:
     stage, detector = _loop_stage(9)
     prepared = replace(
         _prepared(
-            "x", model="claude-sonnet-4-6", provider="anthropic", protocol="count_tokens"
+            "x",
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+            protocol="count_tokens",
         ),
         payload={"model": "claude-sonnet-4-6", **_history("messages", {"path": "a"})},
         agent_loop=AgentLoop(action="block"),

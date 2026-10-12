@@ -586,7 +586,10 @@ async def test_a_fernet_rotation_of_an_entra_secret_never_reuses_its_token() -> 
     assign_secret_reference(
         row,
         await store.rotate_secret(
-            tenant_id, SecretRef(row.secret_ref), _ENTRA_SECRET, expected_purpose=purpose
+            tenant_id,
+            SecretRef(row.secret_ref),
+            _ENTRA_SECRET,
+            expected_purpose=purpose,
         ),
     )
 
