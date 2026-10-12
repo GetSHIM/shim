@@ -535,20 +535,20 @@ def _kind_store() -> Mock:
 
 
 @pytest.mark.asyncio
-async def test_resolve_row_answers_a_key_or_an_entra_token_keyed_by_version() -> None:
+async def test_resolve_row_answers_a_key_or_an_entra_token_keyed_by_reference() -> None:
     tenant_id = TenantId(uuid4())
     store = _kind_store()
     entra = Mock(token=AsyncMock(side_effect=["token-1", "token-2"]))
     resolver = ManagedProviderCredentialResolver("openai", store, Mock(), entra=entra)
     key_row, entra_row = _secret_row("openai"), _secret_row("azure_entra")
-    rotated = _secret_row("azure_entra", "2", id=entra_row.id)
+    rotated = _secret_row("azure_entra", id=entra_row.id, secret_ref="fernet:v2:new")
 
     assert await resolver.resolve_row(tenant_id, key_row) == "sk-managed"
     assert await resolver.resolve_row(tenant_id, entra_row) == "token-1"
     assert await resolver.resolve_row(tenant_id, rotated) == "token-2"
     assert [call.args[0] for call in entra.token.await_args_list] == [
-        (tenant_id, entra_row.id, "1"),
-        (tenant_id, entra_row.id, "2"),
+        (tenant_id, entra_row.id, "fernet:v2:azure_entra"),
+        (tenant_id, entra_row.id, "fernet:v2:new"),
     ]
     credential = entra.token.await_args_list[0].args[1]
     assert (credential.tenant, credential.client_secret.get_secret_value()) == (
@@ -568,6 +568,31 @@ async def test_resolve_row_answers_a_key_or_an_entra_token_keyed_by_version() ->
         503,
         "PROVIDER_NOT_CONFIGURED",
     )
+
+
+@pytest.mark.asyncio
+async def test_a_fernet_rotation_of_an_entra_secret_never_reuses_its_token() -> None:
+    tenant_id = TenantId(uuid4())
+    store = FernetSecretStore()
+    purpose = "provider:openai:azure-entra-client"
+    entra = Mock(token=AsyncMock(side_effect=["token-1", "token-2"]))
+    resolver = ManagedProviderCredentialResolver("openai", store, Mock(), entra=entra)
+    row = ProviderSecret(id=uuid4(), provider="azure_entra")
+    assign_secret_reference(
+        row, await store.put_secret(tenant_id, purpose, _ENTRA_SECRET)
+    )
+
+    assert await resolver.resolve_row(tenant_id, row) == "token-1"
+    assign_secret_reference(
+        row,
+        await store.rotate_secret(
+            tenant_id, SecretRef(row.secret_ref), _ENTRA_SECRET, expected_purpose=purpose
+        ),
+    )
+
+    assert await resolver.resolve_row(tenant_id, row) == "token-2"
+    first, second = (call.args[0] for call in entra.token.await_args_list)
+    assert first != second
 
 
 @pytest.mark.asyncio
