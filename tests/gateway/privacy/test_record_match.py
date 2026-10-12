@@ -424,9 +424,7 @@ def test_separators_never_join_a_digit_run_to_its_neighbour() -> None:
         ("ISIK CELIK", "ışık çelik"),
     ],
 )
-def test_a_name_typed_without_turkish_letters_is_the_same_name(
-    listed, written
-) -> None:
+def test_a_name_typed_without_turkish_letters_is_the_same_name(listed, written) -> None:
     index = _index(
         RecordField("token", primary=True),
         RecordField("name"),

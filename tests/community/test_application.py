@@ -187,7 +187,10 @@ async def test_identifiers_in_any_script_s_digits_never_reach_the_provider(
                     "authorization": f"Bearer {GATEWAY_KEY}",
                     "x-provider-key": PROVIDER_KEY,
                 },
-                json={"model": MODEL, "messages": [{"role": "user", "content": prompt}]},
+                json={
+                    "model": MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
             )
     await upstream.aclose()
 
