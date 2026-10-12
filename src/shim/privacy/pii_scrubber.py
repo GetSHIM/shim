@@ -18,7 +18,7 @@ from presidio_analyzer import RecognizerResult
 
 from shim.privacy.policies import EntityAction
 from shim.privacy.presidio_analyzer import PresidioAnalyzer
-from shim.rules.content import ContentHit, ContentRules, first_fit
+from shim.rules.content import ContentHit, ContentRules, first_fit, fold_digits
 from shim.rules.model import ACTION_RANK
 
 
@@ -156,8 +156,10 @@ def _preprocess_with_spans(text: str) -> tuple[str, list[_SourceSpan]]:
         if not dotted_i and not _INVISIBLE.fullmatch(character):
             visible_characters.append(character)
             visible_spans.append(span)
-    visible_text = "".join(visible_characters)
-    return _normalize_with_spans(visible_text, visible_spans)
+    normalized, normalized_spans = _normalize_with_spans(
+        "".join(visible_characters), visible_spans
+    )
+    return fold_digits(normalized), normalized_spans
 
 
 class PIIScrubberService:

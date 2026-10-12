@@ -38,6 +38,7 @@ _END = rf"(?!{_WORD})"
 # underscore, a letter next to a digit and a lower-case letter before an upper-case
 # one are word edges too: "atlas_rapor", "Atlas2024", "AtlasProje".
 _RUN = re.compile(r"[^\W\d_]+|\d+")
+_OTHER_DIGIT = re.compile(r"[^\D0-9]")
 _CAMEL = regex.compile(r"\p{Ll}\p{Lu}")
 _SPACES = re.compile(r"\s+")
 _DASH = "-"
@@ -59,15 +60,23 @@ _LABEL = r"^[A-Z][A-Z0-9]{1,15}(?:_[A-Z0-9]{1,15})?$"
 _MIN_SUFFIXED_TERM = 4
 
 
+def fold_digits(text: str) -> str:
+    """Every script's decimal digits as 0-9 (Arabic-Indic, Devanagari, ...), one
+    character for one: the number a model reads."""
+
+    return _OTHER_DIGIT.sub(lambda digit: str(unicodedata.decimal(digit[0])), text)
+
+
 def _fold(text: str) -> str:
     """The fold terms are compared in; one character for one, so offsets hold.
 
-    Lower case with the four Turkish I letters as one, ş ç ğ ö ü as s c g o u, and
-    every dash as a hyphen: "ŞİŞLİ", "Sisli" and "sişli" are one word.
+    Lower case with the four Turkish I letters as one, ş ç ğ ö ü as s c g o u,
+    every dash as a hyphen and every digit as 0-9: "ŞİŞLİ", "Sisli" and "sişli"
+    are one word.
     """
 
     # str.replace runs in C; a translate table walks a dict per character.
-    folded = text.replace("İ", "i").lower()
+    folded = fold_digits(text).replace("İ", "i").lower()
     for letter, plain in _ASCII:
         folded = folded.replace(letter, plain)
     return folded

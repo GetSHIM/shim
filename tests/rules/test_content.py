@@ -426,6 +426,9 @@ def test_first_fit_takes_spans_in_key_order_and_kept_ones_always() -> None:
         ("e-Devlet", "e–Devlet"),
         ("e-Devlet", "e‐Devlet'e"),
         ("PRJ-2024-001", "PRJ−2024−001"),
+        # Digits of any script are the number they are.
+        ("PRJ-2024-001", "PRJ-٢٠٢٤-٠٠١"),
+        ("PRJ-٢٠٢٤-٠٠١", "PRJ-२०२४-००१"),
     ],
 )
 def test_a_term_is_found_in_every_form_it_is_written_in(term, text) -> None:
@@ -452,7 +455,7 @@ def test_a_longer_word_is_not_the_term(term, text) -> None:
     assert _found(_term(term), text) == 0
 
 
-@pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234"])
+@pytest.mark.parametrize("text", ["PRJ–1234", "PRJ−1234", "prj‐1234", "PRJ-١٢٣٤"])
 def test_a_template_hyphen_takes_any_dash(text) -> None:
     assert _found(_pattern(templates=["PRJ-####"]), text) == 1
 
