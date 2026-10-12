@@ -50,7 +50,8 @@ the list existed is treated as `external` for each request, recorded with the ve
 For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
-There is no retry or failover. A five-second model-list health probe records
+There is no retry or failover unless a tenant rule asks for one; each extra attempt
+is its own request with its own cost. A five-second model-list health probe records
 only HTTP success/failure and never reads an unbounded response body; it uses the
 credential the gateway would use, so an Entra credential sends a fresh token. For an
 `azure_openai` deployment a 200 or a 404 from `/openai/v1/models` is healthy (the

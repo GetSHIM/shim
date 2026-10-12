@@ -367,6 +367,21 @@ skipped as bound to Anthropic thinking), absent when no transform is on and for 
 counting. Sizes and counts only. The request list and its CSV show it, and the
 community JSONL event carries it whenever the band ran.
 
+`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` are on
+the row of an extra attempt a tenant rule asked for (number 2 or 3, reason
+`fallback`, `overflow`, `format_retry`, `canary_fallback` or `degrade`, and the rule's
+id), written at reservation. The first attempt's row carries none of them and is never
+rewritten: a group is the row whose `request_id` is the `attempt_group_id` plus every
+row carrying it, and the attempt that served the client is the highest
+`attempt_number` that completed. Each row has its own tokens and cost; an extra
+attempt reserves no daily or monthly request unit. The request list, its CSV and
+`GET /api/v1/management/requests?attempt_group_id=<request id>` (both the first row
+and the later ones) carry them. `route_decision` is set when a tenant rule chose the
+request's target after privacy: `rule_id`, `state`, `from` and `to` (deployment ids,
+or `catalog`), `reason`, `conversation_id` and `outcome`, with an earlier decision of
+the same request under `previous` (one level); `deployment_kind` and `deployment_id`
+are then rewritten in the same update. Absent otherwise.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is

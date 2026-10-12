@@ -444,6 +444,9 @@ see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 ## Read errors and retry
 
 Tell a refusal shim made from one the provider made, and retry only when a retry can succeed.
+shim never retries on its own; only an enterprise tenant's rule can add a second
+attempt, and then the answer carries `X-Shim-Attempts` and the request id of the
+attempt that served it.
 
 1. Read the `X-Shim-Error-Code` response header. Every provider-route error whose
    code shim knows carries it, in the OpenAI, Anthropic and Gemini shapes alike.
@@ -984,6 +987,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
+| `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

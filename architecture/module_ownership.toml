@@ -67,6 +67,12 @@ forbidden_noncloud_import_roots = [
   "AuthenticatedPrincipal",
   "validate_actor_identity",
 ]
+"shim.gateway.kernel.attempts" = [
+  "AttemptOutcome",
+  "AttemptReason",
+  "Target",
+  "skip_attempt",
+]
 "shim.gateway.kernel.gateway_kernel" = ["GatewayKernel"]
 "shim.gateway.kernel.result" = ["AdmissionState", "PreparedInference", "ProviderTarget", "ResponseWarning", "UNSPECIFIED_PROVIDER_MODEL"]
 "shim.gateway.pipeline.anthropic_execution" = ["AnthropicExecution"]
@@ -189,6 +195,7 @@ public = [
   "src/shim/gateway/contracts/inference.py",
   "src/shim/gateway/contracts/principal.py",
   "src/shim/gateway/kernel/__init__.py",
+  "src/shim/gateway/kernel/attempts.py",
   "src/shim/gateway/kernel/gateway_kernel.py",
   "src/shim/gateway/kernel/result.py",
   "src/shim/gateway/kernel/runtime.py",
@@ -440,6 +447,7 @@ enterprise = [
   "ee/src/shim_enterprise/gateway/__init__.py",
   "ee/src/shim_enterprise/gateway/api/__init__.py",
   "ee/src/shim_enterprise/gateway/api/enterprise_errors.py",
+  "ee/src/shim_enterprise/gateway/attempts.py",
   "ee/src/shim_enterprise/gateway/contracts/__init__.py",
   "ee/src/shim_enterprise/gateway/contracts/audit.py",
   "ee/src/shim_enterprise/gateway/contracts/enterprise_errors.py",
@@ -560,6 +568,7 @@ enterprise = [
   "ee/tests/gateway/pipeline/test_scan.py",
   "ee/tests/gateway/pipeline/test_scan_recovery.py",
   "ee/tests/gateway/privacy/test_chain_store.py",
+  "ee/tests/gateway/test_attempts.py",
   "ee/tests/observability/test_enterprise_observability.py",
   "ee/tests/observability/test_language_cost.py",
   "ee/tests/observability/test_latency.py",

@@ -69,8 +69,24 @@ and accounting fields it consumes, then uses the official provider SDK or
 native Gemini transport. It does not introduce a canonical cross-provider
 request model.
 
-Outbound SDK retries are disabled. One admitted shim request may make at most
-one billable provider attempt.
+Outbound SDK retries are disabled. One admitted shim request makes at most one
+billable provider attempt, unless a tenant-written rule adds attempts. The kernel
+takes an optional `AttemptPolicy` (`src/shim/gateway/kernel/attempts.py`); community
+passes none. The policy may choose the request's target after privacy, before the
+bands (same row and request id, recorded as `route_decision`), and, after a
+`ProviderCallError` or an answered JSON attempt, name a target for one more attempt.
+Each extra attempt is its own request: a new request id and start, the same privacy
+outcome and admission, the bands run again for its target from the masked payload
+before the bands, a usage reservation without a request unit (rate limits and the
+repeat detector never see it), its own spend reservation and settlement, and the
+`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` of its
+row. Core guards skip a target with a `gateway.attempt` verdict: at most
+`MAX_ATTEMPTS` (3), never from an internal deployment to another kind when the
+request carried personal data or a rule match, never off the deployment a Responses
+continuation is pinned to, never without a stored credential after a BYOK key was
+consumed. A stream is never offered once it has started. The client sees the serving
+attempt's `X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an
+answered attempt a later one supersedes is settled and never returned.
 
 ## Community composition
 

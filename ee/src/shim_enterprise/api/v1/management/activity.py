@@ -161,6 +161,15 @@ _SystemPromptHashFilter = Annotated[
 _ApprovalFilter = Annotated[
     UUID | None, Query(description="Only requests this request approval decided.")
 ]
+_AttemptGroupFilter = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=255,
+        description="Only the attempts of one client request: the first attempt's "
+        "request id.",
+    ),
+]
 _OutcomeFilter = Annotated[
     CompletionOutcomeFilter | None,
     Query(
@@ -282,6 +291,19 @@ class RequestActivityView(BaseModel):
             "[] when the band ran and set nothing, null when it did not run."
         ),
     )
+    attempt_group_id: str | None = Field(
+        default=None,
+        description="On an extra attempt a tenant rule asked for: the request id of "
+        "the client request's first attempt; null on a first attempt.",
+    )
+    attempt_number: int | None = Field(default=None, ge=2)
+    attempt_reason: str | None = None
+    attempt_rule_id: str | None = None
+    route_decision: dict[str, Any] | None = Field(
+        default=None,
+        description="Where a tenant rule sent the request after privacy; null "
+        "when no rule chose its target.",
+    )
     transforms_applied: list[dict[str, Any]] | None = Field(
         default=None,
         description=(
@@ -381,6 +403,7 @@ async def list_requests(
     system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
     approval_id: _ApprovalFilter = None,
+    attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -406,6 +429,7 @@ async def list_requests(
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
         approval_id=approval_id,
+        attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -574,6 +598,7 @@ async def export_requests(
     system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
     approval_id: _ApprovalFilter = None,
+    attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     user: User = Depends(get_current_user),
@@ -597,6 +622,7 @@ async def export_requests(
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
         approval_id=approval_id,
+        attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
         soft_refusal=soft_refusal,
     )
@@ -674,6 +700,11 @@ async def export_requests(
                 "rule_matches",
                 "settings_applied",
                 "transforms_applied",
+                "attempt_group_id",
+                "attempt_number",
+                "attempt_reason",
+                "attempt_rule_id",
+                "route_decision",
                 "injection_markers",
                 "restore_withheld",
                 "approval_id",
@@ -728,6 +759,11 @@ async def export_requests(
                     _json(details.get("rule_matches")),
                     _json(details.get("settings_applied")),
                     _json(details.get("transforms_applied")),
+                    details.get("attempt_group_id"),
+                    details.get("attempt_number"),
+                    details.get("attempt_reason"),
+                    details.get("attempt_rule_id"),
+                    _json(details.get("route_decision")),
                     _json(details.get("injection_markers")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
@@ -760,6 +796,7 @@ async def _request_filters(
     api_key_id: UUID | None = None,
     rule_id: str | None = None,
     approval_id: UUID | None = None,
+    attempt_group_id: str | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
     soft_refusal: bool | None = None,
 ) -> list[Any]:
@@ -845,6 +882,13 @@ async def _request_filters(
         )
     if approval_id is not None:
         filters.append(RequestLog.details.contains({"approval_id": str(approval_id)}))
+    if attempt_group_id is not None:
+        filters.append(
+            or_(
+                RequestLog.request_id == attempt_group_id,
+                RequestLog.details.contains({"attempt_group_id": attempt_group_id}),
+            )
+        )
     if completion_outcome is not None:
         outcome = RequestLog.details["completion_outcome"].as_string()
         filters.append(

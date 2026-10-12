@@ -99,6 +99,7 @@ class PolicyVerdict(FrozenContractModel):
         "rules",
         "settings",
         "transforms",
+        "attempt",
     ]
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
@@ -178,6 +179,21 @@ EMBEDDINGS_PROTOCOLS = frozenset({"embeddings", "embed_content"})
 RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
 
 
+AttemptReason = Literal[
+    "fallback", "overflow", "format_retry", "canary_fallback", "degrade"
+]
+
+
+@dataclass(frozen=True)
+class AttemptInfo:
+    """Attempt 2 or later of one client request, linked to the first by its request id."""
+
+    group_id: str
+    number: int
+    reason: AttemptReason
+    rule_id: str
+
+
 @dataclass(frozen=True)
 class PreparedInference:
     """One validated native provider request plus trusted gateway state."""
@@ -219,6 +235,12 @@ class PreparedInference:
     provider_betas: tuple[str, ...] = ()
     # The transform band's changes with their sizes; None when it did not run.
     transforms_applied: tuple[dict[str, Any], ...] | None = None
+    # The masked payload before the bands: what an extra attempt starts again from.
+    pre_band_payload: dict[str, Any] | None = field(
+        default=None, repr=False, compare=False
+    )
+    attempt: AttemptInfo | None = None
+    route_decision: Mapping[str, Any] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
@@ -258,6 +280,7 @@ class PreparedInference:
             "rules",
             "settings",
             "transforms",
+            "attempt",
         ],
         outcome: Literal["allow", "mask", "deny", "error", "skip"],
         reason_code: str,

@@ -23,6 +23,15 @@ from shim.gateway.admission import (
     TaskCounter,
 )
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
+from shim.gateway.kernel.attempts import (
+    AttemptOutcome,
+    AttemptPolicy,
+    Target,
+    guarded,
+    next_attempt,
+    retargeted,
+    skip_attempt,
+)
 from shim.gateway.pipeline.admission import AdmissionStage, rule_blocked
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
 from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
@@ -44,6 +53,7 @@ from shim.gateway.usage import (
     UsageLimitExceeded,
 )
 from shim.observability.metrics import (
+    EXTRA_ATTEMPTS_TOTAL,
     INFLIGHT_DUPLICATES_TOTAL,
     REQUESTS_IN_FLIGHT,
     REQUESTS_TOTAL,
@@ -78,6 +88,16 @@ _GENAI_PROVIDERS = {
 }
 
 
+def _failure_reason(error: BaseException) -> UsageFailureReason:
+    if (
+        isinstance(error, ProviderCallError)
+        and error.status_code < 500
+        and error.error_code != "PROVIDER_TIMEOUT"
+    ):
+        return "provider_rejected_without_usage"
+    return "request_aborted"
+
+
 class GatewayKernel:
     def __init__(
         self,
@@ -99,6 +119,7 @@ class GatewayKernel:
         honor_trace_parent: bool = False,
         task_counter: TaskCounter | None = None,
         model_lifecycle: ModelLifecycle | None = None,
+        attempt_policy: AttemptPolicy | None = None,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -124,6 +145,7 @@ class GatewayKernel:
         self.prepare_inference = prepare_inference
         self.approval_gate = approval_gate
         self.honor_trace_parent = honor_trace_parent
+        self.attempt_policy = attempt_policy
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -275,7 +297,7 @@ class GatewayKernel:
             str(prepared.request_id),
         )
         leader = admission_stage.leader
-        shared = handed_off = False
+        shared = handed_off = settled = False
         try:
             prepared = await run_stage(
                 PrivacyStage(
@@ -328,15 +350,28 @@ class GatewayKernel:
                 if counted.request_id:
                     headers["request-id"] = counted.request_id
                 return JSONResponse(content=counted.payload, headers=headers)
-            pins = pins_in_scope(prepared)
-            if pins or prepared.band.on:
-                prepared, blocked = await run_stage(SettingsBandStage(pins), prepared)
-                if blocked is not None:
-                    await self.usage.record_privacy(prepared)
-                    raise rule_blocked(blocked)
-            if prepared.band.json_compaction:
-                prepared = await run_stage(TransformBandStage(), prepared)
+            # Only an extra attempt reads it: a BYOK key is consumed by the first one.
+            byok = (
+                self.attempt_policy is not None
+                and invocation.provider_credential is not None
+            )
+            if self.attempt_policy is not None:
+                target = guarded(
+                    prepared,
+                    await self.attempt_policy.choose_target_after_privacy(prepared),
+                    attempts=1,
+                    byok=byok,
+                )
+                # Kept by reference: an extra attempt runs the bands again from here.
+                prepared = (
+                    replace(prepared, pre_band_payload=prepared.payload)
+                    if target is None
+                    else retargeted(prepared, target)
+                )
+            prepared, blocked = await self._bands(prepared)
             await self.usage.record_privacy(prepared)
+            if blocked is not None:
+                raise rule_blocked(blocked)
             if leader is not None and (
                 answer := await self._leader_answer(prepared, leader)
             ):
@@ -350,58 +385,116 @@ class GatewayKernel:
                 ProviderSpendStage(invocation, self.usage),
                 prepared,
             )
-            if prepared.stream:
-                stream_session = self.postprocessor.create_stream_session(
-                    prepared,
-                    on_terminal=lambda: self.inflight.leave(*inflight_key),
-                )
-            # A stream's session releases its own call at its terminal state.
-            in_flight = REQUESTS_IN_FLIGHT.labels(
-                provider=bounded_label("provider", invocation.provider)
-            )
-            in_flight.inc()
-            try:
-                provider_output = await run_stage(
-                    ProviderExecutionStage(
-                        invocation,
-                        execution,
-                        self.usage,
-                    ),
-                    prepared,
-                )
-            except BaseException:
-                in_flight.dec()
-                raise
-            if not isinstance(provider_output, ProviderStream):
-                in_flight.dec()
-                # Before this request's own postprocess, so followers do not wait on it.
-                self.inflight.publish(*inflight_key, provider_output)
-            try:
-                response = await run_stage(
-                    PostprocessStage(
-                        self.postprocessor,
+            attempts = 1
+            while True:
+                stream_session = None
+                if prepared.stream:
+                    stream_session = self.postprocessor.create_stream_session(
                         prepared,
-                        stream_session=stream_session,
-                    ),
-                    provider_output,
+                        on_terminal=lambda: self.inflight.leave(*inflight_key),
+                    )
+                # A stream's session releases its own call at its terminal state.
+                in_flight = REQUESTS_IN_FLIGHT.labels(
+                    provider=bounded_label("provider", invocation.provider)
                 )
+                in_flight.inc()
+                execution_stage = ProviderExecutionStage(
+                    invocation, execution, self.usage
+                )
+                try:
+                    provider_output = await run_stage(execution_stage, prepared)
+                except ProviderCallError as error:
+                    in_flight.dec()
+                    if self.attempt_policy is None:
+                        raise
+                    target = guarded(
+                        prepared,
+                        await self.attempt_policy.next_attempt(
+                            AttemptOutcome(
+                                prepared,
+                                attempts,
+                                error,
+                                execution_stage.provider_started,
+                                None,
+                            )
+                        ),
+                        attempts=attempts,
+                        byok=byok,
+                    )
+                    # This attempt is settled here; the client may see the next one.
+                    await self._fail_safely(prepared, reason=_failure_reason(error))
+                    settled = True
+                    following = (
+                        None
+                        if target is None
+                        else await self._start_attempt(
+                            invocation, prepared, target, attempts + 1
+                        )
+                    )
+                    if following is None:
+                        raise
+                    prepared, attempts, settled = following, attempts + 1, False
+                    if prepared_observer is not None:
+                        prepared_observer(prepared)
+                    continue
+                except BaseException:
+                    in_flight.dec()
+                    raise
+                target = None
+                if not isinstance(provider_output, ProviderStream):
+                    in_flight.dec()
+                    if self.attempt_policy is not None:
+                        target = guarded(
+                            prepared,
+                            await self.attempt_policy.next_attempt(
+                                AttemptOutcome(
+                                    prepared,
+                                    attempts,
+                                    None,
+                                    True,
+                                    provider_output.payload,
+                                )
+                            ),
+                            attempts=attempts,
+                            byok=byok,
+                        )
+                    if target is None:
+                        # Before this request's own postprocess, so followers do not wait on it.
+                        self.inflight.publish(*inflight_key, provider_output)
+                try:
+                    response = await run_stage(
+                        PostprocessStage(
+                            self.postprocessor,
+                            prepared,
+                            stream_session=stream_session,
+                        ),
+                        provider_output,
+                    )
+                except BaseException:
+                    if isinstance(provider_output, ProviderStream):
+                        in_flight.dec()
+                    raise
+                if target is not None:
+                    # The settled answer is kept aside: it serves only if no next attempt starts.
+                    settled = True
+                    following = await self._start_attempt(
+                        invocation, prepared, target, attempts + 1
+                    )
+                    if following is not None:
+                        prepared, attempts, settled = following, attempts + 1, False
+                        if prepared_observer is not None:
+                            prepared_observer(prepared)
+                        continue
+                    self.inflight.publish(*inflight_key, provider_output)
                 # A stream leaves at its terminal state, through its session.
                 handed_off = isinstance(response, StreamingResponse)
+                if attempts > 1:
+                    response.headers["X-Shim-Attempts"] = str(attempts)
                 return response
-            except BaseException:
-                if isinstance(provider_output, ProviderStream):
-                    in_flight.dec()
-                raise
         except BaseException as error:
-            reason = (
-                "provider_rejected_without_usage"
-                if isinstance(error, ProviderCallError)
-                and error.status_code < 500
-                and error.error_code != "PROVIDER_TIMEOUT"
-                else "request_aborted"
-            )
             if prepared.protocol != "count_tokens":
-                await self._fail_safely(prepared, reason=reason)
+                if not settled:
+                    await self._fail_safely(prepared, reason=_failure_reason(error))
             elif not isinstance(error, UsageAuditPersistenceError):
                 if not any(
                     verdict.outcome in {"deny", "error"}
@@ -420,6 +513,71 @@ class GatewayKernel:
                 self.inflight.leave(*inflight_key)
             if admission.inflight_duplicate_of is not None:
                 INFLIGHT_DUPLICATES_TOTAL.labels(shared=str(shared).lower()).inc()
+
+    async def _bands(
+        self, prepared: PreparedInference
+    ) -> tuple[PreparedInference, str | None]:
+        # The settings band, then the transform band; the id of a pin that blocks.
+        pins = pins_in_scope(prepared)
+        if pins or prepared.band.on:
+            prepared, blocked = await run_stage(SettingsBandStage(pins), prepared)
+            if blocked is not None:
+                return prepared, blocked
+        if prepared.band.json_compaction:
+            prepared = await run_stage(TransformBandStage(), prepared)
+        return prepared, None
+
+    async def _start_attempt(
+        self,
+        invocation: GatewayInvocation,
+        prepared: PreparedInference,
+        target: Target,
+        number: int,
+    ) -> PreparedInference | None:
+        # Attempt `number`, admitted and reserved, or None. Admission is the usage
+        # reservation only: rate limits and the repeat detector never see it.
+        following, blocked = await self._bands(
+            next_attempt(prepared, target, number=number)
+        )
+        if blocked is not None:
+            skip_attempt(
+                following,
+                target.reason,
+                target.rule_id,
+                "ATTEMPT_NOT_ADMITTED",
+                outcome="not_admitted",
+            )
+            return None
+        assert following.admission is not None
+        try:
+            await self.usage.admit(following, following.admission)
+        except Exception:
+            skip_attempt(
+                following,
+                target.reason,
+                target.rule_id,
+                "ATTEMPT_NOT_ADMITTED",
+                outcome="not_admitted",
+            )
+            await self.usage.reject(following)
+            return None
+        try:
+            await self.usage.record_privacy(following)
+            following = await run_stage(
+                ProviderSpendStage(invocation, self.usage), following
+            )
+        except Exception:
+            skip_attempt(
+                following,
+                target.reason,
+                target.rule_id,
+                "ATTEMPT_NOT_ADMITTED",
+                outcome="not_admitted",
+            )
+            await self._fail_safely(following, reason="admission_aborted")
+            return None
+        EXTRA_ATTEMPTS_TOTAL.labels(reason=target.reason, outcome="started").inc()
+        return following
 
     async def _leader_answer(
         self, prepared: PreparedInference, leader: InFlightEntry

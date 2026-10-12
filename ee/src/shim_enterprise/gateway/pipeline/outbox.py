@@ -226,6 +226,11 @@ _DIAGNOSTIC_FIELDS = (
     "rule_matches_truncated",
     "settings_applied",
     "transforms_applied",
+    "attempt_group_id",
+    "attempt_number",
+    "attempt_reason",
+    "attempt_rule_id",
+    "route_decision",
     "approval_id",
     "request_archive",
 )

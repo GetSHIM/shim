@@ -114,6 +114,8 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         rule_matches=[],
         settings_applied=None,
         transforms_applied=None,
+        route_decision=None,
+        attempt=None,
         band=BandSettings(),
         approval_id=None,
         unpriced=False,
@@ -444,6 +446,8 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         rule_matches=[],
         settings_applied=None,
         transforms_applied=None,
+        route_decision=None,
+        attempt=None,
         approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
@@ -988,6 +992,8 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         rule_matches=[],
         settings_applied=None,
         transforms_applied=None,
+        route_decision=None,
+        attempt=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -3952,3 +3958,159 @@ async def test_an_embeddings_request_reserves_its_quota(protocol) -> None:
 
     command = repository.reserve_quota.await_args.args[1]
     assert (command.maximum_output_tokens, command.system_prompt_hash) == (0, None)
+
+
+@pytest.mark.asyncio
+async def test_two_attempts_are_two_rows_each_with_its_own_cost(
+    db, test_api_key, monkeypatch
+) -> None:
+    from shim.gateway.kernel.result import AttemptInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+
+    def attempt(number: int, group: str | None) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = started_at
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=False
+        )
+        if group is not None:
+            prepared.attempt = AttemptInfo(
+                group_id=group, number=number, reason="fallback", rule_id="spare"
+            )
+        return prepared
+
+    first = attempt(1, None)
+    second = attempt(2, first.request_id)
+    for prepared in (first, second):
+        await usage.admit(prepared, prepared.admission)
+        await usage.record_privacy(prepared)
+        await coordinator.reserve_spend(prepared, False, db)
+    await usage.fail(first, reason="request_aborted")
+    await coordinator.finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=second.tenant_id,
+            request_id=second.request_id,
+            quota_action=TerminalAction.SETTLE,
+            spend_action=TerminalAction.SETTLE,
+            prompt_tokens=20,
+            completion_tokens=2,
+            actual_cost_usd=Decimal("0.00002"),
+            provider_model=second.pricing_model,
+            lifecycle_status="completed",
+        ),
+    )
+
+    rows = {
+        row.request_id: row
+        for row in (
+            await db.scalars(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id.in_(
+                        [first.request_id, second.request_id]
+                    )
+                )
+            )
+        ).all()
+    }
+    assert {key: row.status for key, row in rows.items()} == {
+        first.request_id: "failed",
+        second.request_id: "completed",
+    }
+    assert {
+        key: value
+        for key, value in rows[second.request_id].lifecycle_metadata.items()
+        if key.startswith("attempt_")
+    } == {
+        "attempt_group_id": first.request_id,
+        "attempt_number": 2,
+        "attempt_reason": "fallback",
+        "attempt_rule_id": "spare",
+    }
+    assert not any(
+        key.startswith("attempt_") for key in rows[first.request_id].lifecycle_metadata
+    )
+    events = {
+        (event.request_id, event.event_type)
+        for event in (
+            await db.scalars(
+                select(UsageLedger).where(
+                    UsageLedger.request_id.in_([first.request_id, second.request_id])
+                )
+            )
+        ).all()
+    }
+    assert {
+        (second.request_id, "spend_reservation"),
+        (second.request_id, "spend_settlement"),
+        (first.request_id, "spend_reservation"),
+    } <= events
+    assert (first.request_id, "spend_settlement") not in events
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    for event in (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id.in_([first.request_id, second.request_id]),
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).all():
+        await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        attempt_group_id=first.request_id,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=first.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=10, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    csv_rows = list(
+        csv.DictReader(
+            io.StringIO(
+                b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                    "utf-8-sig"
+                )
+            )
+        )
+    )
+    listed = {item.request_id: item for item in page.items}
+    assert set(listed) == {first.request_id, second.request_id}
+    assert (
+        listed[second.request_id].attempt_group_id,
+        listed[second.request_id].attempt_number,
+        listed[second.request_id].attempt_reason,
+        listed[second.request_id].attempt_rule_id,
+    ) == (first.request_id, 2, "fallback", "spare")
+    assert listed[first.request_id].attempt_group_id is None
+    by_id = {row["request_id"]: row for row in csv_rows}
+    assert by_id[second.request_id]["attempt_group_id"] == first.request_id
+    assert by_id[second.request_id]["attempt_number"] == "2"
+    assert by_id[first.request_id]["attempt_number"] == ""

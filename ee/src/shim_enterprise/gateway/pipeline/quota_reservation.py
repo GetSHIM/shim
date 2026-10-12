@@ -342,6 +342,7 @@ class DurableAccountingCoordinator:
             "utf-8"
         )
         loop_digest = take_repeat_digest(str(prepared.tenant_id))
+        attempt = prepared.attempt
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
@@ -395,6 +396,11 @@ class DurableAccountingCoordinator:
                             verdict.model_dump(mode="json")
                             for verdict in prepared.policy_verdicts
                         ),
+                        request_delta=0 if attempt else 1,
+                        attempt_group_id=attempt.group_id if attempt else None,
+                        attempt_number=attempt.number if attempt else None,
+                        attempt_reason=attempt.reason if attempt else None,
+                        attempt_rule_id=attempt.rule_id if attempt else None,
                     ),
                 )
                 await session.commit()
@@ -601,6 +607,18 @@ class DurableAccountingCoordinator:
                                 else {}
                             ),
                             **match_records(prepared),
+                            # A target chosen after privacy replaces the one reserved.
+                            **(
+                                {}
+                                if prepared.route_decision is None
+                                else {
+                                    "route_decision": dict(prepared.route_decision),
+                                    "deployment_kind": prepared.deployment_kind,
+                                    "deployment_id": prepared.target.deployment_id
+                                    if prepared.target
+                                    else None,
+                                }
+                            ),
                             **(
                                 {}
                                 if prepared.settings_applied is None

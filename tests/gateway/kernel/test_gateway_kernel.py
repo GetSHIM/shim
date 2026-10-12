@@ -13,7 +13,7 @@ from starlette.responses import Response
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
-from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID, ProviderId
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
@@ -3111,3 +3111,520 @@ async def test_decoys_that_fill_the_candidate_cap_never_let_a_record_through(
     assert line["rule_matches"][0]["truncated"] is True
     if status == 400:
         assert calls == [] and response.headers["x-shim-rule-id"] == "customers"
+
+
+# Extra attempts a tenant rule asks for (S57): a stub policy stands in for a strategy.
+
+
+class _StubPolicy:
+    def __init__(self, *, after_privacy=None, after_error=(), after_answer=()) -> None:
+        self.after_privacy = after_privacy
+        self.after_error = list(after_error)
+        self.after_answer = list(after_answer)
+        self.outcomes: list = []
+
+    async def choose_target_after_privacy(self, prepared):
+        return self.after_privacy
+
+    async def next_attempt(self, outcome):
+        self.outcomes.append(outcome)
+        queue = self.after_error if outcome.error is not None else self.after_answer
+        return queue.pop(0) if queue else None
+
+
+def _target(reason="fallback", **values):
+    from shim.gateway.kernel.attempts import Target
+
+    return Target(
+        provider_target=values.pop("provider_target", None),
+        deployment_kind=values.pop("deployment_kind", "unknown"),
+        reason=reason,
+        rule_id=values.pop("rule_id", "fallback_rule"),
+    )
+
+
+async def _attempt_call(
+    monkeypatch,
+    policy,
+    statuses,
+    *,
+    stream=False,
+    route="chat",
+    headers=None,
+    admit=None,
+    body=None,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-environment")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-environment")
+    calls: list[httpx.Request] = []
+    admitted: list = []
+    original_admit = LocalUsageLifecycle.admit
+
+    async def spy_admit(self, prepared, admission):
+        admitted.append(prepared)
+        if admit is not None:
+            await admit(prepared)
+        return await original_admit(self, prepared, admission)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "admit", spy_admit)
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(
+                status, json={"error": {"message": "down", "type": "server_error"}}
+            )
+        if request.url.path.endswith("/count_tokens"):
+            return httpx.Response(200, json={"input_tokens": 3})
+        reply = {
+            **_CHAT_REPLY,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": f"answer {len(calls)}"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                **reply,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"answer {len(calls)}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=reply)
+
+    events = io.StringIO()
+    path, auth, build = _ROUTES[route]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            app.state.gateway_service.kernel.attempt_policy = policy
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, **(headers or {})},
+                    json=body
+                    or {**build("hello"), **({"stream": True} if stream else {})},
+                )
+                await response.aread()
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, calls, admitted, lines
+
+
+@pytest.mark.asyncio
+async def test_a_target_after_a_provider_error_is_a_second_attempt(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, admitted, lines = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 2"
+    first, second = admitted
+    assert first.attempt is None and second.attempt is not None
+    assert second.request_id != first.request_id
+    assert (second.attempt.group_id, second.attempt.number) == (
+        str(first.request_id),
+        2,
+    )
+    assert response.headers["x-shim-request-id"] == str(second.request_id)
+    assert response.headers["x-shim-attempts"] == "2"
+    failed, answered = policy.outcomes
+    assert failed.error.status_code == 503 and failed.provider_started
+    assert failed.prepared.request_id == first.request_id and failed.attempts == 1
+    assert answered.error is None and answered.attempts == 2
+    assert [line["outcome"] for line in lines] == ["request_aborted", "completed"]
+    assert [line["request_id"] for line in lines] == [
+        str(first.request_id),
+        str(second.request_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_without_a_target_the_error_is_todays(monkeypatch) -> None:
+    policy = _StubPolicy()
+
+    response, calls, admitted, _ = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 503 and len(calls) == 1 and len(admitted) == 1
+    assert "x-shim-attempts" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_at_most_three_attempts_then_the_last_error(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target(), _target(), _target()])
+
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [503, 503, 503]
+    )
+
+    assert response.status_code == 503 and len(calls) == 3 and len(admitted) == 3
+    assert response.headers["x-shim-request-id"] == str(admitted[2].request_id)
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[-1]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_LIMIT_REACHED"
+
+
+@pytest.mark.asyncio
+async def test_a_byok_request_needs_a_stored_credential_for_another_attempt(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, lines = await _attempt_call(
+        monkeypatch, policy, [503], headers={"x-provider-key": "sk-caller"}
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NEEDS_STORED_CREDENTIAL"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_answer_is_settled_and_never_returned(monkeypatch) -> None:
+    policy = _StubPolicy(after_answer=[_target("format_retry")])
+
+    response, calls, admitted, lines = await _attempt_call(monkeypatch, policy, [])
+
+    assert len(calls) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 2"
+    assert [line["outcome"] for line in lines] == ["completed", "completed"]
+    assert policy.outcomes[0].answer["choices"][0]["message"]["content"] == "answer 1"
+    assert response.headers["x-shim-attempts"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_the_kept_answer_serves_when_the_next_attempt_is_not_admitted(
+    monkeypatch,
+) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(prepared):
+        if prepared.attempt is not None:
+            raise UsageLimitExceeded("no budget")
+
+    policy = _StubPolicy(after_answer=[_target("format_retry")])
+
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [], admit=refuse
+    )
+
+    assert response.status_code == 200 and len(calls) == 1 and len(admitted) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 1"
+    assert response.headers["x-shim-request-id"] == str(admitted[0].request_id)
+    assert "x-shim-attempts" not in response.headers
+    rejected = next(
+        line for line in lines if line["request_id"] == str(admitted[1].request_id)
+    )
+    verdicts = {v["rule_id"]: v["reason_code"] for v in rejected["policy_verdicts"]}
+    assert rejected["outcome"] == "rejected"
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NOT_ADMITTED"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_refused_before_its_first_byte_may_take_a_second_attempt(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, _ = await _attempt_call(monkeypatch, policy, [503], stream=True)
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert "answer 2" in response.text
+    assert response.headers["x-shim-attempts"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_a_bound_stream_is_never_offered_to_the_policy(monkeypatch) -> None:
+    policy = _StubPolicy(after_answer=[_target()])
+
+    response, calls, _, _ = await _attempt_call(monkeypatch, policy, [], stream=True)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert policy.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_asks_the_policy(monkeypatch) -> None:
+    class Never(_StubPolicy):
+        async def choose_target_after_privacy(self, prepared):
+            raise AssertionError("count_tokens reached the policy")
+
+    response, calls, _, _ = await _attempt_call(
+        monkeypatch, Never(after_error=[_target()]), [], route="count_tokens"
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_only_provider_errors_are_offered(monkeypatch) -> None:
+    import shim.gateway.pipeline.postprocess as postprocess
+
+    async def broken(self, *args, **kwargs):
+        raise RuntimeError("postprocess failed")
+
+    monkeypatch.setattr(postprocess.ResponsePostprocessor, "finalize", broken)
+    policy = _StubPolicy(after_error=[_target()])
+
+    with pytest.raises(RuntimeError):
+        await _attempt_call(monkeypatch, policy, [])
+
+    assert [outcome.error for outcome in policy.outcomes] == [None]
+
+
+def _registry(deployment_id: str):
+    from shim.gateway.kernel.result import ProviderTarget
+
+    return ProviderTarget(
+        deployment_id=deployment_id,
+        base_url="https://models.internal.test/v1",
+        upstream_model=f"model-{deployment_id}",
+        credential_reference="secret",
+        timeout_seconds=30,
+        declared_version="1",
+    )
+
+
+def _attempt_base():
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from shim.gateway.contracts.context import (
+        AuditPolicy,
+        GatewayContext,
+        PrivacyPolicy,
+        TierPolicy,
+    )
+    from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
+    from shim.gateway.kernel.result import AdmissionState, PreparedInference
+    from shim.gateway.request_policy import RequestPolicyContext
+    from shim.privacy.policies import PrivacyAction, PrivacyOutcome
+
+    return PreparedInference(
+        context=GatewayContext(
+            request_id=RequestId("req_first"),
+            tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),
+            actor_type="api_key",
+            api_key_id=ApiKeyId(UUID("22222222-2222-2222-2222-222222222222")),
+            user_id=None,
+            endpoint="/v1/responses",
+            started_at=datetime(2026, 10, 13, tzinfo=UTC),
+            tier_policy=TierPolicy(rate_limit_rpm=60),
+            privacy_policy=PrivacyPolicy(pii_mode="scrub"),
+            audit_policy=AuditPolicy(mode="best_effort"),
+        ),
+        payload={"model": "model-a", "input": "<EMAIL_ADDRESS_1> hi"},
+        provider=ProviderId("openai"),
+        protocol="responses",
+        model="alias-a",
+        stream=False,
+        policy=RequestPolicyContext(rate_limit_key_hash="h", tier="t"),
+        pii_config=None,
+        admission=AdmissionState(
+            estimated_input_tokens=1,
+            maximum_output_tokens=16,
+            cost_center="untagged",
+            tags=(),
+        ),
+        privacy=PrivacyOutcome(
+            action=PrivacyAction.SCRUBBED,
+            pii_detected=True,
+            verification_map={"<EMAIL_ADDRESS_1>": "a@example.com"},
+        ),
+        target=_registry("a"),
+        deployment_kind="internal",
+    )
+
+
+_ATTEMPT_BASE = _attempt_base()
+
+
+@pytest.mark.parametrize(
+    ("changes", "target", "attempts", "byok", "code"),
+    [
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            3,
+            False,
+            "ATTEMPT_LIMIT_REACHED",
+        ),
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        (
+            {},
+            _target(deployment_kind="unknown"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        (
+            {
+                "payload": {
+                    "model": "model-a",
+                    "input": "hi",
+                    "previous_response_id": "resp_1",
+                }
+            },
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            1,
+            False,
+            "ATTEMPT_CONTINUATION_PINNED",
+        ),
+        (
+            {"payload": {"model": "model-a", "input": "hi", "conversation": "conv_1"}},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            1,
+            False,
+            "ATTEMPT_CONTINUATION_PINNED",
+        ),
+        (
+            {"deployment_kind": "external"},
+            _target(deployment_kind="unknown"),
+            1,
+            True,
+            "ATTEMPT_NEEDS_STORED_CREDENTIAL",
+        ),
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            2,
+            True,
+            None,
+        ),
+        (
+            {
+                "payload": {
+                    "model": "model-a",
+                    "input": "hi",
+                    "previous_response_id": "resp_1",
+                }
+            },
+            _target(provider_target=_registry("a"), deployment_kind="internal"),
+            1,
+            False,
+            None,
+        ),
+    ],
+)
+def test_each_core_guard_skips_with_its_code(
+    changes, target, attempts, byok, code
+) -> None:
+    from shim.gateway.kernel.attempts import guarded
+
+    prepared = replace(_ATTEMPT_BASE, policy_verdicts=[], **changes)
+
+    allowed = guarded(prepared, target, attempts=attempts, byok=byok)
+
+    assert (allowed is None) is (code is not None)
+    assert [
+        (v.rule_id, v.stage, v.outcome, v.reason_code) for v in prepared.policy_verdicts
+    ] == ([("gateway.attempt", "attempt", "skip", code)] if code else [])
+
+
+def test_a_target_after_privacy_rewrites_the_model_and_keeps_the_masking() -> None:
+    from shim.gateway.kernel.attempts import retargeted
+
+    earlier = {"rule_id": "cheap", "state": "monitor", "previous": {"rule_id": "x"}}
+    prepared = replace(_ATTEMPT_BASE, route_decision=earlier)
+
+    moved = retargeted(
+        prepared, _target(provider_target=_registry("b"), deployment_kind="internal")
+    )
+
+    assert moved.payload == {"model": "model-b", "input": "<EMAIL_ADDRESS_1> hi"}
+    assert moved.pre_band_payload is moved.payload
+    assert prepared.payload["model"] == "model-a"
+    assert moved.privacy is prepared.privacy and moved.request_id == prepared.request_id
+    assert moved.route_decision == {
+        "rule_id": "fallback_rule",
+        "state": "enforced",
+        "from": "a",
+        "to": "b",
+        "reason": "fallback",
+        "conversation_id": None,
+        "outcome": "routed",
+        "previous": {"rule_id": "cheap", "state": "monitor"},
+    }
+    assert retargeted(_ATTEMPT_BASE, _target()).route_decision["to"] == "catalog"
+
+
+@pytest.mark.asyncio
+async def test_an_extra_attempt_runs_the_bands_again_for_its_own_target() -> None:
+    from shim.gateway.kernel.attempts import next_attempt
+    from shim.gateway.request_policy import BandSettings
+
+    kernel = GatewayKernel(
+        {"anthropic": SimpleNamespace(pii_scrubber=object())},
+        chain_store=object(),
+        policy_resolver=object(),
+        rate_limiter=object(),
+        loop_detector=object(),
+        loop_repeat_limit=3,
+        loop_window_seconds=60,
+        cost_tag_max_length=64,
+        usage=SimpleNamespace(),
+    )
+    payload = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "thinking": {"type": "adaptive"},
+        "tools": [{"name": n, "input_schema": {}} for n in ("a", "b", "c")],
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    first = replace(
+        _ATTEMPT_BASE,
+        payload=payload,
+        pre_band_payload=payload,
+        provider=ProviderId("anthropic"),
+        protocol="messages",
+        model="claude-haiku-4-5",
+        target=None,
+        deployment_kind="unknown",
+        band=BandSettings(
+            anthropic_auto_cache="5m",
+            anthropic_keep_thinking_turns=1,
+            tool_search="regex",
+            tool_search_min_tools=2,
+        ),
+        placeholder_key=None,
+        privacy=None,
+    )
+    banded, _ = await kernel._bands(first)
+    assert "context_management" in banded.payload and banded.provider_betas
+
+    second, _ = await kernel._bands(
+        next_attempt(
+            banded,
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            number=2,
+        )
+    )
+
+    assert second.payload == {**payload, "model": "model-b"}
+    assert second.provider_betas == () and second.settings_applied == ()
+    plain, _ = await kernel._bands(replace(first, band=BandSettings()))
+    assert plain.payload is payload

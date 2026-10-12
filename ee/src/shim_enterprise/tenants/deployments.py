@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 UNHEALTHY_MARK_SECONDS = 300
 
 
-def _unhealthy_seconds_left(deployment: ModelDeployment) -> int:
+def unhealthy_seconds_left(deployment: ModelDeployment) -> int:
     checked_at = deployment.health_checked_at
     if deployment.health != "unhealthy" or checked_at is None:
         return 0
@@ -140,6 +140,24 @@ async def require_model_aliases(
         )
 
 
+def deployment_target(deployment: ModelDeployment, base_url: str) -> ProviderTarget:
+    """The invocation destination of an approved deployment row."""
+    return ProviderTarget(
+        deployment_id=str(deployment.id),
+        base_url=base_url,
+        upstream_model=deployment.upstream_model,
+        credential_reference=str(deployment.provider_secret_id),
+        timeout_seconds=deployment.timeout_seconds,
+        declared_version=deployment.declared_version,
+        input_per_million=deployment.input_price_per_million,
+        output_per_million=deployment.output_price_per_million,
+        context_window=deployment.context_window,
+        price_model=deployment.price_model,
+        cache_read_per_million=deployment.cache_read_price_per_million,
+        cache_write_per_million=deployment.cache_write_price_per_million,
+    )
+
+
 class DeploymentResolver:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
@@ -239,7 +257,7 @@ class DeploymentResolver:
                     "message": "The model is disabled or does not support this provider protocol.",
                 },
             )
-        retry_after = _unhealthy_seconds_left(deployment)
+        retry_after = unhealthy_seconds_left(deployment)
         if retry_after:
             prepared.record_verdict(
                 "deployment.registry",
@@ -305,20 +323,7 @@ class DeploymentResolver:
             prepared,
             payload={**prepared.payload, "model": deployment.upstream_model},
             deployment_kind=kind,
-            target=ProviderTarget(
-                deployment_id=str(deployment.id),
-                base_url=base_url,
-                upstream_model=deployment.upstream_model,
-                credential_reference=str(deployment.provider_secret_id),
-                timeout_seconds=deployment.timeout_seconds,
-                declared_version=deployment.declared_version,
-                input_per_million=deployment.input_price_per_million,
-                output_per_million=deployment.output_price_per_million,
-                context_window=deployment.context_window,
-                price_model=deployment.price_model,
-                cache_read_per_million=deployment.cache_read_price_per_million,
-                cache_write_per_million=deployment.cache_write_price_per_million,
-            ),
+            target=deployment_target(deployment, base_url),
         )
 
     async def catalog(
@@ -355,7 +360,7 @@ class DeploymentResolver:
             records.pop(row.alias, None)
             if (
                 not row.enabled
-                or _unhealthy_seconds_left(row)
+                or unhealthy_seconds_left(row)
                 or row.provider != provider
             ):
                 continue

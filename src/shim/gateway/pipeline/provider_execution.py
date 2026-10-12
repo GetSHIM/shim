@@ -68,6 +68,7 @@ class ProviderExecutionStage:
         self.invocation = invocation
         self.execution = execution
         self.usage = usage
+        self.provider_started = False
 
     async def run(self, value: PreparedInference) -> ProviderNonStream | ProviderStream:
         provider_started_at: float | None = None
@@ -75,6 +76,7 @@ class ProviderExecutionStage:
         async def mark_started() -> None:
             nonlocal provider_started_at
             await self.usage.mark_provider_started(value)
+            self.provider_started = True
             provider_started_at = perf_counter()
 
         started_at = perf_counter()

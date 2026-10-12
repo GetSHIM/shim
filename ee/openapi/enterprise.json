@@ -12570,6 +12570,52 @@
             "description": "The request approval this request created, was refused under or consumed; null when no approval gate decided it.",
             "title": "Approval Id"
           },
+          "attempt_group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an extra attempt a tenant rule asked for: the request id of the client request's first attempt; null on a first attempt.",
+            "title": "Attempt Group Id"
+          },
+          "attempt_number": {
+            "anyOf": [
+              {
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Number"
+          },
+          "attempt_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Reason"
+          },
+          "attempt_rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Rule Id"
+          },
           "blocked_entities": {
             "anyOf": [
               {
@@ -12869,6 +12915,19 @@
             ],
             "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
             "title": "Restore Withheld"
+          },
+          "route_decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where a tenant rule sent the request after privacy; null when no rule chose its target.",
+            "title": "Route Decision"
           },
           "rule_matches": {
             "anyOf": [
@@ -23873,6 +23932,26 @@
             }
           },
           {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -24232,6 +24311,26 @@
               ],
               "description": "Only requests this request approval decided.",
               "title": "Approval Id"
+            }
+          },
+          {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
             }
           },
           {

@@ -212,6 +212,12 @@ class QuotaReservationCommand:
     repeat_digest: str | None = None
     audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
     policy_verdicts: tuple[dict[str, Any], ...] = ()
+    # An extra attempt a tenant rule asked for uses tokens but no request unit.
+    request_delta: Literal[0, 1] = 1
+    attempt_group_id: str | None = None
+    attempt_number: int | None = None
+    attempt_reason: str | None = None
+    attempt_rule_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -379,6 +385,16 @@ class DurableAccountingRepository:
                     "repeat_digest": command.repeat_digest,
                     "audit_policy_mode": command.audit_policy_mode,
                     "policy_verdicts": list(command.policy_verdicts),
+                    **(
+                        {}
+                        if command.attempt_group_id is None
+                        else {
+                            "attempt_group_id": command.attempt_group_id,
+                            "attempt_number": command.attempt_number,
+                            "attempt_reason": command.attempt_reason,
+                            "attempt_rule_id": command.attempt_rule_id,
+                        }
+                    ),
                 },
             },
         )
@@ -393,7 +409,7 @@ class DurableAccountingRepository:
                 "provider_model": None,
                 "event_type": "quota_reservation",
                 "idempotency_key": (f"request:{command.request_id}:quota:reservation"),
-                "request_count": 1,
+                "request_count": command.request_delta,
                 "prompt_tokens": command.estimated_input_tokens,
                 "completion_tokens": command.maximum_output_tokens,
                 "total_tokens": (
@@ -1026,7 +1042,7 @@ class DurableAccountingRepository:
             periods,
             key=lambda item: (item[0], item[1]),
         ):
-            if request_limit is not None and 1 > request_limit:
+            if request_limit is not None and command.request_delta > request_limit:
                 raise QuotaLimitExceeded(f"{period_type} request quota exceeded")
             if token_limit is not None and tokens > token_limit:
                 raise QuotaLimitExceeded(f"{period_type} token quota exceeded")
@@ -1036,7 +1052,7 @@ class DurableAccountingRepository:
                 period_type=period_type,
                 period_start=start,
                 period_end=end,
-                request_delta=1,
+                request_delta=command.request_delta,
                 token_delta=tokens,
                 request_limit=request_limit,
                 token_limit=token_limit,
@@ -1054,7 +1070,7 @@ class DurableAccountingRepository:
                     "period_type": period_type,
                     "period_start": start.isoformat(),
                     "period_end": end.isoformat(),
-                    "reserved_requests": 1,
+                    "reserved_requests": command.request_delta,
                     "reserved_tokens": tokens,
                 }
             )
@@ -1939,7 +1955,7 @@ class DurableAccountingRepository:
             None,
             None,
             "quota_reservation",
-            1,
+            command.request_delta,
             command.estimated_input_tokens,
             command.maximum_output_tokens,
         )
