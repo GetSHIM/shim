@@ -13,6 +13,7 @@ from uuid import UUID
 from pydantic import (
     Field,
     SecretStr,
+    StringConstraints,
     ValidationInfo,
     ValidatorFunctionWrapHandler,
     field_validator,
@@ -83,6 +84,14 @@ class CommunitySettings(BaseSettings):
     SHIM_INFLIGHT_SHARING: Literal["off", "on"] = "off"
     SHIM_ANTHROPIC_AUTO_CACHE: Literal["off", "5m", "1h"] = "off"
     SHIM_OPENAI_PROMPT_CACHE_KEY: Literal["off", "key", "tenant"] = "off"
+    SHIM_TOOL_SEARCH: Literal["off", "regex", "bm25"] = "off"
+    SHIM_TOOL_SEARCH_MIN_TOOLS: int = Field(default=10, ge=2, le=10_000)
+    SHIM_TOOL_SEARCH_KEEP_LOADED: Annotated[
+        list[Annotated[str, StringConstraints(min_length=1, max_length=128)]],
+        NoDecode,
+    ] = Field(default_factory=list, max_length=64)
+    SHIM_ANTHROPIC_KEEP_THINKING_TURNS: int = Field(default=0, ge=0, le=8)
+    SHIM_OPENAI_REASONING_CONTEXT: Literal["off", "current_turn"] = "off"
     SHIM_MODEL_LIFECYCLE_FILE: Path | None = None
     SHIM_MODEL_RETIRING_WARNING: Literal["record", "header"] = "record"
     # Azure OpenAI v1 for catalog routes: an Azure key or an Entra app (S52).
@@ -125,6 +134,7 @@ class CommunitySettings(BaseSettings):
         "BACKEND_CORS_ORIGINS",
         "SHIM_RESPONSE_ANALYSIS",
         "PII_EMBEDDINGS_MONITOR",
+        "SHIM_TOOL_SEARCH_KEEP_LOADED",
         mode="before",
     )
     @classmethod

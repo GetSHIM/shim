@@ -5964,6 +5964,22 @@
             "default": {
               "window_seconds": 3600
             }
+          },
+          "thinking_history": {
+            "$ref": "#/components/schemas/ThinkingHistorySettings",
+            "default": {
+              "anthropic_keep_turns": 0,
+              "openai_reasoning_context": "off"
+            }
+          },
+          "tool_search": {
+            "$ref": "#/components/schemas/ToolSearchSettings",
+            "default": {
+              "api_key_ids": [],
+              "keep_loaded": [],
+              "min_tools": 10,
+              "mode": "off"
+            }
           }
         },
         "title": "GatewaySettings",
@@ -6133,6 +6149,26 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thinking_history": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingHistoryPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolSearchPatch"
               },
               {
                 "type": "null"
@@ -15563,6 +15599,65 @@
         "title": "ThinkingConfig",
         "type": "object"
       },
+      "ThinkingHistoryPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_keep_turns": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Keep Turns"
+          },
+          "openai_reasoning_context": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "current_turn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Reasoning Context"
+          }
+        },
+        "title": "ThinkingHistoryPatch",
+        "type": "object"
+      },
+      "ThinkingHistorySettings": {
+        "additionalProperties": false,
+        "description": "Earlier thinking stops being billed again (S55).",
+        "properties": {
+          "anthropic_keep_turns": {
+            "default": 0,
+            "maximum": 8.0,
+            "minimum": 0.0,
+            "title": "Anthropic Keep Turns",
+            "type": "integer"
+          },
+          "openai_reasoning_context": {
+            "default": "off",
+            "enum": [
+              "off",
+              "current_turn"
+            ],
+            "title": "Openai Reasoning Context",
+            "type": "string"
+          }
+        },
+        "title": "ThinkingHistorySettings",
+        "type": "object"
+      },
       "ThinkingLevel": {
         "description": "The number of thoughts tokens that the model should generate.",
         "enum": [
@@ -15985,6 +16080,121 @@
           }
         },
         "title": "ToolResponse",
+        "type": "object"
+      },
+      "ToolSearchPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Ids"
+          },
+          "keep_loaded": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Loaded"
+          },
+          "min_tools": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Tools"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "regex",
+                  "bm25"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          }
+        },
+        "title": "ToolSearchPatch",
+        "type": "object"
+      },
+      "ToolSearchSettings": {
+        "additionalProperties": false,
+        "description": "Tools load on demand through the provider's tool search (S55).",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "keep_loaded": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Keep Loaded",
+            "type": "array"
+          },
+          "min_tools": {
+            "default": 10,
+            "maximum": 10000.0,
+            "minimum": 2.0,
+            "title": "Min Tools",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "regex",
+              "bm25"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "ToolSearchSettings",
         "type": "object"
       },
       "ToolType": {

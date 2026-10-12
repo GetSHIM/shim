@@ -749,6 +749,7 @@ class _GatewaySettingsResource:
                 ApiKey,
                 set(after.inflight_sharing_api_key_ids),
             ),
+            ("tool_search", "api_key_ids", ApiKey, set(after.tool_search.api_key_ids)),
         ):
             known = (
                 set(

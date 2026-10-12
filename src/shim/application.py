@@ -200,6 +200,13 @@ def create_community_app(
                     band=BandSettings(
                         anthropic_auto_cache=configured.SHIM_ANTHROPIC_AUTO_CACHE,
                         openai_prompt_cache_key=configured.SHIM_OPENAI_PROMPT_CACHE_KEY,
+                        tool_search=configured.SHIM_TOOL_SEARCH,
+                        tool_search_min_tools=configured.SHIM_TOOL_SEARCH_MIN_TOOLS,
+                        tool_search_keep_loaded=tuple(
+                            configured.SHIM_TOOL_SEARCH_KEEP_LOADED
+                        ),
+                        anthropic_keep_thinking_turns=configured.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
+                        openai_reasoning_context=configured.SHIM_OPENAI_REASONING_CONTEXT,
                     ),
                 ),
                 rate_limiter=rate_limiter,

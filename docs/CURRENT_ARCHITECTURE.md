@@ -286,7 +286,12 @@ records the privacy facts and then refuses with `RULE_BLOCKED`. Applied steps ar
 recorded as `settings_applied`. After the pins the band runs its fixed `STEPS`,
 each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) and
 `openai_prompt_cache_key` (an OpenAI routing key derived from the prompt prefix),
-for catalog routes and the registry aliases the tenant lists. The `route` kind
+`tool_search` (`defer_loading` and the provider's search tool),
+`anthropic_clear_thinking` (`context_management`, with its beta flag in
+`provider_betas`, which moves the Anthropic execution to the beta client) and
+`openai_reasoning_context`, for catalog routes and the registry aliases the tenant
+lists. A step that declines a request it was on for records a `settings.<step>`
+`skip` verdict. The `route` kind
 ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`

@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import Field, SecretBytes
+from pydantic import Field, SecretBytes, StringConstraints
 
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
@@ -48,8 +48,28 @@ class BandSettings(FrozenContractModel):
 
     anthropic_auto_cache: Literal["off", "5m", "1h"] = "off"
     openai_prompt_cache_key: Literal["off", "key", "tenant"] = "off"
-    # Enterprise: registry aliases the provider-cache steps may touch.
+    # Enterprise: registry aliases the band's provider steps may touch.
     provider_cache_deployments: tuple[str, ...] = Field(default=(), max_length=100)
+    tool_search: Literal["off", "regex", "bm25"] = "off"
+    tool_search_min_tools: int = Field(default=10, ge=2, le=10_000)
+    tool_search_keep_loaded: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)], ...
+    ] = Field(default=(), max_length=64)
+    # Enterprise: the keys tool search applies to; empty is every key.
+    tool_search_api_key_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    anthropic_keep_thinking_turns: int = Field(default=0, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] = "off"
+
+    @property
+    def on(self) -> bool:
+        """A switch is on; the lists and the minimum alone start nothing."""
+        return (
+            self.anthropic_auto_cache != "off"
+            or self.openai_prompt_cache_key != "off"
+            or self.tool_search != "off"
+            or self.anthropic_keep_thinking_turns > 0
+            or self.openai_reasoning_context != "off"
+        )
 
 
 class ResolvedRequestPolicy(FrozenContractModel):

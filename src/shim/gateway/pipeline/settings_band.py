@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from hashlib import sha256
 import json
+import re
 from typing import Any
 
 from shim.gateway.kernel.result import PreparedInference
@@ -50,18 +51,24 @@ class SettingsBandStage:
     async def run(
         self, value: PreparedInference
     ) -> tuple[PreparedInference, str | None]:
-        payload, applied = value.payload, []
+        payload, applied, betas = value.payload, [], []
         if self.pins:
             value, payload, applied, blocked = _apply_pins(value, self.pins)
             if blocked is not None:
                 return replace(value, settings_applied=()), blocked
-        for step_id, version, protocols, apply in STEPS:
+        for step_id, version, protocols, apply, step_betas in STEPS:
             if value.protocol in protocols:
                 changed = apply(value, payload)
                 if changed is not None:
                     payload = changed
                     applied.append({"id": step_id, "version": version})
-        return replace(value, payload=payload, settings_applied=tuple(applied)), None
+                    betas += [beta for beta in step_betas if beta not in betas]
+        return replace(
+            value,
+            payload=payload,
+            settings_applied=tuple(applied),
+            provider_betas=tuple(betas),
+        ), None
 
     def trace_metadata(
         self, output: tuple[PreparedInference, str | None]
@@ -115,7 +122,7 @@ def _apply_pins(
     return value, payload, applied, None
 
 
-def _cache_target(prepared: PreparedInference) -> bool:
+def _provider_target(prepared: PreparedInference) -> bool:
     # An on-prem server behind a provider-compatible API may refuse a parameter it
     # does not know, so only listed deployments are touched.
     return (
@@ -144,7 +151,7 @@ def _anthropic_auto_cache(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
     ttl = prepared.band.anthropic_auto_cache
-    if ttl == "off" or not _cache_target(prepared) or _client_breakpoint(payload):
+    if ttl == "off" or not _provider_target(prepared) or _client_breakpoint(payload):
         return None
     # A random placeholder changes the prompt on every request: a write, never a read.
     if (
@@ -176,7 +183,7 @@ def _openai_prompt_cache_key(
     scope = prepared.band.openai_prompt_cache_key
     if (
         scope == "off"
-        or not _cache_target(prepared)
+        or not _provider_target(prepared)
         or payload.get("prompt_cache_key") is not None
     ):
         return None
@@ -209,23 +216,219 @@ def _openai_prompt_cache_key(
     }
 
 
-# (id, version, protocols, apply), in order after the pins. A step adds, changes or
-# removes provider parameters and structural markers only, never a content string.
+def _skip(prepared: PreparedInference, step_id: str, reason: str) -> None:
+    prepared.record_verdict(
+        f"settings.{step_id}",
+        stage="settings",
+        outcome="skip",
+        reason_code=reason,
+        policy=prepared.band.model_dump(mode="json"),
+    )
+
+
+def _thinking_on(payload: Mapping[str, Any]) -> bool:
+    thinking = payload.get("thinking")
+    return isinstance(thinking, Mapping) and thinking.get("type") in {
+        "enabled",
+        "adaptive",
+    }
+
+
+# Version 1 of each model gate: the families the provider documents the feature for.
+TOOL_SEARCH_MODELS_V1 = {
+    "messages": re.compile(
+        r"^claude-((opus|sonnet|haiku)-4-[5-9]|(opus|sonnet|haiku)-[5-9]|fable-|mythos-)"
+    ),
+    "responses": re.compile(r"^gpt-(5\.([4-9]|[1-9][0-9])|[6-9])([.-]|$)"),
+}
+REASONING_CONTEXT_MODELS_V1 = re.compile(r"^gpt-(5\.([6-9]|[1-9][0-9])|[6-9])([.-]|$)")
+_SEARCH_TOOLS = {
+    "regex": {
+        "type": "tool_search_tool_regex_20251119",
+        "name": "tool_search_tool_regex",
+    },
+    "bm25": {"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"},
+}
+
+
+def _eligible(protocol: str, tool: object) -> bool:
+    if not isinstance(tool, Mapping):
+        return False
+    if protocol == "messages":
+        return tool.get("type") in {None, "custom"}
+    return tool.get("type") == "function"
+
+
+def _client_defers(tools: list[Any]) -> bool:
+    for tool in tools:
+        if not isinstance(tool, Mapping):
+            continue
+        if (
+            str(tool.get("type", "")).startswith("tool_search")
+            or "defer_loading" in tool
+        ):
+            return True
+        configs = tool.get("configs")
+        nested = [
+            tool.get("default_config"),
+            *(configs.values() if isinstance(configs, Mapping) else ()),
+        ]
+        if any(
+            isinstance(config, Mapping) and "defer_loading" in config
+            for config in nested
+        ):
+            return True
+    return False
+
+
+def _forced_names(choice: object) -> set[str]:
+    if not isinstance(choice, Mapping):
+        return set()
+    if choice.get("type") in {"tool", "function"} and isinstance(
+        choice.get("name"), str
+    ):
+        return {choice["name"]}
+    if choice.get("type") == "allowed_tools":
+        return {
+            tool["name"]
+            for tool in _list(choice.get("tools"))
+            if isinstance(tool, Mapping) and isinstance(tool.get("name"), str)
+        }
+    return set()
+
+
+def _tool_search(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    band = prepared.band
+    if (
+        band.tool_search == "off"
+        or not _provider_target(prepared)
+        or (
+            band.tool_search_api_key_ids
+            and str(prepared.api_key_id) not in band.tool_search_api_key_ids
+        )
+    ):
+        return None
+    tools = _list(payload.get("tools"))
+    eligible = [
+        index for index, tool in enumerate(tools) if _eligible(prepared.protocol, tool)
+    ]
+    if len(eligible) < band.tool_search_min_tools:
+        return None
+    if not TOOL_SEARCH_MODELS_V1[prepared.protocol].match(prepared.pricing_model):
+        _skip(prepared, "tool_search", "SETTING_MODEL_UNSUPPORTED")
+        return None
+    if _client_defers(tools):
+        _skip(prepared, "tool_search", "SETTING_CLIENT_OWNED")
+        return None
+    # Changing tools mid-conversation invalidates every earlier thinking block.
+    if prepared.protocol == "messages" and (
+        _thinking_on(payload)
+        or any(
+            isinstance(block, Mapping)
+            and block.get("type") in {"thinking", "redacted_thinking"}
+            for message in _list(payload.get("messages"))
+            if isinstance(message, Mapping)
+            for block in _list(message.get("content"))
+        )
+    ):
+        _skip(prepared, "tool_search", "SETTING_THINKING_BOUND")
+        return None
+    kept = set(band.tool_search_keep_loaded) | _forced_names(payload.get("tool_choice"))
+    deferred = {
+        index
+        for index in eligible
+        if not (isinstance(name := tools[index].get("name"), str) and name in kept)
+        and not (prepared.protocol == "messages" and "cache_control" in tools[index])
+    }
+    # The provider refuses a request whose every tool is deferred.
+    if len(deferred) == len(eligible):
+        deferred.discard(eligible[0])
+    search = (
+        _SEARCH_TOOLS[band.tool_search]
+        if prepared.protocol == "messages"
+        else {"type": "tool_search"}
+    )
+    return {
+        **payload,
+        "tools": [
+            {**tool, "defer_loading": True} if index in deferred else tool
+            for index, tool in enumerate(tools)
+        ]
+        + [search],
+    }
+
+
+def _anthropic_clear_thinking(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    turns = prepared.band.anthropic_keep_thinking_turns
+    if not turns or not _provider_target(prepared) or not _thinking_on(payload):
+        return None
+    if "context_management" in payload:
+        _skip(prepared, "anthropic_clear_thinking", "SETTING_CLIENT_OWNED")
+        return None
+    # Never clear_tool_uses: dropping tool results is history trimming.
+    edit = {
+        "type": "clear_thinking_20251015",
+        "keep": {"type": "thinking_turns", "value": turns},
+    }
+    return {**payload, "context_management": {"edits": [edit]}}
+
+
+def _openai_reasoning_context(
+    prepared: PreparedInference, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    if (
+        prepared.band.openai_reasoning_context == "off"
+        or not _provider_target(prepared)
+        # Earlier models already default to the current turn.
+        or not REASONING_CONTEXT_MODELS_V1.match(prepared.pricing_model)
+    ):
+        return None
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, Mapping) and "context" in reasoning:
+        _skip(prepared, "openai_reasoning_context", "SETTING_CLIENT_OWNED")
+        return None
+    return _write(payload, ("reasoning", "context"), "current_turn")
+
+
+# (id, version, protocols, apply, Anthropic beta flags), in order after the pins. A
+# step adds, changes or removes provider parameters and structural markers only,
+# never a content string.
 STEPS: tuple[
     tuple[
         str,
         int,
         frozenset[str],
         Callable[[PreparedInference, dict[str, Any]], dict[str, Any] | None],
+        tuple[str, ...],
     ],
     ...,
 ] = (
-    ("anthropic_auto_cache", 1, frozenset({"messages"}), _anthropic_auto_cache),
+    ("anthropic_auto_cache", 1, frozenset({"messages"}), _anthropic_auto_cache, ()),
     (
         "openai_prompt_cache_key",
         1,
         frozenset({"chat", "responses"}),
         _openai_prompt_cache_key,
+        (),
+    ),
+    ("tool_search", 1, frozenset({"messages", "responses"}), _tool_search, ()),
+    (
+        "anthropic_clear_thinking",
+        1,
+        frozenset({"messages"}),
+        _anthropic_clear_thinking,
+        ("context-management-2025-06-27",),
+    ),
+    (
+        "openai_reasoning_context",
+        1,
+        frozenset({"responses"}),
+        _openai_reasoning_context,
+        (),
     ),
 )
 

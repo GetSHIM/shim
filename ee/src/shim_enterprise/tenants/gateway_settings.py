@@ -124,6 +124,46 @@ class ProviderCachePatch(BaseModel):
     deployments: list[_Alias] | None = Field(default=None, max_length=100)
 
 
+_ToolName = Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class ToolSearchSettings(BaseModel):
+    """Tools load on demand through the provider's tool search (S55)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: Literal["off", "regex", "bm25"] = "off"
+    min_tools: int = Field(default=10, ge=2, le=10_000)
+    keep_loaded: list[_ToolName] = Field(default=[], max_length=64)
+    # Empty is every key.
+    api_key_ids: list[UUID] = Field(default=[], max_length=100)
+
+
+class ToolSearchPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["off", "regex", "bm25"] | None = None
+    min_tools: int | None = Field(default=None, ge=2, le=10_000)
+    keep_loaded: list[_ToolName] | None = Field(default=None, max_length=64)
+    api_key_ids: list[UUID] | None = Field(default=None, max_length=100)
+
+
+class ThinkingHistorySettings(BaseModel):
+    """Earlier thinking stops being billed again (S55)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    anthropic_keep_turns: int = Field(default=0, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] = "off"
+
+
+class ThinkingHistoryPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    anthropic_keep_turns: int | None = Field(default=None, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] | None = None
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -143,6 +183,8 @@ class GatewaySettings(BaseModel):
     finding_modes: dict[str, FindingMode] = {}
     request_archive: RequestArchiveSettings = RequestArchiveSettings()
     provider_cache: ProviderCacheSettings = ProviderCacheSettings()
+    tool_search: ToolSearchSettings = ToolSearchSettings()
+    thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -169,6 +211,8 @@ class GatewaySettingsPatch(BaseModel):
     finding_modes: dict[str, FindingMode] | None = None
     request_archive: RequestArchivePatch | None = None
     provider_cache: ProviderCachePatch | None = None
+    tool_search: ToolSearchPatch | None = None
+    thinking_history: ThinkingHistoryPatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -344,6 +388,9 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "inflight_sharing_api_key_ids": neutral,
     # A provider's own cache: what the request costs, not what it may carry.
     "provider_cache": neutral,
+    # Cost settings: the same tools and history reach the model.
+    "tool_search": neutral,
+    "thinking_history": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

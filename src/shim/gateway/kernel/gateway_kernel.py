@@ -35,7 +35,6 @@ from shim.gateway.pipeline.provider_execution import (
     ProviderExecutionStage,
     ProviderStream,
 )
-from shim.gateway.request_policy import BandSettings
 from shim.gateway.streaming import StreamSession
 from shim.gateway.usage import (
     UsageAuditPersistenceError,
@@ -59,7 +58,6 @@ from .result import PreparedInference
 
 
 logger = logging.getLogger(__name__)
-_BAND_OFF = BandSettings()
 _PROVIDERS = frozenset({"openai", "anthropic", "google"})
 
 
@@ -330,7 +328,7 @@ class GatewayKernel:
                     headers["request-id"] = counted.request_id
                 return JSONResponse(content=counted.payload, headers=headers)
             pins = pins_in_scope(prepared)
-            if pins or prepared.band != _BAND_OFF:
+            if pins or prepared.band.on:
                 prepared, blocked = await run_stage(SettingsBandStage(pins), prepared)
                 if blocked is not None:
                     await self.usage.record_privacy(prepared)

@@ -348,7 +348,9 @@ rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 `settings_applied` lists the settings band steps that set a provider parameter on
 the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
 is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
-are `anthropic_auto_cache` and `openai_prompt_cache_key`, version 1. It is written with the
+are `anthropic_auto_cache` and `openai_prompt_cache_key`, and the tool and thinking
+steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, all
+version 1. It is written with the
 privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
 `warn` pin, a provider-cache step with nothing to do, a refused request), and absent
 when the band did not run: no pin in scope for the request's protocol and every

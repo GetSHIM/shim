@@ -230,6 +230,16 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "openai_prompt_cache_key": "off",
                 "deployments": [],
             },
+            "tool_search": {
+                "mode": "off",
+                "min_tools": 10,
+                "keep_loaded": [],
+                "api_key_ids": [],
+            },
+            "thinking_history": {
+                "anthropic_keep_turns": 0,
+                "openai_reasoning_context": "off",
+            },
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -255,6 +265,16 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "anthropic_auto_cache": "off",
                     "openai_prompt_cache_key": "off",
                     "deployments": [],
+                },
+                "tool_search": {
+                    "mode": "off",
+                    "min_tools": 10,
+                    "keep_loaded": [],
+                    "api_key_ids": [],
+                },
+                "thinking_history": {
+                    "anthropic_keep_turns": 0,
+                    "openai_reasoning_context": "off",
                 },
             }
         }
@@ -1025,6 +1045,22 @@ def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
     resource: str, before: dict, change: dict, risk: str
 ) -> None:
     assert REGISTRY[resource].classify(before, {**before, **change}) == risk
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tool_search": {"mode": "bm25", "min_tools": 3}},
+        {"thinking_history": {"anthropic_keep_turns": 2}},
+        {"provider_cache": {"anthropic_auto_cache": "1h"}},
+    ],
+)
+def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
+    before = GatewaySettings().model_dump(mode="json")
+    after = GatewaySettings.model_validate(change).model_dump(mode="json")
+
+    assert REGISTRY["gateway_settings"].classify(before, after) == "neutral"
+    assert REGISTRY["gateway_settings"].classify(after, before) == "neutral"
 
 
 @pytest.mark.asyncio

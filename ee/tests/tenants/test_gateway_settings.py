@@ -131,6 +131,16 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "openai_prompt_cache_key": "off",
                 "deployments": [],
             },
+            "tool_search": {
+                "mode": "off",
+                "min_tools": 10,
+                "keep_loaded": [],
+                "api_key_ids": [],
+            },
+            "thinking_history": {
+                "anthropic_keep_turns": 0,
+                "openai_reasoning_context": "off",
+            },
         },
         "revision": 0,
         "updated_at": None,
@@ -1032,3 +1042,81 @@ def test_provider_cache_changes_are_neutral(before, after) -> None:
         GatewaySettings(provider_cache=ProviderCacheSettings(**before)),
         GatewaySettings(provider_cache=ProviderCacheSettings(**after)),
     ) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_tool_search_and_thinking_history_round_trip_as_neutral_groups(
+    db, test_api_key, audit_events
+) -> None:
+    organization_id = test_api_key.organization_id
+    admin = await _admin(db, organization_id)
+
+    with pytest.raises(HTTPException) as unknown:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"tool_search": {"api_key_ids": [str(uuid4())]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {
+                "tool_search": {
+                    "mode": "bm25",
+                    "min_tools": 3,
+                    "api_key_ids": [str(test_api_key.id)],
+                },
+                "thinking_history": {"anthropic_keep_turns": 2},
+            }
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    row = await db.get(OrganizationGatewaySettings, organization_id)
+
+    assert unknown.value.status_code == 422
+    assert "tool_search names api_key_ids" in unknown.value.detail
+    assert changed.settings.tool_search.mode == "bm25"
+    assert changed.settings.tool_search.api_key_ids == [test_api_key.id]
+    assert changed.settings.thinking_history.anthropic_keep_turns == 2
+    assert row.settings == {
+        "tool_search": {
+            "mode": "bm25",
+            "min_tools": 3,
+            "api_key_ids": [str(test_api_key.id)],
+        },
+        "thinking_history": {"anthropic_keep_turns": 2},
+    }, "defaults are not stored"
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(organization_id)
+    )
+    for bad in (
+        {"tool_search": {"mode": "on"}},
+        {"tool_search": {"min_tools": 1}},
+        {"tool_search": {"keep_loaded": ["x" * 129]}},
+        {"tool_search": {"keep_loaded": [f"t{n}" for n in range(65)]}},
+        {"tool_search": {"api_key_ids": [str(uuid4()) for _ in range(101)]}},
+        {"thinking_history": {"anthropic_keep_turns": 9}},
+        {"thinking_history": {"openai_reasoning_context": "all_turns"}},
+    ):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate(bad)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {"tool_search": {"mode": "regex"}},
+        {"thinking_history": {"anthropic_keep_turns": 3}},
+        {"thinking_history": {"openai_reasoning_context": "current_turn"}},
+    ],
+)
+def test_tool_search_and_thinking_changes_are_neutral(after) -> None:
+    on = GatewaySettings.model_validate(after)
+
+    assert classify_change(GatewaySettings(), on) == ("neutral", [])
+    assert classify_change(on, GatewaySettings()) == ("neutral", [])

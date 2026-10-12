@@ -5,6 +5,7 @@ import copy
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
+from time import perf_counter
 import json
 from typing import Any
 from uuid import UUID
@@ -482,10 +483,13 @@ async def test_auto_cache_touches_messages_only(protocol) -> None:
 
 
 def test_token_counting_never_runs_a_band_step() -> None:
-    assert all("count_tokens" not in protocols for _, _, protocols, _ in STEPS)
+    assert all("count_tokens" not in step[2] for step in STEPS)
     assert [step[0] for step in STEPS] == [
         "anthropic_auto_cache",
         "openai_prompt_cache_key",
+        "tool_search",
+        "anthropic_clear_thinking",
+        "openai_reasoning_context",
     ]
 
 
@@ -623,3 +627,391 @@ async def test_a_client_prompt_cache_key_is_left_as_privacy_left_it(sent) -> Non
     banded = await _band(prepared)
 
     assert banded.payload is prepared.payload and banded.settings_applied == ()
+
+
+# Tool deferral and thinking history (S55).
+
+
+def _tools(protocol: str, *names: str) -> list[dict[str, Any]]:
+    if protocol == "messages":
+        return [
+            {"name": name, "description": f"{name} a record", "input_schema": {}}
+            for name in names
+        ]
+    return [
+        {"type": "function", "name": name, "description": f"{name} a record"}
+        for name in names
+    ]
+
+
+_MODELS = {"messages": "claude-haiku-4-5", "responses": "gpt-5.6-mini"}
+_SEARCH = {
+    "messages": {
+        "type": "tool_search_tool_regex_20251119",
+        "name": "tool_search_tool_regex",
+    },
+    "responses": {"type": "tool_search"},
+}
+
+
+def _searching(protocol: str, *, band: dict[str, Any] | None = None, **fields):
+    return _cached(
+        protocol,
+        band={"tool_search": "regex", "tool_search_min_tools": 3, **(band or {})},
+        **{"model": _MODELS[protocol], **fields},
+    )
+
+
+def _deferred(payload: dict[str, Any]) -> list[str]:
+    return [tool["name"] for tool in payload["tools"] if tool.get("defer_loading")]
+
+
+def _skips(prepared: PreparedInference) -> dict[str, str]:
+    return {
+        verdict.rule_id: verdict.reason_code
+        for verdict in prepared.policy_verdicts
+        if verdict.stage == "settings" and verdict.outcome == "skip"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["messages", "responses"])
+async def test_tool_search_defers_from_the_minimum_and_appends_the_search_tool(
+    protocol,
+) -> None:
+    three = _tools(protocol, "lookup", "create", "delete")
+
+    banded = await _band(_searching(protocol, tools=three))
+    below = await _band(_searching(protocol, tools=three[:2]))
+
+    assert _deferred(banded.payload) == ["create", "delete"]
+    assert banded.payload["tools"][:3] == [
+        tool if tool["name"] == "lookup" else {**tool, "defer_loading": True}
+        for tool in three
+    ]
+    assert banded.payload["tools"][3] == _SEARCH[protocol]
+    assert banded.settings_applied == ({"id": "tool_search", "version": 1},)
+    assert below.payload["tools"] == three[:2] and below.settings_applied == ()
+    assert _skips(banded) == _skips(below) == {}
+
+
+@pytest.mark.asyncio
+async def test_bm25_appends_the_bm25_tool_and_the_bytes_repeat() -> None:
+    fields = {"tools": _tools("messages", "lookup", "create", "delete", "archive")}
+    band = {"tool_search": "bm25"}
+
+    first = await _band(_searching("messages", band=band, **fields))
+    second = await _band(_searching("messages", band=band, **fields))
+
+    assert first.payload["tools"][-1] == {
+        "type": "tool_search_tool_bm25_20251119",
+        "name": "tool_search_tool_bm25",
+    }
+    assert json.dumps(first.payload) == json.dumps(second.payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "band", "fields", "loaded"),
+    [
+        ("messages", {"tool_search_keep_loaded": ("delete",)}, {}, {"delete"}),
+        (
+            "messages",
+            {},
+            {"tool_choice": {"type": "tool", "name": "create"}},
+            {"create"},
+        ),
+        (
+            "responses",
+            {},
+            {"tool_choice": {"type": "function", "name": "create"}},
+            {"create"},
+        ),
+        (
+            "responses",
+            {},
+            {
+                "tool_choice": {
+                    "type": "allowed_tools",
+                    "mode": "auto",
+                    "tools": [
+                        {"type": "function", "name": "create"},
+                        {"type": "function", "name": "delete"},
+                    ],
+                }
+            },
+            {"create", "delete"},
+        ),
+        ("messages", {"tool_search_keep_loaded": ()}, {}, {"lookup"}),
+    ],
+)
+async def test_named_forced_and_allowed_tools_stay_loaded(
+    protocol, band, fields, loaded
+) -> None:
+    tools = _tools(protocol, "lookup", "create", "delete")
+    prepared = _searching(protocol, band=band, tools=tools, **fields)
+
+    banded = await _band(prepared)
+
+    assert {tool["name"] for tool in tools} - set(_deferred(banded.payload)) == loaded
+
+
+@pytest.mark.asyncio
+async def test_a_cached_tool_stays_loaded_and_the_first_is_kept_when_all_would_go() -> (
+    None
+):
+    tools = _tools("messages", "lookup", "create", "delete")
+    tools[2]["cache_control"] = {"type": "ephemeral"}
+
+    cached = await _band(_searching("messages", tools=tools))
+    every = await _band(
+        _searching("messages", tools=_tools("messages", "lookup", "create", "delete"))
+    )
+
+    assert _deferred(cached.payload) == ["lookup", "create"]
+    assert _deferred(every.payload) == ["create", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_server_tools_and_mcp_toolsets_are_never_counted_or_touched() -> None:
+    server = [
+        {"type": "web_search_20250305", "name": "web_search"},
+        {"type": "mcp_toolset", "mcp_server_name": "crm"},
+    ]
+    tools = [*server, *_tools("messages", "lookup", "create", "delete")]
+
+    banded = await _band(_searching("messages", tools=tools))
+    short = await _band(
+        _searching("messages", tools=[*server, *_tools("messages", "a", "b")])
+    )
+
+    assert banded.payload["tools"][:2] == server
+    assert _deferred(banded.payload) == ["create", "delete"]
+    assert short.settings_applied == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "fields", "reason"),
+    [
+        ("messages", {"model": "claude-opus-4-1"}, "SETTING_MODEL_UNSUPPORTED"),
+        (
+            "messages",
+            {"model": "claude-sonnet-4-20250514"},
+            "SETTING_MODEL_UNSUPPORTED",
+        ),
+        ("responses", {"model": "gpt-5.3"}, "SETTING_MODEL_UNSUPPORTED"),
+        (
+            "messages",
+            {"extra": [_SEARCH["messages"]]},
+            "SETTING_CLIENT_OWNED",
+        ),
+        ("responses", {"extra": [{"type": "tool_search"}]}, "SETTING_CLIENT_OWNED"),
+        ("messages", {"defer": True}, "SETTING_CLIENT_OWNED"),
+        (
+            "messages",
+            {
+                "extra": [
+                    {
+                        "type": "mcp_toolset",
+                        "mcp_server_name": "crm",
+                        "default_config": {"defer_loading": False},
+                    }
+                ]
+            },
+            "SETTING_CLIENT_OWNED",
+        ),
+        (
+            "messages",
+            {
+                "extra": [
+                    {
+                        "type": "mcp_toolset",
+                        "mcp_server_name": "crm",
+                        "configs": {"search": {"defer_loading": True}},
+                    }
+                ]
+            },
+            "SETTING_CLIENT_OWNED",
+        ),
+        ("messages", {"thinking": {"type": "adaptive"}}, "SETTING_THINKING_BOUND"),
+        (
+            "messages",
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "redacted_thinking", "data": "x"}],
+                    },
+                    {"role": "user", "content": "go on"},
+                ]
+            },
+            "SETTING_THINKING_BOUND",
+        ),
+    ],
+)
+async def test_tool_search_skips_with_its_reason(protocol, fields, reason) -> None:
+    tools = _tools(protocol, "lookup", "create", "delete")
+    if fields.pop("defer", False):
+        tools[0]["defer_loading"] = False
+    tools += fields.pop("extra", [])
+    prepared = _searching(protocol, tools=tools, **fields)
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload and banded.settings_applied == ()
+    assert _skips(banded) == {"settings.tool_search": reason}
+
+
+@pytest.mark.asyncio
+async def test_tool_search_follows_its_key_scope() -> None:
+    tools = _tools("messages", "lookup", "create", "delete")
+    own = "22222222-2222-2222-2222-222222222222"
+
+    listed = await _band(
+        _searching("messages", band={"tool_search_api_key_ids": (own,)}, tools=tools)
+    )
+    other = await _band(
+        _searching(
+            "messages",
+            band={"tool_search_api_key_ids": (own,)},
+            key=_OTHER_KEY,
+            tools=tools,
+            model="claude-opus-4-1",
+        )
+    )
+
+    assert _deferred(listed.payload) == ["create", "delete"]
+    assert other.payload["tools"] == tools and _skips(other) == {}
+
+
+@pytest.mark.asyncio
+async def test_clear_thinking_sets_the_edit_and_its_beta_on_thinking_requests() -> None:
+    band = {"anthropic_keep_thinking_turns": 2}
+    thinking = {"type": "enabled", "budget_tokens": 1024}
+
+    banded = await _band(_cached("messages", band=band, thinking=thinking))
+    off = await _band(_cached("messages", band=band))
+    owned = await _band(
+        _cached("messages", band=band, thinking=thinking, context_management={})
+    )
+
+    assert banded.payload["context_management"] == {
+        "edits": [
+            {
+                "type": "clear_thinking_20251015",
+                "keep": {"type": "thinking_turns", "value": 2},
+            }
+        ]
+    }
+    assert banded.provider_betas == ("context-management-2025-06-27",)
+    assert banded.settings_applied == (
+        {"id": "anthropic_clear_thinking", "version": 1},
+    )
+    assert "context_management" not in off.payload and off.provider_betas == ()
+    assert owned.payload["context_management"] == {} and owned.provider_betas == ()
+    assert _skips(owned) == {
+        "settings.anthropic_clear_thinking": "SETTING_CLIENT_OWNED"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "reasoning", "expected"),
+    [
+        ("gpt-5.6-mini", None, {"context": "current_turn"}),
+        ("gpt-6", {"effort": "low"}, {"effort": "low", "context": "current_turn"}),
+        ("gpt-5.5", None, None),
+    ],
+)
+async def test_reasoning_context_is_set_on_the_families_that_render_old_reasoning(
+    model, reasoning, expected
+) -> None:
+    fields = {"model": model, **({"reasoning": reasoning} if reasoning else {})}
+
+    banded = await _band(
+        _cached(
+            "responses", band={"openai_reasoning_context": "current_turn"}, **fields
+        )
+    )
+
+    assert banded.payload.get("reasoning") == (expected or reasoning)
+    assert _skips(banded) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_client_reasoning_context_is_kept() -> None:
+    prepared = _cached(
+        "responses",
+        band={"openai_reasoning_context": "current_turn"},
+        model="gpt-5.6-mini",
+        reasoning={"context": "all_turns"},
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload
+    assert _skips(banded) == {
+        "settings.openai_reasoning_context": "SETTING_CLIENT_OWNED"
+    }
+
+
+@pytest.mark.asyncio
+async def test_thinking_steps_take_registry_targets_only_when_listed() -> None:
+    band = {
+        "anthropic_keep_thinking_turns": 1,
+        "openai_reasoning_context": "current_turn",
+        "tool_search": "regex",
+        "tool_search_min_tools": 3,
+    }
+    thinking = replace(
+        _cached("messages", band=band, thinking={"type": "adaptive"}), target=_TARGET
+    )
+    reasoning = replace(
+        _cached("responses", band=band, model="gpt-5.6-mini"), target=_TARGET
+    )
+    listed = replace(
+        _cached(
+            "responses",
+            band={**band, "provider_cache_deployments": ("gpt-5.6-mini",)},
+            model="gpt-5.6-mini",
+            tools=_tools("responses", "a", "b", "c"),
+        ),
+        target=replace(_TARGET, upstream_model="gpt-5.6-mini"),
+    )
+
+    assert (await _band(thinking)).settings_applied == ()
+    assert (await _band(reasoning)).settings_applied == ()
+    assert [step["id"] for step in (await _band(listed)).settings_applied] == [
+        "tool_search",
+        "openai_reasoning_context",
+    ]
+
+
+def test_the_band_starts_only_for_a_switch() -> None:
+    assert not BandSettings().on
+    assert not BandSettings(
+        tool_search_min_tools=3,
+        tool_search_keep_loaded=("a",),
+        provider_cache_deployments=("x",),
+    ).on
+    assert BandSettings(tool_search="bm25").on
+    assert BandSettings(anthropic_keep_thinking_turns=1).on
+    assert BandSettings(openai_reasoning_context="current_turn").on
+
+
+@pytest.mark.asyncio
+async def test_hostile_tool_lists_stay_linear_and_never_raise() -> None:
+    tools = _tools("responses", *(f"t{n}" for n in range(10_000)))
+    tools[1]["name"] = ["not", "a", "name"]
+    prepared = _searching(
+        "responses", band={"tool_search_keep_loaded": ("t5",)}, tools=tools
+    )
+
+    started = perf_counter()
+    banded = await _band(prepared)
+
+    assert perf_counter() - started < 1
+    assert len(_deferred(banded.payload)) == 9_999
+    assert banded.payload["tools"][1]["defer_loading"] is True

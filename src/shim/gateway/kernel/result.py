@@ -209,6 +209,8 @@ class PreparedInference:
     band: BandSettings = field(default_factory=BandSettings)
     # The settings band's applied steps, by id and version; None when it did not run.
     settings_applied: tuple[dict[str, object], ...] | None = None
+    # Anthropic beta flags the band's applied steps need, in step order.
+    provider_betas: tuple[str, ...] = ()
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )

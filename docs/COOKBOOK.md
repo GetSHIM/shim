@@ -20,6 +20,8 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Check structured output](#check-structured-output)
 - [Use the provider's cache discount](#use-the-providers-cache-discount)
+- [Load tools on demand](#load-tools-on-demand)
+- [Stop paying for old thinking](#stop-paying-for-old-thinking)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -786,9 +788,67 @@ changes on every send, so the Anthropic step leaves it alone; set
 `PII_PLACEHOLDER_MODE=stable` to cache such prompts. OpenAI caches automatically
 above 1,024 tokens and the key only steers routing; it guarantees no hit.
 `CACHE_NOT_APPLIED` is raised only for breakpoints you placed. Gemini requests and
-token counting are never changed. Leave both off when
+token counting are never changed. Leave these settings, and those of the next two
+recipes, off when
 `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at something other than the
 provider: another server may refuse a parameter it does not know.
+
+## Load tools on demand
+
+Let the model open only the tool definitions it needs, through the provider's own
+tool search, for apps that send answers back unchanged.
+
+1. Set `SHIM_TOOL_SEARCH=regex` (or `bm25`), and `SHIM_TOOL_SEARCH_MIN_TOOLS` (2 to
+   10,000, default 10) for the fewest tools a request must offer.
+2. Name tools that stay loaded in `SHIM_TOOL_SEARCH_KEEP_LOADED` (comma-separated or
+   a JSON list, at most 64 names).
+
+A messages request to Claude Opus, Sonnet or Haiku 4.5 or later, a 5.x model, Fable
+or Mythos, or a Responses request to GPT-5.4 or later, offering at least the minimum
+of its own function tools, gets `"defer_loading": true` on every such tool except the
+kept ones, the tool `tool_choice` forces, the tools an `allowed_tools` choice names,
+Anthropic tools carrying `cache_control`, and, when nothing else would stay loaded,
+the first tool. One search tool is appended: `tool_search_tool_regex_20251119` or
+`tool_search_tool_bm25_20251119` for Anthropic, `{"type": "tool_search"}` for
+OpenAI. Every definition is still sent, in its order; the same tools give the same
+bytes on every turn, so the prompt cache holds.
+
+Notes: the model may answer with a search step first (`server_tool_use` and
+`tool_search_tool_result` blocks, or `tool_search_call` and `tool_search_output`
+items); shim returns them as the provider sent them, and your app must keep them in
+its history, as the provider SDKs' agent loops do. An app that drops unknown blocks
+can fail on its next request: try one app first (enterprise scopes the setting by
+key). A request is left alone, with a `settings.tool_search` verdict saying why, when
+the model is older (`SETTING_MODEL_UNSUPPORTED`), the client already sends a search
+tool or a `defer_loading` (`SETTING_CLIENT_OWNED`), or an Anthropic request has
+thinking on or thinking blocks in its history (`SETTING_THINKING_BOUND`: changing
+tools mid-conversation invalidates earlier thinking). Server tools, MCP toolsets and
+namespaces are never deferred. Turning the setting on or off changes the tool
+prefix once per conversation, one cache write.
+
+## Stop paying for old thinking
+
+Stop earlier turns' thinking from being billed as input again on every turn.
+
+1. For Anthropic, set `SHIM_ANTHROPIC_KEEP_THINKING_TURNS` to the thinking turns to
+   keep (1 to 8; 0 is off). A messages request with `thinking.type` `enabled` or
+   `adaptive` and no `context_management` of its own gets
+   `"context_management": {"edits": [{"type": "clear_thinking_20251015", "keep":
+   {"type": "thinking_turns", "value": N}}]}`, sent on Anthropic's beta API with
+   `anthropic-beta: context-management-2025-06-27` after any flags your client sends.
+   The answer's `context_management.applied_edits` says what was cleared.
+2. For OpenAI, set `SHIM_OPENAI_REASONING_CONTEXT=current_turn`. A Responses request
+   to the GPT-5.6 family or later without `reasoning.context` gets
+   `"reasoning": {"context": "current_turn"}`; earlier models already default to it.
+
+Notes: when thinking blocks are cleared, Anthropic rewrites the prompt cache from the
+cleared block onward on each turn that clears one, so the saving is the old thinking
+minus that write. Not rendering earlier reasoning can change OpenAI answer quality.
+Tool results are never cleared (`clear_tool_uses` is not offered), and neither
+setting touches chat completions, Gemini (its thought blocks and signatures pass as
+sent) or token counting. A client's own `context_management` or `reasoning.context`
+wins, with a `SETTING_CLIENT_OWNED` verdict. With both settings off, Anthropic models
+that keep earlier thinking keep billing it as input, as `prompt_tokens` show.
 
 ## Stream long generations and read usage
 

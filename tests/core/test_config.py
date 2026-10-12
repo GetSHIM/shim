@@ -332,6 +332,33 @@ def test_provider_cache_settings_are_off_unless_set(name, values) -> None:
             CommunitySettings(_env_file=None, **{name: value})
 
 
+def test_tool_search_and_thinking_settings_are_off_and_bounded() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (
+        settings.SHIM_TOOL_SEARCH,
+        settings.SHIM_TOOL_SEARCH_MIN_TOOLS,
+        settings.SHIM_TOOL_SEARCH_KEEP_LOADED,
+        settings.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
+        settings.SHIM_OPENAI_REASONING_CONTEXT,
+    ) == ("off", 10, [], 0, "off")
+    for raw in ("lookup, create", '["lookup", "create"]'):
+        assert CommunitySettings(
+            _env_file=None, SHIM_TOOL_SEARCH_KEEP_LOADED=raw
+        ).SHIM_TOOL_SEARCH_KEEP_LOADED == ["lookup", "create"]
+    for name, value in (
+        ("SHIM_TOOL_SEARCH", "on"),
+        ("SHIM_TOOL_SEARCH_MIN_TOOLS", 1),
+        ("SHIM_TOOL_SEARCH_MIN_TOOLS", 10_001),
+        ("SHIM_TOOL_SEARCH_KEEP_LOADED", ",".join(f"t{n}" for n in range(65))),
+        ("SHIM_TOOL_SEARCH_KEEP_LOADED", "x" * 129),
+        ("SHIM_ANTHROPIC_KEEP_THINKING_TURNS", 9),
+        ("SHIM_ANTHROPIC_KEEP_THINKING_TURNS", -1),
+        ("SHIM_OPENAI_REASONING_CONTEXT", "all_turns"),
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
 def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
     settings = CommunitySettings(_env_file=None)
 

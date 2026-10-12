@@ -87,6 +87,7 @@ def _prepared(
         protocol=protocol,
         stream=bool(payload.get("stream")),
         privacy=privacy,
+        provider_betas=(),
     )
 
 
@@ -2336,3 +2337,147 @@ async def test_the_band_prompt_cache_key_reaches_openai_through_the_sdk(
     assert len(sent["prompt_cache_key"]) == 37
     line = json.loads(events.getvalue().splitlines()[-1])
     assert line["settings_applied"] == [{"id": "openai_prompt_cache_key", "version": 1}]
+
+
+_SEARCH_ITEMS = [
+    {
+        "id": "tsc_1",
+        "type": "tool_search_call",
+        "execution": "server",
+        "status": "completed",
+        "arguments": {"query": "weather"},
+        "call_id": None,
+    },
+    {
+        "id": "tso_1",
+        "type": "tool_search_output",
+        "execution": "server",
+        "status": "completed",
+        "call_id": None,
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "parameters": {"type": "object"},
+                "strict": False,
+            }
+        ],
+    },
+]
+
+
+# The pinned SDK's dump adds a null for every unset field.
+def _native(value):
+    if isinstance(value, dict):
+        return {key: _native(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_native(item) for item in value]
+    return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_tool_search_and_reasoning_context_reach_openai_and_come_back(
+    stream,
+) -> None:
+    answer = {
+        **_response("resp_search"),
+        "model": "gpt-5.6-luna",
+        "output": _SEARCH_ITEMS,
+        "reasoning": {"effort": "low", "context": "current_turn"},
+    }
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if not stream:
+            return httpx.Response(200, json=answer)
+        events = [
+            {
+                "type": "response.created",
+                "response": {**answer, "status": "in_progress", "output": []},
+                "sequence_number": 0,
+            },
+            *(
+                {
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item,
+                    "sequence_number": index + 1,
+                }
+                for index, item in enumerate(_SEARCH_ITEMS)
+            ),
+            {"type": "response.completed", "response": answer, "sequence_number": 3},
+        ]
+        return httpx.Response(
+            200,
+            text="".join(
+                f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                for event in events
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    outbound = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    application = create_community_app(
+        CommunitySettings(
+            OPENAI_BASE_URL="https://upstream.test/v1",
+            BACKEND_CORS_ORIGINS=[],
+            SHIM_TOOL_SEARCH="regex",
+            SHIM_TOOL_SEARCH_MIN_TOOLS=3,
+            SHIM_OPENAI_REASONING_CONTEXT="current_turn",
+            _env_file=None,
+        ),
+        http_client=outbound,
+        event_stream=StringIO(),
+    )
+    tools = [
+        {"type": "function", "name": name, "parameters": {"type": "object"}}
+        for name in ("lookup", "create", "delete")
+    ]
+    async with (
+        application.router.lifespan_context(application),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://127.0.0.1",
+        ) as client,
+    ):
+        response = await client.post(
+            "/v1/responses",
+            headers={"x-openai-api-key": "sk-provider"},
+            json={
+                "model": "gpt-5.6-luna",
+                "input": "weather in Ankara",
+                "tools": tools,
+                "stream": stream,
+            },
+        )
+    await outbound.aclose()
+
+    [sent] = seen
+    assert [tool.get("defer_loading") for tool in sent["tools"]] == [
+        None,
+        True,
+        True,
+        None,
+    ]
+    assert sent["tools"][-1] == {"type": "tool_search"}
+    assert sent["reasoning"] == {"context": "current_turn"}
+    if not stream:
+        body = response.json()
+        assert _native(body["output"]) == _native(_SEARCH_ITEMS)
+        assert body["reasoning"]["context"] == "current_turn"
+        return
+    items = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert _native(
+        [
+            event["item"]
+            for event in items
+            if event["type"] == "response.output_item.done"
+        ]
+    ) == _native(_SEARCH_ITEMS)
+    assert items[-1]["response"]["reasoning"]["context"] == "current_turn"
