@@ -365,7 +365,7 @@ Turning a switch back on, or raising a type's action, records only
 
 ## Policy versions and plans
 
-Ten resources are managed: every write to them records a version, a plan can
+Eleven resources are managed: every write to them records a version, a plan can
 change them, and a restore can put them back.
 
 | Resource | Item | Fields | Write paths | Relaxing when |
@@ -380,6 +380,7 @@ change them, and a restore can put them back.
 | `oversight_policies` | policy id | `name`, `enabled`, `mode`, `trigger`, `ttl_seconds`, `default_on_timeout` | `POST`, `PATCH`, `DELETE /compliance/oversight/policies` | deleted or disabled; `default_on_timeout` to `allow`; any change to `mode`, `trigger`, `ttl_seconds` |
 | `provider_keys` | `_` | `allow_customer_provider_keys` | `PUT /settings/provider-keys` | turned on |
 | `forward_targets` | target id | `enabled`, `min_severity` | `PATCH`, `DELETE /compliance/forward-targets/{id}` | deleted; disabled; `min_severity` raised |
+| `record_sets` | set id | `active_revision`, and `enforced` (read only: an enforced rule uses the set) | `POST /record-sets/{id}/revisions/{n}/activate` | another revision of a set an enforced rule uses (any revision can drop records); a revision that lacks a record or document of the active one also records `tenant.privacy_protection_relaxed` |
 
 Each resource lists, per field, the direction of a change (one shared rule,
 `classify_fields`); a field it does not list is `relaxing` whatever the change,
@@ -470,7 +471,8 @@ owner override below.
   "relaxed": [...]}`, each entry `resource.item.field` (or `resource.item` for a
   created or deleted item), a field listed when changing it alone would relax.
   `PUT /rules`, `PUT /settings/provider-keys` and `PATCH`, `DELETE
-  /compliance/forward-targets/{id}` are such writes. `POST /api-keys` without
+  /compliance/forward-targets/{id}` are such writes, and so is activating
+  another revision of a record set an enforced rule uses. `POST /api-keys` without
   `allowed_models` answers the same 409 with `api_keys.new.allowed_models`:
   create the key with a model list and widen it through a plan.
 - Applying a relaxing plan, or a restore whose plan relaxes, does not apply it:

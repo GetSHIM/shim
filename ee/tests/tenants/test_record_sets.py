@@ -277,6 +277,51 @@ async def test_a_revision_with_fewer_values_to_match_is_a_relaxation(
 
 
 @pytest.mark.asyncio
+async def test_a_same_size_revision_of_other_entries_is_a_relaxation(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    records = await management.create_record_set(_customers(), _request(), admin, db)
+    prints = await management.create_record_set(
+        management.RecordSetCreate(name="docs", kind="fingerprints"),
+        _request(),
+        admin,
+        db,
+    )
+
+    async def activate(set_id: UUID, chunk: management.RecordSetChunkPut) -> None:
+        revision = (await management.open_record_set_revision(set_id, admin, db))[
+            "revision"
+        ]
+        await management.put_record_set_chunk(set_id, revision, 0, chunk, admin, db)
+        await management.activate_record_set_revision(
+            set_id, revision, _request(), admin, db
+        )
+
+    def rows(first: int) -> management.RecordSetChunkPut:
+        return management.RecordSetChunkPut(
+            records=[[f"{first + n:016x}", f"{first + n + 99:016x}"] for n in range(3)]
+        )
+
+    def documents(first: int) -> management.RecordSetChunkPut:
+        return management.RecordSetChunkPut(
+            documents=[[f"{first + n:016x}" for n in range(8)]]
+        )
+
+    for set_id, chunk in ((records["id"], rows), (prints["id"], documents)):
+        await activate(set_id, chunk(1))
+        # The same entries again, then the same count of other ones.
+        await activate(set_id, chunk(1))
+        await activate(set_id, chunk(500))
+
+    assert [
+        event["extra"]["relaxed"]
+        for event in await audit_events(test_org.id)
+        if event["endpoint"] == "tenant.privacy_protection_relaxed"
+    ] == [[f"record_sets.{records['id']}"], [f"record_sets.{prints['id']}"]]
+
+
+@pytest.mark.asyncio
 async def test_deleting_a_set_locks_the_rule_set_it_is_checked_against(
     db, test_org
 ) -> None:

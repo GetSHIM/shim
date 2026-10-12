@@ -1098,7 +1098,7 @@ Make every change that loosens protection wait for a second administrator.
 2. A direct write that loosens protection (masking off, a raised limit, a
    model added to a key, a new deployment, a deleted budget, an enforced rule
    removed, customer provider keys allowed, a forward target disabled or
-   deleted, ...) now answers 409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the
+   deleted, a new revision of a record set an enforced rule uses, ...) now answers 409 `CHANGE_REQUIRES_APPROVAL` with `relaxed`, the
    `resource.item.field` names it would loosen, and writes nothing. A new API
    key needs `allowed_models`; widen it later with a plan. Tightening and
    neutral writes are unchanged.

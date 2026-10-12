@@ -37,6 +37,7 @@ from shim_enterprise.secrets.store import get_secret_store
 from shim_enterprise.policy import api as policy_api
 from shim_enterprise.policy.models import PolicyPlan, PolicyVersion
 from shim_enterprise.policy.resources import REGISTRY
+from shim_enterprise.rules.models import OrganizationRuleSet
 from shim_enterprise.tenants import gateway_settings
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, classify_change
 from shim_enterprise.tenants.models import (
@@ -1225,6 +1226,133 @@ async def test_rules_provider_keys_and_forward_targets_travel_as_plans(db) -> No
     assert organization.allow_customer_provider_keys is True
     assert disabled.enabled is False
     assert await db.get(ComplianceForwardTarget, deleted.id) is None
+
+
+async def _record_set_revision(db, admin: User, set_id: str, first: int) -> int:
+    opened = await _call(
+        db, admin, "POST", f"{MANAGEMENT}/record-sets/{set_id}/revisions"
+    )
+    revision = opened.json()["revision"]
+    put = await _call(
+        db,
+        admin,
+        "PUT",
+        f"{MANAGEMENT}/record-sets/{set_id}/revisions/{revision}/chunks/0",
+        json={
+            "records": [
+                [f"{first + n:016x}", f"{first + n + 99:016x}"] for n in range(3)
+            ]
+        },
+    )
+    assert put.status_code == 200, put.text
+    return revision
+
+
+@pytest.mark.asyncio
+async def test_a_record_set_an_enforced_rule_uses_changes_only_through_a_plan(
+    db,
+) -> None:
+    users = await _organization(db, "admin", "admin2")
+    owner, admin, admin2 = users["owner"], users["admin"], users["admin2"]
+    tenant = owner.organization_id
+    sets = []
+    for name in ("customers", "spare"):
+        created = await _call(
+            db,
+            admin,
+            "POST",
+            f"{MANAGEMENT}/record-sets",
+            json={
+                "name": name,
+                "kind": "records",
+                "fields": [
+                    {"name": "no", "kind": "token", "primary": True},
+                    {"name": "ad", "kind": "name"},
+                ],
+            },
+        )
+        set_id = created.json()["id"]
+        revision = await _record_set_revision(db, admin, set_id, 1)
+        activated = await _call(
+            db,
+            admin,
+            "POST",
+            f"{MANAGEMENT}/record-sets/{set_id}/revisions/{revision}/activate",
+        )
+        assert activated.status_code == 200, activated.text
+        sets.append(set_id)
+    used, spare = sets
+    db.add(
+        OrganizationRuleSet(
+            organization_id=tenant,
+            revision=1,
+            rules=[
+                {
+                    "id": rule_id,
+                    "name": rule_id,
+                    "kind": "record_set",
+                    "action": "block",
+                    "state": state,
+                    "match": {"set_id": set_id},
+                }
+                for rule_id, state, set_id in (
+                    ("customers", "enforced", used),
+                    ("spare", "monitor", spare),
+                )
+            ],
+        )
+    )
+    await _turn_on(db, owner)
+    # As many records as before, none of them the same: the enforced block is gone.
+    swapped = await _record_set_revision(db, admin, used, 500)
+    spare_revision = await _record_set_revision(db, admin, spare, 500)
+
+    direct = await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/record-sets/{used}/revisions/{swapped}/activate",
+    )
+    unused = await _call(
+        db,
+        admin,
+        "POST",
+        f"{MANAGEMENT}/record-sets/{spare}/revisions/{spare_revision}/activate",
+    )
+    plan = await _plan(
+        db,
+        admin,
+        {"resource": "record_sets", "item": used, "set": {"active_revision": swapped}},
+    )
+    submitted = await _call(db, admin, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+    pending = await _call(db, admin, "GET", f"{MANAGEMENT}/record-sets/{used}")
+    approved = await _call(
+        db, admin2, "POST", f"{POLICY}/plans/{plan['id']}/approve", json={}
+    )
+    view = await _call(db, admin, "GET", f"{MANAGEMENT}/record-sets/{used}")
+
+    assert direct.status_code == 409
+    assert direct.json()["detail"]["code"] == "CHANGE_REQUIRES_APPROVAL"
+    assert direct.json()["detail"]["relaxed"] == [f"record_sets.{used}.active_revision"]
+    assert unused.status_code == 200, "only a monitor rule uses it"
+    assert plan["risk"] == "relaxing"
+    assert submitted.status_code == 202
+    assert pending.json()["active_revision"] == swapped - 1
+    assert (approved.status_code, approved.json()["status"]) == (200, "applied")
+    assert view.json()["active_revision"] == swapped
+    version = approved.json()["applied_version"]
+    [activated] = [
+        event
+        for event in await _audits(db, tenant, "tenant.record_set_revision_activated")
+        if event.get("policy_version") == version
+    ]
+    assert activated["record_set_id"] == used
+    assert {
+        "relaxed": [f"record_sets.{used}"],
+        "policy_version": version,
+    }.items() <= (await _audits(db, tenant, "tenant.privacy_protection_relaxed"))[
+        -1
+    ].items()
 
 
 @pytest.mark.asyncio

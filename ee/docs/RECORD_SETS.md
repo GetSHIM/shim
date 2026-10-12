@@ -46,9 +46,16 @@ reference data, not request content, so they are available there too.
    `rule_matches`, then enforce it.
 
 Activating keeps the revision before it, so activating that one again is a one-step
-rollback; every other revision's chunks are deleted. Activating a revision with fewer
-entries than the active one, or fewer values to match by (non-empty record fields, or
-fingerprints), is recorded as a relaxation (`record_sets.<id>`). A set a rule references
+rollback; every other revision's chunks are deleted. Activating a revision that lacks any
+record or document of the active one, byte for byte (fewer entries, an emptied field, or
+as many entries but other ones), is recorded as a relaxation (`record_sets.<id>`).
+Every activation records a [policy version](POLICY_DECISIONS.md#policy-versions-and-plans)
+of the `record_sets` resource. While [four eyes](POLICY_DECISIONS.md#four-eyes) is on,
+activating another revision of a set that an enforced rule uses answers 409
+`CHANGE_REQUIRES_APPROVAL` (`record_sets.<id>.active_revision`): plan it instead
+(`{"resource": "record_sets", "item": "<id>", "set": {"active_revision": <n>}}`) and
+have a second administrator approve it. A set only `monitor` rules use, or none,
+activates directly. A set a rule references
 cannot be deleted (409 `RECORD_SET_IN_USE`; the rule set is locked while it is checked);
 deleting removes the row,
 its chunks and its key. `GET /record-sets` and `GET /record-sets/{id}` show metadata and
