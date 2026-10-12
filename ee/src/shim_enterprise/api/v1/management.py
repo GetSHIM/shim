@@ -236,6 +236,7 @@ from shim_enterprise.tenants.deployments import (
     require_model_aliases,
     validate_deployment_url,
 )
+from shim_enterprise.policy.models import PolicyPlan
 from shim_enterprise.policy.plans import (
     Impact,
     Risk,
@@ -2977,6 +2978,32 @@ async def put_record_set_chunk(
             409,
             "RECORD_SET_REVISION_SEALED",
             "Chunks go to a newly opened revision; an activated one never changes.",
+        )
+    # What a reviewer sees in a plan is what its approval activates.
+    planned = await session.scalar(
+        select(PolicyPlan.id)
+        .where(
+            PolicyPlan.organization_id == tenant_id,
+            PolicyPlan.status.in_(("draft", "pending_approval")),
+            PolicyPlan.expires_at > datetime.now(timezone.utc),
+            PolicyPlan.changes.contains(
+                [
+                    {
+                        "resource": "record_sets",
+                        "item": str(set_id),
+                        "after": {"active_revision": revision},
+                    }
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    if planned is not None:
+        raise _record_set_error(
+            409,
+            "RECORD_SET_REVISION_PLANNED",
+            "A pending plan activates this revision; it takes no more chunks until "
+            "the plan is applied, rejected or expires.",
         )
     if row.kind == "records":
         if payload.records is None or payload.documents is not None:
@@ -7682,7 +7709,21 @@ class _RecordSetResource:
         after: State | None,
         window_days: int,
     ) -> Impact:
-        return no_impact(window_days)
+        assert before is not None and after is not None
+        revision = after["active_revision"]
+        if revision == before["active_revision"]:
+            return no_impact(window_days)
+        row = await _record_set(session, organization_id, UUID(item_id))
+        proposed = sum(
+            count for count, _ in await _revision_chunks(session, row.id, revision)
+        )
+        unit = "records" if row.kind == "records" else "documents"
+        return {
+            "requests": None,
+            "basis": "metadata",
+            "window_days": window_days,
+            "note": f"{row.entry_count} {unit} now, {proposed} in revision {revision}",
+        }
 
     async def after_commit(self, request: Request, organization_id: UUID) -> None:
         await _invalidate_policy(request, organization_id)
