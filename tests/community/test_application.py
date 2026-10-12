@@ -620,3 +620,109 @@ async def test_community_traces_only_when_an_endpoint_is_set(
             endpoint=endpoint, service_name="shim"
         )
         shutdown_tracing.assert_called_once_with()
+
+
+# "\ud800" as a client sends it: a JSON escape that decodes to a lone surrogate.
+_LONE = '"hi \\ud800"'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pii", ["scrub", "disabled"])
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        (
+            "/v1/chat/completions",
+            f'{{"model": "{MODEL}", "messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1/embeddings",
+            f'{{"model": "text-embedding-3-small", "input": {_LONE}}}',
+        ),
+        (
+            "/v1/responses",
+            f'{{"model": "{MODEL}", "input": {_LONE}}}',
+        ),
+        (
+            "/v1/messages",
+            '{"model": "claude-sonnet-4-6", "max_tokens": 16, '
+            f'"messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1/messages/count_tokens",
+            '{"model": "claude-sonnet-4-6", '
+            f'"messages": [{{"role": "user", "content": {_LONE}}}]}}',
+        ),
+        (
+            "/v1beta/models/gemini-3.5-flash:generateContent",
+            f'{{"contents": [{{"role": "user", "parts": [{{"text": {_LONE}}}]}}]}}',
+        ),
+        (
+            "/v1beta/models/gemini-embedding-001:embedContent",
+            f'{{"content": {{"parts": [{{"text": {_LONE}}}]}}}}',
+        ),
+    ],
+)
+async def test_a_lone_surrogate_is_a_native_400_before_privacy_or_the_provider(
+    path: str, body: str, pii: str
+) -> None:
+    from shim.privacy.policies import effective_entity_actions
+
+    attempts: list[httpx.Request] = []
+    upstream = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: attempts.append(request) or httpx.Response(500)
+        )
+    )
+    actions = (
+        {}
+        if pii == "scrub"
+        else {kind: "off" for kind in effective_entity_actions(None, None)}
+    )
+    application = create_community_app(
+        _settings(PII_ENTITY_ACTIONS=actions), http_client=upstream
+    )
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                path,
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "x-provider-key": PROVIDER_KEY,
+                    "content-type": "application/json",
+                },
+                content=body.encode(),
+            )
+    await upstream.aclose()
+
+    assert response.status_code == 400, response.text
+    assert response.headers["x-shim-error-code"] == "INVALID_REQUEST"
+    assert attempts == []
+
+
+@pytest.mark.asyncio
+async def test_a_lone_surrogate_scan_is_a_validation_error() -> None:
+    application = create_community_app(_settings())
+    async with application.router.lifespan_context(application):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://shim.test",
+        ) as gateway_http:
+            response = await gateway_http.post(
+                "/v1/scan",
+                headers={
+                    "authorization": f"Bearer {GATEWAY_KEY}",
+                    "content-type": "application/json",
+                },
+                content=f'{{"text": {_LONE}}}'.encode(),
+            )
+
+    # The scan's text is a typed string, which pydantic already refuses, as it
+    # refuses any other invalid scan input; the input is never echoed.
+    assert response.status_code == 422, response.text
+    [error] = response.json()["detail"]
+    assert (error["type"], error["loc"]) == ("string_unicode", ["body", "text"])
+    assert "input" not in error

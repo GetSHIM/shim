@@ -56,7 +56,7 @@ def request_digest(
     """
     material = json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    ).encode("utf-8", errors="backslashreplace")
     head = f"{tenant_id}\n{api_key_id}\n{protocol}\n{model}\n{int(stream)}\n"
     digest = hmac.new(
         _approval_key(base_key), head.encode("utf-8") + material, hashlib.sha256

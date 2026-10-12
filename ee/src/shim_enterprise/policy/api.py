@@ -42,7 +42,7 @@ _APPROVAL_LIFETIME = timedelta(hours=72)
 _MAX_PLAN_BYTES = 256 * 1024
 _MAX_CHANGES = 100
 _MAX_VERSION = 2_147_483_647
-# What /state and one version's states show besides audit.read.
+# What /state, one version's states and plans' changes show besides audit.read.
 _STATE_READS = ("deployments.read", "rules.read", "settings.read", "usage.read")
 # A plan written by these sources keeps its source on the version it applies.
 _OWN_SOURCES = {"mcp", "file", "auto", "import", "proposal", "restore"}
@@ -497,6 +497,7 @@ async def list_plans(
     user: User = Depends(require("plans.create", "audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> list[PolicyPlan]:
+    await _require_state_reads(session, user)
     organization_id = _tenant(user)
     await _expire_overdue(session, organization_id)
     statement = select(PolicyPlan).where(PolicyPlan.organization_id == organization_id)
@@ -515,6 +516,7 @@ async def get_plan(
     user: User = Depends(require("plans.create", "audit.read")),
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
+    await _require_state_reads(session, user)
     organization_id = _tenant(user)
     await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
     return await _owned_plan(session, organization_id, plan_id)

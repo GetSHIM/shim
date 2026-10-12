@@ -268,10 +268,9 @@ class ManagedProviderCredentialResolver:
             client_secret=stored["client_secret"],
             scope=stored["scope"],
         )
-        # A rotation changes the version, so a rotated secret never reuses a token.
-        return await self.entra.token(
-            (tenant_id, row.id, row.secret_version), credential
-        )
+        # A rotation changes the reference (a Fernet version is always "v2"), so a
+        # rotated secret never reuses a token.
+        return await self.entra.token((tenant_id, row.id, row.secret_ref), credential)
 
     async def resolve(
         self,

@@ -531,8 +531,9 @@ summarise the history in the app; send the relevant part of a document.
 **Checks.** Once a day per organization (a worker restart evaluates again), over
 the last 30 days, for each API key with at least 50 requests that offered tools
 and at least one answer that called a tool: a tool offered in at least half of
-those requests that no answer of the key called, neither as its name nor as
-`<name>_call` (a Responses built-in tool). Severity low. Subject: the API key. Max
+those requests that no answer of the key called, neither as its name nor, for a
+Responses built-in tool offered as `builtin:<type>`, as `<type>_call` (a
+`_preview` type as its base name). Severity low. Subject: the API key. Max
 mode `observe`, blast radius `key`, risk class `cost`.
 
 **Why.** A tool definition is paid on every request that offers it, whether or not
@@ -604,8 +605,8 @@ timeouts.
 
 **Checks.** For each registered deployment with at least 50 streams in the 7 days
 before the last 24 hours, their median TTFT is the baseline. An hour of the last
-24 is congested when it has at least 10 streams, their p95 TTFT (cold starts left
-out) is at least three times the baseline, and at least 4 requests, streams or
+24 is congested when it has at least 10 streams with a TTFT that are not cold
+starts, their p95 TTFT is at least three times the baseline, and at least 4 requests, streams or
 JSON, were in flight at once (the
 [latency read](COOKBOOK.md#read-latency-per-team-and-app)'s peak concurrency). It
 fires at 2 congested hours. JSON answers' latency is not in the p95: it includes

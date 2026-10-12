@@ -218,6 +218,12 @@ def test_the_digest_is_pinned_and_ignores_key_order_and_whitespace() -> None:
     )[1] == len('{"a":"ü"}'.encode())
 
 
+def test_a_lone_surrogate_digests_without_raising() -> None:
+    lone = json.loads('{"content": "\\ud83d"}')
+
+    assert _digest(payload=lone) != _digest(payload={"content": "\\ud83d"})
+
+
 @pytest.mark.parametrize(
     "change",
     [

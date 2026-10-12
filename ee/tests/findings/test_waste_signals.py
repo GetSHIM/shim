@@ -218,11 +218,22 @@ async def test_fewer_than_20_requests_never_fire(db, test_api_key) -> None:
 @pytest.mark.asyncio
 async def test_a_tool_offered_often_and_never_called_is_dead(db, test_api_key) -> None:
     for index in range(50):
-        offered = ["lookup", "create", "web_search"] + (
-            ["delete"] if index < 30 else []
-        )
+        # Built-in tools as the shape analyzer names them, called as <type>_call.
+        offered = [
+            "lookup",
+            "create",
+            "builtin:web_search",
+            "builtin:file_search",
+            "builtin:web_search_preview",
+        ] + (["delete"] if index < 30 else [])
         offered += ["rare"] if index < 10 else []
-        calls = ["lookup"] if index == 0 else ["web_search_call"] if index == 1 else []
+        calls = (
+            ["lookup"]
+            if index == 0
+            else ["web_search_call", "file_search_call"]
+            if index == 1
+            else []
+        )
         _add(
             db,
             test_api_key,

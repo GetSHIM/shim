@@ -339,9 +339,11 @@ class AdmissionStage:
             }
         )
         task_id, trace_id = _task_identity(self.invocation.headers)
+        # A token count is neither an agent turn nor one of the task's calls.
+        counted = value.protocol != "count_tokens"
         signature = (
             _tool_signature(payload, value.protocol)
-            if value.agent_loop.action != "off"
+            if counted and value.agent_loop.action != "off"
             else None
         )
         turn_key = (
@@ -403,7 +405,7 @@ class AdmissionStage:
                     },
                     headers={"x-should-retry": "false"},
                 )
-        task_calls = await self._admit_task_call(value, task_id)
+        task_calls = await self._admit_task_call(value, task_id) if counted else None
         shareable = _shareable(value, candidates)
         earlier = (
             None
@@ -901,7 +903,18 @@ def _estimate_input_tokens(
     Keys hash in the order the client sent them, so a reordered body is another request.
     """
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    encoded = serialized.encode("utf-8", errors="backslashreplace")
+    try:
+        encoded = serialized.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate ("\ud800" in the JSON) is no text: refused before privacy
+        # could miss it, never rewritten into something the provider would get.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": "The request contains an unpaired UTF-16 surrogate.",
+            },
+        ) from None
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
     return max(1, len(encoded)), hashlib.sha256(
         identity.encode() + b"\n" + encoded

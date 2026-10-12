@@ -1271,8 +1271,11 @@ async def test_versions_are_read_only_with_the_reads_of_what_they_hold(db) -> No
     state = await _call(db, auditor, "GET", f"{POLICY}/state")
     version = await _call(db, auditor, "GET", f"{POLICY}/versions/1")
     listed = await _call(db, auditor, "GET", f"{POLICY}/versions")
+    # A plan's changes hold rule terms and setting values.
+    plans = await _call(db, auditor, "GET", f"{POLICY}/plans")
+    plan = await _call(db, auditor, "GET", f"{POLICY}/plans/{uuid4()}")
 
-    for refused in (state, version):
+    for refused in (state, version, plans, plan):
         assert (refused.status_code, refused.json()["detail"]) == (
             403,
             "Permission required: deployments.read and rules.read and settings.read "

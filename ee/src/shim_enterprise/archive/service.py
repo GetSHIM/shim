@@ -76,7 +76,10 @@ def _retention_days(prepared: PreparedInference) -> int | None:
 
 def _sealed(payload: Any, edits: dict[str, str]) -> tuple[int, bytes, bytes] | None:
     """Size and ciphertexts of the masked payload and the edit; None when too large."""
-    plain = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    # A lone surrogate becomes its JSON escape, so the row opens as it was sent.
+    plain = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8", errors="backslashreplace"
+    )
     if len(plain) > MAX_ARCHIVED_BYTES:
         return None
     cipher = Fernet(str(settings.ENCRYPTION_KEY).encode())

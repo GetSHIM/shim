@@ -13,7 +13,7 @@ from typing import Any, Literal
 from uuid import UUID
 from xml.sax.saxutils import escape
 
-from sqlalchemy import Text, cast, distinct, func, select, true
+from sqlalchemy import Text, cast, distinct, exists, func, select, true
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -434,8 +434,20 @@ async def language_costs(
     read = await language_cost(
         session, tenant_id, start=window.start, end=window.end, group_by="model"
     )
-    # The analyzer never labelled an answer of the month: nothing was measured.
-    if not read["items"] and not read["excluded"]["language_unknown"]:
+    # The analyzer never labelled an answer of the month: nothing was measured. It
+    # labels short, tool and reasoning answers too, which the read then leaves out.
+    if not read["items"] and not await session.scalar(
+        select(
+            exists().where(
+                RequestLifecycle.organization_id == tenant_id,
+                RequestLifecycle.started_at >= window.start,
+                RequestLifecycle.started_at < window.end,
+                RequestLifecycle.lifecycle_metadata["response_analysis"].has_key(
+                    "language"
+                ),
+            )
+        )
+    ):
         return (), LANGUAGE_COST_OFF
     by_model: dict[str, dict[str, Any]] = {}
     for item in read["items"]:

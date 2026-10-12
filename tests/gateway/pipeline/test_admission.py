@@ -1372,6 +1372,32 @@ async def test_with_the_loop_signal_off_nothing_is_computed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_token_count_is_neither_an_agent_turn_nor_a_task_call() -> None:
+    from shim.gateway.request_policy import AgentLoop, TaskCaps
+
+    stage, detector = _loop_stage(9)
+    prepared = replace(
+        _prepared(
+            "x",
+            model="claude-sonnet-4-6",
+            provider="anthropic",
+            protocol="count_tokens",
+        ),
+        payload={"model": "claude-sonnet-4-6", **_history("messages", {"path": "a"})},
+        agent_loop=AgentLoop(action="block"),
+        task_caps=TaskCaps(max_calls=1),
+    )
+
+    first = await stage.run(prepared)
+    second = await stage.run(replace(prepared, policy_verdicts=[]))
+
+    assert detector.check_exact_repeat.await_args.kwargs["turn_key"] is None
+    assert first.admission is not None and second.admission is not None
+    assert first.admission.tool_call_repeats is None
+    assert second.admission.task_calls is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("headers", "refused_on"), [({"x-shim-task-id": "t-1"}, 3), ({}, None)]
 )
