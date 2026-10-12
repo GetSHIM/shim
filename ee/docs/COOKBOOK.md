@@ -1192,8 +1192,9 @@ Notes:
   body, field for field; key order and whitespace do not matter. Change
   anything and it needs its own approval.
 - A pending approval lives 24 hours; at most 200 wait per tenant and 50 per
-  key, after which new ones answer 403 `APPROVAL_QUEUE_FULL`. Rows are deleted
-  30 days after they were held. An approval is used up when the
+  key, after which new ones answer 403 `APPROVAL_QUEUE_FULL`. The ai_act worker
+  expires overdue rows each pass (hourly by default) and drops their request
+  digest; rows are deleted 30 days after they were held. An approval is used up when the
   request is sent, even if the provider then fails.
 - Token counting (`/v1/messages/count_tokens`) with a held term answers 403
   `APPROVAL_REQUIRED` and creates no approval: a count sends the content too.

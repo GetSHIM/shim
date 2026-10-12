@@ -218,8 +218,12 @@ database transaction, never open across the provider call:
 - One approval allows one send, within 60 minutes of the approval; it is
   consumed before the provider call, so a failed attempt needs a new approval.
   A pending approval lives 24 hours; at most 200 wait per tenant and 50 per key,
-  so one key cannot fill the queue. These are constants, not settings. Expiry is
-  lazy: the gateway and every read of the approvals API store `expired`.
+  so one key cannot fill the queue. These are constants, not settings. The
+  gateway and every read of the approvals API store `expired` as they meet an
+  overdue row, and each audit maintenance pass (hourly by default) expires every
+  tenant's overdue rows in batches of 1,000, each statement bounded to 10
+  seconds, so an untouched row keeps its request digest at most one interval
+  past its expiry (`request_approvals_expired` in the pass summary).
 - A presented `X-Shim-Approval-Id` that does not fit (unknown, another tenant
   or key, another request, used, expired, malformed) is ignored rather than
   refused, so ids cannot be probed and a changed request gets its own approval.

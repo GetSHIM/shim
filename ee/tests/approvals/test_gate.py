@@ -526,3 +526,42 @@ async def test_the_maintenance_worker_deletes_old_approvals(
     ).run_once()
 
     assert summary.request_approvals_deleted == 7
+
+
+@pytest.mark.asyncio
+async def test_the_maintenance_worker_expires_overdue_approvals_and_drops_digests(
+    tenants, async_engine, monkeypatch
+) -> None:
+    from shim_enterprise.workers import ai_act
+
+    async def none(*_args, **_kwargs):
+        return 0, 0
+
+    monkeypatch.setattr(ai_act, "generate_due_monthly_evidence", none)
+    monkeypatch.setattr(ai_act, "remind_incident_deadlines", none)
+    monkeypatch.setattr(ai_act.settings, "AI_ACT_AUDIT_ANCHOR_ENABLED", False)
+    monkeypatch.setattr(ai_act.settings, "OVERSIGHT_ENABLED", False)
+    organization, user, _, [key, _] = tenants[0]
+    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    overdue, waiting, unused, used = _pending(organization.id, key.id, 4)
+    overdue["expires_at"] = past
+    unused.update(status="approved", decided_by=user.id, use_by=past)
+    used.update(status="used", request_digest=None, expires_at=past)
+    async with async_sessionmaker(async_engine).begin() as session:
+        await session.execute(insert(RequestApproval), [overdue, waiting, unused, used])
+
+    summary = await ai_act.AuditMaintenanceWorker(
+        session_factory=async_sessionmaker(async_engine), interval_seconds=60
+    ).run_once()
+
+    rows = {row.request_id: row for row in await _rows(async_engine, organization.id)}
+    assert summary.request_approvals_expired >= 2
+    assert [
+        (rows[row["request_id"]].status, rows[row["request_id"]].request_digest)
+        for row in (overdue, waiting, unused, used)
+    ] == [
+        ("expired", None),
+        ("pending", waiting["request_digest"]),
+        ("expired", None),
+        ("used", None),
+    ]

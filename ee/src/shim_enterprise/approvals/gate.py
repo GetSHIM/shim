@@ -9,10 +9,10 @@ from functools import cache
 import hashlib
 import hmac
 import json
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,7 +20,12 @@ from shim.gateway.kernel.result import PreparedInference
 from shim.rules.approval import ApprovalDecision, ApprovalRequest
 from shim_enterprise.approvals.models import RequestApproval
 from shim_enterprise.core.config import settings
-from shim_enterprise.core.database import delete_in_batches
+from shim_enterprise.core.database import (
+    DELETE_BATCH,
+    DELETE_BATCHES,
+    bound_statements,
+    delete_in_batches,
+)
 from shim_enterprise.observability.enterprise_metrics import REQUEST_APPROVALS_TOTAL
 from shim_enterprise.outbox.handlers import APPROVAL_REQUESTED
 from shim_enterprise.outbox.publisher import OutboxWriter
@@ -64,27 +69,48 @@ def request_digest(
     return digest, len(material)
 
 
-async def expire_overdue(session: AsyncSession, tenant: UUID, *where: Any) -> None:
-    """Lazy expiry: a pending row past its lifetime, an approval past its use-by.
+# A pending row past its lifetime, an approval past its use-by.
+_OVERDUE = (
+    (RequestApproval.status == "pending") & (RequestApproval.expires_at <= func.now())
+) | ((RequestApproval.status == "approved") & (RequestApproval.use_by <= func.now()))
 
-    A row that can no longer be used keeps no digest of the request (legal rule).
-    """
+
+async def expire_overdue(session: AsyncSession, tenant: UUID, *where: Any) -> None:
+    """Lazy expiry; a row that can no longer be used keeps no digest of the request
+    (legal rule)."""
     await session.execute(
         update(RequestApproval)
-        .where(
-            RequestApproval.organization_id == tenant,
-            (
-                (RequestApproval.status == "pending")
-                & (RequestApproval.expires_at <= func.now())
-            )
-            | (
-                (RequestApproval.status == "approved")
-                & (RequestApproval.use_by <= func.now())
-            ),
-            *where,
-        )
+        .where(RequestApproval.organization_id == tenant, _OVERDUE, *where)
         .values(status="expired", request_digest=None)
     )
+
+
+async def expire_all_overdue(session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """Every tenant's overdue rows, so no digest waits for a read to expire it."""
+    expired = 0
+    for _ in range(DELETE_BATCHES):
+        async with session_factory.begin() as session:
+            await bound_statements(session)
+            batch = cast(
+                CursorResult[Any],
+                await session.execute(
+                    update(RequestApproval)
+                    # Checked again on the row itself: a request may have used it.
+                    .where(
+                        _OVERDUE,
+                        RequestApproval.id.in_(
+                            select(RequestApproval.id)
+                            .where(_OVERDUE)
+                            .limit(DELETE_BATCH)
+                        ),
+                    )
+                    .values(status="expired", request_digest=None)
+                ),
+            ).rowcount
+        expired += batch
+        if batch < DELETE_BATCH:
+            break
+    return expired
 
 
 async def delete_old_approvals(
