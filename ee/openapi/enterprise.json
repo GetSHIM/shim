@@ -5828,6 +5828,12 @@
               "min_tools": 10,
               "mode": "off"
             }
+          },
+          "transforms": {
+            "$ref": "#/components/schemas/TransformSettings",
+            "default": {
+              "json_compaction": "off"
+            }
           }
         },
         "title": "GatewaySettings",
@@ -6017,6 +6023,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ToolSearchPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transforms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransformPatch"
               },
               {
                 "type": "null"
@@ -12954,6 +12970,22 @@
             ],
             "title": "Team"
           },
+          "transforms_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transform band steps that changed the request, by id and version, with characters before and after and the strings changed; [] when the band ran and changed nothing, null when it did not run.",
+            "title": "Transforms Applied"
+          },
           "ttft_ms": {
             "anyOf": [
               {
@@ -16104,6 +16136,45 @@
           }
         },
         "title": "Transcription",
+        "type": "object"
+      },
+      "TransformPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "json_compaction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Compaction"
+          }
+        },
+        "title": "TransformPatch",
+        "type": "object"
+      },
+      "TransformSettings": {
+        "additionalProperties": false,
+        "description": "Transform band steps: lossless content changes, each off by default (S56).",
+        "properties": {
+          "json_compaction": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Json Compaction",
+            "type": "string"
+          }
+        },
+        "title": "TransformSettings",
         "type": "object"
       },
       "TranslationConfig": {

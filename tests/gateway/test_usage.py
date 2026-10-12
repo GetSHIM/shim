@@ -59,6 +59,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         rules_evaluated=False,
         rule_matches=[],
         settings_applied=None,
+        transforms_applied=None,
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -1835,6 +1836,41 @@ async def test_the_jsonl_event_carries_settings_applied_only_when_applied(
     event = json.loads(stream.getvalue())
     assert event.get("settings_applied") == (list(applied) if applied else None)
     assert ("settings_applied" in event) == bool(applied)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "applied",
+    [
+        None,
+        (),
+        (
+            {
+                "id": "json_compaction",
+                "version": 1,
+                "before_chars": 200,
+                "after_chars": 120,
+                "items": 2,
+            },
+        ),
+    ],
+)
+async def test_the_jsonl_event_carries_transforms_applied_when_the_band_ran(
+    applied,
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.transforms_applied = applied
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert ("transforms_applied" in event) == (applied is not None)
+    assert event.get("transforms_applied") == (
+        None if applied is None else list(applied)
+    )
 
 
 @pytest.mark.asyncio

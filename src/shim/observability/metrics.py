@@ -240,6 +240,11 @@ TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",
 )
+TRANSFORMS_TOTAL = Counter(
+    "shim_transforms_total",
+    "Transform band steps per request, by step and result.",
+    ("transform", "result"),
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

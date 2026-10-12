@@ -56,7 +56,8 @@ GatewayService
         |
         v
 GatewayKernel
-  policy -> admission -> privacy -> rules -> settings band -> provider start
+  policy -> admission -> privacy -> rules -> settings band -> transform band
+         -> provider start
          -> one SDK attempt -> restore -> finalize
         |
         v
@@ -291,7 +292,14 @@ each off by default: `anthropic_auto_cache` (a top-level Anthropic breakpoint) a
 `provider_betas`, which moves the Anthropic execution to the beta client) and
 `openai_reasoning_context`, for catalog routes and the registry aliases the tenant
 lists. A step that declines a request it was on for records a `settings.<step>`
-`skip` verdict. The `route` kind
+`skip` verdict. The transform band (`src/shim/gateway/pipeline/transform_band.py`)
+follows it, only when a transform is on, and changes content under four conditions:
+nothing changes below a published threshold, each step is deterministic and
+version-pinned, before and after sizes are recorded (`transforms_applied`), and the
+tenant can turn it off. Its one step, `json_compaction`, removes whitespace between
+JSON tokens in tool results and keeps a string only when it parses to the same value;
+it skips Anthropic requests bound to thinking with a `transforms.json_compaction`
+verdict, and runs in a worker thread above 65,536 candidate characters. The `route` kind
 ships no matcher yet.
 `ResponseWarning` also defines `SEMANTIC_WARN`, which no stage raises yet.
 Admission adds `MODEL_RETIRING` (retirement within 90 days) or `MODEL_RETIRED`

@@ -358,6 +358,15 @@ band setting off, and token counting. Ids and versions only, never
 a parameter value. The request list and its CSV (compact JSON) show it; the
 community JSONL event carries it only when a step was applied.
 
+`transforms_applied` lists the transform band steps that changed the request, as
+`{"id", "version", "before_chars", "after_chars"}` plus the step's own counts:
+`json_compaction` adds `items`, the tool result strings it compacted, and its
+character sums cover those strings only. Written with the privacy facts, `[]` when the
+band ran and changed nothing (no JSON tool result qualified, or the request was
+skipped as bound to Anthropic thinking), absent when no transform is on and for token
+counting. Sizes and counts only. The request list and its CSV show it, and the
+community JSONL event carries it whenever the band ran.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is

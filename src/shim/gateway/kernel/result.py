@@ -92,7 +92,13 @@ class PolicyVerdict(FrozenContractModel):
     rule_version: Literal[1] = 1
     policy_version: str = Field(min_length=1, max_length=128)
     stage: Literal[
-        "authentication", "admission", "privacy", "provider_spend", "rules", "settings"
+        "authentication",
+        "admission",
+        "privacy",
+        "provider_spend",
+        "rules",
+        "settings",
+        "transforms",
     ]
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
@@ -211,6 +217,8 @@ class PreparedInference:
     settings_applied: tuple[dict[str, object], ...] | None = None
     # Anthropic beta flags the band's applied steps need, in step order.
     provider_betas: tuple[str, ...] = ()
+    # The transform band's changes with their sizes; None when it did not run.
+    transforms_applied: tuple[dict[str, Any], ...] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
@@ -249,6 +257,7 @@ class PreparedInference:
             "provider_spend",
             "rules",
             "settings",
+            "transforms",
         ],
         outcome: Literal["allow", "mask", "deny", "error", "skip"],
         reason_code: str,

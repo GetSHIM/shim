@@ -164,6 +164,20 @@ class ThinkingHistoryPatch(BaseModel):
     openai_reasoning_context: Literal["off", "current_turn"] | None = None
 
 
+class TransformSettings(BaseModel):
+    """Transform band steps: lossless content changes, each off by default (S56)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    json_compaction: Literal["off", "on"] = "off"
+
+
+class TransformPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    json_compaction: Literal["off", "on"] | None = None
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -185,6 +199,7 @@ class GatewaySettings(BaseModel):
     provider_cache: ProviderCacheSettings = ProviderCacheSettings()
     tool_search: ToolSearchSettings = ToolSearchSettings()
     thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
+    transforms: TransformSettings = TransformSettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -213,6 +228,7 @@ class GatewaySettingsPatch(BaseModel):
     provider_cache: ProviderCachePatch | None = None
     tool_search: ToolSearchPatch | None = None
     thinking_history: ThinkingHistoryPatch | None = None
+    transforms: TransformPatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -391,6 +407,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Cost settings: the same tools and history reach the model.
     "tool_search": neutral,
     "thinking_history": neutral,
+    # Lossless: the model reads the same values in fewer characters.
+    "transforms": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

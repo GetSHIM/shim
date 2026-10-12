@@ -609,6 +609,15 @@ class DurableAccountingCoordinator:
                                 }
                             ),
                             **(
+                                {}
+                                if prepared.transforms_applied is None
+                                else {
+                                    "transforms_applied": list(
+                                        prepared.transforms_applied
+                                    )
+                                }
+                            ),
+                            **(
                                 {"approval_id": prepared.approval_id}
                                 if prepared.approval_id is not None
                                 else {}

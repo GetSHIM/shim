@@ -29,6 +29,7 @@ from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostproc
 from shim.gateway.pipeline.privacy import PrivacyStage
 from shim.gateway.pipeline.provider_spend import ProviderSpendStage
 from shim.gateway.pipeline.settings_band import SettingsBandStage, pins_in_scope
+from shim.gateway.pipeline.transform_band import TransformBandStage
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderNonStream,
@@ -333,6 +334,8 @@ class GatewayKernel:
                 if blocked is not None:
                     await self.usage.record_privacy(prepared)
                     raise rule_blocked(blocked)
+            if prepared.band.json_compaction:
+                prepared = await run_stage(TransformBandStage(), prepared)
             await self.usage.record_privacy(prepared)
             if leader is not None and (
                 answer := await self._leader_answer(prepared, leader)

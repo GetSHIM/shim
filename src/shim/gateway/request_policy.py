@@ -59,6 +59,8 @@ class BandSettings(FrozenContractModel):
     tool_search_api_key_ids: tuple[str, ...] = Field(default=(), max_length=100)
     anthropic_keep_thinking_turns: int = Field(default=0, ge=0, le=8)
     openai_reasoning_context: Literal["off", "current_turn"] = "off"
+    # The transform band's switch; it never starts the settings band.
+    json_compaction: bool = False
 
     @property
     def on(self) -> bool:

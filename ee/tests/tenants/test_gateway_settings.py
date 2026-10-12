@@ -141,6 +141,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
+            "transforms": {"json_compaction": "off"},
         },
         "revision": 0,
         "updated_at": None,
@@ -1113,6 +1114,7 @@ async def test_tool_search_and_thinking_history_round_trip_as_neutral_groups(
         {"tool_search": {"mode": "regex"}},
         {"thinking_history": {"anthropic_keep_turns": 3}},
         {"thinking_history": {"openai_reasoning_context": "current_turn"}},
+        {"transforms": {"json_compaction": "on"}},
     ],
 )
 def test_tool_search_and_thinking_changes_are_neutral(after) -> None:
@@ -1120,3 +1122,22 @@ def test_tool_search_and_thinking_changes_are_neutral(after) -> None:
 
     assert classify_change(GatewaySettings(), on) == ("neutral", [])
     assert classify_change(on, GatewaySettings()) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_json_compaction_round_trips(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"transforms": {"json_compaction": "on"}}),
+        _request(),
+        admin,
+        db,
+    )
+    row = await db.get(OrganizationGatewaySettings, test_org.id)
+
+    assert changed.settings.transforms.json_compaction == "on"
+    assert row.settings == {"transforms": {"json_compaction": "on"}}
+    for bad in ({"json_compaction": True}, {"json_compaction": "yes"}, {"other": "on"}):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"transforms": bad})

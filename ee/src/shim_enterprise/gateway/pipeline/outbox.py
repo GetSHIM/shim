@@ -225,6 +225,7 @@ _DIAGNOSTIC_FIELDS = (
     "rule_matches",
     "rule_matches_truncated",
     "settings_applied",
+    "transforms_applied",
     "approval_id",
     "request_archive",
 )

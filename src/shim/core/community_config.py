@@ -92,6 +92,7 @@ class CommunitySettings(BaseSettings):
     ] = Field(default_factory=list, max_length=64)
     SHIM_ANTHROPIC_KEEP_THINKING_TURNS: int = Field(default=0, ge=0, le=8)
     SHIM_OPENAI_REASONING_CONTEXT: Literal["off", "current_turn"] = "off"
+    SHIM_JSON_COMPACTION: Literal["off", "on"] = "off"
     SHIM_MODEL_LIFECYCLE_FILE: Path | None = None
     SHIM_MODEL_RETIRING_WARNING: Literal["record", "header"] = "record"
     # Azure OpenAI v1 for catalog routes: an Azure key or an Entra app (S52).

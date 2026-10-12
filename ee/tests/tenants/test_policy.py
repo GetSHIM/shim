@@ -528,6 +528,7 @@ async def test_the_provider_cache_setting_reaches_the_band(
                     "anthropic_keep_turns": 2,
                     "openai_reasoning_context": "current_turn",
                 },
+                "transforms": {"json_compaction": "on"},
             }
         )
     ) == BandSettings(
@@ -540,6 +541,7 @@ async def test_the_provider_cache_setting_reaches_the_band(
         tool_search_api_key_ids=(str(UUID(int=7)),),
         anthropic_keep_thinking_turns=2,
         openai_reasoning_context="current_turn",
+        json_compaction=True,
     )
 
 

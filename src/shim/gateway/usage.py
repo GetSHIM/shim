@@ -392,6 +392,11 @@ class LocalUsageLifecycle:
                 if prepared.settings_applied
                 else {}
             ),
+            **(
+                {}
+                if prepared.transforms_applied is None
+                else {"transforms_applied": list(prepared.transforms_applied)}
+            ),
             "warnings": list(prepared.warnings),
             "policy_verdicts": [
                 verdict.model_dump(mode="json") for verdict in prepared.policy_verdicts

@@ -22,6 +22,7 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Use the provider's cache discount](#use-the-providers-cache-discount)
 - [Load tools on demand](#load-tools-on-demand)
 - [Stop paying for old thinking](#stop-paying-for-old-thinking)
+- [Shrink JSON tool results](#shrink-json-tool-results)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -850,6 +851,38 @@ sent) or token counting. A client's own `context_management` or `reasoning.conte
 wins, with a `SETTING_CLIENT_OWNED` verdict. With both settings off, Anthropic models
 that keep earlier thinking keep billing it as input, as `prompt_tokens` show.
 
+## Shrink JSON tool results
+
+Send pretty-printed JSON your tools return without its indentation, so every later
+turn that resends the history pays for fewer input tokens.
+
+1. Set `SHIM_JSON_COMPACTION=on`.
+2. Read `transforms_applied` on the usage event: `{"id": "json_compaction",
+   "version": 1, "before_chars", "after_chars", "items"}` when a tool result changed,
+   `[]` when the band ran and nothing qualified.
+
+Only tool results are read: chat `role: "tool"` content (a string, or `text` parts),
+Responses `function_call_output` output (a string, or `input_text` parts), Anthropic
+`tool_result` content (a string, or `text` blocks), and every string inside a Gemini
+`functionResponse.response`. A string changes only when it is a whole JSON object or
+array of 64 to 1,000,000 characters with space, tab, CR or LF between tokens: those
+characters are dropped and everything else, string contents, number literals such as
+`1.10` and duplicate keys included, is copied byte for byte, and the result is kept
+only when it parses to the same value and is shorter. System, user and assistant
+text, tool call arguments, tool definitions and documents are never changed, nor is
+token counting, which counts the request as you sent it.
+
+Notes: the same input always gives the same output, so from the first request with
+the setting on the provider's prompt cache holds; on the request where the setting
+flips, a conversation in progress sends its earlier tool results in the other form
+once, writing the cache again from the first one. An Anthropic request with thinking
+on, or with thinking blocks in its history, is left alone (a
+`transforms.json_compaction` `skip` verdict, `TRANSFORM_THINKING_BOUND`): changing an
+earlier turn invalidates every later thinking block. Claude Code users get the same
+compaction at the source from shim-cli. Tool results over 65,536 characters in total
+are compacted off the event loop. `shim_transforms_total{transform, result}` counts
+the step per request.
+
 ## Stream long generations and read usage
 
 Stream long answers without losing exact token accounting.
@@ -950,6 +983,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
+| `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

@@ -251,6 +251,17 @@ _SEARCH_TOOLS = {
 }
 
 
+def thinking_bound(payload: Mapping[str, Any]) -> bool:
+    """An Anthropic request with thinking on, or thinking blocks in its history."""
+    return _thinking_on(payload) or any(
+        isinstance(block, Mapping)
+        and block.get("type") in {"thinking", "redacted_thinking"}
+        for message in _list(payload.get("messages"))
+        if isinstance(message, Mapping)
+        for block in _list(message.get("content"))
+    )
+
+
 def _eligible(protocol: str, tool: object) -> bool:
     if not isinstance(tool, Mapping):
         return False
@@ -323,16 +334,7 @@ def _tool_search(
         _skip(prepared, "tool_search", "SETTING_CLIENT_OWNED")
         return None
     # Changing tools mid-conversation invalidates every earlier thinking block.
-    if prepared.protocol == "messages" and (
-        _thinking_on(payload)
-        or any(
-            isinstance(block, Mapping)
-            and block.get("type") in {"thinking", "redacted_thinking"}
-            for message in _list(payload.get("messages"))
-            if isinstance(message, Mapping)
-            for block in _list(message.get("content"))
-        )
-    ):
+    if prepared.protocol == "messages" and thinking_bound(payload):
         _skip(prepared, "tool_search", "SETTING_THINKING_BOUND")
         return None
     kept = set(band.tool_search_keep_loaded) | _forced_names(payload.get("tool_choice"))

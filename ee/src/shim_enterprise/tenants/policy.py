@@ -453,6 +453,7 @@ class TenantRequestPolicyResolver:
                     tool_search_api_key_ids=tuple(map(str, search.api_key_ids)),
                     anthropic_keep_thinking_turns=thinking.anthropic_keep_turns,
                     openai_reasoning_context=thinking.openai_reasoning_context,
+                    json_compaction=gateway.transforms.json_compaction == "on",
                 ),
                 restore_withheld=frozenset(
                     kind

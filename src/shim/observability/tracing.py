@@ -27,6 +27,7 @@ SPAN_NAMES: Final[frozenset[str]] = frozenset(
         "gateway.quota_reservation",
         "gateway.privacy",
         "gateway.settings_band",
+        "gateway.transform_band",
         "gateway.provider_call",
         "gateway.postprocess",
         "gateway.stream",
@@ -40,6 +41,7 @@ ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "action",
         "actor_type",
+        "chars_saved",
         "endpoint",
         "entity_type",
         "estimated_input_tokens",
@@ -50,6 +52,7 @@ ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
         "gen_ai.response.finish_reasons",
         "gen_ai.usage.input_tokens",
         "gen_ai.usage.output_tokens",
+        "items",
         "maximum_output_tokens",
         "method",
         "model",

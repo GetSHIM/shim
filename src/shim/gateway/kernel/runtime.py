@@ -17,6 +17,7 @@ _STAGE_SPANS = {
     "admission": "gateway.admission",
     "privacy": "gateway.privacy",
     "settings_band": "gateway.settings_band",
+    "transform_band": "gateway.transform_band",
     "provider_spend": "gateway.quota_reservation",
     "provider_execution": "gateway.provider_call",
     "postprocess": "gateway.postprocess",

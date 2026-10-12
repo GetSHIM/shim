@@ -282,6 +282,14 @@ class RequestActivityView(BaseModel):
             "[] when the band ran and set nothing, null when it did not run."
         ),
     )
+    transforms_applied: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Transform band steps that changed the request, by id and version, with "
+            "characters before and after and the strings changed; [] when the band "
+            "ran and changed nothing, null when it did not run."
+        ),
+    )
     approval_id: UUID | None = Field(
         default=None,
         description="The request approval this request created, was refused under "
@@ -665,6 +673,7 @@ async def export_requests(
                 "response_analysis",
                 "rule_matches",
                 "settings_applied",
+                "transforms_applied",
                 "injection_markers",
                 "restore_withheld",
                 "approval_id",
@@ -718,6 +727,7 @@ async def export_requests(
                     else None,
                     _json(details.get("rule_matches")),
                     _json(details.get("settings_applied")),
+                    _json(details.get("transforms_applied")),
                     _json(details.get("injection_markers")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),

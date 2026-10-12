@@ -359,6 +359,23 @@ def test_tool_search_and_thinking_settings_are_off_and_bounded() -> None:
             CommunitySettings(_env_file=None, **{name: value})
 
 
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_json_compaction_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_JSON_COMPACTION == "off"
+    if not valid:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_JSON_COMPACTION=value)
+        return
+    assert (
+        CommunitySettings(
+            _env_file=None, SHIM_JSON_COMPACTION=value
+        ).SHIM_JSON_COMPACTION
+        == value
+    )
+
+
 def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
     settings = CommunitySettings(_env_file=None)
 

@@ -240,6 +240,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "anthropic_keep_turns": 0,
                 "openai_reasoning_context": "off",
             },
+            "transforms": {"json_compaction": "off"},
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -276,6 +277,7 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                     "anthropic_keep_turns": 0,
                     "openai_reasoning_context": "off",
                 },
+                "transforms": {"json_compaction": "off"},
             }
         }
     }

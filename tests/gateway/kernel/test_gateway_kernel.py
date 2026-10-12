@@ -49,9 +49,11 @@ def _kernel(usage) -> GatewayKernel:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("with_pin", [False, True])
+@pytest.mark.parametrize(
+    ("with_pin", "with_transform"), [(False, False), (True, False), (True, True)]
+)
 async def test_kernel_runs_the_authoritative_stage_order(
-    monkeypatch: pytest.MonkeyPatch, with_pin: bool
+    monkeypatch: pytest.MonkeyPatch, with_pin: bool, with_transform: bool
 ) -> None:
     order: list[str] = []
     prepared = SimpleNamespace(
@@ -66,7 +68,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         privacy=_NO_PII,
         payload={},
         rules=None,
-        band=BandSettings(),
+        band=BandSettings(json_compaction=with_transform),
     )
     provider_output = object()
     response = Response("ok")
@@ -81,6 +83,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         ("AdmissionStage", "admission"),
         ("PrivacyStage", "privacy"),
         ("SettingsBandStage", "settings_band"),
+        ("TransformBandStage", "transform_band"),
         ("ProviderSpendStage", "provider_spend"),
         ("ProviderExecutionStage", "provider_execution"),
         ("PostprocessStage", "postprocess"),
@@ -132,6 +135,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         "admission",
         "privacy",
         *(["settings_band"] if with_pin else []),
+        *(["transform_band"] if with_transform else []),
         "record_privacy",
         "provider_spend",
         "provider_execution",
@@ -1087,10 +1091,8 @@ def band_spans(monkeypatch):
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr(tracing_module.trace, "get_tracer", provider.get_tracer)
-    yield lambda: [
-        span.attributes
-        for span in exporter.get_finished_spans()
-        if span.name == "gateway.settings_band"
+    yield lambda name="gateway.settings_band": [
+        span.attributes for span in exporter.get_finished_spans() if span.name == name
     ]
     provider.shutdown()
 
@@ -1207,6 +1209,147 @@ async def test_without_a_pin_the_band_is_skipped(
     [line] = lines
     assert "settings_applied" not in line
     assert band_spans() == []
+
+
+_PRETTY = json.dumps(
+    {"rows": [{"id": n, "name": f"row {n}"} for n in range(4)]}, indent=2
+)
+_COMPACT = json.dumps(json.loads(_PRETTY), separators=(",", ":"))
+_TOOL_RESULTS = {
+    "chat": (
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": _PRETTY},
+            ]
+        },
+        lambda body: body["messages"][2]["content"],
+    ),
+    "responses": (
+        {
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "f",
+                    "arguments": "{}",
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": _PRETTY},
+            ]
+        },
+        lambda body: body["input"][1]["output"],
+    ),
+    "messages": (
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "f", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": _PRETTY}
+                    ],
+                },
+            ]
+        },
+        lambda body: body["messages"][2]["content"][0]["content"],
+    ),
+    "gemini": (
+        {
+            "contents": [
+                {"role": "user", "parts": [{"text": "hello"}]},
+                {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "f", "args": {}}}],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "f",
+                                "response": {"output": _PRETTY},
+                            }
+                        }
+                    ],
+                },
+            ]
+        },
+        lambda body: body["contents"][2]["parts"][0]["functionResponse"]["response"][
+            "output"
+        ],
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_TOOL_RESULTS))
+@pytest.mark.parametrize("setting", ["on", "off"])
+async def test_json_compaction_reaches_the_provider_through_each_sdk(
+    monkeypatch, band_spans, route, setting
+) -> None:
+    body, sent = _TOOL_RESULTS[route]
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        None,
+        route,
+        settings={"SHIM_JSON_COMPACTION": setting},
+        extra=body,
+    )
+
+    assert response.status_code == 200
+    [call] = calls
+    [line] = lines
+    transform_spans = band_spans(name="gateway.transform_band")
+    if setting == "off":
+        assert sent(json.loads(call.content)) == _PRETTY
+        assert "transforms_applied" not in line and transform_spans == []
+        return
+    assert sent(json.loads(call.content)) == _COMPACT
+    assert line["transforms_applied"] == [
+        {
+            "id": "json_compaction",
+            "version": 1,
+            "before_chars": len(_PRETTY),
+            "after_chars": len(_COMPACT),
+            "items": 1,
+        }
+    ]
+    assert transform_spans == [
+        {"items": 1, "chars_saved": len(_PRETTY) - len(_COMPACT), "status": "success"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_token_counting_counts_the_uncompacted_request(monkeypatch) -> None:
+    body, sent = _TOOL_RESULTS["messages"]
+
+    response, [call], _ = await _call_with_rules(
+        monkeypatch,
+        None,
+        "count_tokens",
+        settings={"SHIM_JSON_COMPACTION": "on"},
+        extra=body,
+    )
+
+    assert response.status_code == 200
+    assert sent(json.loads(call.content)) == _PRETTY
 
 
 @pytest.mark.asyncio
