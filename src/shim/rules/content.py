@@ -468,6 +468,10 @@ class ContentRules:
             self.budget.remaining -= perf_counter() - started
         if truncated:
             self.truncated.add(rule.id)
+            # Records past the cap were never read, so an enforced mask or block
+            # cannot vouch for them: known values repeated as decoys would pass.
+            if rule.state == "enforced" and rule.action in {"mask", "block"}:
+                self.errors.add(rule.id)
         if matched:
             self.values.setdefault(rule.id, set()).update(map(str, matched))
         # The set's label is the placeholder type of an enforced mask.

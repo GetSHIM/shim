@@ -62,10 +62,13 @@ fingerprints set (2 to 200 shared fingerprints). In the privacy stage, for every
 
 - records: values shaped like the set's primary fields are hashed and looked up; for each
   candidate record the other fields are looked for within 300 characters of the hit
-  (names: every one to three letter words apart by spaces and at most one hyphen or
-  apostrophe; phones also written with dots or brackets). At most 2,000 candidates per
-  string; beyond,
-  the match says `truncated: true`;
+  (names: every one to three letter words apart by spaces and at most one dash or
+  apostrophe; phones also written with dots or brackets; a TCKN or VKN also grouped by
+  spaces or hyphens; digits of any script, such as Arabic-Indic, count as the number they
+  are). Fields are matched within one string: a record split across messages or content
+  parts is not matched. At most 2,000 candidates per string; beyond, the match says
+  `truncated: true`, and an enforced `mask` or `block` refuses the request with
+  `RULE_BLOCKED`, because the records past the cap were never read;
 - fingerprints: a string of 40 words or more is fingerprinted and compared.
 
 The count is the distinct records or documents matched in the request. Enforced `mask`

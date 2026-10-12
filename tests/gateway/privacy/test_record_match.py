@@ -367,3 +367,47 @@ def test_a_phone_written_with_dots_or_brackets_matches(written) -> None:
     )
 
     assert index.match_records(f"Ali Veli, tel {written}", 2)[0] == {0}
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "100 000 001 46",
+        "100-000-001-46",
+        "١٠٠٠٠٠٠٠١٤٦",  # Arabic-Indic digits: a model reads them as the number
+        "१०००००००१४६",  # Devanagari digits
+    ],
+)
+def test_a_tckn_written_with_separators_or_other_digits_matches(written) -> None:
+    index = _index(
+        RecordField("tckn", primary=True),
+        RecordField("name"),
+        rows=[[("tckn", "10000000146"), ("name", "Ali Veli")]],
+    )
+
+    assert index.match_records(f"TC {written}, Ali Veli", 2)[0] == {0}
+
+
+@pytest.mark.parametrize("dash", ["–", "—", "‐", "‑"])
+def test_a_name_joined_by_any_dash_matches(dash) -> None:
+    index = _index(
+        RecordField("token", primary=True),
+        RecordField("name"),
+        rows=[[("token", "MUS000001"), ("name", "Ayşe-Nur Yılmaz")]],
+    )
+
+    assert index.match_records(f"MUS000001 Ayşe{dash}Nur Yılmaz", 2)[0] == {0}
+
+
+def test_separators_never_join_a_digit_run_to_its_neighbour() -> None:
+    index = _index(
+        RecordField("tckn", primary=True),
+        RecordField("name"),
+        rows=[[("tckn", "10000000146"), ("name", "Ali Veli")]],
+    )
+
+    # A longer run is another number, with or without a separator before it.
+    assert index.match_records("910000000146 Ali Veli", 2)[0] == set()
+    assert index.match_records("12 10000000146 Ali Veli", 2)[0] == {0}
+    # A run that takes the record's first digits does not hide the record.
+    assert index.match_records("99 100 000 001 46 Ali Veli", 2)[0] == {0}

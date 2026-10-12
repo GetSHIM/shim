@@ -2774,3 +2774,26 @@ async def test_a_set_that_could_not_load_fails_closed_only_when_enforced(
         assert calls == [] and response.headers.get("retry-after") == "5"
     else:
         assert line["rule_matches"][0]["error"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("state", "status"), [("enforced", 400), ("monitor", 200)])
+async def test_decoys_that_fill_the_candidate_cap_never_let_a_record_through(
+    monkeypatch, state, status
+) -> None:
+    from shim.privacy import record_match
+
+    # Known primaries alone push the real record past the cap, unread.
+    monkeypatch.setattr(record_match, "MAX_CANDIDATES", 3)
+    response, calls, [line] = await _call_with_rules(
+        monkeypatch,
+        _record_rules("block", state=state),
+        "chat",
+        text="MUS000000 " * 3 + "MUS000001 İsmail Işık",
+        record_sets={_SET_ID: _customer_set()},
+    )
+
+    assert response.status_code == status
+    assert line["rule_matches"][0]["truncated"] is True
+    if status == 400:
+        assert calls == [] and response.headers["x-shim-rule-id"] == "customers"

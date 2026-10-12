@@ -44,8 +44,10 @@ FIELD_WINDOW = 300
 MAX_CANDIDATES = 2_000
 
 _SHAPES: dict[FieldKind, re.Pattern[str]] = {
-    "tckn": re.compile(r"(?<!\d)\d{11}(?!\d)"),
-    "vkn": re.compile(r"(?<!\d)\d{10}(?!\d)"),
+    # A space or hyphen may group the digits. Every start is tried (the value is
+    # group 1 of a lookahead), so a run that borrows the first digits hides nothing.
+    "tckn": re.compile(r"(?<!\d)(?=(\d(?:[ -]?\d){10})(?!\d))"),
+    "vkn": re.compile(r"(?<!\d)(?=(\d(?:[ -]?\d){9})(?!\d))"),
     "iban": re.compile(r"(?<![A-Za-z0-9])TR\d{2}(?: ?\d{4}){5} ?\d{2}(?!\d)", re.I),
     # Starting only where a run starts keeps a long run without "@" linear.
     "email": re.compile(r"(?<![\w.+-])[\w.+-]{1,64}@[\w-]+(?:\.[\w-]+)+"),
@@ -57,8 +59,8 @@ _SHAPES: dict[FieldKind, re.Pattern[str]] = {
 }
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,63}")
 _LETTERS = re.compile(r"[^\W\d_]+")
-# Between the words of one name: spaces, and at most one hyphen or apostrophe.
-_NAME_GAP = re.compile(r"\s*[-'’]?\s*")
+# Between the words of one name: spaces, and at most one dash or apostrophe.
+_NAME_GAP = re.compile(r"\s*[-'’‐‑‒–—]?\s*")
 _NOT_WORD = re.compile(r"[^\w]+|_+")
 
 
@@ -75,8 +77,14 @@ def normalize(
     """The field's normal form, or None when the value is not of the kind."""
 
     text = unicodedata.normalize("NFKC", value).strip()
+    if kind in {"tckn", "vkn", "digits", "phone", "iban"} and not text.isascii():
+        # Any script's digits are the number a model reads: Arabic-Indic too.
+        text = "".join(
+            str(unicodedata.decimal(char)) if char.isdecimal() else char
+            for char in text
+        )
     if kind in {"tckn", "vkn", "digits"}:
-        digits = re.sub(r"\s", "", text)
+        digits = re.sub(r"[\s-]", "", text)
         size = {"tckn": (11, 11), "vkn": (10, 10)}.get(kind) or length or (4, 34)
         ok = digits.isascii() and digits.isdigit() and size[0] <= len(digits) <= size[1]
         return digits if ok else None
@@ -231,12 +239,14 @@ class RecordSetIndex:
                         )
             return
         for found in _SHAPES[kind].finditer(text):
-            normalized = normalize(kind, found.group(), spec.length)
+            # The value is the last group: the whole match, or a lookahead's group 1.
+            group = found.re.groups
+            normalized = normalize(kind, found.group(group), spec.length)
             if normalized:
                 yield (
                     record_hash(self.key, kind, normalized),
-                    offset + found.start(),
-                    offset + found.end(),
+                    offset + found.start(group),
+                    offset + found.end(group),
                 )
 
     def match_records(
