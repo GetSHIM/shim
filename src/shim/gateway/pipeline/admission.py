@@ -903,7 +903,18 @@ def _estimate_input_tokens(
     Keys hash in the order the client sent them, so a reordered body is another request.
     """
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    encoded = serialized.encode("utf-8", errors="backslashreplace")
+    try:
+        encoded = serialized.encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate ("\ud800" in the JSON) is no text: refused before privacy
+        # could miss it, never rewritten into something the provider would get.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": "The request contains an unpaired UTF-16 surrogate.",
+            },
+        ) from None
     # One token per UTF-8 byte bounds tokenizer-hostile provider payloads.
     return max(1, len(encoded)), hashlib.sha256(
         identity.encode() + b"\n" + encoded

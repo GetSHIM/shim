@@ -476,6 +476,7 @@ except openai.APIStatusError as error:
 | Azure's content filter refused the prompt | 400 `PROVIDER_CONTENT_FILTERED`; the message names the categories | none: change the prompt; sending it unchanged fails again |
 | A Bedrock deployment's inference profile leaves the regions the tenant allows (enterprise) | `BEDROCK_REGION_NOT_ALLOWED` | none: use a deployment inside the allowed regions |
 | The provider SDK refused the request before sending it | 400 `INVALID_REQUEST` | none: correct the request |
+| A string holds an unpaired UTF-16 surrogate (`"\ud800"` in the JSON), before privacy reads it | 400 `INVALID_REQUEST` | none: correct the request |
 | Provider answered another error | the provider's status, `PROVIDER_TIMEOUT` for a timeout status, otherwise `PROVIDER_UNAVAILABLE` | none from shim |
 | Provider call timed out | 504 `PROVIDER_TIMEOUT` | none from shim |
 | Provider unreachable, or its circuit is open | 503 `PROVIDER_UNAVAILABLE` | none from shim |
