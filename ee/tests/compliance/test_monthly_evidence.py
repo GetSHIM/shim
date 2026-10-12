@@ -987,6 +987,24 @@ async def test_two_workers_store_one_file_and_one_notice(async_engine) -> None:
             )
 
 
+@pytest.mark.asyncio
+async def test_an_analyzer_that_labelled_only_excluded_answers_is_not_off(db) -> None:
+    from ee.tests.observability.test_language_cost import _answer, _tenant
+
+    _, key = await _tenant(db)
+    _answer(db, key, characters=50)
+    _answer(db, key, tool_call_names=["lookup"])
+    await db.flush()
+    window = evidence.monthly_window(
+        "2026-10", now=datetime(2026, 11, 2, tzinfo=timezone.utc)
+    )
+
+    assert await evidence.language_costs(db, key.organization_id, window) == (
+        (),
+        None,
+    )
+
+
 @pytest.mark.parametrize("english", [30, 0])
 @pytest.mark.asyncio
 async def test_the_language_section_lists_models_with_30_turkish_answers(
