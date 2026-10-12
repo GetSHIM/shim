@@ -797,6 +797,8 @@ async def test_only_the_key_owner_rotates_a_key_and_an_administrator_revokes_it(
         for caller in (admin, owner, team_admin)
     ]
     still = await authenticate_api_key(db, plaintext)
+    # The console offers Rotate only on keys whose owner is the viewer.
+    listed = await call(admin, "GET", "/api-keys")
     rotated = await call(holder, "POST", f"/api-keys/{key.id}/rotate")
     revoked = await call(admin, "DELETE", f"/api-keys/{key.id}")
 
@@ -806,7 +808,11 @@ async def test_only_the_key_owner_rotates_a_key_and_an_administrator_revokes_it(
             "Only the key's owner can rotate it; an administrator can revoke it.",
         )
     assert still is not None and still.id == key.id
+    assert [row["user_id"] for row in listed.json() if row["id"] == str(key.id)] == [
+        str(holder.id)
+    ]
     assert rotated.status_code == 200 and rotated.json()["plaintext"] != plaintext
+    assert rotated.json()["user_id"] == str(holder.id)
     assert revoked.status_code == 204
     await db.refresh(key)
     assert key.is_active is False

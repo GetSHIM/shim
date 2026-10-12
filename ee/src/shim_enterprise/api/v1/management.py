@@ -444,6 +444,7 @@ class ApiKeyView(BaseModel):
     team: str | None
     team_id: UUID | None
     allowed_models: list[str] | None
+    user_id: UUID = Field(description="The key's owner: only they may rotate it.")
 
 
 class CreatedApiKey(ApiKeyView):
