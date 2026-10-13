@@ -299,6 +299,11 @@ class RequestActivityView(BaseModel):
     attempt_number: int | None = Field(default=None, ge=2)
     attempt_reason: str | None = None
     attempt_rule_id: str | None = None
+    shadow_of: str | None = Field(
+        default=None,
+        description="On a copy of a finished request sent to a candidate model: "
+        "the primary request's id; null otherwise.",
+    )
     route_decision: dict[str, Any] | None = Field(
         default=None,
         description="Where a tenant rule sent the request after privacy; null "
@@ -705,6 +710,7 @@ async def export_requests(
                 "attempt_reason",
                 "attempt_rule_id",
                 "route_decision",
+                "shadow_of",
                 "injection_markers",
                 "restore_withheld",
                 "approval_id",
@@ -764,6 +770,7 @@ async def export_requests(
                     details.get("attempt_reason"),
                     details.get("attempt_rule_id"),
                     _json(details.get("route_decision")),
+                    details.get("shadow_of"),
                     _json(details.get("injection_markers")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),

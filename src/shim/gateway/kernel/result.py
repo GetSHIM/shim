@@ -195,6 +195,15 @@ class AttemptInfo:
 
 
 @dataclass(frozen=True)
+class ShadowInfo:
+    """A copy of a finished request sent to a candidate target."""
+
+    # The primary request's id.
+    of: str
+    rule_id: str
+
+
+@dataclass(frozen=True)
 class PreparedInference:
     """One validated native provider request plus trusted gateway state."""
 
@@ -240,6 +249,7 @@ class PreparedInference:
         default=None, repr=False, compare=False
     )
     attempt: AttemptInfo | None = None
+    shadow: ShadowInfo | None = None
     route_decision: Mapping[str, Any] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False

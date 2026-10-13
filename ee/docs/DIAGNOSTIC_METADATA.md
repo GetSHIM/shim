@@ -382,6 +382,12 @@ or `catalog`), `reason`, `conversation_id` and `outcome`, with an earlier decisi
 the same request under `previous` (one level); `deployment_kind` and `deployment_id`
 are then rewritten in the same update. Absent otherwise.
 
+`shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
+to a candidate model: the primary request's id and the rule that chose it. The copy
+has its own tokens and cost, which the tenant pays, and reserves no daily or monthly
+request unit (`request_count` 0). The request list and its CSV carry `shadow_of`;
+both keys are absent on every other row.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is

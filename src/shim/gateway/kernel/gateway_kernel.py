@@ -23,6 +23,14 @@ from shim.gateway.admission import (
     TaskCounter,
 )
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
+from shim.gateway.kernel.shadow import (
+    ShadowObservation,
+    ShadowSelection,
+    ShadowSender,
+    observation,
+    selectable,
+    shadow_of,
+)
 from shim.gateway.kernel.attempts import (
     AttemptOutcome,
     AttemptPolicy,
@@ -34,7 +42,19 @@ from shim.gateway.kernel.attempts import (
 )
 from shim.gateway.pipeline.admission import AdmissionStage, rule_blocked
 from shim.gateway.pipeline.authenticate import AuthenticateStage, GatewayInvocation
-from shim.gateway.pipeline.postprocess import PostprocessStage, ResponsePostprocessor
+from shim.gateway.pipeline.analysis import AnalysisToolCall
+from shim.gateway.pipeline.postprocess import (
+    OnSettled,
+    PostprocessStage,
+    ResponsePostprocessor,
+)
+from shim.gateway.streaming.finalization import StreamFinalization
+from shim.gateway.streaming.meter import (
+    KEPT_ANSWER_CHARACTERS,
+    KEPT_TOOL_CALLS,
+    answer_text,
+    answer_tool_calls,
+)
 from shim.gateway.pipeline.privacy import PrivacyStage
 from shim.gateway.pipeline.provider_spend import ProviderSpendStage
 from shim.gateway.pipeline.settings_band import SettingsBandStage, pins_in_scope
@@ -54,6 +74,7 @@ from shim.gateway.usage import (
 )
 from shim.observability.metrics import (
     EXTRA_ATTEMPTS_TOTAL,
+    SHADOW_COPIES_TOTAL,
     INFLIGHT_DUPLICATES_TOTAL,
     REQUESTS_IN_FLIGHT,
     REQUESTS_TOTAL,
@@ -120,6 +141,8 @@ class GatewayKernel:
         task_counter: TaskCounter | None = None,
         model_lifecycle: ModelLifecycle | None = None,
         attempt_policy: AttemptPolicy | None = None,
+        shadow_sender: ShadowSender | None = None,
+        shadow_max_in_flight: int = 4,
     ) -> None:
         self.executions = dict(executions)
         if not self.executions or not set(self.executions) <= _PROVIDERS:
@@ -146,6 +169,10 @@ class GatewayKernel:
         self.approval_gate = approval_gate
         self.honor_trace_parent = honor_trace_parent
         self.attempt_policy = attempt_policy
+        self.shadow_sender = shadow_sender
+        self.shadow_max_in_flight = shadow_max_in_flight
+        # Per process; a copy beyond the bound is dropped, never queued.
+        self._shadow_in_flight = 0
 
     async def execute(self, invocation: GatewayInvocation) -> Response:
         endpoint = bounded_label("endpoint", invocation.metadata.endpoint)
@@ -362,12 +389,13 @@ class GatewayKernel:
                     attempts=1,
                     byok=byok,
                 )
-                # Kept by reference: an extra attempt runs the bands again from here.
-                prepared = (
-                    replace(prepared, pre_band_payload=prepared.payload)
-                    if target is None
-                    else retargeted(prepared, target)
-                )
+                if target is not None:
+                    prepared = retargeted(prepared, target)
+            if (
+                self.attempt_policy is not None or self.shadow_sender is not None
+            ) and prepared.pre_band_payload is None:
+                # Kept by reference: an extra attempt or a copy runs the bands again from here.
+                prepared = replace(prepared, pre_band_payload=prepared.payload)
             prepared, blocked = await self._bands(prepared)
             await self.usage.record_privacy(prepared)
             if blocked is not None:
@@ -385,13 +413,22 @@ class GatewayKernel:
                 ProviderSpendStage(invocation, self.usage),
                 prepared,
             )
+            selection = self._shadow_selection(prepared)
             attempts = 1
             while True:
+                on_settled = (
+                    None
+                    if selection is None
+                    else self._shadow_copy(invocation, execution, prepared, selection)
+                )
+                keep = selection is not None and selection.keep_answer
                 stream_session = None
                 if prepared.stream:
                     stream_session = self.postprocessor.create_stream_session(
                         prepared,
                         on_terminal=lambda: self.inflight.leave(*inflight_key),
+                        on_settled=on_settled,
+                        keep_answer=keep,
                     )
                 # A stream's session releases its own call at its terminal state.
                 in_flight = REQUESTS_IN_FLIGHT.labels(
@@ -467,6 +504,9 @@ class GatewayKernel:
                             self.postprocessor,
                             prepared,
                             stream_session=stream_session,
+                            # Only the attempt that serves is copied.
+                            on_settled=on_settled if target is None else None,
+                            keep_answer=keep,
                         ),
                         provider_output,
                     )
@@ -513,6 +553,149 @@ class GatewayKernel:
                 self.inflight.leave(*inflight_key)
             if admission.inflight_duplicate_of is not None:
                 INFLIGHT_DUPLICATES_TOTAL.labels(shared=str(shared).lower()).inc()
+
+    def _shadow_selection(self, prepared: PreparedInference) -> ShadowSelection | None:
+        if self.shadow_sender is None or not selectable(prepared):
+            return None
+        try:
+            return self.shadow_sender.select(prepared)
+        except Exception as exc:
+            logger.warning("Shadow selection failed type=%s", type(exc).__name__)
+            SHADOW_COPIES_TOTAL.labels(outcome="failed").inc()
+            return None
+
+    def _shadow_copy(
+        self,
+        invocation: GatewayInvocation,
+        execution: Any,
+        primary: PreparedInference,
+        selection: ShadowSelection,
+    ) -> OnSettled:
+        # Runs after the caller's answer is complete, as the postprocessor's
+        # settled hook: it never touches the caller and never raises.
+        async def copy(
+            terminal: StreamFinalization,
+            text: str | None,
+            tool_calls: tuple[AnalysisToolCall, ...],
+            truncated: bool,
+        ) -> None:
+            assert self.shadow_sender is not None
+            if terminal.terminal_status != "completed":
+                return
+            if self._shadow_in_flight >= self.shadow_max_in_flight:
+                SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated").inc()
+                return
+            self._shadow_in_flight += 1
+            try:
+                candidate = await self.shadow_sender.candidate(primary, selection)
+                if candidate is None:
+                    SHADOW_COPIES_TOTAL.labels(outcome="no_candidate").inc()
+                    return
+                if (
+                    candidate.deployment_kind != "internal"
+                    and candidate.deployment_kind != primary.deployment_kind
+                ) or not candidate.provider_target.credential_reference:
+                    SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
+                    return
+                shadow, blocked = await self._bands(
+                    shadow_of(primary, selection, candidate)
+                )
+                if blocked is not None:
+                    SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
+                    return
+                observed = await self._run_shadow(
+                    replace(invocation, provider_credential=None),
+                    execution,
+                    shadow,
+                    keep_answer=selection.keep_answer,
+                )
+                SHADOW_COPIES_TOTAL.labels(outcome="sent").inc()
+                await self.shadow_sender.compare(
+                    primary,
+                    selection,
+                    observation(primary, terminal, text, tool_calls, truncated),
+                    observed,
+                )
+            except Exception as exc:
+                logger.warning("Shadow copy failed type=%s", type(exc).__name__)
+                SHADOW_COPIES_TOTAL.labels(outcome="failed").inc()
+            finally:
+                self._shadow_in_flight -= 1
+
+        return copy
+
+    async def _run_shadow(
+        self,
+        invocation: GatewayInvocation,
+        execution: Any,
+        shadow: PreparedInference,
+        *,
+        keep_answer: bool,
+    ) -> ShadowObservation:
+        # The copy is its own request: no rate limit, repeat or task counter sees it.
+        assert shadow.admission is not None
+        try:
+            await self.usage.admit(shadow, shadow.admission)
+        except BaseException:
+            await self.usage.reject(shadow)
+            raise
+        settled: asyncio.Future[ShadowObservation] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        async def observe(
+            terminal: StreamFinalization,
+            text: str | None,
+            tool_calls: tuple[AnalysisToolCall, ...],
+            truncated: bool,
+        ) -> None:
+            settled.set_result(
+                observation(shadow, terminal, text, tool_calls, truncated)
+            )
+
+        try:
+            await self.usage.record_privacy(shadow)
+            shadow = await run_stage(ProviderSpendStage(invocation, self.usage), shadow)
+            output = await ProviderExecutionStage(
+                invocation, execution, self.usage
+            ).run(shadow)
+        except ProviderCallError as error:
+            await self._fail_safely(shadow, reason=_failure_reason(error))
+            return ShadowObservation(
+                request_id=str(shadow.request_id),
+                status="provider_error",
+                completion_outcome=None,
+                answer_text=None,
+                prompt_tokens=0,
+                completion_tokens=0,
+                cost_usd=None,
+                provider_latency_ms=None,
+                ttft_ms=None,
+                error_code=error.error_code,
+            )
+        except BaseException:
+            # A copy cancelled at shutdown, or one that failed, is settled here.
+            await self._fail_safely(shadow, reason="request_aborted")
+            raise
+        if isinstance(output, ProviderNonStream):
+            _, terminal = await self.postprocessor.settle_json(shadow, output)
+            text = answer_text(output.payload) if keep_answer else None
+            calls = answer_tool_calls(output.payload) if keep_answer else ()
+            return observation(
+                shadow,
+                terminal,
+                text[:KEPT_ANSWER_CHARACTERS] if text is not None else None,
+                calls[:KEPT_TOOL_CALLS],
+                (text is not None and len(text) > KEPT_ANSWER_CHARACTERS)
+                or len(calls) > KEPT_TOOL_CALLS,
+            )
+        session = self.postprocessor.create_stream_session(
+            shadow, on_settled=observe, keep_answer=keep_answer
+        )
+        await self.postprocessor.finalize(shadow, output, stream_session=session)
+        async for _ in session:
+            pass
+        return await settled
 
     async def _bands(
         self, prepared: PreparedInference

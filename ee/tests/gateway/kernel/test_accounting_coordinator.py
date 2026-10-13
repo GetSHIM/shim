@@ -116,6 +116,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         transforms_applied=None,
         route_decision=None,
         attempt=None,
+        shadow=None,
         band=BandSettings(),
         approval_id=None,
         unpriced=False,
@@ -448,6 +449,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         transforms_applied=None,
         route_decision=None,
         attempt=None,
+        shadow=None,
         approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
@@ -994,6 +996,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         transforms_applied=None,
         route_decision=None,
         attempt=None,
+        shadow=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -4114,3 +4117,107 @@ async def test_two_attempts_are_two_rows_each_with_its_own_cost(
     assert by_id[second.request_id]["attempt_group_id"] == first.request_id
     assert by_id[second.request_id]["attempt_number"] == "2"
     assert by_id[first.request_id]["attempt_number"] == ""
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
+    db, test_api_key, monkeypatch
+) -> None:
+    from shim.gateway.kernel.result import ShadowInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+    copy = _prepared()
+    copy.tenant_id = test_api_key.organization_id
+    copy.api_key_id = test_api_key.id
+    copy.source_endpoint = "chat.completions"
+    copy.policy = SimpleNamespace(team=None)
+    copy.context.started_at = started_at
+    copy.admission.cost_center = "untagged"
+    copy.admission.tags = ()
+    copy.admission.repeat_chain_length = None
+    copy.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
+    copy.shadow = ShadowInfo(of="req_primary", rule_id="change_test")
+
+    await usage.admit(copy, copy.admission)
+    await usage.record_privacy(copy)
+    await coordinator.reserve_spend(copy, False, db)
+    await coordinator.finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=copy.tenant_id,
+            request_id=copy.request_id,
+            quota_action=TerminalAction.SETTLE,
+            spend_action=TerminalAction.SETTLE,
+            prompt_tokens=20,
+            completion_tokens=2,
+            actual_cost_usd=Decimal("0.00002"),
+            provider_model=copy.pricing_model,
+            lifecycle_status="completed",
+        ),
+    )
+
+    metadata = await db.scalar(
+        select(RequestLifecycle.lifecycle_metadata).where(
+            RequestLifecycle.request_id == copy.request_id
+        )
+    )
+    assert (metadata["shadow_of"], metadata["shadow_rule_id"]) == (
+        "req_primary",
+        "change_test",
+    )
+    events = {
+        event.event_type: event
+        for event in (
+            await db.scalars(
+                select(UsageLedger).where(UsageLedger.request_id == copy.request_id)
+            )
+        ).all()
+    }
+    assert events["quota_reservation"].request_count == 0
+    assert {"spend_reservation", "spend_settlement"} <= set(events)
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == copy.request_id,
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).scalar_one()
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=copy.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=copy.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].shadow_of == "req_primary"
+    assert row["shadow_of"] == "req_primary"

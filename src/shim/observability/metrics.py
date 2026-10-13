@@ -240,6 +240,11 @@ TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",
 )
+SHADOW_COPIES_TOTAL = Counter(
+    "shim_shadow_copies_total",
+    "Copies of finished requests sent to a candidate target, by outcome.",
+    ("outcome",),
+)
 EXTRA_ATTEMPTS_TOTAL = Counter(
     "shim_extra_attempts_total",
     "Extra provider attempts tenant rules asked for, by reason and outcome.",

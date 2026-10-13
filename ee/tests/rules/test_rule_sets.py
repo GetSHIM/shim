@@ -547,6 +547,7 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
         transforms_applied=None,
         route_decision=None,
         attempt=None,
+        shadow=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",

@@ -12972,6 +12972,18 @@
             "description": "Settings band steps that set a provider parameter, by id and version; [] when the band ran and set nothing, null when it did not run.",
             "title": "Settings Applied"
           },
+          "shadow_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a copy of a finished request sent to a candidate model: the primary request's id; null otherwise.",
+            "title": "Shadow Of"
+          },
           "shim_latency_ms": {
             "anyOf": [
               {

@@ -88,6 +88,22 @@ consumed. A stream is never offered once it has started. The client sees the ser
 attempt's `X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an
 answered attempt a later one supersedes is settled and never returned.
 
+The kernel also takes an optional `ShadowSender` (`src/shim/gateway/kernel/shadow.py`;
+none in community, none in enterprise until a tenant feature supplies one). Right
+before the provider call it may select the request for a copy: never a token count,
+a Responses continuation or a Responses request whose `store` is not `false`. Only
+after the serving attempt settled `completed`, and only after the caller's answer is
+complete (after the JSON body is sent, after a stream's finalization), a background
+task registered with the postprocessor asks for a candidate target, checks that it is
+internal or of the primary's kind and has a stored credential, and sends the same
+masked payload, bands re-run for the candidate, without the caller's provider key.
+The copy is its own request (`shadow_of`), reserves no request unit, never passes the
+admission stage, and is settled with its own cost; then the sender compares both
+answers in memory. At most `shadow_max_in_flight` copies run per process (enterprise
+`SHADOW_MAX_IN_FLIGHT`, 4); more are dropped. A copy's failure is logged by type and
+counted in `shim_shadow_copies_total`, never raised; `drain()` at shutdown cancels a
+copy still running and fails it.
+
 ## Community composition
 
 `src/shim/application.py` constructs the community application explicitly:

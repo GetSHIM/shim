@@ -3628,3 +3628,326 @@ async def test_an_extra_attempt_runs_the_bands_again_for_its_own_target() -> Non
     assert second.provider_betas == () and second.settings_applied == ()
     plain, _ = await kernel._bands(replace(first, band=BandSettings()))
     assert plain.payload is payload
+
+
+# Shadow copies (S58): a stub sender stands in for E70's.
+
+
+class _StubSender:
+    def __init__(
+        self,
+        *,
+        kind="internal",
+        reference="stored-secret",
+        keep_answer=True,
+        hold: asyncio.Event | None = None,
+        fail: str | None = None,
+    ) -> None:
+        self.kind, self.reference, self.keep_answer = kind, reference, keep_answer
+        self.hold, self.fail = hold, fail
+        self.selected: list = []
+        self.compared: list = []
+        self.candidate_started = asyncio.Event()
+
+    def select(self, prepared):
+        from shim.gateway.kernel.shadow import ShadowSelection
+
+        self.selected.append(prepared)
+        return ShadowSelection("shadow_rule", "candidate-llm", self.keep_answer)
+
+    async def candidate(self, prepared, selection):
+        from shim.gateway.kernel.result import ProviderTarget
+        from shim.gateway.kernel.shadow import ShadowCandidate
+
+        self.candidate_started.set()
+        if self.hold is not None:
+            await self.hold.wait()
+        if self.fail == "candidate":
+            raise RuntimeError("candidate failed")
+        return ShadowCandidate(
+            provider_target=ProviderTarget(
+                deployment_id="d-candidate",
+                base_url="https://candidate.test/v1",
+                upstream_model="candidate-model",
+                credential_reference=self.reference,
+                timeout_seconds=30,
+                declared_version="1",
+            ),
+            deployment_kind=self.kind,
+        )
+
+    async def compare(self, prepared, selection, primary, shadow):
+        if self.fail == "compare":
+            raise RuntimeError("compare failed")
+        self.compared.append((prepared, primary, shadow))
+
+
+class _StoredKeys:
+    async def resolve(self, tenant_id, credential, *, reference=None):
+        if reference is None:
+            return credential.consume() if credential else "sk-environment"
+        return "sk-stored-" + reference
+
+
+async def _shadow_call(
+    monkeypatch,
+    sender,
+    *,
+    stream=False,
+    statuses=(),
+    body=None,
+    max_in_flight=4,
+    requests=1,
+    hold_copy=False,
+):
+    calls: list[httpx.Request] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if hold_copy and request.url.host == "candidate.test":
+            await asyncio.Event().wait()
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "down"}})
+        sent = json.loads(request.content)
+        if request.url.path.endswith("/responses"):
+            return httpx.Response(200, json=_RULE_REPLIES["/v1/responses"])
+        reply = {
+            **_CHAT_REPLY,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"from {sent['model']}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        if sent.get("stream"):
+            chunk = {
+                **reply,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"from {sent['model']}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=reply)
+
+    events = io.StringIO()
+    responses = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps({"EMAIL_ADDRESS": "mask"}),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.shadow_sender = sender
+            kernel.shadow_max_in_flight = max_in_flight
+            kernel.executions["openai"].credential_resolver = _StoredKeys()
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                for _ in range(requests):
+                    response = await inbound.post(
+                        "/v1/chat/completions"
+                        if body is None or "messages" in body
+                        else "/v1/responses",
+                        headers={
+                            "authorization": f"Bearer {_GATEWAY_KEY}",
+                            "x-provider-key": "sk-caller",
+                        },
+                        json=body
+                        or {
+                            "model": "gpt-5-nano",
+                            "stream": stream,
+                            "messages": [
+                                {"role": "user", "content": "Mail jane.doe@example.com"}
+                            ],
+                        },
+                    )
+                    await response.aread()
+                    responses.append(response)
+            if sender is not None and (sender.hold is not None or hold_copy):
+                await asyncio.wait_for(sender.candidate_started.wait(), 5)
+                while hold_copy and len(calls) < 2:
+                    await asyncio.sleep(0.01)
+                await kernel.postprocessor.drain(0.05)
+            else:
+                await kernel.postprocessor.drain(5)
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return responses, calls, lines
+
+
+def _stable(response: httpx.Response) -> tuple:
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key not in {"x-shim-request-id", "x-shim-latency-ms", "content-length"}
+    }
+    return response.status_code, headers, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_shadow_copy_never_changes_the_callers_answer(
+    monkeypatch, stream
+) -> None:
+    sender = _StubSender()
+
+    [plain], _, _ = await _shadow_call(monkeypatch, None, stream=stream)
+    [shadowed], calls, lines = await _shadow_call(monkeypatch, sender, stream=stream)
+
+    assert _stable(plain) == _stable(shadowed)
+    primary_call, copy_call = calls
+    copy = json.loads(copy_call.content)
+    assert copy["model"] == "candidate-model" and copy.get("stream", False) is stream
+    assert "jane.doe@example.com" not in copy_call.content.decode()
+    assert "<EMAIL_ADDRESS" in copy_call.content.decode()
+    assert copy_call.url.host == "candidate.test"
+    assert copy_call.headers["authorization"] == "Bearer sk-stored-stored-secret"
+    assert primary_call.headers["authorization"] == "Bearer sk-caller"
+    [(prepared, primary, shadow)] = sender.compared
+    assert prepared.request_id == primary.request_id
+    assert primary.answer_text == "from gpt-5-nano"
+    assert shadow.answer_text == "from candidate-model"
+    assert (primary.status, shadow.status) == ("completed", "completed")
+    primary_line, shadow_line = lines
+    assert shadow_line["request_id"] == shadow.request_id
+    assert primary_line["request_id"] == primary.request_id
+
+
+@pytest.mark.asyncio
+async def test_the_callers_answer_is_complete_before_the_candidate_is_asked(
+    monkeypatch,
+) -> None:
+    hold = asyncio.Event()
+    sender = _StubSender(hold=hold)
+
+    [response], calls, _ = await _shadow_call(monkeypatch, sender)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert sender.candidate_started.is_set() and sender.compared == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender", "copies"),
+    [
+        (_StubSender(kind="external"), 0),
+        (_StubSender(reference=""), 0),
+        (_StubSender(kind="internal"), 1),
+    ],
+)
+async def test_the_candidate_guards(monkeypatch, sender, copies) -> None:
+    _, calls, _ = await _shadow_call(monkeypatch, sender)
+
+    assert len(calls) == 1 + copies and len(sender.compared) == copies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"model": "gpt-5-nano", "input": "hi", "store": True},
+        {"model": "gpt-5-nano", "input": "hi"},
+        {
+            "model": "gpt-5-nano",
+            "input": "hi",
+            "store": False,
+            "previous_response_id": "resp_1",
+        },
+    ],
+)
+async def test_stored_responses_and_continuations_are_never_selected(
+    monkeypatch, body
+) -> None:
+    sender = _StubSender()
+
+    _, calls, _ = await _shadow_call(monkeypatch, sender, body=body)
+
+    # An unknown continuation fails closed before any call; the others make one.
+    assert sender.selected == []
+    assert all(call.url.host != "candidate.test" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_an_unstored_response_is_copied(monkeypatch) -> None:
+    sender = _StubSender(keep_answer=False)
+
+    _, calls, _ = await _shadow_call(
+        monkeypatch, sender, body={"model": "gpt-5-nano", "input": "hi", "store": False}
+    )
+
+    assert len(calls) == 2 and len(sender.compared) == 1
+    assert sender.compared[0][1].answer_text is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_primary_is_never_copied(monkeypatch) -> None:
+    sender = _StubSender()
+
+    [response], calls, _ = await _shadow_call(monkeypatch, sender, statuses=[503])
+
+    assert response.status_code == 503 and len(calls) == 1 and sender.compared == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_process_drops_the_copy_and_counts_it(monkeypatch) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    dropped = SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated")
+    before = dropped._value.get()
+    hold = asyncio.Event()
+    sender = _StubSender(hold=hold)
+
+    responses, calls, _ = await _shadow_call(
+        monkeypatch, sender, max_in_flight=1, requests=2
+    )
+
+    assert [r.status_code for r in responses] == [200, 200] and len(calls) == 2
+    assert dropped._value.get() == before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", ["candidate", "compare"])
+async def test_a_raising_sender_is_logged_and_counted(
+    monkeypatch, caplog, fail
+) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    failed = SHADOW_COPIES_TOTAL.labels(outcome="failed")
+    before = failed._value.get()
+
+    [response], _, _ = await _shadow_call(monkeypatch, _StubSender(fail=fail))
+
+    assert response.status_code == 200
+    assert failed._value.get() == before + 1
+    assert "Shadow copy failed type=RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_drain_cancels_a_held_copy_and_fails_it(monkeypatch) -> None:
+    sender = _StubSender()
+
+    [response], calls, lines = await _shadow_call(monkeypatch, sender, hold_copy=True)
+
+    assert response.status_code == 200 and len(calls) == 2 and sender.compared == []
+    primary, copy = lines
+    assert (primary["outcome"], copy["outcome"]) == ("completed", "request_aborted")

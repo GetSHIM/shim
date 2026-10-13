@@ -988,6 +988,7 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_injection_markers_total` | `marker` |
 | `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
 | `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
+| `shim_shadow_copies_total` (enterprise only) | `outcome` (`sent`, `no_candidate`, `skipped_guard`, `dropped_saturated`, `failed`) |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

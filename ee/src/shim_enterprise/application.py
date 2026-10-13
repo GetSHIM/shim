@@ -240,6 +240,7 @@ def _create_gateway_kernel(
         policy_resolver=policy_resolver,
         prepare_inference=DeploymentResolver(AsyncSessionLocal).resolve,
         attempt_policy=TenantAttemptPolicy(AsyncSessionLocal, strategies=()),
+        shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
         loop_repeat_limit=settings.LOOP_REPEAT_LIMIT,

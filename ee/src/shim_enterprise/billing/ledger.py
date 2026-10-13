@@ -218,6 +218,9 @@ class QuotaReservationCommand:
     attempt_number: int | None = None
     attempt_reason: str | None = None
     attempt_rule_id: str | None = None
+    # A copy of a finished request sent to a candidate target.
+    shadow_of: str | None = None
+    shadow_rule_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -393,6 +396,14 @@ class DurableAccountingRepository:
                             "attempt_number": command.attempt_number,
                             "attempt_reason": command.attempt_reason,
                             "attempt_rule_id": command.attempt_rule_id,
+                        }
+                    ),
+                    **(
+                        {}
+                        if command.shadow_of is None
+                        else {
+                            "shadow_of": command.shadow_of,
+                            "shadow_rule_id": command.shadow_rule_id,
                         }
                     ),
                 },

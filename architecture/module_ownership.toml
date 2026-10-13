@@ -199,6 +199,7 @@ public = [
   "src/shim/gateway/kernel/gateway_kernel.py",
   "src/shim/gateway/kernel/result.py",
   "src/shim/gateway/kernel/runtime.py",
+  "src/shim/gateway/kernel/shadow.py",
   "src/shim/gateway/kernel/stage.py",
   "src/shim/gateway/local_auth.py",
   "src/shim/gateway/pipeline/__init__.py",

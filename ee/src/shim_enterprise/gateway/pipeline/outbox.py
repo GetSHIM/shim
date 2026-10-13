@@ -231,6 +231,7 @@ _DIAGNOSTIC_FIELDS = (
     "attempt_reason",
     "attempt_rule_id",
     "route_decision",
+    "shadow_of",
     "approval_id",
     "request_archive",
 )
