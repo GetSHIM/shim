@@ -672,8 +672,24 @@ new term list. A preview counts only what is honest:
   a rule stored before that table existed is bounded by the set's last write).
   Requests whose matches were cut at 32 make it a lower bound.
 - `metadata`: a kind whose condition can be checked on stored request metadata
-  registers an estimator under its kind or `<kind>:<match.on>`. None is
-  registered yet: `term` and `pattern` need content.
+  registers an estimator under its kind or `<kind>:<match.on>`
+  (`rules/estimators.py`). The scope is the gateway's: the model the request
+  reached (date suffix stripped, case folded), never the alias, and `unknown`
+  targets count as `external`.
+  - `destination` counts requests whose record shows a named type in
+    `pii_entities` or `monitored_entities`. A type whose base action is `off`
+    was not detected, so it is not counted and the note names it; a type the
+    base action blocked is not counted, because the rule would not change that
+    request.
+  - `request_limit` counts each request that crossed any cap once: the byte cap
+    on the quota reservation (requests with media parts left out and counted in
+    the note), the price tier on the settled `LARGE_CONTEXT_PRICE` warning (an
+    upper bound of what an enforced block refuses before the call), and the
+    tool, document and history caps on the `shape` analyzer's counts, which only
+    some rows carry (the note says how many). With a shape cap and no shape row
+    in the window, it gives no estimate.
+  - `term`, `pattern`, `record_set`, `parameter_pin` and most `route` variants
+    need content or have no estimator.
 - `none`: anything else, or a query over 10 seconds.
 
 So content rules start in `monitor`, and their preview becomes real after they
@@ -681,9 +697,10 @@ have run. A new rule may be stored enforced only with an unexpired preview row o
 the same kind, action, scope and match that covered a whole window of at least 7
 days; a restore may re-create an enforced rule without one, because it brings
 back exactly what was there. A new rule has no monitor history, so only a
-`metadata` estimator can give it such a preview: until one is registered, no
-`rule_previews` row is written and every new rule starts in `monitor`. The path
-stays for the estimators later PRDs add. Every write to the rule set goes through
+`metadata` estimator can give it such a preview: `destination` and
+`request_limit` rules can start enforced after one, other kinds start in
+`monitor`, and so does a `request_limit` rule with a tool, document or history
+cap for a tenant without the `shape` analyzer. Every write to the rule set goes through
 one path, which also keeps the definition rows.
 
 AIUC rule files are imported one way. Rule ids become `aiuc_<slug>` (Turkish

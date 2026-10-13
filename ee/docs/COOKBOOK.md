@@ -594,6 +594,15 @@ See how many requests a rule would have hit before it blocks anything.
      (`window.covered_days` says how much of the window that covers). A rename,
      a new action or a new state keeps the history.
    - `metadata`: the rule's kind can be counted from stored request metadata.
+     A `destination` rule counts requests where a named type was detected
+     (masked or monitored) on a target in its scope; a type whose base action
+     is `off` was never detected, so the `note` names it. A `request_limit`
+     rule counts each request that crossed any of its caps once. The byte cap
+     leaves out requests with media parts and says how many. The price tier
+     counts settled input above the tier, more than an enforced block refuses
+     before the call. Tool, document and history caps need the `shape`
+     analyzer in `response_analysis`: without it the answer is `none`, and with
+     it the `note` says how many requests carried its counts.
    - `none`: no history, and its kind cannot be counted without the prompts,
      which shim does not keep (`term` and `pattern` rules). Start it in monitor.
 

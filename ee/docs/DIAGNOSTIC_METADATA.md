@@ -352,6 +352,11 @@ run (those show as a `rule.<id>` verdict). A match is ids and counts, never the 
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+A [preview](POLICY_DECISIONS.md#tenant-rules) of a new `destination` rule reads
+`pii_entities` and `monitored_entities`; one of a `request_limit` rule reads the
+quota reservation's `prompt_tokens`, `media_parts`, `warnings` and
+`response_analysis.shape`. Both read the scope keys (`team_id`, `tags`,
+`deployment_kind`) and never a value.
 
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under

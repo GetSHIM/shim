@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -10,7 +11,7 @@ from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import exists, func, literal_column, select, text
+from sqlalchemy import ColumnElement, exists, func, literal_column, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -145,17 +146,21 @@ def _top(counts: dict[Any, int], key: str) -> list[dict[str, Any]]:
     ]
 
 
-async def _monitor_history(
+async def count_matching(
     session: AsyncSession,
     organization_id: UUID,
-    rule_id: str,
     start: datetime,
     end: datetime,
-) -> tuple[int, int, ByScope]:
-    metadata = RequestLifecycle.lifecycle_metadata
-    matched = metadata.contains({"rule_matches": [{"rule_id": rule_id}]})
-    errored = metadata.contains({"rule_matches": [{"rule_id": rule_id, "error": True}]})
-    truncated = metadata.contains({"rule_matches_truncated": True})
+    matched: ColumnElement[bool],
+    *,
+    also: ColumnElement[bool] | None = None,
+    totals: Sequence[ColumnElement[bool]] = (),
+) -> tuple[int, list[int], ByScope]:
+    """Requests of the window that match, by API key, team and model, in one statement.
+
+    `also` widens the rows read without counting them as matches; `totals` are more
+    whole-window counts over those rows.
+    """
     # A literal, so the select list and GROUP BY hold the same expression.
     team = literal_column("request_lifecycle.metadata ->> 'team_id'")
     key, model = RequestLifecycle.api_key_id, RequestLifecycle.requested_model
@@ -166,25 +171,24 @@ async def _monitor_history(
             team,
             model,
             func.count().filter(matched),
-            func.count().filter(errored),
-            func.count().filter(truncated),
+            *(func.count().filter(condition) for condition in totals),
         )
         .where(
             RequestLifecycle.organization_id == organization_id,
             RequestLifecycle.started_at >= start,
             RequestLifecycle.started_at < end,
-            matched | truncated,
+            matched if also is None else matched | also,
         )
         .group_by(func.grouping_sets(key, team, model, text("()")))
     )
     keys: dict[Any, int] = {}
     teams: dict[Any, int] = {}
     models: dict[Any, int] = {}
-    total = errors = truncated_rows = 0
-    for grouping, key_id, team_id, model_name, count, error_count, cut in rows:
+    total, extra = 0, [0 for _ in totals]
+    for grouping, key_id, team_id, model_name, count, *more in rows:
         # grouping() sets a bit for every column a row is not grouped by.
         if grouping == 0b111:
-            total, errors, truncated_rows = count, error_count, cut
+            total, extra = count, list(more)
         elif count and grouping == 0b011 and key_id is not None:
             keys[str(key_id)] = count
         elif count and grouping == 0b101 and team_id is not None:
@@ -193,14 +197,38 @@ async def _monitor_history(
             models[model_name] = count
     return (
         total,
-        errors,
+        extra,
         {
             "api_keys": _top(keys, "id"),
             "teams": _top(teams, "id"),
             "models": _top(models, "model"),
-            "truncated_rows": truncated_rows,
+            "truncated_rows": 0,
         },
     )
+
+
+async def _monitor_history(
+    session: AsyncSession,
+    organization_id: UUID,
+    rule_id: str,
+    start: datetime,
+    end: datetime,
+) -> tuple[int, int, ByScope]:
+    metadata = RequestLifecycle.lifecycle_metadata
+    truncated = metadata.contains({"rule_matches_truncated": True})
+    total, (errors, truncated_rows), by_scope = await count_matching(
+        session,
+        organization_id,
+        start,
+        end,
+        metadata.contains({"rule_matches": [{"rule_id": rule_id}]}),
+        also=truncated,
+        totals=(
+            metadata.contains({"rule_matches": [{"rule_id": rule_id, "error": True}]}),
+            truncated,
+        ),
+    )
+    return total, errors, {**by_scope, "truncated_rows": truncated_rows}
 
 
 def _empty_scope() -> ByScope:

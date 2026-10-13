@@ -367,6 +367,50 @@ async def test_a_plan_with_a_valid_preview_creates_the_rule_enforced(db) -> None
 
 
 @pytest.mark.asyncio
+async def test_a_destination_rule_previewed_from_metadata_is_created_enforced(
+    db,
+) -> None:
+    users = await _organization(db)
+    owner = users["owner"]
+    destination = _rule(
+        "tckn",
+        kind="destination",
+        action="mask",
+        state="enforced",
+        scope={"deployment_kinds": ["external"]},
+        match={"entity_types": ["TR_NATIONAL_ID"]},
+    )
+    change = {"resource": "rules", "item": None, "set": destination}
+
+    refused = await _call(
+        db,
+        owner,
+        "POST",
+        f"{POLICY}/plans/{(await _plan(db, owner, change)).json()['id']}/apply",
+    )
+    preview = await _call(
+        db,
+        owner,
+        "POST",
+        f"{MANAGEMENT}/rules/preview",
+        json={"rule": destination, "window_days": 7},
+    )
+    plan = await _plan(db, owner, change)
+    applied = await _call(
+        db, owner, "POST", f"{POLICY}/plans/{plan.json()['id']}/apply"
+    )
+
+    assert refused.json()["detail"]["code"] == "RULE_MUST_START_IN_MONITOR"
+    assert (preview.json()["basis"], preview.json()["enforce_on_create"]) == (
+        "metadata",
+        True,
+    )
+    assert plan.json()["changes"][0]["impact"]["basis"] == "metadata"
+    assert applied.json()["status"] == "applied"
+    assert (await _stored(db, owner.organization_id))[0]["state"] == "enforced"
+
+
+@pytest.mark.asyncio
 async def test_a_restore_brings_back_a_deleted_enforced_rule_without_a_preview(
     db,
 ) -> None:
