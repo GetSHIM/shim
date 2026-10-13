@@ -16,6 +16,205 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AccountActivity": {
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/ActivityAccount"
+          },
+          "findings_open": {
+            "items": {
+              "$ref": "#/components/schemas/OpenFinding"
+            },
+            "title": "Findings Open",
+            "type": "array"
+          },
+          "gateway_keys": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityKey"
+            },
+            "title": "Gateway Keys",
+            "type": "array"
+          },
+          "management": {
+            "$ref": "#/components/schemas/ManagementActivity"
+          },
+          "model_usage": {
+            "$ref": "#/components/schemas/ModelUsage"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ActivityWindow"
+          }
+        },
+        "required": [
+          "account",
+          "gateway_keys",
+          "model_usage",
+          "management",
+          "findings_open",
+          "window"
+        ],
+        "title": "AccountActivity",
+        "type": "object"
+      },
+      "ActivityAccount": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "active",
+          "expires_at",
+          "last_used_at"
+        ],
+        "title": "ActivityAccount",
+        "type": "object"
+      },
+      "ActivityKey": {
+        "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          }
+        },
+        "required": [
+          "id",
+          "prefix",
+          "name",
+          "team_id",
+          "allowed_models",
+          "is_active",
+          "expires_at"
+        ],
+        "title": "ActivityKey",
+        "type": "object"
+      },
+      "ActivityWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "ActivityWindow",
+        "type": "object"
+      },
       "AffectedTaskView": {
         "properties": {
           "requests_refused": {
@@ -33,6 +232,50 @@
           "requests_refused"
         ],
         "title": "AffectedTaskView",
+        "type": "object"
+      },
+      "AgentKeyInput": {
+        "properties": {
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Allowed Models",
+            "type": "array"
+          },
+          "expires_in_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          }
+        },
+        "required": [
+          "name",
+          "allowed_models",
+          "expires_in_days"
+        ],
+        "title": "AgentKeyInput",
         "type": "object"
       },
       "AgentLoop": {
@@ -2818,7 +3061,7 @@
           },
           "models": {
             "items": {
-              "$ref": "#/components/schemas/ModelCount"
+              "$ref": "#/components/schemas/shim_enterprise__rules__api__ModelCount"
             },
             "title": "Models",
             "type": "array"
@@ -3631,6 +3874,11 @@
       },
       "CreatedServiceAccount": {
         "properties": {
+          "active": {
+            "description": "False while the account is frozen.",
+            "title": "Active",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -3701,6 +3949,7 @@
           "last_used_at",
           "created_by",
           "created_at",
+          "active",
           "plaintext"
         ],
         "title": "CreatedServiceAccount",
@@ -3791,7 +4040,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 28,
+            "maxItems": 29,
             "title": "Permissions",
             "type": "array"
           },
@@ -3849,6 +4098,7 @@
                 "budgets.manage",
                 "teams.manage",
                 "keys.own",
+                "keys.hold",
                 "keys.manage",
                 "members.read",
                 "members.manage",
@@ -5559,6 +5809,25 @@
           }
         },
         "title": "ForwardTargetUpdate",
+        "type": "object"
+      },
+      "FrozenView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "active"
+        ],
+        "title": "FrozenView",
         "type": "object"
       },
       "FunctionCall": {
@@ -8164,6 +8433,43 @@
         "title": "Links",
         "type": "object"
       },
+      "ManagementActivity": {
+        "properties": {
+          "plans_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Plans By Status",
+            "type": "object"
+          },
+          "refused_applies": {
+            "title": "Refused Applies",
+            "type": "integer"
+          },
+          "remediations_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Remediations By Status",
+            "type": "object"
+          },
+          "versions": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plans_by_status",
+          "versions",
+          "remediations_by_status",
+          "refused_applies"
+        ],
+        "title": "ManagementActivity",
+        "type": "object"
+      },
       "McpServer": {
         "additionalProperties": false,
         "description": "A MCPServer is a server that can be called by the model to perform actions.\n\nIt is a server that implements the MCP protocol. Next ID: 6. This data type is\nnot supported in Vertex AI.",
@@ -8326,24 +8632,6 @@
           "active_signing_keys"
         ],
         "title": "ModeView",
-        "type": "object"
-      },
-      "ModelCount": {
-        "properties": {
-          "model": {
-            "title": "Model",
-            "type": "string"
-          },
-          "requests": {
-            "title": "Requests",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "model",
-          "requests"
-        ],
-        "title": "ModelCount",
         "type": "object"
       },
       "ModelDeploymentInput": {
@@ -9113,6 +9401,38 @@
         "title": "ModelSelectionConfig",
         "type": "object"
       },
+      "ModelUsage": {
+        "properties": {
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/shim_enterprise__api__v1__management__agents__ModelCount"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requests",
+          "failed",
+          "cost_usd",
+          "by_model"
+        ],
+        "title": "ModelUsage",
+        "type": "object"
+      },
       "MonthlyEvidenceRead": {
         "properties": {
           "format": {
@@ -9445,6 +9765,25 @@
           "error"
         ],
         "title": "OpenAIErrorResponse",
+        "type": "object"
+      },
+      "OpenFinding": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule_id"
+        ],
+        "title": "OpenFinding",
         "type": "object"
       },
       "Outcome": {
@@ -14815,6 +15154,11 @@
       },
       "ServiceAccountView": {
         "properties": {
+          "active": {
+            "description": "False while the account is frozen.",
+            "title": "Active",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -14880,7 +15224,8 @@
           "expires_at",
           "last_used_at",
           "created_by",
-          "created_at"
+          "created_at",
+          "active"
         ],
         "title": "ServiceAccountView",
         "type": "object"
@@ -17139,6 +17484,7 @@
                 "budgets.manage",
                 "teams.manage",
                 "keys.own",
+                "keys.hold",
                 "keys.manage",
                 "members.read",
                 "members.manage",
@@ -17955,6 +18301,31 @@
         "title": "FindingPage",
         "type": "object"
       },
+      "shim_enterprise__api__v1__management__agents__ModelCount": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
+        "type": "object"
+      },
       "shim_enterprise__compliance__schemas__FindingPage": {
         "properties": {
           "items": {
@@ -17984,6 +18355,24 @@
           "offset"
         ],
         "title": "FindingPage",
+        "type": "object"
+      },
+      "shim_enterprise__rules__api__ModelCount": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
         "type": "object"
       }
     },
@@ -26099,6 +26488,172 @@
         ]
       }
     },
+    "/api/v1/management/service-accounts/{account_id}/activity": {
+      "get": {
+        "operationId": "service_account_activity_api_v1_management_service_accounts__account_id__activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 720,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountActivity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Service Account Activity",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/freeze": {
+      "post": {
+        "operationId": "freeze_service_account_api_v1_management_service_accounts__account_id__freeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrozenView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Freeze Service Account",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/gateway-keys": {
+      "post": {
+        "operationId": "issue_agent_gateway_key_api_v1_management_service_accounts__account_id__gateway_keys_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentKeyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue Agent Gateway Key",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/service-accounts/{account_id}/rotate": {
       "post": {
         "operationId": "rotate_service_account_api_v1_management_service_accounts__account_id__rotate_post",
@@ -26142,6 +26697,54 @@
           }
         ],
         "summary": "Rotate Service Account",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/unfreeze": {
+      "post": {
+        "operationId": "unfreeze_service_account_api_v1_management_service_accounts__account_id__unfreeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrozenView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unfreeze Service Account",
         "tags": [
           "management"
         ]

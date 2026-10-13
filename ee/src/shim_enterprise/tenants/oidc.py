@@ -35,6 +35,7 @@ from shim_enterprise.tenants.models import (
     OrganizationRole,
     User,
 )
+from shim_enterprise.tenants.permissions import KEY_HOLDING
 from shim_enterprise.tenants.teams import plausible_email, synchronize_oidc_teams
 
 logger = logging.getLogger(__name__)
@@ -252,8 +253,8 @@ async def synchronize_user(session: AsyncSession, claims: dict[str, Any]) -> Use
             session, user, groups, settings.OIDC_TEAM_GROUP_MAP
         )
         revoked = 0
-        if custom_role is not None and "keys.own" not in custom_role.permissions:
-            # Only keys.own holders may hold active gateway keys.
+        if custom_role is not None and not KEY_HOLDING & set(custom_role.permissions):
+            # Only key holders (KEY_HOLDING) may hold active gateway keys.
             revoked = len(
                 (
                     await session.scalars(

@@ -110,6 +110,14 @@ Never a tool: stored request content, provider secrets, gateway keys, members,
 invitations, roles, service accounts, configuration-file mode and signing keys,
 exports, and finding status changes.
 
+## The agent's own model calls
+
+Run the agent's model calls through shim too, with a gateway key an owner issues
+to its recommender account: [run Claude Code on shim and let it manage
+shim](COOKBOOK.md#run-claude-code-on-shim-and-let-it-manage-shim). None of the
+account routes (issue a key, freeze, activity) is a tool: an agent must not
+freeze or inspect accounts.
+
 ## What a recommender can apply
 
 A `recommender` account applies a plan only when every change is on the

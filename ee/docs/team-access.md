@@ -28,6 +28,7 @@ write nor own gateway keys.
 | `budgets.manage` | Create, change, delete and evaluate budgets | x | x | | |
 | `teams.manage` | Create and change teams, grant or remove `team_admin` | x | x | | |
 | `keys.own` | Create and hold one's own gateway keys | x | x | x | |
+| `keys.hold` | Hold a gateway key an owner issued, never create one: the recommender's, for its own model calls ([run Claude Code on shim](COOKBOOK.md#run-claude-code-on-shim-and-let-it-manage-shim)) | | | | |
 | `keys.manage` | Read and change every key, set `allowed_models` and `team_id` on keys without a team; owners and admins only | x | x | | |
 | `members.read` | The member list with e-mail addresses | x | x | | x |
 | `members.manage` | Invite, list and revoke invites, remove members | x | x | | |
@@ -58,8 +59,8 @@ and verification POSTs readers may call (`/compliance/audit/verify` and
 [custom role](#custom-roles) the rule covers organization writes, the routes
 that ask for a permission; their own profile (`PUT /auth/me`), the teams they
 administer, and their own keys, which follow `keys.own`, stay theirs. Only a
-user whose role holds `keys.own` (owner, admin, member) can authenticate a
-gateway key.
+user whose role holds `keys.own` or `keys.hold` (owner, admin, member,
+recommender) can authenticate a gateway key.
 `GET /api/v1/management/auth/me` returns the caller's sorted `permissions` and
 `custom_role`, so a dashboard can decide what to show from one call.
 
@@ -121,9 +122,12 @@ management API without a person's sign-in. It is an organization user of kind
 | Route | Who | What |
 | --- | --- | --- |
 | `POST /api/v1/management/service-accounts` | Owner | `{name, role, expires_in_days}` (1 to 365 days); answers 201 with the account and its key, shown once |
-| `GET /api/v1/management/service-accounts` | Owner | Name, role, key prefix, expiry, last use (to the minute), creator; never the key |
+| `GET /api/v1/management/service-accounts` | Owner | Name, role, key prefix, expiry, last use (to the minute), creator and `active` (false while frozen); never the key |
 | `POST /api/v1/management/service-accounts/{id}/rotate` | Owner | A new key with the same expiry; the old key stops working at once. An expired key answers 409: create a new account |
 | `DELETE /api/v1/management/service-accounts/{id}` | Owner | Deactivates the account, revokes its keys and its gateway keys |
+| `POST /api/v1/management/service-accounts/{id}/freeze`, `/unfreeze` | Owner | Freeze: the account's next management, MCP and model call answers 401; its keys are kept. Unfreeze turns them back on (409 `SERVICE_ACCOUNT_DELETED` for a deleted account). Audited as `tenant.service_account_frozen` and `_unfrozen` |
+| `POST /api/v1/management/service-accounts/{id}/gateway-keys` | Owner | A gateway key for a recommender account: `{name, allowed_models (1 to 200, required), team_id, expires_in_days (1 to 365)}`, shown once. With `team_id` the account joins the team as a member, so the team's limits apply. At most two active keys per account (409 `AGENT_KEY_LIMIT`); another role is 409 `ACCOUNT_CANNOT_HOLD_KEYS`. Audited as `tenant.agent_gateway_key_issued` |
+| `GET /api/v1/management/service-accounts/{id}/activity?hours=24` | `audit.read` | The account, its gateway keys, its model usage (requests, failures, cost, per model), its plans, versions, automatic changes and refused applies, and open findings on its keys, in the last 1 to 720 hours |
 
 - A service account follows its role's rules: an admin one can, for example,
   create gateway keys (owned by the service account), an auditor one is read-only
@@ -139,10 +143,10 @@ management API without a person's sign-in. It is an organization user of kind
 - `recommender` is for agents ([give an agent a recommender
   key](COOKBOOK.md#give-an-agent-a-recommender-key)), and the database lets only
   service accounts hold it. It holds exactly `settings.read`, `rules.read`,
-  `deployments.read`, `findings.read`, `usage.read`, `plans.create` and
-  `plans.apply_allowlisted`: it reads, proposes any plan, and applies one only when
-  every change tightens or cheapens. It can never read stored content, own gateway
-  keys, manage providers, members, roles, budgets, teams or deployments, write
+  `deployments.read`, `findings.read`, `usage.read`, `plans.create`,
+  `plans.apply_allowlisted` and `keys.hold`: it reads, proposes any plan, and applies one only when
+  every change tightens or cheapens. It can never read stored content, create gateway
+  keys (it holds the ones an owner issues it), manage providers, members, roles, budgets, teams or deployments, write
   settings or rules, approve anything, or read the audit log; `/team/members`
   answers it 403. Policy versions and state it reads with `plans.create`. A
   service account's role cannot be changed after creation.
@@ -268,7 +272,7 @@ owners call them.
   `custom_role_id` gives a member the role; `custom_role_id: null` takes it away,
   and a role other than `member` clears it (422 when both are sent). The holder
   then has exactly the role's permissions instead of the member set.
-- Only users whose permissions include `keys.own` may hold active gateway keys.
+- Only users whose permissions include `keys.own` or `keys.hold` may hold active gateway keys.
   Giving a role without it to a user with an active key, or removing it from a
   role whose holders have active keys, answers 409
   `{"code": "ROLE_HOLDERS_HAVE_KEYS", "users": <count>}`: revoke those keys first.

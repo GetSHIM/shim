@@ -739,6 +739,16 @@
   "service_recommender": "403 Organization owner required",
   "team_admin": "403 Organization owner required"
  },
+ "GET /api/v1/management/service-accounts/{account_id}/activity": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Permission required: audit.read",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "403 Permission required: audit.read",
+  "team_admin": "403 Permission required: audit.read"
+ },
  "GET /api/v1/management/settings/pii": {
   "admin": "200",
   "auditor": "200",
@@ -1369,7 +1379,37 @@
   "service_recommender": "403 Organization owner required",
   "team_admin": "403 Organization owner required"
  },
+ "POST /api/v1/management/service-accounts/{account_id}/freeze": {
+  "admin": "403 Organization owner required",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization owner required",
+  "owner": "404",
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization owner required",
+  "team_admin": "403 Organization owner required"
+ },
+ "POST /api/v1/management/service-accounts/{account_id}/gateway-keys": {
+  "admin": "403 Organization owner required",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization owner required",
+  "owner": "422",
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization owner required",
+  "team_admin": "403 Organization owner required"
+ },
  "POST /api/v1/management/service-accounts/{account_id}/rotate": {
+  "admin": "403 Organization owner required",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization owner required",
+  "owner": "404",
+  "service_admin": "403 Organization owner required",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization owner required",
+  "team_admin": "403 Organization owner required"
+ },
+ "POST /api/v1/management/service-accounts/{account_id}/unfreeze": {
   "admin": "403 Organization owner required",
   "auditor": "403 Auditor access is read-only",
   "member": "403 Organization owner required",

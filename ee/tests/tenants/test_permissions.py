@@ -58,6 +58,7 @@ _TABLE = {
     "budgets.manage": "owner admin",
     "teams.manage": "owner admin",
     "keys.own": "owner admin member",
+    "keys.hold": "recommender",
     "keys.manage": "owner admin",
     "members.read": "owner admin auditor",
     "members.manage": "owner admin",
@@ -86,7 +87,8 @@ def test_built_in_roles_hold_exactly_the_table() -> None:
         assert granted == {
             permission for permission, roles in _TABLE.items() if role in roles.split()
         }
-    assert KEY_OWNER_ROLES == {"owner", "admin", "member"}
+    # A recommender holds a key an owner issued (keys.hold) but never mints one.
+    assert KEY_OWNER_ROLES == {"owner", "admin", "member", "recommender"}
 
 
 def test_an_unknown_role_has_no_permission_and_a_custom_role_replaces_the_set() -> None:
@@ -132,11 +134,12 @@ def test_the_recommender_reads_proposes_and_applies_only_allowlisted_plans() -> 
         "usage.read",
         "plans.create",
         "plans.apply_allowlisted",
+        "keys.hold",
     }
     assert not granted & _NEVER_RECOMMENDED
     assert not granted & RESERVED_PERMISSIONS
     assert not [p for p in granted if p.endswith((".write", ".manage"))]
-    assert "recommender" not in KEY_OWNER_ROLES
+    assert "recommender" in KEY_OWNER_ROLES
     # A custom role may carry the limit: it can only tighten.
     custom = OrganizationRole(permissions=["plans.create", "plans.apply_allowlisted"])
     assert effective_permissions(

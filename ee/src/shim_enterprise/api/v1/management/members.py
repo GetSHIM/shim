@@ -40,6 +40,7 @@ from shim_enterprise.tenants.models import (
 from shim_enterprise.policy.plans import keep_two_approvers, lock_tenant
 from shim_enterprise.tenants.permissions import (
     BUILTIN_ROLE_PERMISSIONS,
+    KEY_HOLDING,
     PERMISSIONS,
     RESERVED_PERMISSIONS,
     Permission,
@@ -116,6 +117,7 @@ class ServiceAccountView(BaseModel):
     last_used_at: datetime | None
     created_by: UUID
     created_at: datetime
+    active: bool = Field(description="False while the account is frozen.")
 
 
 class CreatedServiceAccount(ServiceAccountView):
@@ -521,7 +523,7 @@ async def update_team_member(
     if custom_role_id is not None:
         if custom_role_id not in roles:
             raise HTTPException(status_code=404, detail="Role not found")
-        if "keys.own" not in roles[custom_role_id].permissions:
+        if not KEY_HOLDING & set(roles[custom_role_id].permissions):
             await _refuse_key_holders(session, User.id == member.id)
     previous_role = member.role
     previous_custom_role_id = member.custom_role_id
@@ -634,7 +636,7 @@ async def update_custom_role(
     role = (await _roles_by_id(session, tenant_id, lock=True)).get(role_id)
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
-    if "keys.own" not in payload.permissions:
+    if not KEY_HOLDING & set(payload.permissions):
         await _refuse_key_holders(session, User.custom_role_id == role.id)
     changes = payload.model_dump()
     before = {field: getattr(role, field) for field in changes}
@@ -753,7 +755,6 @@ async def list_service_accounts(
         .where(
             User.organization_id == _tenant_id(user),
             User.kind == "service",
-            User.is_active.is_(True),
         )
         .order_by(User.created_at, User.id)
     )
@@ -841,7 +842,13 @@ async def _owned_service_account(
             User.id == account_id,
             User.organization_id == _tenant_id(user),
             User.kind == "service",
-            User.is_active.is_(True),
+            # Frozen accounts too; a deleted one has no live credential.
+            select(ServiceAccountCredential.id)
+            .where(
+                ServiceAccountCredential.user_id == User.id,
+                ServiceAccountCredential.revoked_at.is_(None),
+            )
+            .exists(),
         )
         .with_for_update(of=User)
     )
@@ -884,6 +891,7 @@ def _service_account_row(
         last_used_at=credential.last_used_at,
         created_by=credential.created_by,
         created_at=credential.created_at,
+        active=account.is_active,
     )
 
 
@@ -920,7 +928,7 @@ def _member_view(
     )
 
 
-# The gateway checks only the base role, so only keys.own holders may hold active keys.
+# The gateway checks only the base role, so only key holders (KEY_HOLDING) keep active keys.
 async def _refuse_key_holders(session: AsyncSession, holders: Any) -> None:
     users = await session.scalar(
         select(func.count(func.distinct(ApiKey.user_id)))

@@ -20,6 +20,7 @@ Permission = Literal[
     "budgets.manage",
     "teams.manage",
     "keys.own",
+    "keys.hold",
     "keys.manage",
     "members.read",
     "members.manage",
@@ -64,8 +65,9 @@ RESERVED_PERMISSIONS: frozenset[Permission] = frozenset(
         "requests.approve",
     }
 )
-# Owners and admins apply any plan (plans.apply); the allowlisted limit is for agents.
-_HUMAN_ADMIN = PERMISSIONS - {"plans.apply_allowlisted"}
+# Owners and admins apply any plan (plans.apply) and mint keys (keys.own); the
+# allowlisted limit and holding a key someone else issued are for agents.
+_HUMAN_ADMIN = PERMISSIONS - {"plans.apply_allowlisted", "keys.hold"}
 BUILTIN_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
     "owner": _HUMAN_ADMIN,
     "admin": _HUMAN_ADMIN - {"roles.manage", "config.manage"},
@@ -82,11 +84,14 @@ BUILTIN_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
             "usage.read",
             "plans.create",
             "plans.apply_allowlisted",
+            "keys.hold",
         }
     ),
 }
+# Who may hold an active gateway key: who mints its own, or holds one an owner issued.
+KEY_HOLDING: frozenset[Permission] = frozenset({"keys.own", "keys.hold"})
 KEY_OWNER_ROLES = frozenset(
-    role for role, granted in BUILTIN_ROLE_PERMISSIONS.items() if "keys.own" in granted
+    role for role, granted in BUILTIN_ROLE_PERMISSIONS.items() if granted & KEY_HOLDING
 )
 
 # Routes any signed-in user may call; each scopes its result to the caller in its query.

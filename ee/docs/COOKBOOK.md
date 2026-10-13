@@ -35,6 +35,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
 - [Write rules from a sentence with your agent](#write-rules-from-a-sentence-with-your-agent)
+- [Run Claude Code on shim and let it manage shim](#run-claude-code-on-shim-and-let-it-manage-shim)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
@@ -1078,6 +1079,75 @@ count matches in the request list until a person enforces them. Your sentence an
 examples are never stored. The same route works without MCP: `POST
 /api/v1/management/rules/proposals` (`plans.create`). Details: [rule
 proposals](POLICY_DECISIONS.md#rule-proposals).
+
+## Run Claude Code on shim and let it manage shim
+
+The agent that manages shim is itself an app on shim. Its model calls go through
+the gateway under their own key: the tenant's privacy policy masks them, the key's
+models and its team's limits bound them, and the request list records them. Its
+management calls go through the MCP server with a recommender key: it reads and
+proposes, and applies only allowlisted changes.
+
+1. Create a recommender service account; keep its `sk-shim-svc-` key (the
+   management key).
+2. Issue the agent its gateway key. Only an owner can, and only for a recommender
+   account; the agent cannot mint one itself. `allowed_models` is required. With
+   `team_id`, the account joins the team, so the team's request and token limits
+   apply, and a [budget](#alert-on-a-budget) on that team alerts on its cost. An
+   account holds at most two active gateway keys, so it can rotate.
+3. Point Claude Code at shim for its model calls and at the MCP server for
+   management. Put the management key in a variable of your own, such as
+   `SHIM_MANAGEMENT_KEY`. Claude Code blanks `ANTHROPIC_*` variables in MCP
+   headers.
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "role": "recommender", "expires_in_days": 90}'
+
+curl -X POST http://localhost:8000/api/v1/management/service-accounts/$ACCOUNT_ID/gateway-keys \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "allowed_models": ["claude-haiku-4-5"], "team_id": "'$TEAM_ID'", "expires_in_days": 90}'
+
+cat > shim-mcp.json <<'JSON'
+{"mcpServers": {"shim": {"type": "http", "url": "http://localhost:8000/api/v1/mcp",
+  "headers": {"Authorization": "Bearer ${SHIM_MANAGEMENT_KEY}"}}}}
+JSON
+
+ANTHROPIC_BASE_URL=http://localhost:8000 \
+ANTHROPIC_AUTH_TOKEN=$AGENT_GATEWAY_KEY \
+ANTHROPIC_MODEL=claude-haiku-4-5 ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+SHIM_MANAGEMENT_KEY=$MANAGEMENT_KEY \
+claude --mcp-config shim-mcp.json --strict-mcp-config --allowedTools 'mcp__shim__*'
+```
+
+What shim records for the agent:
+- Model calls are ordinary gateway requests under its key and its account: the
+  request list, cost, privacy counts and verdicts, and findings raised on the key.
+- Management actions carry `actor_type: service` and `actor_role: recommender`.
+  Plans and versions carry its id and source `mcp`, and its unattended applies
+  appear in [automatic changes](FINDINGS.md#automatic-fixes) with its id.
+
+`GET /service-accounts/{id}/activity?hours=24` (`audit.read`) puts it in one place:
+- the account and its gateway keys;
+- model requests, failures, cost and requests per model;
+- plans by status, versions and automatic changes;
+- refused applies;
+- open findings on its keys.
+
+To stop it at once, freeze the account:
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts/$ACCOUNT_ID/freeze \
+  -H "Authorization: Bearer $OWNER_TOKEN"
+```
+
+Its next management, MCP and model call answers 401. Its keys are kept, and
+`/unfreeze` turns them back on. Freezing undoes nothing the agent applied: undo an
+automatic change from `/remediations/{id}/undo` and a plan with a version restore.
+Revoke a gateway key with `DELETE /api-keys/{id}`. Deleting the account revokes
+everything.
 
 ## Give someone exactly the access they need
 
