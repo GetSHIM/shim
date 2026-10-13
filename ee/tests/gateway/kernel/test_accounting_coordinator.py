@@ -4248,7 +4248,7 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
         "outcome": "would_route",
     }
 
-    def request(route_decision: dict | None) -> SimpleNamespace:
+    def request(route_decision: dict | None, pii: bool = False) -> SimpleNamespace:
         prepared = _prepared()
         prepared.tenant_id = test_api_key.organization_id
         prepared.api_key_id = test_api_key.id
@@ -4259,14 +4259,15 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
         prepared.admission.tags = ()
         prepared.admission.repeat_chain_length = None
         prepared.privacy = PrivacyOutcome(
-            action=PrivacyAction.DETECTED, pii_detected=False
+            action=PrivacyAction.DETECTED, pii_detected=pii
         )
         prepared.route_decision = route_decision
         return prepared
 
     # Refused before privacy: the reservation alone carries the decision.
     refused, plain, moved = request(decision), request(None), request(decision)
-    for prepared in (refused, plain, moved):
+    personal = request(decision, pii=True)
+    for prepared in (refused, plain, moved, personal):
         await usage.admit(prepared, prepared.admission)
     # A rule moved it again after privacy; the start decision stays under previous.
     moved.route_decision = {
@@ -4276,9 +4277,10 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
         "outcome": "routed",
         "previous": decision,
     }
-    for prepared in (plain, moved):
+    personal.route_decision = {**moved.route_decision}
+    for prepared in (plain, moved, personal):
         await usage.record_privacy(prepared)
-    for prepared in (refused, plain, moved):
+    for prepared in (refused, plain, moved, personal):
         await usage.fail(prepared, reason="request_aborted")
     rows = {
         row.request_id: row.lifecycle_metadata
@@ -4286,7 +4288,12 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
             await db.scalars(
                 select(RequestLifecycle).where(
                     RequestLifecycle.request_id.in_(
-                        [refused.request_id, plain.request_id, moved.request_id]
+                        [
+                            refused.request_id,
+                            plain.request_id,
+                            moved.request_id,
+                            personal.request_id,
+                        ]
                     )
                 )
             )
@@ -4295,6 +4302,12 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
     assert rows[refused.request_id]["route_decision"] == decision
     assert "route_decision" not in rows[plain.request_id]
     assert rows[moved.request_id]["route_decision"]["previous"] == decision
+    # A personal-data request keeps the decision without the first-turn digest.
+    assert rows[personal.request_id]["route_decision"] == {
+        **moved.route_decision,
+        "conversation_id": None,
+        "previous": {**decision, "conversation_id": None},
+    }
 
     monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
     for event in (
@@ -4344,7 +4357,7 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
     )
     assert listed == {
         "would_route": {refused.request_id},
-        "routed": {moved.request_id},
+        "routed": {moved.request_id, personal.request_id},
         "target_unavailable": set(),
     }
     [row] = csv_rows

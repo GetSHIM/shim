@@ -386,8 +386,10 @@ digest of the first turn) and `outcome` (`routed`, `would_route`,
 again after privacy, that decision replaces it, with `from` and `to` as deployment ids
 (or `catalog`), `conversation_id` null, and the earlier decision under `previous` (one
 level); `deployment_kind` and `deployment_id` are then rewritten in the same update.
-Absent otherwise. The request list filters on it with
-`route_outcome=<outcome>`; prompt text and keywords are never recorded.
+Absent otherwise. When privacy finds personal data, the privacy update sets
+`conversation_id` to null (also under `previous`), as it clears `repeat_digest`. The
+request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
+never recorded.
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy

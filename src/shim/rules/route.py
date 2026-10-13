@@ -254,4 +254,6 @@ def conversation_id(sent: str | None, key: bytes, start_text: str) -> str:
 
     if sent is not None and _CONVERSATION_HEADER.fullmatch(sent):
         return sent
-    return hmac.new(key, start_text.encode(), hashlib.sha256).hexdigest()[:16]
+    # The resolver runs before admission refuses a lone surrogate with a 400.
+    digest = hmac.new(key, start_text.encode("utf-8", "surrogatepass"), hashlib.sha256)
+    return digest.hexdigest()[:16]

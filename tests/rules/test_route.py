@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -248,3 +249,4 @@ def test_the_conversation_id_is_the_header_or_a_keyed_digest() -> None:
     for ignored in ("has space", "x" * 129, "", "ünicode"):
         assert conversation_id(ignored, key, "Be brief.") == digest
     assert conversation_id(None, b"o" * 32, "Be brief.") != digest
+    assert re.fullmatch(r"[0-9a-f]{16}", conversation_id(None, key, "a\ud800b"))

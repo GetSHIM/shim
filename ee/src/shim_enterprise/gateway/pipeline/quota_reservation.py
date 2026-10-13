@@ -581,6 +581,17 @@ class DurableAccountingCoordinator:
             raise ValueError("privacy outcome is required")
         privacy_facts = REQUEST_PRIVACY_RETENTION.durable_facts(prepared.privacy)
         bulk = prepared.privacy.bulk_disclosure
+        route_decision = (
+            None if prepared.route_decision is None else dict(prepared.route_decision)
+        )
+        if route_decision is not None and privacy_facts["pii_detected"]:
+            # The conversation id may be a keyed hash of the first turn's text.
+            route_decision["conversation_id"] = None
+            if isinstance(route_decision.get("previous"), Mapping):
+                route_decision["previous"] = {
+                    **route_decision["previous"],
+                    "conversation_id": None,
+                }
         try:
             lifecycle = await RequestLifecycleRepository.update(
                 session,
@@ -619,9 +630,9 @@ class DurableAccountingCoordinator:
                             # A target chosen after privacy replaces the one reserved.
                             **(
                                 {}
-                                if prepared.route_decision is None
+                                if route_decision is None
                                 else {
-                                    "route_decision": dict(prepared.route_decision),
+                                    "route_decision": route_decision,
                                     "deployment_kind": prepared.deployment_kind,
                                     "deployment_id": prepared.target.deployment_id
                                     if prepared.target
