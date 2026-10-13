@@ -77,14 +77,20 @@ bands (same row and request id, recorded as `route_decision`), and, after a
 `ProviderCallError` or an answered JSON attempt, name a target for one more attempt.
 Each extra attempt is its own request: a new request id and start, the same privacy
 outcome and admission, the bands run again for its target from the masked payload
-before the bands, a usage reservation without a request unit (rate limits and the
-repeat detector never see it), its own spend reservation and settlement, and the
+before the bands, a usage reservation (rate limits and the repeat detector never see
+it) that takes the client request's one request unit only when no earlier attempt was
+answered (`AttemptInfo.counted`), its own spend reservation and settlement, and the
 `attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` of its
 row. Core guards skip a target with a `gateway.attempt` verdict: at most
 `MAX_ATTEMPTS` (3), never from an internal deployment to another kind when the
-request carried personal data or a rule match, never off the deployment a Responses
-continuation is pinned to, never without a stored credential after a BYOK key was
-consumed. A stream is never offered once it has started. The client sees the serving
+request carried personal data or a privacy rule match (term, pattern, record set,
+destination), never to a target for which an enforced mask, block or approval rule
+of a privacy kind is in scope that was not in scope for the target privacy ran for
+(`ATTEMPT_DESTINATION_CHANGED`: privacy ran once, for the first target), never off
+the deployment a Responses continuation is pinned to, never without a stored
+credential after a BYOK key was consumed. An extra attempt starts without the pin
+matches and answer warnings of the one before it, since its bands and answer run
+again; a cancelled start gives back its row and its lease. A stream is never offered once it has started. The client sees the serving
 attempt's `X-Shim-Request-Id` and, when more than one ran, `X-Shim-Attempts`; an
 answered attempt a later one supersedes is settled and never returned.
 
@@ -95,14 +101,18 @@ a Responses continuation or a Responses request whose `store` is not `false`. On
 after the serving attempt settled `completed`, and only after the caller's answer is
 complete (after the JSON body is sent, after a stream's finalization), a background
 task registered with the postprocessor asks for a candidate target, checks that it is
-internal or of the primary's kind and has a stored credential, and sends the same
-masked payload, bands re-run for the candidate, without the caller's provider key.
-The copy is its own request (`shadow_of`), reserves no request unit, never passes the
-admission stage, and is settled with its own cost; then the sender compares both
-answers in memory. At most `shadow_max_in_flight` copies run per process (enterprise
-`SHADOW_MAX_IN_FLIGHT`, 4); more are dropped. A copy's failure is logged by type and
-counted in `shim_shadow_copies_total`, never raised; `drain()` at shutdown cancels a
-copy still running and fails it.
+internal or of the primary's kind, has a stored credential and brings no privacy rule
+into scope that the primary's privacy did not apply (the same check as
+`ATTEMPT_DESTINATION_CHANGED`), and sends the same masked payload, bands re-run for
+the candidate, without the caller's provider key. The copy is its own request
+(`shadow_of`), reserves no request unit, never passes the admission stage, never adds
+to the caller's task cost, and is settled with its own cost; then the sender compares
+both answers in memory. At most `shadow_max_in_flight` copies run per process
+(enterprise `SHADOW_MAX_IN_FLIGHT`, 1 to 64, default 4); more are dropped. Each copy
+runs under `SHADOW_RUN_SECONDS` (600) from the candidate lookup to the comparison. A
+copy's failure or timeout is logged by type and counted in `shim_shadow_copies_total`
+(`failed`), never raised; `drain()` at shutdown cancels a copy still running and
+fails it.
 
 Admission may also hold or refuse work for capacity through the
 `ConcurrencyLimiter` port (`src/shim/gateway/concurrency.py`), the only place that
@@ -114,7 +124,8 @@ time. A refusal is 429 `CONCURRENCY_LIMITED` with `Retry-After` (or
 without a reservation. The lease is released exactly once on every terminal: after a
 JSON postprocess, in a stream's finalizer (heartbeats renew it), on every error after
 admission; an S57 move takes room on the new target first, without waiting, and a
-refusal skips the move (`ATTEMPT_TARGET_SATURATED`); a shadow copy asks with priority
+refusal skips the move (`ATTEMPT_TARGET_SATURATED`); a move to the same target keeps
+the room it holds; a shadow copy asks with priority
 `low` and is dropped when full. Community offers a one-process adapter
 (`SHIM_CONCURRENCY_TOKEN_LIMIT`), off by default; enterprise passes none yet.
 

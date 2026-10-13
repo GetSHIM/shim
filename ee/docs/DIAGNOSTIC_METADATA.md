@@ -373,28 +373,35 @@ the row of an extra attempt a tenant rule asked for (number 2 or 3, reason
 id), written at reservation. The first attempt's row carries none of them and is never
 rewritten: a group is the row whose `request_id` is the `attempt_group_id` plus every
 row carrying it, and the attempt that served the client is the highest
-`attempt_number` that completed. Each row has its own tokens and cost; an extra
-attempt reserves no daily or monthly request unit. The request list, its CSV and
+`attempt_number` that completed. Each row has its own tokens and cost; a client
+request settles one daily and monthly request unit across its attempts: an extra
+attempt reserves the unit only when every earlier attempt failed (and so gave its
+unit back), and none after an answered one. The request list, its CSV and
 `GET /api/v1/management/requests?attempt_group_id=<request id>` (both the first row
 and the later ones) carry them. `route_decision` is set when a
 [route rule](POLICY_DECISIONS.md#route-rules) decided at the conversation start,
 written at reservation: `rule_id`, `state`, `from` (the model the client named), `to`
 (the rule's alias), `reason` (the first `when` condition that matched, or `always`),
-`conversation_id` (the `X-Shim-Conversation-Id` header, or 16 hex characters of a keyed
-digest of the first turn) and `outcome` (`routed`, `would_route`,
+`conversation_id` (16 hex characters of a keyed digest of the `X-Shim-Conversation-Id`
+header, or of the first turn without one; the header itself is never stored) and
+`outcome` (`routed`, `would_route`,
 `not_allowed_for_key` or `target_unavailable`). When a tenant rule moves the request
 again after privacy, that decision replaces it, with `from` and `to` as deployment ids
 (or `catalog`), `conversation_id` null, and the earlier decision under `previous` (one
 level); `deployment_kind` and `deployment_id` are then rewritten in the same update.
-Absent otherwise. When privacy finds personal data, the privacy update sets
-`conversation_id` to null (also under `previous`), as it clears `repeat_digest`. The
+Absent otherwise. The reservation writes `conversation_id` as null; the privacy
+update fills it in only when privacy found no personal data (null otherwise, also
+under `previous`, as it clears `repeat_digest`), so a request refused before privacy
+finished never keeps it. The
 request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
 never recorded.
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy
 has its own tokens and cost, which the tenant pays, and reserves no daily or monthly
-request unit (`request_count` 0). The request list and its CSV carry `shadow_of`;
+request unit (`request_count` 0). Its tokens count against the organization's quota
+only, never the caller's key or team quota, task cost cap, or a team or tag cost
+budget. The request list and its CSV carry `shadow_of`;
 both keys are absent on every other row.
 
 `queue_wait_ms` is the milliseconds a request waited for room on its target under a

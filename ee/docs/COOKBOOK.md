@@ -325,7 +325,11 @@ Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
 `SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`,
 `SHIM_INFLIGHT_SHARING`, `SHIM_ANTHROPIC_AUTO_CACHE`, `SHIM_OPENAI_PROMPT_CACHE_KEY`,
 `SHIM_TOOL_SEARCH*`, `SHIM_ANTHROPIC_KEEP_THINKING_TURNS`,
-`SHIM_OPENAI_REASONING_CONTEXT` and `SHIM_JSON_COMPACTION` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+`SHIM_OPENAI_REASONING_CONTEXT`, `SHIM_JSON_COMPACTION` and `SHIM_CONCURRENCY_*`
+variables. `SHADOW_MAX_IN_FLIGHT` (1 to 64, default 4) caps the shadow copies of
+finished requests one process runs at once; more are dropped and counted. A copy
+counts against the organization's quota only, never the caller's key, team, task
+or team and tag cost budgets. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
 the task id}`); when Redis fails, task caps are not applied: calls go on with a
 `TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
 `shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are
@@ -648,7 +652,7 @@ matched at a word start with Turkish-aware casing, so `fatura` finds
 Notes: the conditions read only the conversation's first turn (system instructions
 and the first user message), so a conversation keeps its model on every turn and its
 provider prompt-cache discount; send `X-Shim-Conversation-Id` to name conversations
-yourself. Responses requests that the provider stores (`store` not `false`, or a
+yourself (only a keyed digest of it is stored). Responses requests that the provider stores (`store` not `false`, or a
 `previous_response_id` / `conversation`) are never routed. With
 [four eyes](#require-a-second-admin-for-loosening-changes) on, enforcing a route rule
 needs a second admin. Prompts are not kept, so a route rule has no

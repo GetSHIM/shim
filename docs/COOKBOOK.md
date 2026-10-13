@@ -891,7 +891,9 @@ flips, a conversation in progress sends its earlier tool results in the other fo
 once, writing the cache again from the first one. An Anthropic request with thinking
 on, or with thinking blocks in its history, is left alone (a
 `transforms.json_compaction` `skip` verdict, `TRANSFORM_THINKING_BOUND`): changing an
-earlier turn invalidates every later thinking block. Claude Code users get the same
+earlier turn invalidates every later thinking block. A Responses request that carries
+a `reasoning` input item (encrypted reasoning replayed by the client) is left alone
+the same way. Claude Code users get the same
 compaction at the source from shim-cli. Tool results over 65,536 characters in total
 are compacted off the event loop. `shim_transforms_total{transform, result}` counts
 the step per request.
