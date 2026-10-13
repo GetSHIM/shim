@@ -114,13 +114,15 @@ class User(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("organization_id", "id", name="uq_users_tenant_id"),
         CheckConstraint(
-            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_users_role"
+            "role IN ('owner', 'admin', 'member', 'auditor', 'recommender')",
+            name="ck_users_role",
         ),
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
         Index("ix_users_organization_id", "organization_id"),
         CheckConstraint("kind IN ('human', 'service')", name="ck_users_kind"),
         CheckConstraint(
-            "kind = 'human' OR role IN ('admin', 'auditor')",
+            "(kind = 'human' AND role <> 'recommender') OR "
+            "(kind = 'service' AND role IN ('admin', 'auditor', 'recommender'))",
             name="ck_users_service_role",
         ),
         ForeignKeyConstraint(

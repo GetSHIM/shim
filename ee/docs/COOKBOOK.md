@@ -32,6 +32,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
@@ -1000,6 +1001,27 @@ Notes:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
+
+## Give an agent a recommender key
+
+An agent (Claude Code, Codex or Cursor) that reads findings and proposes fixes gets
+its own service account with the role `recommender`:
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "role": "recommender", "expires_in_days": 30}'
+```
+
+The answer holds its `sk-shim-svc-` key once. With it the agent reads settings,
+rules, deployments, findings, usage, plans and policy versions, and creates plans
+(`POST /api/v1/management/policy/plans`). It applies a plan only when every change
+tightens or cheapens; anything else answers 403 `PLAN_NOT_ALLOWLISTED`, with the
+reason per change, and waits for a person to apply it. It never reads stored
+content, writes settings or rules directly, approves anything or owns gateway
+keys. Every action it takes is in the audit log with `actor_type: service` and
+`actor_role: recommender`. Details: [team access](team-access.md#service-accounts)
+and [the apply limit](POLICY_DECISIONS.md#the-recommender-and-its-apply-limit).
 
 ## Give someone exactly the access they need
 

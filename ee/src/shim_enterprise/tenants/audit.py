@@ -40,6 +40,8 @@ async def record_management_action(
                     "subject_id": subject_id,
                     **(details or {}),
                     "actor_type": "service" if user.kind == "service" else "user_jwt",
+                    # An agent's rows say which service role acted; people's rows are unchanged.
+                    **({"actor_role": user.role} if user.kind == "service" else {}),
                 },
             },
             "status": "pending",

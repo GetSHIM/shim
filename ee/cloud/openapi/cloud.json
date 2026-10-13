@@ -1509,6 +1509,18 @@
             ],
             "title": "Actor"
           },
+          "actor_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The service account's role (admin, auditor or recommender); null for people.",
+            "title": "Actor Role"
+          },
           "actor_type": {
             "anyOf": [
               {
@@ -3825,7 +3837,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -3930,7 +3943,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 27,
+            "maxItems": 28,
             "title": "Permissions",
             "type": "array"
           },
@@ -4001,6 +4014,7 @@
                 "incidents.manage",
                 "plans.create",
                 "plans.apply",
+                "plans.apply_allowlisted",
                 "plans.approve",
                 "requests.approve",
                 "content.read",
@@ -14673,7 +14687,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -14739,7 +14754,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -15896,7 +15912,8 @@
               "owner",
               "admin",
               "member",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -17005,6 +17022,7 @@
                 "incidents.manage",
                 "plans.create",
                 "plans.apply",
+                "plans.apply_allowlisted",
                 "plans.approve",
                 "requests.approve",
                 "content.read",
@@ -17020,7 +17038,8 @@
               "owner",
               "admin",
               "member",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -23395,6 +23414,9 @@
             },
             "description": "Waiting for approval"
           },
+          "403": {
+            "description": "PLAN_NOT_ALLOWLISTED: a caller limited to allowlisted plans asked for a change that needs a person; `changes` lists each refusal."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -23726,6 +23748,9 @@
               }
             },
             "description": "Waiting for approval"
+          },
+          "403": {
+            "description": "PLAN_NOT_ALLOWLISTED: a caller limited to allowlisted plans asked for a change that needs a person; `changes` lists each refusal."
           },
           "422": {
             "content": {

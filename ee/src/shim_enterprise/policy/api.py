@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
@@ -16,6 +17,7 @@ from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.config_file.models import file_managed
 from shim_enterprise.core.database import get_db
 from shim_enterprise.outbox.handlers import POLICY_APPROVAL_REQUESTED
+from shim_enterprise.policy.allowlist import check_plan
 from shim_enterprise.outbox.publisher import OutboxWriter
 from shim_enterprise.policy.models import PlanStatus, PolicyPlan, PolicyVersion
 from shim_enterprise.policy.plans import (
@@ -44,6 +46,22 @@ _PLAN_LIFETIME = timedelta(days=7)
 _APPROVAL_LIFETIME = timedelta(hours=72)
 _MAX_PLAN_BYTES = 256 * 1024
 _MAX_CHANGES = 100
+# A recommender chooses a version to restore without reading the audit log.
+_VERSION_READS = require(
+    "audit.read", "plans.create", legacy_detail="Permission required: audit.read"
+)
+# Applying asks for plans.apply, or for the allowlisted limit an agent holds.
+_APPLY = require(
+    "plans.apply",
+    "plans.apply_allowlisted",
+    legacy_detail="Permission required: plans.apply",
+)
+_NOT_ALLOWLISTED: dict[int | str, dict[str, Any]] = {
+    403: {
+        "description": "PLAN_NOT_ALLOWLISTED: a caller limited to allowlisted plans "
+        "asked for a change that needs a person; `changes` lists each refusal."
+    }
+}
 _MAX_VERSION = 2_147_483_647
 # What /state, one version's states and plans' changes show besides audit.read.
 _STATE_READS = ("deployments.read", "rules.read", "settings.read", "usage.read")
@@ -170,10 +188,56 @@ def _summary(row: PolicyVersion) -> dict[str, Any]:
 async def _authorize(
     session: AsyncSession, actor: User, resource: ManagedResource
 ) -> None:
-    if resource.permission not in await user_permissions(session, actor):
+    granted = await user_permissions(session, actor)
+    # An agent proposes anything; what it may apply is the allowlist, checked at apply.
+    if resource.permission not in granted and not _allowlisted_only(granted):
         raise HTTPException(
             status_code=403, detail=f"Permission required: {resource.permission}"
         )
+
+
+def _allowlisted_only(granted: frozenset[str]) -> bool:
+    return "plans.apply_allowlisted" in granted and "plans.apply" not in granted
+
+
+async def _refuse_unlisted(
+    session: AsyncSession,
+    actor: User,
+    organization_id: UUID,
+    changes: list[dict[str, Any]],
+    *,
+    risk: str,
+    source: str,
+    plan_id: UUID | None,
+) -> None:
+    """403 PLAN_NOT_ALLOWLISTED, audited and committed first, unless every change is allowlisted."""
+    refusals = await check_plan(
+        session, organization_id, changes, risk=risk, source=source
+    )
+    if not refusals:
+        return
+    await _audit(
+        session,
+        actor,
+        "tenant.policy_plan_apply_refused",
+        str(plan_id or organization_id),
+        details={
+            "plan_id": str(plan_id) if plan_id is not None else None,
+            "risk": risk,
+            "reasons": sorted({refusal.reason for refusal in refusals}),
+        },
+    )
+    await session.commit()
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "PLAN_NOT_ALLOWLISTED",
+            "changes": [asdict(refusal) for refusal in refusals],
+            "message": "This plan needs a person to apply it.",
+            "hint": "Ask an administrator to apply it, or create a plan whose "
+            "changes only tighten or cheapen.",
+        },
+    )
 
 
 async def _require_state_reads(session: AsyncSession, user: User) -> None:
@@ -291,6 +355,17 @@ async def _apply_plan(
     if stale:
         raise HTTPException(
             status_code=409, detail={"code": "PLAN_STALE", "items": stale}
+        )
+    if _allowlisted_only(await user_permissions(session, actor)):
+        # Allowlisted plans tighten by construction, so four eyes never holds one.
+        await _refuse_unlisted(
+            session,
+            actor,
+            organization_id,
+            plan.changes,
+            risk=plan.risk,
+            source=plan.source,
+            plan_id=plan.id,
         )
     if (
         plan.status == "draft"
@@ -534,13 +609,16 @@ async def get_plan(
 @router.post(
     "/plans/{plan_id}/apply",
     response_model=PlanView,
-    responses={202: {"model": PlanView, "description": "Waiting for approval"}},
+    responses={
+        202: {"model": PlanView, "description": "Waiting for approval"},
+        **_NOT_ALLOWLISTED,
+    },
 )
 async def apply_plan(
     plan_id: UUID,
     request: Request,
     response: Response,
-    user: User = Depends(require("plans.apply")),
+    user: User = Depends(_APPLY),
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
     organization_id = _tenant(user)
@@ -641,7 +719,7 @@ async def reject_plan(
 async def list_versions(
     limit: int = Query(default=50, ge=1, le=200),
     before: int | None = Query(default=None, ge=1, le=_MAX_VERSION),
-    user: User = Depends(require("audit.read")),
+    user: User = Depends(_VERSION_READS),
     session: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     statement = select(PolicyVersion).where(
@@ -658,7 +736,7 @@ async def list_versions(
 @router.get("/versions/{version}", response_model=VersionView)
 async def get_version(
     version: int = Path(ge=0, le=_MAX_VERSION),
-    user: User = Depends(require("audit.read")),
+    user: User = Depends(_VERSION_READS),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     await _require_state_reads(session, user)
@@ -675,7 +753,7 @@ async def get_version(
 
 @router.get("/state", response_model=PolicyStateView)
 async def policy_state(
-    user: User = Depends(require("audit.read")),
+    user: User = Depends(_VERSION_READS),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     await _require_state_reads(session, user)
@@ -719,7 +797,10 @@ async def _finish_restore(
 @router.post(
     "/versions/{version}/restore",
     response_model=RestoreView,
-    responses={202: {"model": RestoreView, "description": "Waiting for approval"}},
+    responses={
+        202: {"model": RestoreView, "description": "Waiting for approval"},
+        **_NOT_ALLOWLISTED,
+    },
 )
 async def restore_version(
     payload: RestoreInput,
@@ -727,7 +808,7 @@ async def restore_version(
     response: Response,
     version: int = Path(ge=0, le=_MAX_VERSION),
     user: User = Depends(require("plans.create")),
-    _: User = Depends(require("plans.apply")),
+    _: User = Depends(_APPLY),
     session: AsyncSession = Depends(get_db),
 ) -> RestoreView:
     organization_id = _tenant(user)
@@ -829,6 +910,17 @@ async def restore_version(
         )
     plan = None
     cleanups: list[PostCommit] | None = []
+    if changes and _allowlisted_only(await user_permissions(session, user)):
+        # A refused restore creates no plan.
+        await _refuse_unlisted(
+            session,
+            user,
+            organization_id,
+            changes,
+            risk=combine_risk(change["risk"] for change in changes),
+            source="restore",
+            plan_id=None,
+        )
     if changes:
         plan = await new_plan(
             session,

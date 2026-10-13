@@ -48,11 +48,11 @@ from shim_enterprise.tenants.service import authenticate_api_key
 
 # The R1 table of internal PRD E31, column by column.
 _TABLE = {
-    "settings.read": "owner admin member auditor",
+    "settings.read": "owner admin member auditor recommender",
     "settings.write": "owner admin",
-    "rules.read": "owner admin auditor",
+    "rules.read": "owner admin auditor recommender",
     "rules.write": "owner admin",
-    "deployments.read": "owner admin auditor",
+    "deployments.read": "owner admin auditor recommender",
     "deployments.manage": "owner admin",
     "providers.manage": "owner admin",
     "budgets.manage": "owner admin",
@@ -62,15 +62,16 @@ _TABLE = {
     "members.read": "owner admin auditor",
     "members.manage": "owner admin",
     "roles.manage": "owner",
-    "usage.read": "owner admin auditor",
+    "usage.read": "owner admin auditor recommender",
     "audit.read": "owner admin auditor",
     "compliance.manage": "owner admin",
-    "findings.read": "owner admin auditor",
+    "findings.read": "owner admin auditor recommender",
     "findings.manage": "owner admin",
     "incidents.read": "owner admin auditor",
     "incidents.manage": "owner admin",
-    "plans.create": "owner admin",
+    "plans.create": "owner admin recommender",
     "plans.apply": "owner admin",
+    "plans.apply_allowlisted": "recommender",
     "plans.approve": "owner admin",
     "requests.approve": "owner admin",
     "content.read": "owner admin",
@@ -89,12 +90,64 @@ def test_built_in_roles_hold_exactly_the_table() -> None:
 
 
 def test_an_unknown_role_has_no_permission_and_a_custom_role_replaces_the_set() -> None:
-    unknown = User(role="recommender", custom_role_id=None)
+    unknown = User(role="agent", custom_role_id=None)
     assert effective_permissions(unknown, None) == frozenset()
     member = User(role="member", custom_role_id=uuid4())
     role = OrganizationRole(permissions=["usage.read", "content.read", "made.up"])
     assert effective_permissions(member, role) == {"usage.read"}
     assert effective_permissions(member, None) == frozenset()
+
+
+_NEVER_RECOMMENDED = {
+    "content.read",
+    "keys.own",
+    "keys.manage",
+    "providers.manage",
+    "members.read",
+    "members.manage",
+    "roles.manage",
+    "config.manage",
+    "settings.write",
+    "rules.write",
+    "plans.apply",
+    "plans.approve",
+    "requests.approve",
+    "audit.read",
+    "findings.manage",
+    "budgets.manage",
+    "teams.manage",
+    "deployments.manage",
+    "compliance.manage",
+}
+
+
+def test_the_recommender_reads_proposes_and_applies_only_allowlisted_plans() -> None:
+    granted = BUILTIN_ROLE_PERMISSIONS["recommender"]
+
+    assert granted == {
+        "settings.read",
+        "rules.read",
+        "deployments.read",
+        "findings.read",
+        "usage.read",
+        "plans.create",
+        "plans.apply_allowlisted",
+    }
+    assert not granted & _NEVER_RECOMMENDED
+    assert not granted & RESERVED_PERMISSIONS
+    assert not [p for p in granted if p.endswith((".write", ".manage"))]
+    assert "recommender" not in KEY_OWNER_ROLES
+    # A custom role may carry the limit: it can only tighten.
+    custom = OrganizationRole(permissions=["plans.create", "plans.apply_allowlisted"])
+    assert effective_permissions(
+        User(role="member", custom_role_id=uuid4()), custom
+    ) == {
+        "plans.create",
+        "plans.apply_allowlisted",
+    }
+    management.members.CustomRoleInput(
+        slug="tightener", name="Tightener", permissions=["plans.apply_allowlisted"]
+    )
 
 
 @pytest.mark.parametrize("permission", sorted(RESERVED_PERMISSIONS) + ["made.up"])
@@ -160,9 +213,15 @@ def test_every_management_route_asks_for_a_permission_or_is_listed() -> None:
     ("user", "path", "allowed"),
     [
         (
-            SimpleNamespace(role="recommender", custom_role_id=None),
+            SimpleNamespace(role="agent", custom_role_id=None),
             "/api/v1/management/teams",
             False,
+        ),
+        # plans.create is a write permission: each route's own guard decides.
+        (
+            SimpleNamespace(role="recommender", custom_role_id=None),
+            "/api/v1/management/policy/plans",
+            True,
         ),
         (
             SimpleNamespace(role="auditor", custom_role_id=None),
@@ -326,7 +385,9 @@ async def test_a_read_only_custom_role_keeps_its_own_and_team_scoped_writes(
 @pytest.mark.asyncio
 async def test_only_key_owner_roles_authenticate_a_gateway_key(db) -> None:
     organization = await _organization(db)
+    # Only to give each role a key holder; the constraints allow no human recommender.
     await db.execute(text("ALTER TABLE users DROP CONSTRAINT ck_users_role"))
+    await db.execute(text("ALTER TABLE users DROP CONSTRAINT ck_users_service_role"))
     keys = {
         role: await _key(db, await _user(db, organization, role))
         for role in ("owner", "admin", "member", "auditor", "recommender")

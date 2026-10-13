@@ -33,6 +33,7 @@ Permission = Literal[
     "incidents.manage",
     "plans.create",
     "plans.apply",
+    "plans.apply_allowlisted",
     "plans.approve",
     "requests.approve",
     "content.read",
@@ -63,11 +64,26 @@ RESERVED_PERMISSIONS: frozenset[Permission] = frozenset(
         "requests.approve",
     }
 )
+# Owners and admins apply any plan (plans.apply); the allowlisted limit is for agents.
+_HUMAN_ADMIN = PERMISSIONS - {"plans.apply_allowlisted"}
 BUILTIN_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
-    "owner": PERMISSIONS,
-    "admin": PERMISSIONS - {"roles.manage", "config.manage"},
+    "owner": _HUMAN_ADMIN,
+    "admin": _HUMAN_ADMIN - {"roles.manage", "config.manage"},
     "member": frozenset({"settings.read", "keys.own"}),
     "auditor": READ_PERMISSIONS,
+    # Service accounts only (ck_users_service_role): an agent reads and proposes,
+    # and applies only plans whose every change is on the allowlist.
+    "recommender": frozenset(
+        {
+            "settings.read",
+            "rules.read",
+            "deployments.read",
+            "findings.read",
+            "usage.read",
+            "plans.create",
+            "plans.apply_allowlisted",
+        }
+    ),
 }
 KEY_OWNER_ROLES = frozenset(
     role for role, granted in BUILTIN_ROLE_PERMISSIONS.items() if "keys.own" in granted

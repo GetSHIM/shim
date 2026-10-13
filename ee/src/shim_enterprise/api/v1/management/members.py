@@ -71,12 +71,17 @@ router = APIRouter()
 _MAX_CUSTOM_ROLES = 20
 
 
+ServiceRole = Literal["admin", "auditor", "recommender"]
+# What a user row can hold; inputs for people keep the four human roles.
+UserRole = Literal["owner", "admin", "member", "auditor", "recommender"]
+
+
 class UserView(BaseModel):
     id: UUID
     email: str
     full_name: str | None
     organization_name: str
-    role: Literal["owner", "admin", "member", "auditor"]
+    role: UserRole
     custom_role: str | None
     permissions: list[Permission]
     is_active: bool
@@ -98,14 +103,14 @@ class SubscriptionView(BaseModel):
 
 class ServiceAccountInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    role: Literal["admin", "auditor"]
+    role: ServiceRole
     expires_in_days: int = Field(ge=1, le=365)
 
 
 class ServiceAccountView(BaseModel):
     id: UUID
     name: str | None
-    role: Literal["admin", "auditor"]
+    role: ServiceRole
     prefix: str
     expires_at: datetime
     last_used_at: datetime | None
@@ -125,7 +130,7 @@ class TeamMemberView(BaseModel):
         description="Null for team administrators without the members.read permission."
     )
     full_name: str | None
-    role: Literal["owner", "admin", "member", "auditor"]
+    role: UserRole
     custom_role: str | None = None
     is_active: bool
     created_at: datetime
@@ -818,7 +823,7 @@ async def _user_view(session: AsyncSession, user: User) -> UserView:
         email=user.email,
         full_name=user.full_name,
         organization_name=tenant.name,
-        role=cast(Literal["owner", "admin", "member", "auditor"], user.role),
+        role=cast(UserRole, user.role),
         custom_role=role.slug if role is not None else None,
         permissions=sorted(await user_permissions(session, user)),
         is_active=user.is_active,
@@ -873,7 +878,7 @@ def _service_account_row(
     return ServiceAccountView(
         id=account.id,
         name=account.full_name,
-        role=cast(Literal["admin", "auditor"], account.role),
+        role=cast(ServiceRole, account.role),
         prefix=credential.prefix,
         expires_at=credential.expires_at,
         last_used_at=credential.last_used_at,
@@ -908,7 +913,7 @@ def _member_view(
         id=member.id,
         email=member.email if with_email else None,
         full_name=member.full_name,
-        role=cast(Literal["owner", "admin", "member", "auditor"], member.role),
+        role=cast(UserRole, member.role),
         custom_role=_role_slug(roles, member.custom_role_id),
         is_active=member.is_active,
         created_at=member.created_at,

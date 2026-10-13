@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import runpy
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import ValidationError
@@ -428,3 +432,64 @@ async def test_the_database_refuses_a_service_owner(db) -> None:
     with pytest.raises(IntegrityError, match="ck_users_kind"):
         async with db.begin_nested():
             await db.execute(update(User).where(User.id == owner.id).values(kind="bot"))
+
+
+@pytest.mark.asyncio
+async def test_only_a_service_account_may_be_a_recommender(db) -> None:
+    owner = await _owner(db)
+    created, account = await _create(db, owner, role="recommender")
+
+    assert (created.role, account.kind) == ("recommender", "service")
+    assert [
+        item.role for item in await management.members.list_service_accounts(owner, db)
+    ] == ["recommender"]
+    with pytest.raises(IntegrityError, match="ck_users_service_role"):
+        async with db.begin_nested():
+            await db.execute(
+                update(User).where(User.id == owner.id).values(role="recommender")
+            )
+    with pytest.raises(IntegrityError, match="ck_users_role"):
+        async with db.begin_nested():
+            await db.execute(
+                update(User).where(User.id == account.id).values(role="agent")
+            )
+
+
+@pytest.mark.asyncio
+async def test_the_downgrade_refuses_while_a_recommender_exists(db) -> None:
+    owner = await _owner(db)
+    await _create(db, owner, role="recommender")
+    migration = runpy.run_path(
+        str(
+            Path(__file__).parents[2]
+            / "alembic/versions/5bcf3c3e89cb_allow_recommender_service_accounts.py"
+        )
+    )
+
+    def downgrade(connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration["downgrade"]()
+
+    with pytest.raises(RuntimeError, match="Remove recommender service accounts"):
+        await (await db.connection()).run_sync(downgrade)
+
+
+@pytest.mark.asyncio
+async def test_agent_rows_name_their_service_role_and_people_rows_do_not(
+    db, audit_events
+) -> None:
+    owner = await _owner(db)
+    _, account = await _create(db, owner, role="recommender")
+
+    await record_management_action(
+        db, account, "tenant.test", "subject", details={"actor_role": "admin"}
+    )
+    await record_management_action(db, owner, "tenant.test", "subject")
+
+    agent, person = [
+        event["extra"]
+        for event in await audit_events(owner.organization_id)
+        if event["endpoint"] == "tenant.test"
+    ]
+    assert (agent["actor_type"], agent["actor_role"]) == ("service", "recommender")
+    assert person["actor_type"] == "user_jwt" and "actor_role" not in person

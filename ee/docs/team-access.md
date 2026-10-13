@@ -41,6 +41,7 @@ write nor own gateway keys.
 | `incidents.manage` | Open incidents, change them and their status, record notifications | x | x | | |
 | `plans.create` | Create [policy plans](POLICY_DECISIONS.md#policy-versions-and-plans) and read them; each change also needs its own route's permission | x | x | | |
 | `plans.apply` | Apply plans; with `plans.create`, restore a version | x | x | | |
+| `plans.apply_allowlisted` | Apply a plan, or restore a version, only when every change is on the [allowlist](POLICY_DECISIONS.md#the-recommender-and-its-apply-limit); a custom role may hold it, since it can only tighten. The recommender's limit | | | | |
 | `plans.approve` | Approve or reject a pending plan ([four eyes](POLICY_DECISIONS.md#four-eyes)); never a service account, nor the plan's creator or submitter, nor the signer of a configuration file, nor who created or rotated their service-account key. While four eyes is on, the last two holders cannot be demoted or removed (409 `FOUR_EYES_UNAVAILABLE`) | x | x | | |
 | `requests.approve` | Read and decide [request approvals](POLICY_DECISIONS.md#request-approval); never a service account, nor the owner of the key that sent the request, nor who created or rotated its service account's key | x | x | | |
 | `content.read` | Open stored request content | x | x | | |
@@ -113,7 +114,7 @@ owners/admins retain organization-wide authority.
 
 A service account lets a pipeline, a Terraform run or an agent call the
 management API without a person's sign-in. It is an organization user of kind
-`service` with the role `admin` or `auditor`, a synthetic address
+`service` with the role `admin`, `auditor` or `recommender`, a synthetic address
 `<id>@service-accounts.getshim.tech` that is never mailed, and a key
 `sk-shim-svc-` followed by 64 hex characters, sent as `Authorization: Bearer`.
 
@@ -135,8 +136,19 @@ management API without a person's sign-in. It is an organization user of kind
   answers 401 `INVALID_API_KEY` without saying which. A gateway `sk-shim-` key
   is not accepted on management routes, and a service key is refused at the
   gateway routes.
+- `recommender` is for agents ([give an agent a recommender
+  key](COOKBOOK.md#give-an-agent-a-recommender-key)), and the database lets only
+  service accounts hold it. It holds exactly `settings.read`, `rules.read`,
+  `deployments.read`, `findings.read`, `usage.read`, `plans.create` and
+  `plans.apply_allowlisted`: it reads, proposes any plan, and applies one only when
+  every change tightens or cheapens. It can never read stored content, own gateway
+  keys, manage providers, members, roles, budgets, teams or deployments, write
+  settings or rules, approve anything, or read the audit log; `/team/members`
+  answers it 403. Policy versions and state it reads with `plans.create`. A
+  service account's role cannot be changed after creation.
 - Every management action of a service account carries `actor_type: service`
-  in the audit log; a person's carries `user_jwt`. Creating, rotating and
+  and `actor_role` (its role) in the audit log; a person's carries `user_jwt`
+  and no role. Creating, rotating and
   deleting an account records `tenant.service_account_created`, `_rotated` and
   `_deleted`.
 

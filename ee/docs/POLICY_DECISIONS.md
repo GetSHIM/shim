@@ -518,6 +518,33 @@ Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
 `risk`, `resources`).
 
+### The recommender and its apply limit
+
+A service account with the role `recommender` (an agent, through the MCP server)
+creates plans for any resource, since what it may change is decided when the plan
+is applied, not when it is proposed. `POST /policy/plans/{id}/apply` and `POST
+/policy/versions/{version}/restore` take `plans.apply` or `plans.apply_allowlisted`.
+A caller with only the second is checked by `policy/allowlist.py` after the stale
+check and before anything is written:
+
+- the plan must be `tightening` (`plan_not_tightening`) and not a rule proposal
+  (`proposal_needs_human`);
+- each change must change an existing item (`create_or_delete`) through an
+  allowlist entry for its resource (`not_allowlisted`), only in the entry's fields
+  (`extra_fields`) and in the allowed direction (`wrong_direction`);
+- an entry with an impact bound recomputes the change's impact now, over its
+  window, and refuses when it is unknown (`impact_unknown`) or above the bound
+  (`impact_too_large`).
+
+Any refusal answers 403 `{"code": "PLAN_NOT_ALLOWLISTED", "changes": [{"index",
+"resource", "item", "reason"}], "message", "hint"}`. The plan stays `draft` (a
+refused restore creates none), and `tenant.policy_plan_apply_refused` (plan id,
+risk, reason codes; never a before or after value) is committed before the 403.
+An allowlisted plan tightens by construction, so four eyes never holds it.
+Approving and rejecting stay with `plans.approve`, which no service account holds.
+The allowlist ships empty: until it is filled, a recommender proposes and never
+applies.
+
 ### Configuration file
 
 A tenant can manage `privacy`, `gateway_settings` and `rules`, or any non-empty

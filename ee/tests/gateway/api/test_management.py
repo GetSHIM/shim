@@ -3350,3 +3350,20 @@ async def test_archive_settings_merge_per_field_and_a_shorter_retention_moves_ex
     assert too_long.status_code == 422
     await db.refresh(row)
     assert row.expires_at == row.created_at + timedelta(days=30)
+
+
+def test_recommender_is_a_service_role_and_never_a_person_role() -> None:
+    service = management.members.ServiceAccountInput(
+        name="agent", role="recommender", expires_in_days=1
+    )
+
+    assert service.role == "recommender"
+    for model, values in (
+        (management.members.TeamRolePatch, {"role": "recommender"}),
+        (
+            management.members.TeamInviteInput,
+            {"email": "new@example.com", "role": "recommender"},
+        ),
+    ):
+        with pytest.raises(ValidationError):
+            model.model_validate(values)
