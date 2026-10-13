@@ -76,6 +76,31 @@ async def test_waiters_are_admitted_in_arrival_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_release_wakes_only_the_waiters_of_its_target(monkeypatch) -> None:
+    limiter = _limiter()
+    other = ConcurrencyTarget("tenant", "openai", "https://b.test", "b")
+    held = await limiter.acquire(_TARGET, 900, "normal", 0)
+    await limiter.acquire(other, 900, "normal", 0)
+    checked: list[ConcurrencyTarget] = []
+    fits = limiter._fits
+
+    def counted(target, tokens, limit):
+        checked.append(target)
+        return fits(target, tokens, limit)
+
+    monkeypatch.setattr(limiter, "_fits", counted)
+    waiting = asyncio.create_task(limiter.acquire(other, 500, "normal", 5_000))
+    await asyncio.sleep(0.05)
+    checked.clear()
+
+    await held.release()
+    await asyncio.sleep(0.05)
+
+    assert checked == [] and not waiting.done()
+    waiting.cancel()
+
+
+@pytest.mark.asyncio
 async def test_an_oversized_request_runs_only_on_an_idle_target() -> None:
     limiter = _limiter()
 

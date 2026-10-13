@@ -108,10 +108,13 @@ class InMemoryConcurrencyLimiter:
 
     def __init__(self, limits: Callable[[ConcurrencyTarget], int | None]) -> None:
         self._limits = limits
-        self._condition = asyncio.Condition()
+        self._lock = asyncio.Lock()
         # target -> (tokens in flight, leases held)
         self._used: dict[ConcurrencyTarget, tuple[int, int]] = {}
-        self._waiting: dict[ConcurrencyTarget, deque[object]] = {}
+        # A target's waiters and the condition they wait on, so a release wakes only them.
+        self._waiting: dict[
+            ConcurrencyTarget, tuple[deque[object], asyncio.Condition]
+        ] = {}
 
     def _fits(self, target: ConcurrencyTarget, tokens: int, limit: int) -> bool:
         used, held = self._used.get(target, (0, 0))
@@ -127,13 +130,15 @@ class InMemoryConcurrencyLimiter:
         started = perf_counter()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait_ms / 1_000
-        async with self._condition:
+        async with self._lock:
             if target not in self._used and len(self._used) >= MAX_TRACKED_TARGETS:
                 CONCURRENCY_ADMISSIONS_TOTAL.labels(outcome="refused").inc()
                 raise ConcurrencyRefused(REFUSED_RETRY_AFTER_SECONDS)
             waited = False
             ticket = object()
-            queue = self._waiting.setdefault(target, deque())
+            queue, condition = self._waiting.setdefault(
+                target, (deque(), asyncio.Condition(self._lock))
+            )
             queue.append(ticket)
             try:
                 # Arrival order: only the first waiter of a target may take its room.
@@ -144,7 +149,7 @@ class InMemoryConcurrencyLimiter:
                         raise ConcurrencyRefused(REFUSED_RETRY_AFTER_SECONDS)
                     waited = True
                     try:
-                        await asyncio.wait_for(self._condition.wait(), remaining)
+                        await asyncio.wait_for(condition.wait(), remaining)
                     except TimeoutError:
                         continue
                 used, held = self._used.get(target, (0, 0))
@@ -153,7 +158,7 @@ class InMemoryConcurrencyLimiter:
                 queue.remove(ticket)
                 if not queue:
                     del self._waiting[target]
-                self._condition.notify_all()
+                condition.notify_all()
         waited_ms = round((perf_counter() - started) * 1_000) if waited else 0
         CONCURRENCY_ADMISSIONS_TOTAL.labels(
             outcome="after_wait" if waited else "immediate"
@@ -161,10 +166,11 @@ class InMemoryConcurrencyLimiter:
         return _MemoryLease(self, target, tokens, waited_ms)
 
     async def _release(self, target: ConcurrencyTarget, tokens: int) -> None:
-        async with self._condition:
+        async with self._lock:
             used, held = self._used[target]
             if held == 1:
                 del self._used[target]
             else:
                 self._used[target] = (used - tokens, held - 1)
-            self._condition.notify_all()
+            if target in self._waiting:
+                self._waiting[target][1].notify_all()
