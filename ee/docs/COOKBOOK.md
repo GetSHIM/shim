@@ -31,6 +31,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
+- [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
+- [Use Amazon Bedrock](#use-amazon-bedrock)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
@@ -969,6 +971,56 @@ Notes:
 - The gateway ignores the community `SHIM_AZURE_*` settings except
   `SHIM_AZURE_AUTHORITY_HOST` and `SHIM_AZURE_TOKEN_SCOPE`, and logs each other one
   that is set at startup.
+
+## Use Amazon Bedrock
+
+Reach Claude and open models on Amazon Bedrock through the same shim endpoints,
+with Bedrock's cache reads and writes priced separately.
+
+1. As the platform operator, approve Bedrock's runtime and control origins:
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".amazonaws.com"]`, or the exact
+   `https://bedrock-runtime.<region>.amazonaws.com` and
+   `https://bedrock.<region>.amazonaws.com` in `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`.
+   Behind a VPC interface endpoint, set `AWS_BEDROCK_RUNTIME_URL_TEMPLATE`,
+   `AWS_BEDROCK_CONTROL_URL_TEMPLATE` and `AWS_STS_URL_TEMPLATE` to it.
+2. Give an IAM user this policy and create a long-term access key for it:
+   `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`,
+   `bedrock:CallWithBearerToken`, `bedrock:GetFoundationModel` and
+   `bedrock:GetInferenceProfile`.
+3. Store it: `POST /api/v1/management/providers` with `provider` `anthropic` (or
+   `openai` for open models), `credential_kind: "aws_access_key"` and
+   `aws_access_key: {access_key_id, secret_access_key}`. The view shows `aws:` and
+   the key id's first and last four characters. `POST /providers/{id}/verify` asks
+   STS who the key is: 200 sets `verified_at`, a refusal answers 400. A long-term
+   Bedrock API key instead goes in `key` with `credential_kind:
+   "aws_bedrock_api_key"`; a deployment health check is its check.
+4. Register the deployment with `upstream: "aws_bedrock"`, `aws_region`, the model
+   or inference profile id as `upstream_model`, `deployment_kind: "external"`, and
+   no `base_url`. Enter the region's prices, including the cache prices.
+5. Check health, then call the alias as the model name.
+
+```console
+SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"provider\": \"anthropic\", \"credential_kind\": \"aws_access_key\",
+       \"aws_access_key\": {\"access_key_id\": \"$AWS_ACCESS_KEY_ID\",
+                          \"secret_access_key\": \"$AWS_SECRET_ACCESS_KEY\"}}" | jq -r .id)
+
+jq -n --arg secret "$SECRET_ID" '{
+    alias: "claude-bedrock", provider: "anthropic", upstream: "aws_bedrock",
+    aws_region: "eu-central-1",
+    upstream_model: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    input_price_per_million: 3, output_price_per_million: 15,
+    cache_read_price_per_million: 0.30, cache_write_price_per_million: 3.75,
+    provider_secret_id: $secret, deployment_kind: "external",
+    declared_version: "2026-10-13", owner: "platform-team"}' |
+  curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
+    -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+Notes: token counting is not available on Bedrock (400
+`MODEL_CAPABILITY_UNSUPPORTED`). An access key must be long-term (`AKIA`).
+Details: [model deployments](MODEL_DEPLOYMENTS.md).
 
 ## Automate management with a service account
 

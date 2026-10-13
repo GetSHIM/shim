@@ -5,16 +5,26 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import re
 from typing import Literal, cast
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, require
+from shim_enterprise.aws.sigv4 import AwsCredentials
+from shim_enterprise.aws.sts import StsError, get_caller_identity
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import get_db
@@ -94,21 +104,75 @@ class AzureEntraInput(BaseModel):
         return f"entra:{_mask(str(self.client_id))}"
 
 
+class AwsAccessKeyInput(BaseModel):
+    """A long-term AWS access key pair; temporary (ASIA) keys expire and are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_key_id: str = Field(pattern=r"^AKIA[A-Z0-9]{16}$")
+    secret_access_key: SecretStr
+
+    @field_validator("secret_access_key")
+    @classmethod
+    def forty_characters(cls, value: SecretStr) -> SecretStr:
+        # Checked here: a pattern on SecretStr would echo nothing useful anyway.
+        if not re.fullmatch(r"[A-Za-z0-9/+=]{40}", value.get_secret_value()):
+            raise ValueError(
+                "secret_access_key is 40 characters of A-Z, a-z, 0-9, /, + and ="
+            )
+        return value
+
+    def stored(self) -> str:
+        return json.dumps(
+            {
+                "access_key_id": self.access_key_id,
+                "secret_access_key": self.secret_access_key.get_secret_value(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def masked(self) -> str:
+        return f"aws:{self.access_key_id[:4]}...{self.access_key_id[-4:]}"
+
+
+CredentialKind = Literal["api_key", "aws_access_key", "aws_bedrock_api_key"]
+
+
 class ProviderSecretInput(BaseModel):
     provider: Literal["openai", "anthropic", "google", "azure_entra"] = Field(
         description="azure_entra: an Entra ID client credential for Azure OpenAI "
         "deployments."
     )
     name: str | None = Field(default=None, max_length=100)
+    credential_kind: CredentialKind = Field(
+        default="api_key",
+        description="aws_access_key (aws_access_key) or aws_bedrock_api_key (key): "
+        "a credential for Amazon Bedrock deployments only, provider anthropic or openai.",
+    )
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
     azure_entra: AzureEntraInput | None = None
+    aws_access_key: AwsAccessKeyInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def one_credential_of_its_provider(self) -> ProviderSecretInput:
         entra = self.provider == "azure_entra"
-        if (self.key is not None) == entra or (self.azure_entra is not None) != entra:
-            raise ValueError("azure_entra takes azure_entra; another provider a key")
+        aws_pair = self.credential_kind == "aws_access_key"
+        if self.credential_kind != "api_key" and self.provider not in {
+            "anthropic",
+            "openai",
+        }:
+            raise ValueError("An AWS credential's provider is anthropic or openai")
+        if (
+            (self.key is not None) == (entra or aws_pair)
+            or (self.azure_entra is not None) != entra
+            or (self.aws_access_key is not None) != aws_pair
+        ):
+            raise ValueError(
+                "azure_entra takes azure_entra, aws_access_key takes aws_access_key, "
+                "every other credential a key"
+            )
         return self
 
 
@@ -116,6 +180,7 @@ class ProviderSecretPatch(BaseModel):
     name: str | None = Field(default=None, max_length=100)
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
     azure_entra: AzureEntraInput | None = None
+    aws_access_key: AwsAccessKeyInput | None = None
     monthly_limit_usd: Decimal | None = Field(default=None, ge=0)
 
 
@@ -124,6 +189,7 @@ class ProviderSecretView(BaseModel):
 
     id: UUID
     provider: str
+    credential_kind: CredentialKind
     name: str | None
     masked_key: str
     created_at: datetime
@@ -155,9 +221,9 @@ async def create_provider_secret(
     tenant_id = _tenant_id(user)
     if not user.is_verified:
         raise HTTPException(status_code=403, detail="Verified email required")
-    purpose = provider_secret_purpose(payload.provider)
-    entra = payload.azure_entra
-    plaintext = entra.stored() if entra is not None else payload.key
+    purpose = provider_secret_purpose(payload.provider, payload.credential_kind)
+    structured = payload.azure_entra or payload.aws_access_key
+    plaintext = structured.stored() if structured is not None else payload.key
     assert plaintext is not None
     reference = await get_secret_store().put_secret(
         TenantId(tenant_id), purpose, plaintext, {"provider": payload.provider}
@@ -165,8 +231,9 @@ async def create_provider_secret(
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
+        credential_kind=payload.credential_kind,
         name=payload.name,
-        masked_key=entra.masked() if entra is not None else _mask(plaintext),
+        masked_key=structured.masked() if structured is not None else _mask(plaintext),
         monthly_limit_usd=payload.monthly_limit_usd,
     )
     assign_secret_reference(row, reference)
@@ -198,20 +265,23 @@ async def update_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     entra = row.provider == "azure_entra"
+    aws_pair = row.credential_kind == "aws_access_key"
     if not entra and row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
         raise HTTPException(
             status_code=409,
             detail="Unsupported provider secrets are read-only.",
         )
-    if (patch.key is not None and entra) or (
-        patch.azure_entra is not None and not entra
+    if (
+        (patch.key is not None and (entra or aws_pair))
+        or (patch.azure_entra is not None and not entra)
+        or (patch.aws_access_key is not None and not aws_pair)
     ):
         raise HTTPException(
             status_code=422,
             detail="A credential's kind never changes; create a new provider secret",
         )
     tenant_id = _tenant_id(user)
-    purpose = provider_secret_purpose(row.provider)
+    purpose = provider_secret_purpose(row.provider, row.credential_kind)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
     before = _provider_secret_details(row)
@@ -219,10 +289,11 @@ async def update_provider_secret(
         row.name = patch.name
     if "monthly_limit_usd" in patch.model_fields_set:
         row.monthly_limit_usd = patch.monthly_limit_usd
+    structured = patch.azure_entra or patch.aws_access_key
     rotated = (
         patch.key
         if patch.key is not None
-        else (patch.azure_entra.stored() if patch.azure_entra is not None else None)
+        else (structured.stored() if structured is not None else None)
     )
     if rotated is not None:
         previous_reference = SecretRef(row.secret_ref)
@@ -234,9 +305,7 @@ async def update_provider_secret(
         )
         assign_secret_reference(row, rotated_reference)
         row.masked_key = (
-            patch.azure_entra.masked()
-            if patch.azure_entra is not None
-            else _mask(rotated)
+            structured.masked() if structured is not None else _mask(rotated)
         )
         row.verified_at = None
     try:
@@ -277,11 +346,18 @@ async def verify_provider_secret(
     verification_request = _PROVIDER_VERIFICATION_REQUESTS.get(row.provider)
     if verification_request is None and row.provider != "azure_entra":
         raise HTTPException(status_code=409, detail="Unsupported provider secret")
+    if row.credential_kind == "aws_bedrock_api_key":
+        raise HTTPException(
+            status_code=409,
+            detail="Check a Bedrock API key with a deployment health check",
+        )
     tenant_id = _tenant_id(user)
     client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
     if client is None:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
-    if verification_request is None:
+    if row.credential_kind == "aws_access_key":
+        rejected = await _aws_rejects(row, tenant_id, client)
+    elif verification_request is None:
         rejected = await _entra_rejects(row, tenant_id, client)
     else:
         rejected = await _provider_rejects(row, tenant_id, client, verification_request)
@@ -320,7 +396,7 @@ async def _provider_rejects(
         credential = await get_secret_store().get_secret(
             TenantId(tenant_id),
             SecretRef(row.secret_ref),
-            expected_purpose=provider_secret_purpose(row.provider),
+            expected_purpose=provider_secret_purpose(row.provider, row.credential_kind),
         )
     except Exception as exc:
         logger.warning("Provider verification secret lookup failed")
@@ -345,6 +421,41 @@ async def _provider_rejects(
         return True
     if response.status_code != 200:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
+    return False
+
+
+async def _aws_rejects(
+    row: ProviderSecret, tenant_id: UUID, client: httpx.AsyncClient
+) -> bool:
+    """Whether STS refuses the access key, asked who it belongs to."""
+    try:
+        stored = json.loads(
+            await get_secret_store().get_secret(
+                TenantId(tenant_id),
+                SecretRef(row.secret_ref),
+                expected_purpose=provider_secret_purpose(
+                    row.provider, row.credential_kind
+                ),
+            )
+        )
+    except Exception as exc:
+        logger.warning("Provider verification secret lookup failed")
+        raise HTTPException(
+            status_code=503, detail="Provider verification unavailable"
+        ) from exc
+    credentials = AwsCredentials(
+        access_key_id=stored["access_key_id"],
+        secret_access_key=SecretStr(stored["secret_access_key"]),
+    )
+    try:
+        # GetCallerIdentity needs no permission: any valid key answers it.
+        await get_caller_identity(client, credentials, region="us-east-1")
+    except StsError as exc:
+        if exc.status == 403:
+            return True
+        raise HTTPException(
+            status_code=503, detail="Provider verification unavailable"
+        ) from None
     return False
 
 
@@ -381,7 +492,7 @@ async def delete_provider_secret(
     row = await _owned_provider_secret(session, user, secret_id)
     tenant_id = _tenant_id(user)
     secret_ref = SecretRef(row.secret_ref)
-    purpose = provider_secret_purpose(row.provider)
+    purpose = provider_secret_purpose(row.provider, row.credential_kind)
     details = _provider_secret_details(row)
     await session.delete(row)
     await _audit(

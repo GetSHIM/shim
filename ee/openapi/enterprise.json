@@ -2299,6 +2299,29 @@
         "title": "AuthType",
         "type": "string"
       },
+      "AwsAccessKeyInput": {
+        "additionalProperties": false,
+        "description": "A long-term AWS access key pair; temporary (ASIA) keys expire and are refused.",
+        "properties": {
+          "access_key_id": {
+            "pattern": "^AKIA[A-Z0-9]{16}$",
+            "title": "Access Key Id",
+            "type": "string"
+          },
+          "secret_access_key": {
+            "format": "password",
+            "title": "Secret Access Key",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "access_key_id",
+          "secret_access_key"
+        ],
+        "title": "AwsAccessKeyInput",
+        "type": "object"
+      },
       "AzureEntraInput": {
         "additionalProperties": false,
         "description": "A Microsoft Entra ID app registration's client secret.",
@@ -8644,11 +8667,33 @@
             "title": "Alias",
             "type": "string"
           },
+          "aws_region": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AWS region of an aws_bedrock deployment, such as eu-central-1.",
+            "title": "Aws Region"
+          },
           "base_url": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required, except for aws_bedrock, where shim derives it from the region.",
+            "title": "Base Url"
           },
           "cache_read_price_per_million": {
             "anyOf": [
@@ -8791,10 +8836,11 @@
           },
           "upstream": {
             "default": "generic",
-            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
             "enum": [
               "generic",
-              "azure_openai"
+              "azure_openai",
+              "aws_bedrock"
             ],
             "title": "Upstream",
             "type": "string"
@@ -8810,7 +8856,6 @@
           "alias",
           "provider",
           "upstream_model",
-          "base_url",
           "provider_secret_id",
           "deployment_kind",
           "declared_version",
@@ -8829,11 +8874,33 @@
             "title": "Alias",
             "type": "string"
           },
+          "aws_region": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AWS region of an aws_bedrock deployment, such as eu-central-1.",
+            "title": "Aws Region"
+          },
           "base_url": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required, except for aws_bedrock, where shim derives it from the region.",
+            "title": "Base Url"
           },
           "cache_read_price_per_million": {
             "anyOf": [
@@ -8996,10 +9063,11 @@
           },
           "upstream": {
             "default": "generic",
-            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
             "enum": [
               "generic",
-              "azure_openai"
+              "azure_openai",
+              "aws_bedrock"
             ],
             "title": "Upstream",
             "type": "string"
@@ -9015,7 +9083,6 @@
           "alias",
           "provider",
           "upstream_model",
-          "base_url",
           "provider_secret_id",
           "deployment_kind",
           "declared_version",
@@ -11958,6 +12025,16 @@
       },
       "ProviderSecretInput": {
         "properties": {
+          "aws_access_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AwsAccessKeyInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -11967,6 +12044,17 @@
                 "type": "null"
               }
             ]
+          },
+          "credential_kind": {
+            "default": "api_key",
+            "description": "aws_access_key (aws_access_key) or aws_bedrock_api_key (key): a credential for Amazon Bedrock deployments only, provider anthropic or openai.",
+            "enum": [
+              "api_key",
+              "aws_access_key",
+              "aws_bedrock_api_key"
+            ],
+            "title": "Credential Kind",
+            "type": "string"
           },
           "key": {
             "anyOf": [
@@ -12029,6 +12117,16 @@
       },
       "ProviderSecretPatch": {
         "properties": {
+          "aws_access_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AwsAccessKeyInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -12091,6 +12189,15 @@
             "title": "Created At",
             "type": "string"
           },
+          "credential_kind": {
+            "enum": [
+              "api_key",
+              "aws_access_key",
+              "aws_bedrock_api_key"
+            ],
+            "title": "Credential Kind",
+            "type": "string"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -12143,6 +12250,7 @@
         "required": [
           "id",
           "provider",
+          "credential_kind",
           "name",
           "masked_key",
           "created_at",

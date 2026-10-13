@@ -296,6 +296,7 @@ async def test_managed_provider_resolution_uses_a_fresh_session_per_lookup() -> 
     row = SimpleNamespace(
         secret_ref="fernet:v2:encrypted-provider-key",
         provider="openai",
+        credential_kind="api_key",
     )
     results = [row, None]
     sessions = [

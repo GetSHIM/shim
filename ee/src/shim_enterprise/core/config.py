@@ -29,6 +29,12 @@ class Settings(CommunitySettings):
     MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES: list[str] = []
     # Empty: a deployment is internal when its tenant says so.
     MODEL_DEPLOYMENT_INTERNAL_ORIGINS: list[str] = []
+    # Where AWS is reached; a VPC interface endpoint or a test double replaces them.
+    AWS_BEDROCK_RUNTIME_URL_TEMPLATE: str = (
+        "https://bedrock-runtime.{region}.amazonaws.com"
+    )
+    AWS_BEDROCK_CONTROL_URL_TEMPLATE: str = "https://bedrock.{region}.amazonaws.com"
+    AWS_STS_URL_TEMPLATE: str = "https://sts.{region}.amazonaws.com"
     ALERT_ALLOWED_ORIGINS: list[str] = []
     # The model-deployment name shipped in 0.1.4; existing installs still set it.
     OUTBOUND_CA_BUNDLE: str | None = Field(
@@ -168,6 +174,31 @@ class Settings(CommunitySettings):
             ):
                 raise ValueError(error)
         return value
+
+    @field_validator(
+        "AWS_BEDROCK_RUNTIME_URL_TEMPLATE",
+        "AWS_BEDROCK_CONTROL_URL_TEMPLATE",
+        "AWS_STS_URL_TEMPLATE",
+    )
+    @classmethod
+    def validate_aws_url_template(cls, value: str) -> str:
+        parsed = urlsplit(value.replace("{region}", "region"))
+        if (
+            value.count("{region}") > 1
+            or value.replace("{region}", "").count("{")
+            or value.replace("{region}", "").count("}")
+            or parsed.scheme not in {"https", "http"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "An AWS URL template is an absolute http(s) URL with no path, query "
+                "or credentials and at most one {region}"
+            )
+        return value.rstrip("/")
 
     @field_validator("MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES")
     @classmethod

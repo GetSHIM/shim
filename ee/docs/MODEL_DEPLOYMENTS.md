@@ -109,6 +109,43 @@ rotating the credential starts a new token. A `PUT` that leaves out `upstream`,
 `price_model` or a cache price keeps the stored value, so a client that predates
 them never erases them; every other field still follows the body.
 
+`aws_bedrock` reaches Amazon Bedrock in `aws_region` (such as `eu-central-1`)
+through its own Anthropic-native and OpenAI-compatible routes, executed exactly as
+the other deployments: a client speaks Anthropic Messages or OpenAI Chat to shim and
+Bedrock answers in the same format, streams and errors included. There is no
+Converse or InvokeModel translation and no `bedrock-mantle`. Rules, each its own 422:
+
+- provider `anthropic` (Bedrock's `/anthropic` route) or `openai` (its
+  `/openai/v1` route, for OpenAI's open models, Mistral, Qwen and others);
+  `deployment_kind` `external`;
+- `base_url` is derived: `AWS_BEDROCK_RUNTIME_URL_TEMPLATE` for the region plus
+  `/anthropic` or `/openai/v1`, checked against `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` or
+  the suffix list (`.amazonaws.com`); a client-sent `base_url` that differs is
+  refused, and changing the region or provider moves it;
+- `upstream_model` is a model id (`anthropic.claude-...`, `openai.gpt-oss-120b-1:0`),
+  a system inference profile id (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`), or
+  their ARN; an application inference profile serves the anthropic format only;
+- the credential is an AWS kind, and an AWS credential serves only Bedrock
+  deployments: `aws_access_key` (a long-term `AKIA` key pair; shim mints a
+  short-term Bedrock API key from it locally, for the deployment's region, valid one
+  hour and replaced 300 seconds early, so no AWS call happens on the request path) or
+  `aws_bedrock_api_key` (a long-term Bedrock API key, used as it is).
+
+Token counting is not available for Bedrock deployments: `count_tokens` answers 400
+`MODEL_CAPABILITY_UNSUPPORTED` before any call. The health check reads the model
+(`GET /foundation-models/{id}`) or the inference profile (`GET
+/inference-profiles/{id}`, for an id with two dots before any `:` or a profile ARN)
+on `AWS_BEDROCK_CONTROL_URL_TEMPLATE` with the Bedrock key; 200 is `healthy`.
+Bedrock prices follow the calling region and the profile type (global profiles cost
+about 10 percent less than geographic ones), so enter the deployment's prices,
+including the cache read and write prices Bedrock bills separately; `price_model`
+gives only an approximation. The three AWS URL templates
+(`AWS_BEDROCK_RUNTIME_URL_TEMPLATE`, `AWS_BEDROCK_CONTROL_URL_TEMPLATE`,
+`AWS_STS_URL_TEMPLATE`) are operator settings for VPC interface endpoints and tests:
+an absolute http(s) URL with no path, query or credentials and at most one
+`{region}`; startup fails otherwise. Their hosts are never tenant input. A `PUT`
+that leaves out `upstream` and `aws_region` keeps both.
+
 Without a stated price, public catalog prices apply to recognized upstream model
 names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero
 placeholder with `pricing_resolution=unknown`, and usage reports carry

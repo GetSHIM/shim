@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import ipaddress
 import logging
 import math
+import re
 from typing import cast, Literal
 from urllib.parse import urlsplit
 
@@ -25,6 +26,7 @@ from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.api.v1.chat import model_record
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
+from shim_enterprise.secrets.references import format_reference
 from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
@@ -60,6 +62,22 @@ def _operator_origins(items: list[str]) -> set[tuple[str, str | None, int]]:
         and not parsed.fragment
         and parsed.username is None
     }
+
+
+# A Bedrock model or system inference profile id, such as
+# eu.anthropic.claude-sonnet-4-5-20250929-v1:0 or openai.gpt-oss-120b-1:0.
+BEDROCK_MODEL_ID = re.compile(r"^[a-z0-9-]+\.[A-Za-z0-9._:-]{1,200}$")
+BEDROCK_ARN = re.compile(
+    r"^arn:aws[a-z-]*:bedrock:[a-z]{2}(-[a-z]+)+-[0-9]:(\d{12})?:"
+    r"(?P<kind>foundation-model|inference-profile|application-inference-profile)"
+    r"/[A-Za-z0-9._:-]{1,200}$"
+)
+
+
+def bedrock_base_url(provider: str, region: str) -> str:
+    """Bedrock's Anthropic-native or OpenAI-compatible route in the region."""
+    runtime = settings.AWS_BEDROCK_RUNTIME_URL_TEMPLATE.format(region=region)
+    return runtime + ("/anthropic" if provider == "anthropic" else "/openai/v1")
 
 
 def internal_origin_approved(url: str) -> bool:
@@ -259,8 +277,28 @@ class DeploymentResolver:
                 },
                 headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
             )
+        bedrock = deployment.upstream == "aws_bedrock"
+        if bedrock and prepared.protocol == "count_tokens":
+            prepared.record_verdict(
+                "deployment.registry",
+                stage="admission",
+                outcome="deny",
+                reason_code="MODEL_CAPABILITY_UNSUPPORTED",
+                policy=registry_policy,
+            )
+            raise HTTPException(
+                400,
+                detail={
+                    "code": "MODEL_CAPABILITY_UNSUPPORTED",
+                    "message": "Token counting is not available for Bedrock deployments.",
+                },
+            )
         try:
-            base_url = validate_deployment_url(deployment.base_url)
+            base_url = validate_deployment_url(
+                bedrock_base_url(deployment.provider, cast(str, deployment.aws_region))
+                if bedrock
+                else deployment.base_url
+            )
         except ValueError:
             prepared.record_verdict(
                 "deployment.destination",
@@ -309,7 +347,9 @@ class DeploymentResolver:
                 deployment_id=str(deployment.id),
                 base_url=base_url,
                 upstream_model=deployment.upstream_model,
-                credential_reference=str(deployment.provider_secret_id),
+                credential_reference=format_reference(
+                    deployment.provider_secret_id, deployment.aws_region
+                ),
                 timeout_seconds=deployment.timeout_seconds,
                 declared_version=deployment.declared_version,
                 input_per_million=deployment.input_price_per_million,

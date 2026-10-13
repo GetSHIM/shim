@@ -8,7 +8,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
@@ -39,7 +39,11 @@ from shim_enterprise.tenants.gateway_settings import (
     toward,
 )
 from shim_enterprise.tenants.models import ModelDeployment, User
+from shim_enterprise.secrets.references import AWS_REGION, CredentialReference
 from shim_enterprise.tenants.deployments import (
+    BEDROCK_ARN,
+    BEDROCK_MODEL_ID,
+    bedrock_base_url,
     internal_origin_approved,
     validate_deployment_url,
 )
@@ -74,6 +78,7 @@ router = APIRouter()
 _KEPT_WHEN_ABSENT = frozenset(
     {
         "upstream",
+        "aws_region",
         "price_model",
         "cache_read_price_per_million",
         "cache_write_price_per_million",
@@ -88,7 +93,13 @@ class ModelDeploymentInput(BaseModel):
     )
     provider: Literal["openai", "anthropic"]
     upstream_model: str = Field(min_length=1, max_length=200)
-    base_url: str = Field(min_length=1, max_length=2048)
+    base_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        description="Required, except for aws_bedrock, where shim derives it from "
+        "the region.",
+    )
     provider_secret_id: UUID
     timeout_seconds: int = Field(default=60, ge=1, le=300)
     deployment_kind: Literal["internal", "external"]
@@ -114,9 +125,16 @@ class ModelDeploymentInput(BaseModel):
         ge=1,
         description="Tokens the served model accepts; a request that certainly exceeds it is refused.",
     )
-    upstream: Literal["generic", "azure_openai"] = Field(
+    upstream: Literal["generic", "azure_openai", "aws_bedrock"] = Field(
         default="generic",
-        description="azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+        description="azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. "
+        "aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
+    )
+    aws_region: str | None = Field(
+        default=None,
+        pattern=AWS_REGION.pattern,
+        max_length=32,
+        description="The AWS region of an aws_bedrock deployment, such as eu-central-1.",
     )
     price_model: str | None = Field(
         default=None,
@@ -157,6 +175,12 @@ class ModelDeploymentInput(BaseModel):
             DEFAULT_PRICE_BOOK.models(self.provider)
         ):
             raise ValueError("price_model is not a catalog model for this provider")
+        if self.upstream == "aws_bedrock":
+            return self.bedrock_rules()
+        if self.aws_region is not None:
+            raise ValueError("aws_region is for aws_bedrock deployments only")
+        if self.base_url is None:
+            raise ValueError("base_url is required")
         if self.upstream != "azure_openai":
             return self
         if self.provider != "openai":
@@ -169,6 +193,33 @@ class ModelDeploymentInput(BaseModel):
             raise ValueError("upstream_model is the Azure deployment name")
         return self
 
+    def bedrock_rules(self) -> ModelDeploymentInput:
+        if self.aws_region is None:
+            raise ValueError("An aws_bedrock deployment names its aws_region")
+        if self.deployment_kind != "external":
+            raise ValueError("An aws_bedrock deployment is external")
+        arn = BEDROCK_ARN.fullmatch(self.upstream_model)
+        if arn is None and not BEDROCK_MODEL_ID.fullmatch(self.upstream_model):
+            raise ValueError(
+                "upstream_model is a Bedrock model or inference profile id, or its ARN"
+            )
+        if (
+            arn is not None
+            and arn["kind"] == "application-inference-profile"
+            and self.provider == "openai"
+        ):
+            # Chat Completions rejects application inference profiles with a 400.
+            raise ValueError(
+                "An application inference profile serves the anthropic format only"
+            )
+        derived = validate_deployment_url(
+            bedrock_base_url(self.provider, self.aws_region)
+        )
+        if self.base_url is not None and self.base_url.rstrip("/") != derived:
+            raise ValueError("An aws_bedrock base_url is derived from aws_region")
+        self.base_url = derived
+        return self
+
     @field_validator("upstream_model", "declared_version", "owner")
     @classmethod
     def nonblank(cls, value: str) -> str:
@@ -178,8 +229,8 @@ class ModelDeploymentInput(BaseModel):
 
     @field_validator("base_url")
     @classmethod
-    def approved_destination(cls, value: str) -> str:
-        return validate_deployment_url(value)
+    def approved_destination(cls, value: str | None) -> str | None:
+        return None if value is None else validate_deployment_url(value)
 
 
 class ModelDeploymentView(ModelDeploymentInput):
@@ -187,7 +238,7 @@ class ModelDeploymentView(ModelDeploymentInput):
 
     @field_validator("base_url")
     @classmethod
-    def approved_destination(cls, value: str) -> str:
+    def approved_destination(cls, value: str | None) -> str | None:
         # Operators must still be able to inspect a now-disallowed deployment.
         return value
 
@@ -533,6 +584,7 @@ async def check_model_deployment_health(
         ) from None
     checked_version = row.updated_at
     provider, upstream, tenant_id = row.provider, row.upstream, _tenant_id(user)
+    region, model = row.aws_region, row.upstream_model
     # Finish the read transaction before secret-store or provider I/O.
     await session.commit()
     client = request.app.state.http_client
@@ -540,18 +592,26 @@ async def check_model_deployment_health(
     try:
         async with asyncio.timeout(5):
             credential = await _fresh_resolver(provider, client).resolve_row(
-                TenantId(tenant_id), secret
+                TenantId(tenant_id),
+                secret,
+                CredentialReference(secret.id, region),
             )
-            headers = (
-                {"Authorization": f"Bearer {credential}"}
-                if provider == "openai"
-                else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
-            )
-            path = "/models" if provider == "openai" else "/v1/models"
+            if upstream == "aws_bedrock":
+                assert region is not None
+                # Bedrock's control plane answers whether the key reaches the model.
+                url = _bedrock_model_url(region, model)
+                headers = {"Authorization": f"Bearer {credential}"}
+            else:
+                headers = (
+                    {"Authorization": f"Bearer {credential}"}
+                    if provider == "openai"
+                    else {"x-api-key": credential, "anthropic-version": "2023-06-01"}
+                )
+                url = base_url + ("/models" if provider == "openai" else "/v1/models")
             # Stream headers only: an unhealthy server cannot force an unbounded body read.
             async with client.stream(
                 "GET",
-                base_url + path,
+                url,
                 headers=headers,
                 timeout=5,
                 follow_redirects=False,
@@ -580,6 +640,25 @@ async def check_model_deployment_health(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+def _bedrock_model_url(region: str, model: str) -> str:
+    """The control-plane read of a model, or of an inference profile.
+
+    A system profile id has at least two dots before any colon
+    (eu.anthropic.claude-...); a model id has one (anthropic.claude-...).
+    """
+    control = validate_deployment_url(
+        settings.AWS_BEDROCK_CONTROL_URL_TEMPLATE.format(region=region)
+    )
+    arn = BEDROCK_ARN.fullmatch(model)
+    profile = (
+        arn["kind"] != "foundation-model"
+        if arn is not None
+        else model.split(":", 1)[0].count(".") >= 2
+    )
+    resource = "inference-profiles" if profile else "foundation-models"
+    return f"{control}/{resource}/{quote(model, safe='')}"
 
 
 async def _owned_model_deployment(
@@ -654,10 +733,20 @@ class _DeploymentResource:
         before: State | None,
         proposed: State,
     ) -> State:
-        payload = _validated(ModelDeploymentInput, {**(before or {}), **proposed})
+        merged = {**(before or {}), **proposed}
+        if merged.get("upstream") == "aws_bedrock" and "base_url" not in proposed:
+            # Derived from the region: a change that moves the region moves it too.
+            merged["base_url"] = None
+        payload = _validated(ModelDeploymentInput, merged)
         secret = await _owned_provider_secret(
             session, actor, payload.provider_secret_id
         )
+        if (secret.credential_kind != "api_key") != (payload.upstream == "aws_bedrock"):
+            raise HTTPException(
+                422,
+                detail="An AWS credential serves only Amazon Bedrock deployments, "
+                "and a Bedrock deployment only an AWS credential",
+            )
         if secret.provider == "azure_entra":
             if (payload.provider, payload.upstream) != ("openai", "azure_openai"):
                 raise HTTPException(
@@ -669,6 +758,8 @@ class _DeploymentResource:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
             )
+        # The input model sets base_url for every upstream, derived or given.
+        assert payload.base_url is not None
         if payload.deployment_kind == "internal" and not internal_origin_approved(
             payload.base_url
         ):

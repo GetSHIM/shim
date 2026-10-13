@@ -547,6 +547,10 @@ class ProviderSecret(Base, TimestampMixin):
             "monthly_limit_usd IS NULL OR monthly_limit_usd >= 0",
             name="ck_provider_secret_monthly_limit",
         ),
+        CheckConstraint(
+            "credential_kind IN ('api_key', 'aws_access_key', 'aws_bedrock_api_key')",
+            name="ck_provider_secrets_credential_kind",
+        ),
         Index(
             "ix_provider_secrets_tenant_provider",
             "organization_id",
@@ -570,6 +574,11 @@ class ProviderSecret(Base, TimestampMixin):
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # api_key, or an AWS kind that serves only Bedrock deployments: a long-term
+    # access key pair the gateway mints Bedrock API keys from, or a Bedrock API key.
+    credential_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="api_key", server_default="api_key"
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
 
@@ -620,8 +629,13 @@ class ModelDeployment(Base, TimestampMixin):
             name="ck_model_deployments_cache_prices",
         ),
         CheckConstraint(
-            "upstream IN ('generic', 'azure_openai')",
+            "upstream IN ('generic', 'azure_openai', 'aws_bedrock')",
             name="ck_model_deployments_upstream",
+        ),
+        CheckConstraint(
+            "((upstream = 'aws_bedrock') = (aws_region IS NOT NULL)) AND "
+            "(aws_region IS NULL OR aws_region ~ '^[a-z]{2}(-[a-z]+)+-[0-9]$')",
+            name="ck_model_deployments_aws_region",
         ),
     )
 
@@ -660,6 +674,7 @@ class ModelDeployment(Base, TimestampMixin):
     upstream: Mapped[str] = mapped_column(
         String(32), nullable=False, default="generic", server_default="generic"
     )
+    aws_region: Mapped[str | None] = mapped_column(String(32))
 
 
 class RecordSet(Base, TimestampMixin):

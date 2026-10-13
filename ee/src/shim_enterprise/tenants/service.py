@@ -308,11 +308,13 @@ async def _archive_workspace(
 ) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
     tenant_id = organization.id
     secrets_to_delete = [
-        (reference, provider_secret_purpose(provider))
-        for reference, provider in await session.execute(
-            select(ProviderSecret.secret_ref, ProviderSecret.provider).where(
-                ProviderSecret.organization_id == tenant_id
-            )
+        (reference, provider_secret_purpose(provider, kind))
+        for reference, provider, kind in await session.execute(
+            select(
+                ProviderSecret.secret_ref,
+                ProviderSecret.provider,
+                ProviderSecret.credential_kind,
+            ).where(ProviderSecret.organization_id == tenant_id)
         )
     ]
     secrets_to_delete += [
