@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import math
 import re
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -60,6 +61,14 @@ _NAMES: dict[str, dict[str, tuple[str, Literal["sum", "max"]]]] = {
 _LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(\S+)")
 
 
+# What the INTEGER and BIGINT columns hold.
+_INT, _BIGINT = 2**31 - 1, 2**63 - 1
+
+
+def _bounded(value: float, top: int) -> int:
+    return min(top, max(0, int(value)))
+
+
 class ScrapeError(Exception):
     """A failed read: `code` is what the hourly row records."""
 
@@ -89,7 +98,8 @@ def parse_prometheus(server: Server, body: str) -> Sample:
             value = float(match.group(3))
         except ValueError:
             continue
-        if value != value:  # NaN
+        # NaN and infinities: a server's page is never trusted with a column.
+        if not math.isfinite(value):
             continue
         field, combine = names[match.group(1)]
         found[field] = (
@@ -103,8 +113,8 @@ def parse_prometheus(server: Server, body: str) -> Sample:
         raise ScrapeError("unrecognized")
     cache = found.get("cache_usage", found.get("cache_usage_legacy"))
     return Sample(
-        running=None if "running" not in found else int(found["running"]),
-        waiting=None if "waiting" not in found else int(found["waiting"]),
+        running=None if "running" not in found else _bounded(found["running"], _INT),
+        waiting=None if "waiting" not in found else _bounded(found["waiting"], _INT),
         cache_usage=None if cache is None else min(1.0, max(0.0, cache)),
     )
 
@@ -126,7 +136,8 @@ def parse_ollama(body: str, upstream_model: str) -> Sample:
     if entry is None:
         return Sample(loaded=False)
     vram = entry.get("size_vram")
-    return Sample(loaded=True, vram_bytes=vram if isinstance(vram, int) else None)
+    usable = isinstance(vram, int) and not isinstance(vram, bool)
+    return Sample(loaded=True, vram_bytes=_bounded(vram, _BIGINT) if usable else None)
 
 
 def metrics_url(base_url: str, server: Server) -> str:
@@ -343,15 +354,18 @@ async def scrape_inference_metrics(
     async def one(target: Target) -> None:
         async with gate:
             try:
-                sample = await read_sample(
-                    http_client,
-                    target.server,
-                    target.base_url,
-                    target.upstream_model,
-                    await _credential(target),
-                )
-            except ScrapeError as error:
-                results.append((target, None, error.code))
+                # The secret-store read counts against the same timeout as the read.
+                async with asyncio.timeout(SCRAPE_SECONDS):
+                    sample = await read_sample(
+                        http_client,
+                        target.server,
+                        target.base_url,
+                        target.upstream_model,
+                        await _credential(target),
+                    )
+            except (ScrapeError, TimeoutError) as error:
+                code = error.code if isinstance(error, ScrapeError) else "timeout"
+                results.append((target, None, code))
                 INFERENCE_SCRAPES_TOTAL.labels(
                     server=target.server, outcome="error"
                 ).inc()

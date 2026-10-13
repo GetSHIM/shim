@@ -77,6 +77,10 @@ def upgrade() -> None:
             name="pk_inference_metrics_hourly",
         ),
     )
+    # Every scrape pass deletes hours past retention; the key leads with the tenant.
+    op.create_index(
+        "ix_inference_metrics_hourly_hour", "inference_metrics_hourly", ["hour"]
+    )
 
 
 def downgrade() -> None:

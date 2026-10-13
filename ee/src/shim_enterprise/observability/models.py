@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     String,
@@ -32,6 +33,7 @@ class InferenceMetricsHourly(Base):
             "hour",
             name="pk_inference_metrics_hourly",
         ),
+        Index("ix_inference_metrics_hourly_hour", "hour"),
         CheckConstraint(
             "server IN ('vllm', 'tgi', 'ollama')",
             name="ck_inference_metrics_hourly_server",

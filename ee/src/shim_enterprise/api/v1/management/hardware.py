@@ -16,8 +16,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Date, Integer, Text, and_, case, cast, func, literal, select
-from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
+from sqlalchemy import Date, Integer, Text, and_, case, cast, func, select
+from sqlalchemy.dialects.postgresql import aggregate_order_by, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, READER_REQUIRED, require
@@ -152,16 +152,30 @@ async def set_hardware_cost(
     session: AsyncSession = Depends(get_db),
 ) -> DeploymentHardwareCost:
     await _internal_deployment(session, user, deployment_id, write=True)
-    row = await _entry(session, user, deployment_id, period)
-    before = _cost_details(row)
-    if row is None:
-        row = DeploymentHardwareCost(
-            organization_id=_tenant_id(user), deployment_id=deployment_id, period=period
+    before = _cost_details(await _entry(session, user, deployment_id, period))
+    values = {
+        "amount": payload.amount,
+        "currency": payload.currency,
+        "note": payload.note,
+        "entered_by": str(user.id),
+    }
+    # Two first entries for a month race to the unique key: the later one updates.
+    row_id = await session.scalar(
+        insert(DeploymentHardwareCost)
+        .values(
+            organization_id=_tenant_id(user),
+            deployment_id=deployment_id,
+            period=period,
+            **values,
         )
-        session.add(row)
-    row.amount, row.currency, row.note = payload.amount, payload.currency, payload.note
-    row.entered_by = str(user.id)
-    await session.flush()
+        .on_conflict_do_update(
+            constraint="uq_deployment_hardware_costs_period",
+            set_={**values, "updated_at": func.now()},
+        )
+        .returning(DeploymentHardwareCost.id)
+    )
+    row = await session.get(DeploymentHardwareCost, row_id, populate_existing=True)
+    assert row is not None
     await _audit(
         session,
         user,
@@ -278,7 +292,7 @@ async def hardware_allocation(
     """Each internal deployment's hardware cost for the month, shared by tokens."""
     tenant_id = _tenant_id(user)
     month = _month(period)
-    current = date.today().replace(day=1)
+    current = datetime.now(timezone.utc).date().replace(day=1)
     if month > current or month < _shift(current, -REPORT_MONTHS):
         raise HTTPException(
             422,
@@ -551,9 +565,13 @@ async def capacity_forecast(
     if deployments:
         listed = (
             select(
-                func.unnest(
-                    literal([str(row.id) for row in deployments], type_=ARRAY(Text))
-                ).label("deployment")
+                cast(ModelDeployment.id, Text).label("deployment"),
+                cast(func.timezone("UTC", ModelDeployment.created_at), Date).label(
+                    "since"
+                ),
+            ).where(
+                ModelDeployment.organization_id == tenant_id,
+                ModelDeployment.id.in_([row.id for row in deployments]),
             )
         ).subquery()
         grid = (
@@ -563,7 +581,9 @@ async def capacity_forecast(
                 func.coalesce(daily.c.peak, 0).label("peak"),
                 (daily.c.peak.is_not(None)).label("traffic"),
             )
-            .select_from(listed.join(days, literal(True)))
+            # A day without traffic since the deployment existed counts as 0; a
+            # day before it existed is not a day of its history.
+            .select_from(listed.join(days, cast(days.c.day, Date) >= listed.c.since))
             .outerjoin(
                 daily,
                 and_(

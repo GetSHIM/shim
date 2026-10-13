@@ -101,75 +101,86 @@ class ReconciliationWorker:
         metrics_client: httpx.AsyncClient,
     ) -> None:
         reconcile_due = budgets_due = findings_due = metrics_due = monotonic()
-        while not stop_event.is_set():
-            if (clock := monotonic()) >= reconcile_due:
-                reconcile_due = clock + self.interval_seconds
-                try:
-                    recovered = await self.run_once()
-                    write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "reconciliation")
-                    if recovered:
-                        logger.warning(
-                            "Recovered stale gateway requests count=%s", recovered
+        scraping: asyncio.Task[None] | None = None
+        try:
+            while not stop_event.is_set():
+                if (clock := monotonic()) >= reconcile_due:
+                    reconcile_due = clock + self.interval_seconds
+                    try:
+                        recovered = await self.run_once()
+                        write_heartbeat(
+                            settings.WORKER_HEARTBEAT_PATH, "reconciliation"
                         )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error(
-                        "Gateway reconciliation pass failed type=%s",
-                        type(exc).__name__,
-                    )
-            if (clock := monotonic()) >= budgets_due:
-                budgets_due = clock + settings.BUDGET_EVALUATION_INTERVAL_SECONDS
+                        if recovered:
+                            logger.warning(
+                                "Recovered stale gateway requests count=%s", recovered
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "Gateway reconciliation pass failed type=%s",
+                            type(exc).__name__,
+                        )
+                if (clock := monotonic()) >= budgets_due:
+                    budgets_due = clock + settings.BUDGET_EVALUATION_INTERVAL_SECONDS
+                    try:
+                        await evaluate_enabled_budgets(
+                            self.session_factory, now=datetime.now(timezone.utc)
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "Budget evaluation pass failed type=%s", type(exc).__name__
+                        )
+                if (clock := monotonic()) >= findings_due:
+                    findings_due = clock + settings.FINDINGS_EVALUATION_INTERVAL_SECONDS
+                    try:
+                        await evaluate_findings(
+                            self.session_factory, now=datetime.now(timezone.utc)
+                        )
+                        await run_remediations(
+                            self.session_factory, now=datetime.now(timezone.utc)
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.error(
+                            "Findings evaluation pass failed type=%s",
+                            type(exc).__name__,
+                        )
+                if (clock := monotonic()) >= metrics_due:
+                    metrics_due = clock + settings.INFERENCE_METRICS_INTERVAL_SECONDS
+                    # Its own task: slow servers never hold up recovery or the
+                    # heartbeat, and a pass still running is not started again.
+                    if scraping is None or scraping.done():
+                        scraping = asyncio.create_task(self._scrape(metrics_client))
                 try:
-                    await evaluate_enabled_budgets(
-                        self.session_factory, now=datetime.now(timezone.utc)
+                    # Wake for whichever is due first: a metrics interval shorter
+                    # than the reconciliation interval keeps its own cadence.
+                    await asyncio.wait_for(
+                        stop_event.wait(),
+                        timeout=max(0.0, min(reconcile_due, metrics_due) - monotonic()),
                     )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error(
-                        "Budget evaluation pass failed type=%s", type(exc).__name__
-                    )
-            if (clock := monotonic()) >= findings_due:
-                findings_due = clock + settings.FINDINGS_EVALUATION_INTERVAL_SECONDS
-                try:
-                    await evaluate_findings(
-                        self.session_factory, now=datetime.now(timezone.utc)
-                    )
-                    await run_remediations(
-                        self.session_factory, now=datetime.now(timezone.utc)
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error(
-                        "Findings evaluation pass failed type=%s", type(exc).__name__
-                    )
-            if (clock := monotonic()) >= metrics_due:
-                metrics_due = clock + settings.INFERENCE_METRICS_INTERVAL_SECONDS
-                try:
-                    await scrape_inference_metrics(
-                        self.session_factory,
-                        metrics_client,
-                        now=datetime.now(timezone.utc),
-                        interval_seconds=settings.INFERENCE_METRICS_INTERVAL_SECONDS,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    # The type only: never the URL or the body.
-                    logger.error(
-                        "Inference metrics scrape failed type=%s", type(exc).__name__
-                    )
-            try:
-                # Wake for whichever is due first: a metrics interval shorter than the
-                # reconciliation interval keeps its own cadence.
-                await asyncio.wait_for(
-                    stop_event.wait(),
-                    timeout=max(0.0, min(reconcile_due, metrics_due) - monotonic()),
-                )
-            except TimeoutError:
-                continue
+                except TimeoutError:
+                    continue
+        finally:
+            if scraping is not None:
+                scraping.cancel()
+                await asyncio.gather(scraping, return_exceptions=True)
+
+    async def _scrape(self, metrics_client: httpx.AsyncClient) -> None:
+        try:
+            await scrape_inference_metrics(
+                self.session_factory,
+                metrics_client,
+                now=datetime.now(timezone.utc),
+                interval_seconds=settings.INFERENCE_METRICS_INTERVAL_SECONDS,
+            )
+        except Exception as exc:
+            # The type only: never the URL or the body.
+            logger.error("Inference metrics scrape failed type=%s", type(exc).__name__)
 
 
 async def main() -> None:

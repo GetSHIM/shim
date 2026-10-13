@@ -376,6 +376,8 @@ async def test_worker_evaluates_budgets_findings_and_metrics_first_and_then_on_t
             return await waitable
         waitable.close()
         clock[0] += timeout
+        # The scrape runs as its own task: let it run while the loop waits.
+        await asyncio.sleep(0)
         raise TimeoutError
 
     evaluate = AsyncMock(
@@ -406,12 +408,66 @@ async def test_worker_evaluates_budgets_findings_and_metrics_first_and_then_on_t
     assert passes == [1000.0 + 30 * index for index in range(31)]
     assert evaluate.await_count == 4
     assert findings.await_count == 2
-    assert scrape.await_count == 61
+    # The 61st pass starts as the worker stops, and is cancelled before it runs.
+    assert scrape.await_count == 60
     assert scrape.await_args.kwargs["interval_seconds"] == 15
     assert all(
         call.args == (worker.session_factory,)
         for call in evaluate.await_args_list + findings.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_a_slow_scrape_never_holds_up_recovery_or_the_heartbeat(
+    monkeypatch,
+) -> None:
+    worker = ReconciliationWorker(
+        accounting=SimpleNamespace(),
+        scans=SimpleNamespace(),
+        session_factory=lambda: None,
+        batch_size=10,
+        interval_seconds=30,
+    )
+    stop_event = asyncio.Event()
+    clock = [1000.0]
+    passes: list[float] = []
+    scrapes: list[float] = []
+
+    async def run_once() -> int:
+        passes.append(clock[0])
+        if len(passes) == 4:
+            stop_event.set()
+        return 0
+
+    async def hung(*args, **kwargs) -> None:
+        scrapes.append(clock[0])
+        await asyncio.Event().wait()
+
+    async def wait_for(waitable, *, timeout: float):
+        if stop_event.is_set():
+            return await waitable
+        waitable.close()
+        clock[0] += timeout
+        await asyncio.sleep(0)
+        raise TimeoutError
+
+    monkeypatch.setattr(worker, "run_once", run_once)
+    monkeypatch.setattr(worker_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(worker_module, "evaluate_enabled_budgets", AsyncMock())
+    monkeypatch.setattr(worker_module, "evaluate_findings", AsyncMock())
+    monkeypatch.setattr(worker_module, "run_remediations", AsyncMock())
+    monkeypatch.setattr(worker_module, "scrape_inference_metrics", hung)
+    monkeypatch.setattr(
+        worker_module.settings, "INFERENCE_METRICS_INTERVAL_SECONDS", 30
+    )
+    monkeypatch.setattr(worker_module.asyncio, "wait_for", wait_for)
+
+    async with asyncio.timeout(2):
+        await worker.run(stop_event)
+
+    assert passes == [1000.0, 1030.0, 1060.0, 1090.0]
+    # A scrape still running is not started again.
+    assert len(scrapes) == 1
 
 
 @pytest.mark.parametrize(

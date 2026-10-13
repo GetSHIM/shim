@@ -746,7 +746,12 @@ class DeploymentHardwareCost(Base, TimestampMixin):
         SqlUUID(as_uuid=True), primary_key=True, default=uuid4
     )
     organization_id: Mapped[UUID] = mapped_column(
-        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+        ForeignKey(
+            "organizations.id",
+            name="fk_deployment_hardware_costs_organization",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
     )
     deployment_id: Mapped[UUID] = mapped_column(
         ForeignKey(

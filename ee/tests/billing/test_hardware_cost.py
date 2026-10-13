@@ -366,3 +366,52 @@ async def test_a_put_without_capacity_keeps_it(db, monkeypatch) -> None:
         4,
     )
     assert bounds == [422, 422]
+
+
+@pytest.mark.asyncio
+async def test_two_first_entries_for_a_month_end_as_one_row(db, monkeypatch) -> None:
+    from shim_enterprise.api.v1.management import hardware
+
+    user = await _admin(db)
+    internal = await _deployment(db, user.organization_id)
+    path = f"{DEPLOYMENTS}/{internal.id}/hardware-costs/{PERIOD}"
+    first = await _call(db, user, "PUT", path, json={"amount": "10", "currency": "TRY"})
+
+    async def not_yet(*args, **kwargs):
+        # As a concurrent first PUT sees it: no row yet, then one at insert.
+        return None
+
+    monkeypatch.setattr(hardware, "_entry", not_yet)
+    second = await _call(
+        db, user, "PUT", path, json={"amount": "12", "currency": "TRY"}
+    )
+    listed = await _call(db, user, "GET", f"{DEPLOYMENTS}/{internal.id}/hardware-costs")
+
+    assert first.status_code == 200
+    assert second.status_code == 200, second.text
+    assert [entry["amount"] for entry in listed.json()] == ["12.00"]
+
+
+@pytest.mark.asyncio
+async def test_the_current_month_is_the_utc_month(db, monkeypatch) -> None:
+    from shim_enterprise.api.v1.management import hardware
+
+    # The server's local calendar is already in the next month; UTC is not.
+    class Tomorrow(date):
+        @classmethod
+        def today(cls) -> date:
+            return _shift(MONTH, 1)
+
+    monkeypatch.setattr(hardware, "date", Tomorrow)
+    user = await _admin(db)
+    next_month = f"{_shift(MONTH, 1):%Y-%m}"
+
+    read = await _call(
+        db,
+        user,
+        "GET",
+        "/api/v1/management/cost/hardware",
+        params={"period": next_month},
+    )
+
+    assert read.status_code == 422

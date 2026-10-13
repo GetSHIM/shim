@@ -68,8 +68,12 @@ async def test_a_growing_line_reaches_capacity_on_the_closed_form_day(db) -> Non
     tenant = user.organization_id
     growing = await _deployment(db, tenant, alias="gpu-growing")
     growing.capacity_concurrent_requests = 10
+    growing.created_at = datetime.now(timezone.utc) - timedelta(days=FORECAST_DAYS)
     young = await _deployment(db, tenant, alias="gpu-young")
     young.capacity_concurrent_requests = 10
+    young.created_at = datetime.combine(
+        FIRST + timedelta(days=FORECAST_DAYS - 13), time(), timezone.utc
+    )
     key = await _key(db, user)
     for day in range(FORECAST_DAYS):
         # Busy hour 0.1 * day + 0.05, every other day through a failed request.
@@ -147,3 +151,23 @@ async def test_the_servers_own_queue_gives_a_measured_capacity(db) -> None:
         9,
         "entered",
     )
+
+
+@pytest.mark.asyncio
+async def test_days_before_a_deployment_existed_are_absent_not_zero(db) -> None:
+    user = await _admin(db)
+    young = await _deployment(db, user.organization_id, alias="gpu-flat")
+    young.capacity_concurrent_requests = 10
+    young.created_at = datetime.combine(
+        FIRST + timedelta(days=FORECAST_DAYS - 20), time(), timezone.utc
+    )
+    key = await _key(db, user)
+    for day in range(FORECAST_DAYS - 20, FORECAST_DAYS):
+        await _busy(db, key, young, day, 2.0)
+    await db.flush()
+
+    [row] = (await _call(db, user, "GET", FORECAST)).json()["deployments"]
+
+    # Flat since it was created: no slope, so no date.
+    assert row["slope_per_day"] == pytest.approx(0, abs=1e-9)
+    assert (row["status"], row["projected_date"]) == ("not_growing", None)

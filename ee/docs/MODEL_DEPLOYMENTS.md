@@ -175,7 +175,10 @@ code. `GET /api/v1/management/aws/region-lock/preview` (`settings.read`, optiona
 `mode`, `scopes`, `regions`) shows, per Bedrock deployment, what a lock would do
 and how many requests it served in the last 7 days. A tier's
 `features.provider_policy.allowed_regions` is the operator's ceiling for Bedrock:
-always enforced, unknown destinations refused; no shipped tier sets it.
+always enforced, unknown destinations refused; no shipped tier sets it. Under four
+eyes, a change of `mode` alone decides its direction (`off` < `monitor` <
+`enforce`), whatever the lists do in the same change; with the mode kept and on, a
+narrower list tightens and a wider or emptied one relaxes.
 
 Without a stated price, public catalog prices apply to recognized upstream model
 names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero
@@ -278,7 +281,8 @@ holds at once, as you state it; a `PUT` that leaves it out keeps it.
 deployment over the last 56 days, each hour's average number of requests in flight
 (request durations from the provider's start to completion or failure, counted in
 the hour they started), each day's busiest hour, and the straight-line trend of
-those days. It answers `days_with_traffic`, `current_peak` (the busiest hour of the
+those days. A day without traffic since the deployment was created counts as 0; days
+before it existed are left out. It answers `days_with_traffic`, `current_peak` (the busiest hour of the
 last 7 days), `slope_per_day`, `capacity` and, when the trend reaches the capacity
 within 365 days, `projected_date`, with a `status`: `not_enough_data` (fewer than 14
 days with traffic), `no_capacity`, `at_capacity`, `not_growing`, `projected` or

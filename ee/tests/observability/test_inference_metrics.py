@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ee.tests.aws.test_bedrock_management import _admin, _call
@@ -605,3 +605,74 @@ async def test_the_queue_rule(db, hours, fires) -> None:
     if queued:
         assert queued[0].evidence["saturated_hours"] == 2
         assert service.RULES[service.INFERENCE_QUEUE_SATURATED].MAX_MODE == "observe"
+
+
+@pytest.mark.parametrize(
+    ("page", "running", "waiting"),
+    [
+        ("vllm:num_requests_running inf\nvllm:num_requests_waiting 2\n", None, 2),
+        ("vllm:num_requests_running -inf\nvllm:num_requests_waiting 2\n", None, 2),
+        (
+            "vllm:num_requests_running 1e12\nvllm:num_requests_waiting -3\n",
+            2_147_483_647,
+            0,
+        ),
+    ],
+)
+def test_values_a_column_cannot_hold_are_dropped_or_clamped(
+    page, running, waiting
+) -> None:
+    sample = parse_prometheus("vllm", page)
+
+    assert (sample.running, sample.waiting) == (running, waiting)
+
+
+def test_a_vram_size_a_column_cannot_hold_is_clamped() -> None:
+    huge = json.dumps({"models": [{"name": "m", "size_vram": 2**70}]})
+    flag = json.dumps({"models": [{"name": "m", "size_vram": True}]})
+
+    assert parse_ollama(huge, "m").vram_bytes == 2**63 - 1
+    assert parse_ollama(flag, "m").vram_bytes is None
+
+
+@pytest.mark.asyncio
+async def test_a_slow_credential_read_counts_against_the_scrape_timeout(
+    db, monkeypatch
+) -> None:
+    user = await _admin(db)
+    deployment = await _deployment(db, user.organization_id)
+    await _listed(db, user, [{"deployment_id": str(deployment.id), "server": "vllm"}])
+
+    async def slow(target):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(inference_metrics, "_credential", slow)
+    monkeypatch.setattr(inference_metrics, "SCRAPE_SECONDS", 0.1)
+    connection = await db.connection()
+    async with httpx.AsyncClient() as client:
+        await scrape_inference_metrics(
+            _sessions(connection),
+            client,
+            now=datetime.now(timezone.utc),
+            interval_seconds=6,
+        )
+
+    row = await db.scalar(
+        select(InferenceMetricsHourly).where(
+            InferenceMetricsHourly.deployment_id == deployment.id
+        )
+    )
+    assert row is not None and (row.errors, row.last_error) == (1, "timeout")
+
+
+@pytest.mark.asyncio
+async def test_the_retention_delete_reads_an_index_on_the_hour(db) -> None:
+    definition = await db.scalar(
+        text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE indexname = 'ix_inference_metrics_hourly_hour'"
+        )
+    )
+
+    # Every pass deletes hours older than 90 days; the key leads with the tenant.
+    assert definition is not None and definition.endswith("(hour)")
