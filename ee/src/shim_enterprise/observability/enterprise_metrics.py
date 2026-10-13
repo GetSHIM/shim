@@ -73,3 +73,8 @@ MCP_TOOL_CALLS_TOTAL = Counter(
     "MCP tool calls by tool and outcome (ok, error).",
     ("tool", "outcome"),
 )
+RULE_PROPOSALS_TOTAL = Counter(
+    "shim_rule_proposals_total",
+    "Rule proposals by outcome: proposed, needs_examples, invalid, limited, file_managed.",
+    ("outcome",),
+)

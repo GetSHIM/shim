@@ -203,9 +203,28 @@ async def _answer(
         ).inc()
         return protocol.result(call, outcome)
     if method == "prompts/list":
-        return protocol.result(call, {"prompts": list(PROMPTS)})
+        return protocol.result(call, {"prompts": [item.listing() for item in PROMPTS]})
     if method == "prompts/get":
-        raise Rejected(200, protocol.INVALID_PARAMS, "Unknown prompt", call.id)
+        prompt = next(
+            (item for item in PROMPTS if item.name == params.get("name")), None
+        )
+        arguments = params.get("arguments") or {}
+        text = (
+            prompt.text(arguments) if prompt and isinstance(arguments, dict) else None
+        )
+        if prompt is None or text is None:
+            raise Rejected(
+                200, protocol.INVALID_PARAMS, "Unknown prompt or argument", call.id
+            )
+        return protocol.result(
+            call,
+            {
+                "description": prompt.description,
+                "messages": [
+                    {"role": "user", "content": {"type": "text", "text": text}}
+                ],
+            },
+        )
     if method == "resources/list":
         return protocol.result(
             call,

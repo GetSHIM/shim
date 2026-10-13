@@ -103,7 +103,7 @@ forbidden_noncloud_import_roots = [
 ]
 "shim.privacy.record_match" = ["FIELD_KINDS", "FINGERPRINT_VERSION", "KEY_BYTES", "RecordField", "RecordSetIndex", "fingerprints", "normalize", "record_hash"]
 "shim.privacy.retention" = ["REQUEST_PRIVACY_RETENTION"]
-"shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "load_rule_set", "match_records", "validate_rule_set"]
+"shim.rules" = ["ACTION_RANK", "KINDS", "LIMITS", "Rule", "RuleScope", "RuleSet", "RuleSetError", "count_rule_matches", "load_rule_set", "match_records", "validate_rule_set"]
 "shim.rules.approval" = ["ApprovalDecision", "ApprovalRequest"]
 "shim.rules.content" = ["turkish_fold"]
 "shim.secrets.azure" = ["EntraClientCredential", "EntraTokenCache"]
@@ -493,6 +493,7 @@ enterprise = [
   "ee/src/shim_enterprise/rules/changes.py",
   "ee/src/shim_enterprise/rules/models.py",
   "ee/src/shim_enterprise/rules/preview.py",
+  "ee/src/shim_enterprise/rules/proposals.py",
   "ee/src/shim_enterprise/rules/resource.py",
   "ee/src/shim_enterprise/secrets/__init__.py",
   "ee/src/shim_enterprise/secrets/aws_secrets_manager.py",
@@ -592,6 +593,8 @@ enterprise = [
   "ee/tests/policy/test_recommender_apply.py",
   "ee/tests/rules/test_aiuc_import.py",
   "ee/tests/rules/test_preview.py",
+  "ee/tests/rules/test_proposal_data.py",
+  "ee/tests/rules/test_proposals.py",
   "ee/tests/rules/test_rule_sets.py",
   "ee/tests/rules/test_rules_resource.py",
   "ee/tests/scripts/test_hash_record_set.py",

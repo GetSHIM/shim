@@ -1319,6 +1319,16 @@
   "service_recommender": "403 Permission required: rules.write",
   "team_admin": "403 Permission required: rules.write"
  },
+ "POST /api/v1/management/rules/proposals": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Permission required: plans.create",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "422",
+  "team_admin": "403 Permission required: plans.create"
+ },
  "POST /api/v1/management/service-accounts": {
   "admin": "403 Organization owner required",
   "auditor": "403 Auditor access is read-only",

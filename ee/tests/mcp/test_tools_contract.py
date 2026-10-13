@@ -27,6 +27,7 @@ _BODIES = {
         "changes": [{"resource": "privacy", "item": "_", "set": {"block_email": False}}]
     },
     "restore_version": {},
+    "propose_rules": {"sentence": "x", "rules": []},
 }
 _NEVER = re.compile(
     r"/content|/providers|/api-keys|/team/|/roles|/service-accounts|/config/|/export"
@@ -50,7 +51,7 @@ def _route(tool) -> APIRoute:
 def test_tool_names_are_unique_and_tools_never_reach_the_closed_areas() -> None:
     names = [tool.name for tool in TOOLS]
 
-    assert len(names) == len(set(names)) == 16
+    assert len(names) == len(set(names)) == 17
     assert all(re.fullmatch(r"^[a-z][a-z0-9_]{1,47}$", name) for name in names)
     assert not [tool.path for tool in TOOLS if _NEVER.search(tool.path)]
     # No tool changes a finding's status or writes a setting directly.
@@ -59,6 +60,7 @@ def test_tool_names_are_unique_and_tools_never_reach_the_closed_areas() -> None:
         ("POST", "/api/v1/management/policy/plans"),
         ("POST", "/api/v1/management/policy/plans/{plan_id}/apply"),
         ("POST", "/api/v1/management/policy/versions/{version}/restore"),
+        ("POST", "/api/v1/management/rules/proposals"),
     }
 
 

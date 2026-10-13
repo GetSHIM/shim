@@ -267,3 +267,55 @@ async def test_a_restore_by_a_recommender_passes_the_same_check(
     assert read.status_code == 200
     [audit] = await _audits(db, tenant, "tenant.policy_plan_apply_refused")
     assert audit["plan_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_only_a_person_applies_a_rule_proposal(db) -> None:
+    from ee.tests.rules.test_proposals import PROPOSALS, SENTENCE, term
+
+    users = await _tenant(db)
+    owner, admin, agent = users["owner"], users["admin"], users["agent"]
+    service_admin = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"agent-{uuid4().hex}@example.com",
+        role="admin",
+        kind="service",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(service_admin)
+    await db.flush()
+    four_eyes = await _call(
+        db,
+        owner,
+        "PATCH",
+        "/api/v1/management/gateway-settings",
+        json={"four_eyes": "relaxing"},
+    )
+    assert four_eyes.status_code == 200, four_eyes.text
+    proposed = await _call(
+        db, agent, "POST", PROPOSALS, json={"sentence": SENTENCE, "rules": [term()]}
+    )
+    plan_id = proposed.json()["plan"]["id"]
+
+    by_agent = await _call(db, agent, "POST", f"{POLICY}/plans/{plan_id}/apply")
+    by_service = await _call(
+        db, service_admin, "POST", f"{POLICY}/plans/{plan_id}/apply"
+    )
+    by_admin = await _call(db, admin, "POST", f"{POLICY}/plans/{plan_id}/apply")
+    rules = await _call(db, owner, "GET", "/api/v1/management/rules")
+
+    assert proposed.status_code == 201, proposed.text
+    reasons = {change["reason"] for change in by_agent.json()["detail"]["changes"]}
+    assert by_agent.status_code == 403 and "proposal_needs_human" in reasons
+    assert (by_service.status_code, by_service.json()["detail"]["code"]) == (
+        403,
+        "PROPOSAL_NEEDS_HUMAN",
+    )
+    # Adding monitor rules loosens nothing, so four eyes does not hold it.
+    assert by_admin.status_code == 200, by_admin.text
+    assert by_admin.json()["status"] == "applied"
+    assert [(rule["id"], rule["state"]) for rule in rules.json()["rules"]] == [
+        ("project_atlas", "monitor")
+    ]

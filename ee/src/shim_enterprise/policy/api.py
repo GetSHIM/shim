@@ -303,7 +303,7 @@ async def new_plan(
     organization_id: UUID,
     changes: list[dict[str, Any]],
     *,
-    source: Literal["api", "restore", "import", "file", "mcp"],
+    source: Literal["api", "restore", "import", "file", "mcp", "proposal"],
     reason: str | None,
     context: dict[str, Any] | None = None,
 ) -> PolicyPlan:
@@ -373,6 +373,16 @@ async def _apply_plan(
             risk=plan.risk,
             source=plan.source,
             plan_id=plan.id,
+        )
+    if plan.source == "proposal" and actor.kind != "human":
+        # Rules an agent proposed are turned on by a person, whatever the account's role.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "PROPOSAL_NEEDS_HUMAN",
+                "message": "A rule proposal is applied by a person.",
+                "hint": "An administrator applies rule proposals from the plan page.",
+            },
         )
     if (
         plan.status == "draft"

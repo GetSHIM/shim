@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,34 @@ class Resource:
         return files("shim_enterprise.mcp").joinpath(self.file).read_text("utf-8")
 
 
+def _guide(text: str) -> str:
+    return (
+        files("shim_enterprise.mcp")
+        .joinpath("guides")
+        .joinpath(text)
+        .read_text("utf-8")
+    )
+
+
+@dataclass(frozen=True)
+class Prompt:
+    name: str
+    description: str
+    arguments: tuple[Mapping[str, Any], ...]
+
+    def listing(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "arguments": [dict(argument) for argument in self.arguments],
+        }
+
+    def text(self, arguments: Mapping[str, Any]) -> str | None:
+        """The prompt's text, or None when an argument is not one it takes."""
+        language = arguments.get("language", "tr")
+        return _guide(f"rules.{language}.md") if language in ("tr", "en") else None
+
+
 RESOURCES: tuple[Resource, ...] = (
     Resource(
         uri="shim://guide/agent",
@@ -27,9 +57,32 @@ RESOURCES: tuple[Resource, ...] = (
         mime_type="text/markdown",
         file="agent_guide.md",
     ),
+    *(
+        Resource(
+            uri=f"shim://guide/rules/{language}",
+            name=f"rule writing guide ({language})",
+            description="How to turn the user's sentence into concrete rules with "
+            "propose_rules, and what to ask when shim needs examples.",
+            mime_type="text/markdown",
+            file=f"guides/rules.{language}.md",
+        )
+        for language in ("tr", "en")
+    ),
 )
-# E55 adds the rule-writing prompt.
-PROMPTS: tuple[()] = ()
+PROMPTS: tuple[Prompt, ...] = (
+    Prompt(
+        name="write_rules",
+        description="Turn the user's own sentence about what is secret into concrete "
+        "rules, with examples, for an administrator to approve.",
+        arguments=(
+            {
+                "name": "language",
+                "description": "tr (default) or en",
+                "required": False,
+            },
+        ),
+    ),
+)
 
 INSTRUCTIONS = (
     "shim is an AI gateway. Its findings and their severity come from its own "

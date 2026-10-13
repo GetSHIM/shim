@@ -27,7 +27,13 @@ from shim_enterprise.tenants.models import (
 from shim_enterprise.tenants.plans import activate_organization_plan
 
 MCP = "/api/v1/mcp"
-WRITE_TOOLS = {"plan_from_finding", "create_plan", "apply_plan", "restore_version"}
+WRITE_TOOLS = {
+    "plan_from_finding",
+    "create_plan",
+    "apply_plan",
+    "restore_version",
+    "propose_rules",
+}
 
 
 @pytest_asyncio.fixture
@@ -479,7 +485,7 @@ async def test_timeouts_and_large_results_become_tool_errors(
 
 
 @pytest.mark.asyncio
-async def test_the_guide_is_a_resource_and_there_are_no_prompts_yet(
+async def test_the_guides_are_resources_and_write_rules_a_prompt(
     mcp_app, accounts
 ) -> None:
     key = accounts["auditor"]
@@ -488,18 +494,57 @@ async def test_the_guide_is_a_resource_and_there_are_no_prompts_yet(
     read = await _rpc(
         mcp_app, key, "resources/read", {"uri": "shim://guide/agent"}, modern=True
     )
+    rules_en = await _rpc(
+        mcp_app, key, "resources/read", {"uri": "shim://guide/rules/en"}
+    )
     unknown = await _rpc(mcp_app, key, "resources/read", {"uri": "shim://nothing"})
-    prompts = await _rpc(mcp_app, key, "prompts/list")
-    prompt = await _rpc(mcp_app, key, "prompts/get", {"name": "write_rules"})
+    prompts = await _rpc(mcp_app, key, "prompts/list", modern=True)
+    turkish = await _rpc(
+        mcp_app,
+        key,
+        "prompts/get",
+        {"name": "write_rules", "arguments": {"language": "tr"}},
+    )
+    english = await _rpc(
+        mcp_app,
+        key,
+        "prompts/get",
+        {"name": "write_rules", "arguments": {"language": "en"}},
+        modern=True,
+    )
+    default = await _rpc(mcp_app, key, "prompts/get", {"name": "write_rules"})
+    wrong = await _rpc(
+        mcp_app,
+        key,
+        "prompts/get",
+        {"name": "write_rules", "arguments": {"language": "de"}},
+    )
+    missing = await _rpc(mcp_app, key, "prompts/get", {"name": "nothing"})
 
     assert [item["uri"] for item in listed.json()["result"]["resources"]] == [
-        "shim://guide/agent"
+        "shim://guide/agent",
+        "shim://guide/rules/tr",
+        "shim://guide/rules/en",
     ]
     content = read.json()["result"]["contents"][0]
     assert content["mimeType"] == "text/markdown"
     assert content["text"].startswith("# Working with shim as an agent")
     assert len(content["text"].encode()) <= 8 * 1024
     assert read.json()["result"]["ttlMs"] == 0
+    guide = rules_en.json()["result"]["contents"][0]["text"]
+    assert guide.startswith("# Writing shim rules") and len(guide.encode()) <= 8 * 1024
     assert unknown.json()["error"]["code"] == -32602
-    assert prompts.json()["result"] == {"prompts": []}
-    assert prompt.json()["error"]["code"] == -32602
+    assert [item["name"] for item in prompts.json()["result"]["prompts"]] == [
+        "write_rules"
+    ]
+
+    def text(response) -> str:
+        [message] = response.json()["result"]["messages"]
+        assert message["role"] == "user"
+        return message["content"]["text"]
+
+    assert text(turkish).startswith("# Kullanıcının cümlesinden")
+    assert text(english) == guide
+    assert english.json()["result"]["resultType"] == "complete"
+    assert text(default) == text(turkish)
+    assert wrong.json()["error"]["code"] == missing.json()["error"]["code"] == -32602

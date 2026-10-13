@@ -34,6 +34,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
+- [Write rules from a sentence with your agent](#write-rules-from-a-sentence-with-your-agent)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
@@ -1044,6 +1045,37 @@ rule's facts and documentation; shim calls no model), drafts a plan with
 `PLAN_NOT_ALLOWLISTED` with the reasons and the plan waits for a person. Plans it
 created show `source: "mcp"` in `GET /api/v1/management/policy/plans`. The tools,
 the error mapping and Codex and Cursor settings are in [MCP](MCP.md).
+
+## Write rules from a sentence with your agent
+
+Say what must not leave in your own words, and let the agent turn it into rules.
+The agent reads the `write_rules` prompt (Turkish or English) through the
+[MCP server](MCP.md), asks you for the exact names, codes and formats you mean,
+and for each one a sentence that must be caught and one that must not, then calls
+`propose_rules`:
+
+```json
+{"sentence": "Atlas projesi gizli; proje kodlarımız PRJ-1234 biçiminde.", "language": "tr",
+ "rules": [
+   {"id": "project_atlas", "name": "Atlas", "kind": "term", "action": "mask", "scope": {},
+    "match": {"terms": ["Atlas"], "label": "PROJECT"},
+    "examples": {"match": ["Atlas'ın teslim tarihi"], "no_match": ["Atlantik rotası"]}},
+   {"id": "project_code", "name": "Proje kodu", "kind": "pattern", "action": "mask",
+    "match": {"templates": ["PRJ-####"], "label": "PROJECT_CODE"},
+    "examples": {"match": ["PRJ-4821 için rapor"], "no_match": ["PRJ-48211"]}}]}
+```
+
+shim checks every rule on your examples and on ordinary office text. A vague
+sentence ("Stratejik bilgilerimiz çıkmasın") gives no rule: the answer is 422
+`RULE_PROPOSAL_NEEDS_EXAMPLES` with questions (`no_rules`, `too_generic`,
+`too_broad`, `missing_examples`, `example_not_matched`,
+`no_match_example_matched`) the agent brings back to you. A concrete proposal
+becomes a draft plan with source `proposal`, every rule in `monitor`. An
+administrator applies it from the plan page (an agent's key cannot); the rules then
+count matches in the request list until a person enforces them. Your sentence and
+examples are never stored. The same route works without MCP: `POST
+/api/v1/management/rules/proposals` (`plans.create`). Details: [rule
+proposals](POLICY_DECISIONS.md#rule-proposals).
 
 ## Give someone exactly the access they need
 

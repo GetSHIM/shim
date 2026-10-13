@@ -87,6 +87,7 @@ connect; what it can do is decided by the routes.
 | `apply_plan` | `POST /policy/plans/{plan_id}/apply` | `plans.apply`, `plans.apply_allowlisted` |
 | `list_versions` | `GET /policy/versions` (`limit` at most 50, `before`) | `audit.read`, `plans.create` |
 | `restore_version` | `POST /policy/versions/{version}/restore` (`body`: `reason`) | `plans.apply`, `plans.apply_allowlisted` |
+| `propose_rules` | `POST /rules/proposals` (`body`: `sentence`, `language`, `rules` with `examples`) | `plans.create` |
 
 Routes are under `/api/v1/management`. `tools/list` shows a tool when the caller
 holds one of its permissions (an auditor key sees the twelve read tools); listing
@@ -110,9 +111,14 @@ exports, and finding status changes.
 
 ## Resources and prompts
 
-One resource, `shim://guide/agent` (markdown): what each tool is for, the order
-"list findings, explain, plan, show the impact, ask a person", how to read
-`PLAN_NOT_ALLOWLISTED` reasons and what an agent must never claim. No prompts yet.
+- `shim://guide/agent` (markdown): what each tool is for, the order "list findings,
+  explain, plan, show the impact, ask a person", how to read `PLAN_NOT_ALLOWLISTED`
+  reasons and what an agent must never claim.
+- `shim://guide/rules/tr` and `shim://guide/rules/en`: how to turn the user's sentence
+  into concrete rules with `propose_rules`, and what to ask for each question it
+  returns ([rule proposals](POLICY_DECISIONS.md#rule-proposals)).
+- Prompt `write_rules` (argument `language`, `tr` by default or `en`): one `user`
+  message with the rule guide in that language; another value is `-32602`.
 The `initialize` and `server/discover` answers carry the same rules as
 `instructions`.
 

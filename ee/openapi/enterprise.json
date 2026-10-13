@@ -11564,6 +11564,24 @@
         "title": "PromptVersionView",
         "type": "object"
       },
+      "ProposalView": {
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/PlanView"
+          },
+          "status": {
+            "const": "proposed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "plan"
+        ],
+        "title": "ProposalView",
+        "type": "object"
+      },
       "ProviderKeySettings": {
         "properties": {
           "allow_customer_provider_keys": {
@@ -25493,6 +25511,55 @@
           }
         ],
         "summary": "Preview",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/api/v1/management/rules/proposals": {
+      "post": {
+        "operationId": "propose_rules_api_v1_management_rules_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "sentence, language and rules, each with examples: see ee/docs/COOKBOOK.md, Write rules from a sentence with your agent.",
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Propose Rules",
         "tags": [
           "rules"
         ]

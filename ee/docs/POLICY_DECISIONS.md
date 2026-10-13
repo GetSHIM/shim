@@ -545,6 +545,43 @@ Approving and rejecting stay with `plans.approve`, which no service account hold
 The allowlist ships empty: until it is filled, a recommender proposes and never
 applies.
 
+### Rule proposals
+
+An agent turns the user's own sentence into rules and sends them to `POST
+/rules/proposals` (`plans.create`). shim calls no model and parses no sentence: it
+judges whether each rule is concrete from the examples the user gave, with the
+same matcher the gateway uses (`count_rule_matches`).
+
+- **A vague sentence gives no rule.** A `term` or `pattern` rule needs at least one
+  example it must catch. It is refused with a question when it has none
+  (`missing_examples`), when a term is a generic word for a kind of information
+  (`too_generic`, against a packaged stoplist of Turkish and English words, compared
+  after Turkish folding), when it fires on a packaged 3,000-word neutral office text
+  (`too_broad`), when it misses its own example (`example_not_matched`) or catches a
+  counter-example (`no_match_example_matched`). A search that times out counts as a
+  miss on an example and as a hit on the neutral text. No rule at all is `no_rules`.
+  `destination` rules name entity types and a scope and need no text examples. Any
+  question answers 422 `RULE_PROPOSAL_NEEDS_EXAMPLES` with every question of every
+  rule; a shape or set error answers 422 `RULE_PROPOSAL_INVALID` with field paths at
+  the request's own indices. The stoplist, the text and the checks carry
+  `PROPOSAL_CHECKS_VERSION` (now 1), recorded on every proposal.
+- **Proposals only add rules**, of the kinds `term`, `pattern` and `destination`, all
+  in `monitor`; an id already in the set is `RULE_ID_EXISTS`. At most 20 proposals
+  wait per tenant (409 `RULE_PROPOSAL_LIMIT`). In file mode nothing is stored: the
+  409 `CONFIG_FILE_MANAGED` carries `validated_rules` for the signed file.
+- **The sentence is never stored.** The plan (source `proposal`) holds the rules and
+  `context.proposal`: the checks version, an HMAC of the sentence with whitespace
+  collapsed (`sentence_digest`, keyed per purpose from the installation's base key),
+  its length, its language, the channel (`mcp` or `api`) and how many examples each
+  rule had. The examples are never stored, logged, audited or returned. Audit
+  `tenant.rule_proposal_created`: plan id, rule count, count per kind, term count,
+  channel.
+- **Only a person turns a proposal on.** A plan with source `proposal` is applied only
+  by a human holding `plans.apply`; any service account, of any role, gets 403
+  `PROPOSAL_NEEDS_HUMAN` (a recommender is already refused by the allowlist with
+  `proposal_needs_human`). Adding monitor rules loosens nothing, so four eyes does not
+  hold it. Enforcing a rule afterwards is a separate change by a person.
+
 ### Configuration file
 
 A tenant can manage `privacy`, `gateway_settings` and `rules`, or any non-empty

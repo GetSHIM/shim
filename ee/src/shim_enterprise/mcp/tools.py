@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
@@ -50,6 +51,14 @@ class ListRequests(_Arguments):
 class CreatePlan(_Arguments):
     body: PlanInput
     window_days: int = Field(default=7, ge=1, le=31)
+
+
+class ProposeRules(_Arguments):
+    body: dict[str, Any] = Field(
+        description="{sentence, language, rules}: each rule a term, pattern or "
+        "destination rule (no state) with examples {match, no_match} the user gave. "
+        "Read the write_rules prompt first."
+    )
 
 
 class ListPlans(_Arguments):
@@ -196,6 +205,18 @@ TOOLS: tuple[Tool, ...] = (
         CreatePlan,
         "POST",
         f"{MANAGEMENT}/policy/plans",
+        ("plans.create",),
+        False,
+    ),
+    Tool(
+        "propose_rules",
+        "Turn the user's own sentence into concrete rules. Send the sentence and the "
+        "rules you derived, each with examples the user gave. shim stores nothing "
+        "until an administrator applies the plan. When the answer has questions, ask "
+        "the user, do not guess.",
+        ProposeRules,
+        "POST",
+        f"{MANAGEMENT}/rules/proposals",
         ("plans.create",),
         False,
     ),
