@@ -329,14 +329,19 @@ async def test_worker_repeats_reconciliation_until_stopped(monkeypatch) -> None:
             stop_event.set()
         return 0
 
-    async def wait_for(waitable, *, timeout: int):
+    clock = [1000.0]
+
+    async def wait_for(waitable, *, timeout: float):
         wait_timeouts.append(timeout)
         if stop_event.is_set():
             return await waitable
         waitable.close()
+        clock[0] += timeout
         raise TimeoutError
 
     monkeypatch.setattr(worker, "run_once", run_once)
+    monkeypatch.setattr(worker_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(worker_module, "scrape_inference_metrics", AsyncMock())
     monkeypatch.setattr(worker_module.asyncio, "wait_for", wait_for)
 
     await worker.run(stop_event)
@@ -346,7 +351,7 @@ async def test_worker_repeats_reconciliation_until_stopped(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_evaluates_budgets_and_findings_first_and_then_on_their_intervals(
+async def test_worker_evaluates_budgets_findings_and_metrics_first_and_then_on_their_intervals(
     monkeypatch,
 ) -> None:
     worker = ReconciliationWorker(
@@ -357,40 +362,52 @@ async def test_worker_evaluates_budgets_and_findings_first_and_then_on_their_int
         interval_seconds=30,
     )
     stop_event = asyncio.Event()
-    passes = 0
+    clock = [1000.0]
+    passes: list[float] = []
 
     async def run_once() -> int:
-        nonlocal passes
-        passes += 1
-        if passes == 4:
+        passes.append(clock[0])
+        if clock[0] >= 1900:
             stop_event.set()
         return 0
 
-    async def wait_for(waitable, *, timeout: int):
+    async def wait_for(waitable, *, timeout: float):
+        if stop_event.is_set():
+            return await waitable
         waitable.close()
+        clock[0] += timeout
         raise TimeoutError
 
-    # Start, then one budgets and one findings reading per pass.
-    clock = iter([1000.0, 1000.0, 1000.0, 1100.0, 1100.0, 1300.0, 1300.0, 1350, 1950])
-    evaluate = AsyncMock(side_effect=[RuntimeError("budgets unavailable"), None])
+    evaluate = AsyncMock(
+        side_effect=[RuntimeError("budgets unavailable"), None, None, None]
+    )
     findings = AsyncMock(side_effect=[RuntimeError("findings unavailable"), None])
+    scrape = AsyncMock(side_effect=[RuntimeError("scrape unavailable")] + [None] * 60)
     monkeypatch.setattr(worker, "run_once", run_once)
-    monkeypatch.setattr(worker_module, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(worker_module, "monotonic", lambda: clock[0])
     monkeypatch.setattr(worker_module, "evaluate_enabled_budgets", evaluate)
     monkeypatch.setattr(worker_module, "evaluate_findings", findings)
+    monkeypatch.setattr(worker_module, "run_remediations", AsyncMock())
+    monkeypatch.setattr(worker_module, "scrape_inference_metrics", scrape)
     monkeypatch.setattr(
         worker_module.settings, "BUDGET_EVALUATION_INTERVAL_SECONDS", 300
     )
     monkeypatch.setattr(
         worker_module.settings, "FINDINGS_EVALUATION_INTERVAL_SECONDS", 900
     )
+    monkeypatch.setattr(
+        worker_module.settings, "INFERENCE_METRICS_INTERVAL_SECONDS", 15
+    )
     monkeypatch.setattr(worker_module.asyncio, "wait_for", wait_for)
 
     await worker.run(stop_event)
 
-    assert passes == 4
-    assert evaluate.await_count == 2
+    # Reconciliation keeps its 30 s; the shorter metrics interval wakes the loop between.
+    assert passes == [1000.0 + 30 * index for index in range(31)]
+    assert evaluate.await_count == 4
     assert findings.await_count == 2
+    assert scrape.await_count == 61
+    assert scrape.await_args.kwargs["interval_seconds"] == 15
     assert all(
         call.args == (worker.session_factory,)
         for call in evaluate.await_args_list + findings.await_args_list

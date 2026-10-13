@@ -84,3 +84,9 @@ REMEDIATIONS_TOTAL = Counter(
     "applied, kept, restored, restore_skipped, skipped, undone.",
     ("entry", "phase"),
 )
+INFERENCE_SCRAPES_TOTAL = Counter(
+    "shim_inference_metrics_scrapes_total",
+    "Model server metrics reads by server (vllm, tgi, ollama) and outcome (ok, "
+    "error, skipped).",
+    ("server", "outcome"),
+)

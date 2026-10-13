@@ -5133,7 +5133,10 @@
           "capacity_source": {
             "anyOf": [
               {
-                "const": "entered",
+                "enum": [
+                  "entered",
+                  "measured"
+                ],
                 "type": "string"
               },
               {
@@ -5155,6 +5158,30 @@
             "format": "uuid",
             "title": "Deployment Id",
             "type": "string"
+          },
+          "measured_capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The highest running count in an hour the server queued requests: where it started to queue.",
+            "title": "Measured Capacity"
+          },
+          "measured_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The server's highest hourly running count of the last 7 days (inference_metrics).",
+            "title": "Measured Peak"
           },
           "projected_date": {
             "anyOf": [
@@ -5200,6 +5227,8 @@
           "slope_per_day",
           "capacity",
           "capacity_source",
+          "measured_peak",
+          "measured_capacity",
           "projected_date",
           "status"
         ],
@@ -7289,6 +7318,15 @@
             "title": "Four Eyes",
             "type": "string"
           },
+          "inference_metrics": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InferenceMetricsSource"
+            },
+            "maxItems": 64,
+            "title": "Inference Metrics",
+            "type": "array"
+          },
           "inflight_sharing_api_key_ids": {
             "default": [],
             "items": {
@@ -7433,6 +7471,21 @@
               }
             ],
             "title": "Four Eyes"
+          },
+          "inference_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InferenceMetricsSource"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inference Metrics"
           },
           "inflight_sharing_api_key_ids": {
             "anyOf": [
@@ -9039,6 +9092,37 @@
           "deadline_missed"
         ],
         "title": "IncidentView",
+        "type": "object"
+      },
+      "InferenceMetricsSource": {
+        "additionalProperties": false,
+        "description": "An internal deployment whose model server shim reads the load of.",
+        "properties": {
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "send_credential": {
+            "default": false,
+            "title": "Send Credential",
+            "type": "boolean"
+          },
+          "server": {
+            "enum": [
+              "vllm",
+              "tgi",
+              "ollama"
+            ],
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "server"
+        ],
+        "title": "InferenceMetricsSource",
         "type": "object"
       },
       "Interval": {
@@ -16688,6 +16772,268 @@
           }
         },
         "title": "SearchTypes",
+        "type": "object"
+      },
+      "ServerLoad": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "busy_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Samples with a request running.",
+            "title": "Busy Share"
+          },
+          "cache_usage_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Usage Avg"
+          },
+          "cache_usage_peak": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Usage Peak"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_scrape_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Scrape At"
+          },
+          "loaded_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ollama: samples with the model loaded.",
+            "title": "Loaded Share"
+          },
+          "queued_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Samples with a request waiting.",
+            "title": "Queued Share"
+          },
+          "running_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Running Avg"
+          },
+          "running_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Running Peak"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "server": {
+            "enum": [
+              "vllm",
+              "tgi",
+              "ollama"
+            ],
+            "title": "Server",
+            "type": "string"
+          },
+          "utilisation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "running_avg / capacity.",
+            "title": "Utilisation"
+          },
+          "utilisation_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_capacity",
+                  "server_reports_no_running"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utilisation Unavailable Reason"
+          },
+          "vram_bytes_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vram Bytes Peak"
+          },
+          "waiting_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Avg"
+          },
+          "waiting_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Peak"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "server",
+          "last_scrape_at",
+          "last_error",
+          "samples",
+          "errors",
+          "busy_share",
+          "queued_share",
+          "running_avg",
+          "running_peak",
+          "waiting_avg",
+          "waiting_peak",
+          "cache_usage_avg",
+          "cache_usage_peak",
+          "loaded_share",
+          "vram_bytes_peak",
+          "capacity",
+          "utilisation",
+          "utilisation_unavailable_reason"
+        ],
+        "title": "ServerLoad",
+        "type": "object"
+      },
+      "ServerLoads": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ServerLoad"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ServerLoads",
         "type": "object"
       },
       "ServiceAccountInput": {
@@ -25072,6 +25418,57 @@
           }
         ],
         "summary": "Update Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/inference-metrics": {
+      "get": {
+        "description": "Each listed server's load over the window, from the hourly aggregates.",
+        "operationId": "inference_metrics_api_v1_management_inference_metrics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 744,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerLoads"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inference Metrics",
         "tags": [
           "management"
         ]

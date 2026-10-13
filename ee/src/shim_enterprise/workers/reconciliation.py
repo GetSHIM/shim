@@ -7,8 +7,11 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 import logging
 import signal
+import ssl
 from time import monotonic
 from typing import Any
+
+import httpx
 
 from shim_enterprise.billing.ledger import DurableAccountingRepository
 from shim_enterprise.billing.spend import evaluate_enabled_budgets
@@ -16,6 +19,7 @@ from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal, engine
 from shim_enterprise.findings.service import evaluate_findings
 from shim_enterprise.gateway.pipeline.reconciliation import ScanReconciler
+from shim_enterprise.observability.inference_metrics import scrape_inference_metrics
 from shim_enterprise.policy.remediation import run_remediations
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing, start_span
@@ -79,22 +83,41 @@ class ReconciliationWorker:
             "Gateway reconciliation worker started interval_seconds=%s",
             self.interval_seconds,
         )
-        budgets_due = findings_due = monotonic()
+        # The worker's own client for model servers' metrics routes: no proxy from the
+        # environment, no redirects, the operator's CA bundle.
+        metrics_client = httpx.AsyncClient(
+            trust_env=False,
+            follow_redirects=False,
+            verify=ssl.create_default_context(cafile=settings.OUTBOUND_CA_BUNDLE),
+        )
+        try:
+            await self._loop(stop_event, metrics_client)
+        finally:
+            await metrics_client.aclose()
+
+    async def _loop(
+        self,
+        stop_event: asyncio.Event,
+        metrics_client: httpx.AsyncClient,
+    ) -> None:
+        reconcile_due = budgets_due = findings_due = metrics_due = monotonic()
         while not stop_event.is_set():
-            try:
-                recovered = await self.run_once()
-                write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "reconciliation")
-                if recovered:
-                    logger.warning(
-                        "Recovered stale gateway requests count=%s", recovered
+            if (clock := monotonic()) >= reconcile_due:
+                reconcile_due = clock + self.interval_seconds
+                try:
+                    recovered = await self.run_once()
+                    write_heartbeat(settings.WORKER_HEARTBEAT_PATH, "reconciliation")
+                    if recovered:
+                        logger.warning(
+                            "Recovered stale gateway requests count=%s", recovered
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "Gateway reconciliation pass failed type=%s",
+                        type(exc).__name__,
                     )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error(
-                    "Gateway reconciliation pass failed type=%s",
-                    type(exc).__name__,
-                )
             if (clock := monotonic()) >= budgets_due:
                 budgets_due = clock + settings.BUDGET_EVALUATION_INTERVAL_SECONDS
                 try:
@@ -122,10 +145,28 @@ class ReconciliationWorker:
                     logger.error(
                         "Findings evaluation pass failed type=%s", type(exc).__name__
                     )
+            if (clock := monotonic()) >= metrics_due:
+                metrics_due = clock + settings.INFERENCE_METRICS_INTERVAL_SECONDS
+                try:
+                    await scrape_inference_metrics(
+                        self.session_factory,
+                        metrics_client,
+                        now=datetime.now(timezone.utc),
+                        interval_seconds=settings.INFERENCE_METRICS_INTERVAL_SECONDS,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # The type only: never the URL or the body.
+                    logger.error(
+                        "Inference metrics scrape failed type=%s", type(exc).__name__
+                    )
             try:
+                # Wake for whichever is due first: a metrics interval shorter than the
+                # reconciliation interval keeps its own cadence.
                 await asyncio.wait_for(
                     stop_event.wait(),
-                    timeout=self.interval_seconds,
+                    timeout=max(0.0, min(reconcile_due, metrics_due) - monotonic()),
                 )
             except TimeoutError:
                 continue

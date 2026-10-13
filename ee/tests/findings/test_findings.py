@@ -674,6 +674,12 @@ _SUBJECTS = {
     service.CACHE_ORDER_CHURN: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.COLD_START: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
     service.QUEUEING: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
+    service.IDLE_INFERENCE_CAPACITY: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222"
+    },
+    service.INFERENCE_QUEUE_SATURATED: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222"
+    },
     service.IDLE_INTERNAL_DEPLOYMENT: {
         "deployment_id": "22222222-2222-2222-2222-222222222222",
         "alias": "kurum-llama",
@@ -681,6 +687,24 @@ _SUBJECTS = {
     service.LITELLM_RETRY_BURST: {"litellm_key": "litellm:ce77089fa9483163"},
 }
 _EVIDENCE = {
+    service.IDLE_INFERENCE_CAPACITY: {
+        "window_days": 7,
+        "samples": 1000,
+        "busy_share": 0.05,
+        "running_peak": 1,
+        "cache_usage_avg": 0.2,
+        "gateway_requests": 12,
+        "hardware_cost_month": "120000.00",
+        "currency": "TRY",
+    },
+    service.INFERENCE_QUEUE_SATURATED: {
+        "window_hours": 24,
+        "saturated_hours": 2,
+        "worst_queued_share": 0.75,
+        "waiting_peak": 4,
+        "running_peak": 8,
+        "cache_usage_peak": 0.9,
+    },
     service.LITELLM_UNREGISTERED_MODEL: {
         "requests": 12,
         "window_days": 7,

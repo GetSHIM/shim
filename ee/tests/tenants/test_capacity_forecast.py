@@ -93,10 +93,57 @@ async def test_a_growing_line_reaches_capacity_on_the_closed_form_day(db) -> Non
         "slope_per_day": pytest.approx(0.1, abs=1e-4),
         "capacity": 10,
         "capacity_source": "entered",
+        "measured_peak": None,
+        "measured_capacity": None,
         "projected_date": expected.isoformat(),
         "status": "projected",
     }
     assert (rows["gpu-young"]["days_with_traffic"], rows["gpu-young"]["status"]) == (
         13,
         "not_enough_data",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_servers_own_queue_gives_a_measured_capacity(db) -> None:
+    from shim_enterprise.observability.models import InferenceMetricsHourly
+
+    user = await _admin(db)
+    tenant = user.organization_id
+    measured = await _deployment(db, tenant, alias="gpu-measured")
+    entered = await _deployment(db, tenant, alias="gpu-entered")
+    entered.capacity_concurrent_requests = 9
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    for deployment in (measured, entered):
+        for hours_ago, running, queued in ((2, 3, 0), (30, 6, 10), (24 * 20, 7, 0)):
+            db.add(
+                InferenceMetricsHourly(
+                    organization_id=tenant,
+                    deployment_id=deployment.id,
+                    hour=now - timedelta(hours=hours_ago),
+                    server="vllm",
+                    samples=60,
+                    queued_samples=queued,
+                    running_max=running,
+                )
+            )
+    await db.flush()
+
+    rows = {
+        row["alias"]: row
+        for row in (await _call(db, user, "GET", FORECAST)).json()["deployments"]
+    }
+
+    assert (
+        rows["gpu-measured"]["measured_peak"],
+        rows["gpu-measured"]["measured_capacity"],
+        rows["gpu-measured"]["capacity"],
+        rows["gpu-measured"]["capacity_source"],
+    ) == (6, 6, 6, "measured")
+    assert (
+        rows["gpu-entered"]["capacity"],
+        rows["gpu-entered"]["capacity_source"],
+    ) == (
+        9,
+        "entered",
     )

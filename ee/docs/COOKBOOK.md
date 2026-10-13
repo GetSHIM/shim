@@ -36,6 +36,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
 - [Lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)
 - [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
+- [How busy is our GPU?](#how-busy-is-our-gpu)
 - [Allocate hardware cost to teams](#allocate-hardware-cost-to-teams)
 - [Read the capacity forecast](#read-the-capacity-forecast)
 - [Automate management with a service account](#automate-management-with-a-service-account)
@@ -306,6 +307,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `auto_remediation_paused` | `false` | `true` stops new automatic and agent applies; windows keep closing and automatic undo keeps running ([let shim switch off unused deployments](#let-shim-switch-off-unused-deployments-and-see-what-it-did)). |
 | `bedrock_region_lock` | `off` | `mode`, `scopes`, `regions`: which Bedrock inference profiles requests may use ([lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)). |
 | `bedrock_attribution` | `off` | `mode` `session_tags`, `tag_key`, `unassigned_value`: each team's tag on its Bedrock role sessions ([see team costs on the AWS bill](#see-team-costs-on-the-aws-bill)); needs `AWS_GATEWAY_IDENTITY`. |
+| `inference_metrics` | `[]` | Internal deployments whose model server shim reads the load of (`deployment_id`, `server`, `send_credential`); a PATCH replaces the list ([how busy is our GPU?](#how-busy-is-our-gpu)). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -1126,6 +1128,30 @@ Notes: the measure is the busiest hour's average number of requests in flight,
 from gateway records. Short bursts inside an hour go higher than that, so
 `projected_date` is when the busy hour on average reaches the capacity, not when
 the first request waits. Fewer than 14 days with traffic answers `not_enough_data`.
+
+## How busy is our GPU?
+
+Read the load of your own model servers from their metrics, not from the gateway's
+guess.
+
+1. List the internal deployments and their server type.
+2. After a few minutes, read the load; give it a day for shares that mean something.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"inference_metrics": [{"deployment_id": "'$VLLM_ID'", "server": "vllm"},
+                             {"deployment_id": "'$OLLAMA_ID'", "server": "ollama"}]}'
+
+curl "http://localhost:8000/api/v1/management/inference-metrics?hours=24" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: `busy_share` is the share of readings with a request running; with a
+capacity entered, `utilisation` is the average running count over it. A server
+behind a token needs `send_credential: true`. Findings tell you when a server is
+mostly idle or its queue stays full. Details: [server
+metrics](MODEL_DEPLOYMENTS.md#server-metrics).
 
 ## See team costs on the AWS bill
 

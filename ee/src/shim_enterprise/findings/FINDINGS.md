@@ -130,6 +130,7 @@ action this build does not know (another kind, no deployment id) answers 409.
 | `gateway.language_drift`, `gateway.schema_errors`, `gateway.soft_refusals` | `observe` | none: the prompt, the model choice or the client |
 | `gateway.oversized_parts`, `gateway.dead_tools`, `gateway.cache_order_churn` | `observe` | none: the fix is in the client's code |
 | `gateway.cold_start`, `gateway.queueing` | `observe` | none: the model server's settings or capacity |
+| `gateway.idle_inference_capacity`, `gateway.inference_queue_saturated` | `observe` | none: replicas, capacity or the server's idle settings |
 | `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
 | `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
 
@@ -704,6 +705,51 @@ Impact is the streams in congested hours.
 **Fix.** More capacity for the deployment, a concurrency budget for the target,
 or a separate lane for long requests; the latency read grouped by deployment shows
 the hours.
+
+**Resolves** after 7 days without firing.
+
+## gateway.idle_inference_capacity
+
+**Checks.** For each internal deployment whose model server shim reads
+([server metrics](MODEL_DEPLOYMENTS.md#server-metrics); vLLM and TGI only, since
+Ollama reports no running requests), the readings of the last 7 days: with at
+least 1,000 of them, it fires when fewer than 10 percent had a request running.
+Severity low. Subject: the deployment. Max mode `observe`, blast radius
+`deployment`, risk class `cost`.
+
+**Why.** Hardware is paid for whether it runs requests or not. The gateway's own
+count can miss load that bypasses shim; the server's count does not.
+
+**Evidence and impact.** The readings, the busy share, the running peak, the
+average cache use and the requests shim sent to the deployment in the window; with
+a [hardware cost](MODEL_DEPLOYMENTS.md#hardware-cost-and-capacity) entered for the
+month, that amount and its currency (never converted). Impact is the requests.
+When `gateway.idle_internal_deployment` is open for the same deployment both stay:
+one counts gateway traffic, this one the server's load.
+
+**Fix.** Move the deployment's callers to a shared deployment, lower its replica
+count, or let the server unload the model when idle; the fix is outside the
+gateway.
+
+**Resolves** after 7 days without firing.
+
+## gateway.inference_queue_saturated
+
+**Checks.** For the same servers, the hours of the last 24 with at least 30
+readings in which requests waited in at least half of them. It fires at 2 such
+hours. Severity medium. Subject: the deployment. Max mode `observe`, blast radius
+`deployment`, risk class `reliability`.
+
+**Why.** A queue that stays full means callers wait for the server, not for the
+model; `gateway.queueing` infers the same from first-byte times, this rule reads
+the server's own queue, and both can fire.
+
+**Evidence and impact.** The saturated hours, the worst hour's queued share, the
+waiting and running peaks and the peak cache use. Impact is the requests shim sent
+to the deployment in those hours.
+
+**Fix.** Add capacity, set a concurrency budget for the deployment, or send long
+requests to their own lane.
 
 **Resolves** after 7 days without firing.
 

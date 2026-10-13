@@ -133,6 +133,7 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
                 "tag_key": "shim-team",
                 "unassigned_value": "unassigned",
             },
+            "inference_metrics": [],
         },
         "revision": 0,
         "updated_at": None,

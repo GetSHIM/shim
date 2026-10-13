@@ -112,6 +112,9 @@ class Settings(CommunitySettings):
     GATEWAY_RECONCILIATION_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
     BUDGET_EVALUATION_INTERVAL_SECONDS: int = Field(default=300, ge=30, le=86_400)
     FINDINGS_EVALUATION_INTERVAL_SECONDS: int = Field(default=900, ge=60, le=86_400)
+    # How often the reconciliation worker reads the metrics of the model servers
+    # tenants listed in their inference_metrics setting.
+    INFERENCE_METRICS_INTERVAL_SECONDS: int = Field(default=60, ge=15, le=3_600)
     # How long past a remediation's window to wait for refusals still in the outbox.
     REMEDIATION_WINDOW_GRACE_SECONDS: int = Field(default=900, ge=0, le=3_600)
 

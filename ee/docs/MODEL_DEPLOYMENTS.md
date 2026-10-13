@@ -281,6 +281,45 @@ days with traffic), `no_capacity`, `at_capacity`, `not_growing`, `projected` or
 `beyond_horizon`. It measures busy-hour average concurrency from gateway records;
 instantaneous peaks are higher.
 
+## Server metrics
+
+The model server knows what the gateway cannot: how many requests it runs now,
+how many wait in its queue, and how full its cache is. List internal deployments in
+the gateway setting `inference_metrics` (each `deployment_id`, `server` `vllm`,
+`tgi` or `ollama`, `send_credential`; at most 64, one per deployment; a PATCH
+replaces the list) and the reconciliation worker reads them every
+`INFERENCE_METRICS_INTERVAL_SECONDS` (default 60, 15 to 3,600).
+
+- **Where.** The deployment's own approved origin plus a fixed path: `/metrics`
+  for vLLM and TGI, `/api/ps` for Ollama. Never a tenant-given URL; an origin that
+  is no longer approved is not read (`origin_not_approved`). One GET, no redirects,
+  no proxy from the environment, the operator's CA bundle, 5 seconds, at most 1 MiB,
+  at most 8 servers at once, and a pass deadline of `min(50 s, interval - 5 s)`. With
+  no deployment listed the worker sends no request at all.
+- **Credential.** Only with `send_credential`: the deployment's stored key as
+  `Authorization: Bearer`. vLLM's `/metrics` is outside its `--api-key` prefixes and
+  needs none. A 401 or 403 records `unauthorized`; a key the secret store cannot
+  return records `credential_unavailable`, and the server is not read without it.
+- **What is kept.** vLLM: `vllm:num_requests_running`, `vllm:num_requests_waiting`
+  (summed over models) and `vllm:kv_cache_usage_perc` (or the older
+  `vllm:gpu_cache_usage_perc`; the highest, at most 1). TGI: `tgi_batch_current_size`
+  and `tgi_queue_size`. Ollama: whether the deployment's `upstream_model` is loaded,
+  and its VRAM; Ollama reports neither running nor waiting requests. Every other
+  line of a page, model names and label values included, is never stored or logged.
+- **How.** Hourly aggregates per deployment (samples, busy and queued samples, sums
+  and maxima, errors and the last error), kept 90 days; no raw series.
+
+`GET /api/v1/management/inference-metrics?hours=24` (`deployments.read`, 1 to 744
+hours) shows, per listed deployment, the last read and its error, the busy and
+queued shares, running and waiting averages and peaks, cache use, Ollama's loaded
+share and VRAM, and `utilisation` (average running over the entered capacity).
+The [capacity forecast](#hardware-cost-and-capacity) gains `measured_peak` and
+`measured_capacity` (the concurrency of the busiest hour in which the server
+queued); without an entered capacity it uses the measured one
+(`capacity_source: "measured"`). Two findings read the same rows:
+[`gateway.idle_inference_capacity`](FINDINGS.md#gatewayidle_inference_capacity)
+and [`gateway.inference_queue_saturated`](FINDINGS.md#gatewayinference_queue_saturated).
+
 ## Idle deployments
 
 An internal deployment that served between 1 and 299 requests in 30 days raises

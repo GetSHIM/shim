@@ -56,6 +56,7 @@ from shim_enterprise.tenants.gateway_settings import (
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
+    ModelDeployment,
     OrganizationGatewaySettings,
     Organization,
     OrganizationPIIConfig,
@@ -764,6 +765,22 @@ class _GatewaySettingsResource:
                 raise HTTPException(
                     422, detail=f"{setting} names {field} this organization lacks"
                 )
+        if "inference_metrics" in changes:
+            internal = set(
+                await session.scalars(
+                    select(ModelDeployment.id).where(
+                        ModelDeployment.organization_id == tenant_id,
+                        ModelDeployment.deployment_kind == "internal",
+                    )
+                )
+            )
+            for index, source in enumerate(after.inference_metrics):
+                if source.deployment_id not in internal:
+                    raise HTTPException(
+                        422,
+                        detail=f"inference_metrics[{index}].deployment_id is not an "
+                        "internal deployment of this organization",
+                    )
         return after.model_dump(mode="json")
 
     async def apply(

@@ -63,6 +63,7 @@ from shim_enterprise.observability.model_inventory import (
 )
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
+    DeploymentHardwareCost,
     ModelDeployment,
     Organization,
     OrganizationGatewaySettings,
@@ -89,6 +90,8 @@ DEAD_TOOLS = "gateway.dead_tools"
 CACHE_ORDER_CHURN = "gateway.cache_order_churn"
 COLD_START = "gateway.cold_start"
 QUEUEING = "gateway.queueing"
+IDLE_INFERENCE_CAPACITY = "gateway.idle_inference_capacity"
+INFERENCE_QUEUE_SATURATED = "gateway.inference_queue_saturated"
 LITELLM_UNREGISTERED_MODEL = "litellm.unregistered_model"
 LITELLM_ERROR_RATE = "litellm.error_rate"
 LITELLM_SLOW_FIRST_TOKEN = "litellm.slow_first_token"
@@ -153,6 +156,13 @@ COLD_START_MIN_IDLE_SECONDS = 600
 COLD_START_LATENCY_FACTOR = 5
 COLD_START_MIN_FIRST_BYTE_MS = 10_000
 COLD_START_MIN_EVENTS = 3
+IDLE_CAPACITY_WINDOW_DAYS = 7
+IDLE_CAPACITY_MIN_SAMPLES = 1_000
+IDLE_CAPACITY_MAX_BUSY_SHARE = 0.10
+QUEUE_SATURATED_WINDOW_HOURS = 24
+QUEUE_SATURATED_MIN_HOUR_SAMPLES = 30
+QUEUE_SATURATED_MIN_QUEUED_SHARE = 0.5
+QUEUE_SATURATED_MIN_HOURS = 2
 QUEUEING_WINDOW_HOURS = 24
 QUEUEING_BASELINE_DAYS = 7
 QUEUEING_MIN_BASELINE_STREAMS = 50
@@ -653,6 +663,51 @@ RULES: dict[str, RuleSpec] = {
         BLAST_RADIUS="deployment",
         RISK_CLASS="reliability",
         PLAYBOOK=_playbook(QUEUEING),
+    ),
+    IDLE_INFERENCE_CAPACITY: RuleSpec(
+        TITLE="A model server is mostly idle",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Of {samples} readings of this deployment's server in "
+            "{window_days} days, {busy_share} had a request running.",
+            "tr": "Bu dağıtımın sunucusundan {window_days} günde alınan {samples} "
+            "ölçümün {busy_share} kadarında çalışan bir istek vardı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Move this deployment's callers to a shared deployment, lower its "
+            "replica count, or let the server unload the model when idle.",
+            "tr": "Bu dağıtımın çağıranlarını paylaşılan bir dağıtıma taşıyın, kopya "
+            "sayısını düşürün ya da sunucunun boşta modeli bellekten çıkarmasına "
+            "izin verin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(IDLE_INFERENCE_CAPACITY),
+    ),
+    INFERENCE_QUEUE_SATURATED: RuleSpec(
+        TITLE="A model server's queue stays full",
+        SEVERITY_ID=3,
+        SUMMARY={
+            "en": "In {saturated_hours} hours of the last {window_hours}, requests "
+            "waited in this deployment's server queue in at least half the "
+            "readings, with up to {waiting_peak} waiting.",
+            "tr": "Son {window_hours} saatin {saturated_hours} saatinde bu dağıtımın "
+            "sunucusunda ölçümlerin en az yarısında bekleyen istek vardı; en çok "
+            "{waiting_peak} istek bekledi.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Add capacity to the deployment, set a concurrency budget for it, "
+            "or send long requests to their own lane.",
+            "tr": "Dağıtıma kapasite ekleyin, onun için bir eşzamanlılık bütçesi "
+            "tanımlayın ya da uzun istekleri kendi şeridine gönderin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(INFERENCE_QUEUE_SATURATED),
     ),
     LITELLM_UNREGISTERED_MODEL: RuleSpec(
         TITLE="LiteLLM serves a model outside the registry",
@@ -2508,6 +2563,137 @@ async def _queueing(
     ]
 
 
+async def _server_load(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    """From the servers' own metrics (vLLM and TGI): mostly idle, or a full queue."""
+    # Here, not at the top: the hourly model lives with the scraper.
+    from shim_enterprise.observability.models import InferenceMetricsHourly as load
+
+    week = now - timedelta(days=IDLE_CAPACITY_WINDOW_DAYS)
+    deployment_id = RequestLifecycle.lifecycle_metadata["deployment_id"].as_string()
+    detections = []
+    idle = await session.execute(
+        select(
+            load.deployment_id,
+            func.sum(load.samples).label("samples"),
+            func.sum(load.busy_samples).label("busy"),
+            func.max(load.running_max).label("running_peak"),
+            func.sum(load.cache_usage_sum).label("cache_sum"),
+        )
+        .where(
+            load.organization_id == tenant_id,
+            load.server.in_(("vllm", "tgi")),
+            load.hour >= week,
+        )
+        .group_by(load.deployment_id)
+        .having(func.sum(load.samples) >= IDLE_CAPACITY_MIN_SAMPLES)
+    )
+    for row in idle:
+        busy_share = int(row.busy) / int(row.samples)
+        if busy_share >= IDLE_CAPACITY_MAX_BUSY_SHARE:
+            continue
+        requests = await session.scalar(
+            select(func.count()).where(
+                RequestLifecycle.organization_id == tenant_id,
+                RequestLifecycle.started_at >= week,
+                deployment_id == str(row.deployment_id),
+            )
+        )
+        cost = await session.execute(
+            select(
+                DeploymentHardwareCost.amount, DeploymentHardwareCost.currency
+            ).where(
+                DeploymentHardwareCost.organization_id == tenant_id,
+                DeploymentHardwareCost.deployment_id == row.deployment_id,
+                DeploymentHardwareCost.period == f"{now:%Y-%m}",
+            )
+        )
+        month = cost.first()
+        detections.append(
+            Detection(
+                rule_id=IDLE_INFERENCE_CAPACITY,
+                subject_key=str(row.deployment_id),
+                subject={"deployment_id": str(row.deployment_id)},
+                evidence={
+                    "window_days": IDLE_CAPACITY_WINDOW_DAYS,
+                    "samples": int(row.samples),
+                    "busy_share": round(busy_share, 4),
+                    "running_peak": int(row.running_peak or 0),
+                    "cache_usage_avg": round(
+                        float(row.cache_sum) / int(row.samples), 4
+                    ),
+                    "gateway_requests": int(requests or 0),
+                    # The month's hardware cost in its own currency, never converted.
+                    **(
+                        {
+                            "hardware_cost_month": str(month.amount),
+                            "currency": month.currency,
+                        }
+                        if month is not None
+                        else {}
+                    ),
+                },
+                impact={"cost_usd": None, "requests": int(requests or 0)},
+            )
+        )
+    day = now - timedelta(hours=QUEUE_SATURATED_WINDOW_HOURS)
+    hours: dict[UUID, list[Any]] = {}
+    for row in await session.execute(
+        select(load)
+        .where(
+            load.organization_id == tenant_id,
+            load.server.in_(("vllm", "tgi")),
+            load.hour >= day,
+            load.samples >= QUEUE_SATURATED_MIN_HOUR_SAMPLES,
+            load.queued_samples >= load.samples * QUEUE_SATURATED_MIN_QUEUED_SHARE,
+        )
+        .order_by(load.deployment_id, load.hour)
+    ):
+        hours.setdefault(row[0].deployment_id, []).append(row[0])
+    for deployment, saturated in sorted(hours.items(), key=lambda item: str(item[0])):
+        if len(saturated) < QUEUE_SATURATED_MIN_HOURS:
+            continue
+        worst = max(saturated, key=lambda hour: hour.queued_samples / hour.samples)
+        in_hours = await session.scalar(
+            select(func.count()).where(
+                RequestLifecycle.organization_id == tenant_id,
+                deployment_id == str(deployment),
+                or_(
+                    *(
+                        and_(
+                            RequestLifecycle.started_at >= hour.hour,
+                            RequestLifecycle.started_at
+                            < hour.hour + timedelta(hours=1),
+                        )
+                        for hour in saturated
+                    )
+                ),
+            )
+        )
+        detections.append(
+            Detection(
+                rule_id=INFERENCE_QUEUE_SATURATED,
+                subject_key=str(deployment),
+                subject={"deployment_id": str(deployment)},
+                evidence={
+                    "window_hours": QUEUE_SATURATED_WINDOW_HOURS,
+                    "saturated_hours": len(saturated),
+                    "worst_queued_share": round(
+                        worst.queued_samples / worst.samples, 4
+                    ),
+                    "waiting_peak": max(hour.waiting_max or 0 for hour in saturated),
+                    "running_peak": max(hour.running_max or 0 for hour in saturated),
+                    "cache_usage_peak": max(
+                        hour.cache_usage_max or 0.0 for hour in saturated
+                    ),
+                },
+                impact={"cost_usd": None, "requests": int(in_hours or 0)},
+            )
+        )
+    return detections
+
+
 def _litellm_rows(tenant_id: UUID, end: datetime, window: timedelta) -> tuple[Any, ...]:
     record = ExternalUsageRecord
     return (
@@ -2842,6 +3028,11 @@ async def evaluate_organization(
         (_cache_order_churn, (CACHE_ORDER_CHURN,), "shape" in analysed),
         (_cold_starts, (COLD_START,), registry),
         (_queueing, (QUEUEING,), registry),
+        (
+            _server_load,
+            (IDLE_INFERENCE_CAPACITY, INFERENCE_QUEUE_SATURATED),
+            registry,
+        ),
     )
     detections: list[Detection] = []
     failed: list[str] = []

@@ -165,6 +165,27 @@ class BedrockAttributionPatch(BaseModel):
         return _not_aws_prefix(value)
 
 
+class InferenceMetricsSource(BaseModel):
+    """An internal deployment whose model server shim reads the load of."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    deployment_id: UUID
+    server: Literal["vllm", "tgi", "ollama"]
+    # Send the deployment's stored credential; vLLM's /metrics needs none.
+    send_credential: bool = False
+
+
+def _one_per_deployment(
+    value: list[InferenceMetricsSource] | None,
+) -> list[InferenceMetricsSource] | None:
+    if value is not None and len({source.deployment_id for source in value}) != len(
+        value
+    ):
+        raise ValueError("at most one inference_metrics entry per deployment")
+    return value
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -187,6 +208,14 @@ class GatewaySettings(BaseModel):
     auto_remediation_paused: bool = False
     bedrock_region_lock: BedrockRegionLock = BedrockRegionLock()
     bedrock_attribution: BedrockAttribution = BedrockAttribution()
+    inference_metrics: list[InferenceMetricsSource] = Field(default=[], max_length=64)
+
+    @field_validator("inference_metrics")
+    @classmethod
+    def one_per_deployment(
+        cls, value: list[InferenceMetricsSource]
+    ) -> list[InferenceMetricsSource]:
+        return _one_per_deployment(value) or []
 
     @field_validator("response_analysis")
     @classmethod
@@ -215,6 +244,17 @@ class GatewaySettingsPatch(BaseModel):
     auto_remediation_paused: bool | None = None
     bedrock_region_lock: BedrockRegionLockPatch | None = None
     bedrock_attribution: BedrockAttributionPatch | None = None
+    # Replaces the whole list.
+    inference_metrics: list[InferenceMetricsSource] | None = Field(
+        default=None, max_length=64
+    )
+
+    @field_validator("inference_metrics")
+    @classmethod
+    def one_per_deployment(
+        cls, value: list[InferenceMetricsSource] | None
+    ) -> list[InferenceMetricsSource] | None:
+        return _one_per_deployment(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -427,6 +467,8 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "bedrock_region_lock": _region_lock_direction,
     # Measurement only: a tag on the session loosens no control.
     "bedrock_attribution": neutral,
+    # Reads the tenant's own server; changes no request.
+    "inference_metrics": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

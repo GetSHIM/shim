@@ -17,18 +17,21 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Date, Integer, Text, and_, case, cast, func, literal, select
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, READER_REQUIRED, require
 from shim_enterprise.api.v1.management._common import _tenant_id
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
 from shim_enterprise.core.database import bounded_read, get_db
+from shim_enterprise.observability.models import InferenceMetricsHourly
 from shim_enterprise.tenants.audit import record_management_action as _audit
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
     ApiKey,
     DeploymentHardwareCost,
     ModelDeployment,
+    OrganizationGatewaySettings,
     Team,
     User,
 )
@@ -442,7 +445,15 @@ class DeploymentForecast(BaseModel):
     current_peak: float = Field(description="The busiest hour of the last 7 days.")
     slope_per_day: float | None
     capacity: int | None
-    capacity_source: Literal["entered"] | None
+    capacity_source: Literal["entered", "measured"] | None
+    measured_peak: int | None = Field(
+        description="The server's highest hourly running count of the last 7 days "
+        "(inference_metrics)."
+    )
+    measured_capacity: int | None = Field(
+        description="The highest running count in an hour the server queued requests: "
+        "where it started to queue."
+    )
     projected_date: date | None
     status: ForecastStatus
 
@@ -578,17 +589,52 @@ async def capacity_forecast(
                     ).group_by(grid.c.deployment)
                 )
             }
+    measured: dict[UUID, Any] = {}
+    if deployments:
+        load = InferenceMetricsHourly
+        week = datetime.now(timezone.utc) - timedelta(days=7)
+        async with bounded_read(session):
+            measured = {
+                result.deployment_id: result
+                for result in await session.execute(
+                    select(
+                        load.deployment_id,
+                        func.max(load.running_max)
+                        .filter(load.hour >= week)
+                        .label("peak"),
+                        func.max(load.running_max)
+                        .filter(load.queued_samples > 0)
+                        .label("queued_at"),
+                    )
+                    .where(
+                        load.organization_id == tenant_id,
+                        load.deployment_id.in_([row.id for row in deployments]),
+                        load.hour >= datetime.combine(first, time(), timezone.utc),
+                    )
+                    .group_by(load.deployment_id)
+                )
+            }
     today_index = FORECAST_DAYS - 1
     reports = []
     for row in deployments:
         fit = fits.get(str(row.id))
+        server = measured.get(row.id)
+        measured_peak = server.peak if server else None
+        measured_capacity = server.queued_at if server else None
+        # An entered capacity always wins over the measured one.
+        capacity = row.capacity_concurrent_requests or measured_capacity
+        source: Any = (
+            "entered"
+            if row.capacity_concurrent_requests is not None
+            else ("measured" if measured_capacity is not None else None)
+        )
         traffic_days = int(fit.traffic_days) if fit else 0
         peak = float(fit.current_peak or 0) if fit else 0.0
         slope = float(fit.slope) if fit and fit.slope is not None else None
         intercept = float(fit.intercept) if fit and fit.intercept is not None else None
         status, reached = forecast_status(
             traffic_days,
-            row.capacity_concurrent_requests,
+            capacity,
             peak,
             slope,
             intercept,
@@ -601,10 +647,10 @@ async def capacity_forecast(
                 days_with_traffic=traffic_days,
                 current_peak=round(peak, 4),
                 slope_per_day=None if slope is None else round(slope, 6),
-                capacity=row.capacity_concurrent_requests,
-                capacity_source=None
-                if row.capacity_concurrent_requests is None
-                else "entered",
+                capacity=capacity,
+                capacity_source=source,
+                measured_peak=measured_peak,
+                measured_capacity=measured_capacity,
                 projected_date=None
                 if reached is None
                 else first + timedelta(days=reached),
@@ -612,3 +658,166 @@ async def capacity_forecast(
             )
         )
     return CapacityForecast(deployments=reports)
+
+
+class ServerLoad(BaseModel):
+    deployment_id: UUID
+    alias: str | None
+    server: Literal["vllm", "tgi", "ollama"]
+    last_scrape_at: datetime | None
+    last_error: str | None
+    samples: int
+    errors: int
+    busy_share: float | None = Field(description="Samples with a request running.")
+    queued_share: float | None = Field(description="Samples with a request waiting.")
+    running_avg: float | None
+    running_peak: int | None
+    waiting_avg: float | None
+    waiting_peak: int | None
+    cache_usage_avg: float | None
+    cache_usage_peak: float | None
+    loaded_share: float | None = Field(
+        description="Ollama: samples with the model loaded."
+    )
+    vram_bytes_peak: int | None
+    capacity: int | None
+    utilisation: float | None = Field(description="running_avg / capacity.")
+    utilisation_unavailable_reason: (
+        Literal["no_capacity", "server_reports_no_running"] | None
+    )
+
+
+class ServerLoads(BaseModel):
+    items: list[ServerLoad]
+    unavailable_reason: str | None = None
+
+
+def _share(part: Any, whole: int) -> float | None:
+    return None if not whole else round(int(part) / whole, 4)
+
+
+@router.get("/inference-metrics", response_model=ServerLoads)
+async def inference_metrics(
+    hours: int = Query(default=24, ge=1, le=744),
+    user: User = Depends(require("deployments.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> ServerLoads:
+    """Each listed server's load over the window, from the hourly aggregates."""
+    tenant_id = _tenant_id(user)
+    stored = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == tenant_id
+        )
+    )
+    sources = (
+        GatewaySettings() if stored is None else stored_settings(stored)
+    ).inference_metrics
+    if not sources:
+        return ServerLoads(
+            items=[], unavailable_reason="off, needs gateway setting inference_metrics"
+        )
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    row = InferenceMetricsHourly
+    aggregate = (
+        select(
+            ModelDeployment.id,
+            ModelDeployment.alias,
+            ModelDeployment.capacity_concurrent_requests,
+            func.max(row.updated_at),
+            func.array_agg(aggregate_order_by(row.last_error, row.hour.desc()))[1],
+            func.coalesce(func.sum(row.samples), 0),
+            func.coalesce(func.sum(row.errors), 0),
+            func.coalesce(func.sum(row.busy_samples), 0),
+            func.coalesce(func.sum(row.queued_samples), 0),
+            func.coalesce(func.sum(row.loaded_samples), 0),
+            func.coalesce(func.sum(row.running_sum), 0),
+            func.max(row.running_max),
+            func.coalesce(func.sum(row.waiting_sum), 0),
+            func.max(row.waiting_max),
+            func.coalesce(func.sum(row.cache_usage_sum), 0),
+            func.max(row.cache_usage_max),
+            func.max(row.vram_bytes_max),
+        )
+        .select_from(ModelDeployment)
+        .outerjoin(
+            row,
+            and_(
+                row.organization_id == ModelDeployment.organization_id,
+                row.deployment_id == ModelDeployment.id,
+                row.hour >= since,
+            ),
+        )
+        .where(
+            ModelDeployment.organization_id == tenant_id,
+            ModelDeployment.id.in_([source.deployment_id for source in sources]),
+        )
+        .group_by(ModelDeployment.id)
+    )
+    async with bounded_read(session):
+        found = {result[0]: result for result in await session.execute(aggregate)}
+    items = []
+    for source in sources:
+        result = found.get(source.deployment_id)
+        if result is None:
+            # A deleted deployment drops out of the read.
+            continue
+        (
+            _,
+            alias,
+            capacity,
+            last_at,
+            last_error,
+            samples,
+            errors,
+            busy,
+            queued,
+            loaded,
+            running_sum,
+            running_peak,
+            waiting_sum,
+            waiting_peak,
+            cache_sum,
+            cache_peak,
+            vram_peak,
+        ) = result
+        samples = int(samples)
+        counts = source.server != "ollama"
+        running_avg = (
+            round(int(running_sum) / samples, 4) if samples and counts else None
+        )
+        reason: Any = None
+        if not counts:
+            reason = "server_reports_no_running"
+        elif capacity is None:
+            reason = "no_capacity"
+        items.append(
+            ServerLoad(
+                deployment_id=source.deployment_id,
+                alias=alias,
+                server=source.server,
+                last_scrape_at=last_at,
+                last_error=last_error,
+                samples=samples,
+                errors=int(errors),
+                busy_share=_share(busy, samples) if counts else None,
+                queued_share=_share(queued, samples) if counts else None,
+                running_avg=running_avg,
+                running_peak=running_peak if counts else None,
+                waiting_avg=round(int(waiting_sum) / samples, 4)
+                if samples and counts
+                else None,
+                waiting_peak=waiting_peak if counts else None,
+                cache_usage_avg=round(float(cache_sum) / samples, 4)
+                if samples and source.server == "vllm"
+                else None,
+                cache_usage_peak=cache_peak if source.server == "vllm" else None,
+                loaded_share=None if counts else _share(loaded, samples),
+                vram_bytes_peak=None if counts else vram_peak,
+                capacity=capacity,
+                utilisation=None
+                if reason is not None or running_avg is None
+                else round(running_avg / capacity, 4),
+                utilisation_unavailable_reason=reason,
+            )
+        )
+    return ServerLoads(items=items)
