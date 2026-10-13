@@ -237,9 +237,7 @@ async def _credential(target: Target) -> str | None:
         return await get_secret_store().get_secret(
             TenantId(target.organization_id),
             SecretRef(secret.secret_ref),
-            expected_purpose=provider_secret_purpose(
-                secret.provider, secret.credential_kind
-            ),
+            expected_purpose=provider_secret_purpose(secret.provider),
         )
     except Exception:
         # Fail closed: the server is not read without the credential it was listed with.

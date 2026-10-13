@@ -37,7 +37,11 @@ from shim_enterprise.core.database import AsyncSessionLocal, get_db
 from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim_enterprise.secrets.migration import assign_secret_reference
 from shim_enterprise.secrets.references import AWS_REGION
-from shim_enterprise.secrets.store import get_secret_store, provider_secret_purpose
+from shim_enterprise.secrets.store import (
+    AWS_PROVIDERS,
+    get_secret_store,
+    provider_secret_purpose,
+)
 from shim_enterprise.tenants.audit import (
     change_details,
     record_management_action as _audit,
@@ -150,22 +154,26 @@ class AwsAccessKeyInput(BaseModel):
         return f"aws:{self.access_key_id[:4]}...{self.access_key_id[-4:]}"
 
 
-CredentialKind = Literal["api_key", "aws_access_key", "aws_bedrock_api_key", "aws_role"]
 # IAM's \w is ASCII: letters, digits and underscore.
 AWS_ROLE_ARN = r"^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$"
 
 
 class ProviderSecretInput(BaseModel):
-    provider: Literal["openai", "anthropic", "google", "azure_entra"] = Field(
+    provider: Literal[
+        "openai",
+        "anthropic",
+        "google",
+        "azure_entra",
+        "aws_access_key",
+        "aws_bedrock_api_key",
+        "aws_role",
+    ] = Field(
         description="azure_entra: an Entra ID client credential for Azure OpenAI "
-        "deployments."
+        "deployments. aws_access_key (aws_access_key), aws_bedrock_api_key (key) or "
+        "aws_role (aws_role_arn): a credential for Amazon Bedrock deployments only, "
+        "of either request format."
     )
     name: str | None = Field(default=None, max_length=100)
-    credential_kind: CredentialKind = Field(
-        default="api_key",
-        description="aws_access_key (aws_access_key) or aws_bedrock_api_key (key): "
-        "a credential for Amazon Bedrock deployments only, provider anthropic or openai.",
-    )
     key: str | None = Field(default=None, min_length=10, max_length=10_000)
     azure_entra: AzureEntraInput | None = None
     aws_access_key: AwsAccessKeyInput | None = None
@@ -181,13 +189,8 @@ class ProviderSecretInput(BaseModel):
     @model_validator(mode="after")
     def one_credential_of_its_provider(self) -> ProviderSecretInput:
         entra = self.provider == "azure_entra"
-        aws_pair = self.credential_kind == "aws_access_key"
-        role = self.credential_kind == "aws_role"
-        if self.credential_kind != "api_key" and self.provider not in {
-            "anthropic",
-            "openai",
-        }:
-            raise ValueError("An AWS credential's provider is anthropic or openai")
+        aws_pair = self.provider == "aws_access_key"
+        role = self.provider == "aws_role"
         if (
             (self.key is not None) == (entra or aws_pair or role)
             or (self.azure_entra is not None) != entra
@@ -217,7 +220,6 @@ class ProviderSecretView(BaseModel):
 
     id: UUID
     provider: str
-    credential_kind: CredentialKind
     name: str | None
     masked_key: str
     aws_role_arn: str | None
@@ -229,7 +231,7 @@ class ProviderSecretView(BaseModel):
     @property
     def stores_secret(self) -> bool:
         """False for a role: shim keeps its ARN and nothing secret."""
-        return self.credential_kind != "aws_role"
+        return self.provider != "aws_role"
 
 
 @router.get("/providers", response_model=list[ProviderSecretView])
@@ -258,7 +260,7 @@ async def create_provider_secret(
         raise HTTPException(status_code=403, detail="Verified email required")
     if payload.aws_role_arn is not None:
         return await _create_role_secret(session, user, payload)
-    purpose = provider_secret_purpose(payload.provider, payload.credential_kind)
+    purpose = provider_secret_purpose(payload.provider)
     structured = payload.azure_entra or payload.aws_access_key
     plaintext = structured.stored() if structured is not None else payload.key
     assert plaintext is not None
@@ -268,7 +270,6 @@ async def create_provider_secret(
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
-        credential_kind=payload.credential_kind,
         name=payload.name,
         masked_key=structured.masked() if structured is not None else _mask(plaintext),
         monthly_limit_usd=payload.monthly_limit_usd,
@@ -322,7 +323,6 @@ async def _create_role_secret(
     row = ProviderSecret(
         organization_id=tenant_id,
         provider=payload.provider,
-        credential_kind="aws_role",
         name=payload.name,
         aws_role_arn=payload.aws_role_arn,
         masked_key=_role_mask(payload.aws_role_arn),
@@ -351,9 +351,13 @@ async def update_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     entra = row.provider == "azure_entra"
-    aws_pair = row.credential_kind == "aws_access_key"
-    role = row.credential_kind == "aws_role"
-    if not entra and row.provider not in _PROVIDER_VERIFICATION_REQUESTS:
+    aws_pair = row.provider == "aws_access_key"
+    role = row.provider == "aws_role"
+    if not (
+        entra
+        or row.provider in AWS_PROVIDERS
+        or row.provider in _PROVIDER_VERIFICATION_REQUESTS
+    ):
         raise HTTPException(
             status_code=409,
             detail="Unsupported provider secrets are read-only.",
@@ -369,7 +373,7 @@ async def update_provider_secret(
             detail="A credential's kind never changes; create a new provider secret",
         )
     tenant_id = _tenant_id(user)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     previous_reference: SecretRef | None = None
     rotated_reference: SecretRef | None = None
     before = _provider_secret_details(row)
@@ -438,9 +442,12 @@ async def verify_provider_secret(
 ) -> ProviderSecret:
     row = await _owned_provider_secret(session, user, secret_id)
     verification_request = _PROVIDER_VERIFICATION_REQUESTS.get(row.provider)
-    if verification_request is None and row.provider != "azure_entra":
+    if verification_request is None and row.provider not in {
+        "azure_entra",
+        *AWS_PROVIDERS,
+    }:
         raise HTTPException(status_code=409, detail="Unsupported provider secret")
-    if row.credential_kind == "aws_bedrock_api_key":
+    if row.provider == "aws_bedrock_api_key":
         raise HTTPException(
             status_code=409,
             detail="Check a Bedrock API key with a deployment health check",
@@ -449,7 +456,7 @@ async def verify_provider_secret(
     client: httpx.AsyncClient | None = getattr(request.app.state, "http_client", None)
     if client is None:
         raise HTTPException(status_code=503, detail="Provider verification unavailable")
-    if row.credential_kind == "aws_role":
+    if row.provider == "aws_role":
         checked = await _aws_check(session, user, row, None, client)
         if checked.refused:
             raise HTTPException(
@@ -461,7 +468,7 @@ async def verify_provider_secret(
             )
         await session.refresh(row)
         return row
-    if row.credential_kind == "aws_access_key":
+    if row.provider == "aws_access_key":
         rejected = await _aws_rejects(row, tenant_id, client)
     elif verification_request is None:
         rejected = await _entra_rejects(row, tenant_id, client)
@@ -537,7 +544,7 @@ async def check_aws_secret(
     session: AsyncSession = Depends(get_db),
 ) -> AwsCheckView:
     row = await _owned_provider_secret(session, user, secret_id)
-    if row.credential_kind not in {"aws_role", "aws_access_key"}:
+    if row.provider not in {"aws_role", "aws_access_key"}:
         raise HTTPException(
             status_code=409, detail="An AWS check needs an AWS role or access key"
         )
@@ -577,7 +584,7 @@ async def _aws_check(
         ),
         None,
     )
-    secret_id, kind, role_arn = row.id, row.credential_kind, row.aws_role_arn
+    secret_id, kind, role_arn = row.id, row.provider, row.aws_role_arn
     gateway_row = await session.scalar(
         select(OrganizationGatewaySettings.settings).where(
             OrganizationGatewaySettings.organization_id == tenant_id
@@ -703,9 +710,7 @@ async def _aws_access_key(row: ProviderSecret, tenant_id: UUID) -> AwsCredential
             await get_secret_store().get_secret(
                 TenantId(tenant_id),
                 SecretRef(row.secret_ref),
-                expected_purpose=provider_secret_purpose(
-                    row.provider, row.credential_kind
-                ),
+                expected_purpose=provider_secret_purpose(row.provider),
             )
         )
     except Exception as exc:
@@ -731,7 +736,7 @@ async def _provider_rejects(
         credential = await get_secret_store().get_secret(
             TenantId(tenant_id),
             SecretRef(row.secret_ref),
-            expected_purpose=provider_secret_purpose(row.provider, row.credential_kind),
+            expected_purpose=provider_secret_purpose(row.provider),
         )
     except Exception as exc:
         logger.warning("Provider verification secret lookup failed")
@@ -810,7 +815,7 @@ async def delete_provider_secret(
     tenant_id = _tenant_id(user)
     # A role stores nothing, so there is nothing to delete from the store.
     secret_ref = None if row.secret_ref is None else SecretRef(row.secret_ref)
-    purpose = provider_secret_purpose(row.provider, row.credential_kind)
+    purpose = provider_secret_purpose(row.provider)
     details = _provider_secret_details(row)
     await session.delete(row)
     await _audit(
@@ -824,7 +829,6 @@ async def delete_provider_secret(
 def _provider_secret_details(row: ProviderSecret) -> dict[str, object]:
     return {
         "provider": row.provider,
-        "credential_kind": row.credential_kind,
         "aws_role_arn": row.aws_role_arn,
         "name": row.name,
         "monthly_limit_usd": (

@@ -13364,18 +13364,6 @@
               }
             ]
           },
-          "credential_kind": {
-            "default": "api_key",
-            "description": "aws_access_key (aws_access_key) or aws_bedrock_api_key (key): a credential for Amazon Bedrock deployments only, provider anthropic or openai.",
-            "enum": [
-              "api_key",
-              "aws_access_key",
-              "aws_bedrock_api_key",
-              "aws_role"
-            ],
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "key": {
             "anyOf": [
               {
@@ -13418,12 +13406,15 @@
             "title": "Name"
           },
           "provider": {
-            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments.",
+            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments. aws_access_key (aws_access_key), aws_bedrock_api_key (key) or aws_role (aws_role_arn): a credential for Amazon Bedrock deployments only, of either request format.",
             "enum": [
               "openai",
               "anthropic",
               "google",
-              "azure_entra"
+              "azure_entra",
+              "aws_access_key",
+              "aws_bedrock_api_key",
+              "aws_role"
             ],
             "title": "Provider",
             "type": "string"
@@ -13533,16 +13524,6 @@
             "title": "Created At",
             "type": "string"
           },
-          "credential_kind": {
-            "enum": [
-              "api_key",
-              "aws_access_key",
-              "aws_bedrock_api_key",
-              "aws_role"
-            ],
-            "title": "Credential Kind",
-            "type": "string"
-          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -13601,7 +13582,6 @@
         "required": [
           "id",
           "provider",
-          "credential_kind",
           "name",
           "masked_key",
           "aws_role_arn",

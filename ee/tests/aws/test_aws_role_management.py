@@ -92,8 +92,7 @@ async def _role(db, user, arn: str = ROLE) -> dict:
         "POST",
         PROVIDERS,
         json={
-            "provider": "anthropic",
-            "credential_kind": "aws_role",
+            "provider": "aws_role",
             "aws_role_arn": arn,
         },
     )
@@ -174,8 +173,7 @@ async def test_a_role_secret_stores_nothing_and_needs_the_identity(
     user = await _admin(db)
     monkeypatch.setattr(providers, "get_secret_store", _no_store)
     body = {
-        "provider": "anthropic",
-        "credential_kind": "aws_role",
+        "provider": "aws_role",
         "aws_role_arn": ROLE,
     }
 

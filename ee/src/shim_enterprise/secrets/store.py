@@ -204,13 +204,19 @@ def get_secret_store() -> SecretStore:
     return _store_singleton
 
 
-def provider_secret_purpose(provider: str, credential_kind: str = "api_key") -> str:
+# Credentials for Amazon Bedrock deployments only, which always name them.
+AWS_PROVIDERS = ("aws_access_key", "aws_bedrock_api_key", "aws_role")
+# Unlike provider:<p>:api-key, so a build that predates them never reads one.
+_PURPOSES = {
+    "azure_entra": "provider:openai:azure-entra-client",
+    "aws_access_key": "provider:aws:access-key",
+    "aws_bedrock_api_key": "provider:aws:bedrock-api-key",
+}
+
+
+def provider_secret_purpose(provider: str) -> str:
     """The store purpose a provider secret is kept under."""
-    if provider == "azure_entra":
-        return "provider:openai:azure-entra-client"
-    if credential_kind == "aws_access_key":
-        return f"provider:{provider}:aws-access-key"
-    return f"provider:{provider}:api-key"
+    return _PURPOSES.get(provider, f"provider:{provider}:api-key")
 
 
 def provider_secret_query(
@@ -218,10 +224,13 @@ def provider_secret_query(
 ) -> Select[tuple[ProviderSecret]]:
     """The secret a request of `provider` uses: its deployment's own, else the newest
     of the provider's. An Entra credential (provider azure_entra) serves its OpenAI
-    deployments only. The credential resolver and the spend policy both read this."""
+    deployments only, an AWS credential its Bedrock deployments of either format.
+    The credential resolver and the spend policy both read this."""
     from shim_enterprise.tenants.models import ProviderSecret
 
-    providers = (provider, "azure_entra") if provider == "openai" else (provider,)
+    providers = (provider, *AWS_PROVIDERS)
+    if provider == "openai":
+        providers += ("azure_entra",)
     return (
         select(ProviderSecret)
         .where(
@@ -229,10 +238,7 @@ def provider_secret_query(
             ProviderSecret.provider.in_(providers)
             & (ProviderSecret.id == parse_reference(reference).secret_id)
             if reference is not None
-            # Catalog routes and their spend cap: an AWS credential serves only
-            # Bedrock deployments, which always name it.
-            else (ProviderSecret.provider == provider)
-            & (ProviderSecret.credential_kind == "api_key"),
+            else ProviderSecret.provider == provider,
         )
         .order_by(desc(ProviderSecret.created_at), desc(ProviderSecret.id))
         .limit(1)
@@ -265,7 +271,7 @@ class ManagedProviderCredentialResolver:
         return await self.store.get_secret(
             tenant_id,
             SecretRef(row.secret_ref),
-            expected_purpose=provider_secret_purpose(row.provider, row.credential_kind),
+            expected_purpose=provider_secret_purpose(row.provider),
         )
 
     async def resolve_row(
@@ -276,9 +282,9 @@ class ManagedProviderCredentialResolver:
     ) -> str:
         """An API key as stored, an Entra token for an Entra client credential, or a
         Bedrock API key minted for the reference's region from an AWS access key."""
-        if row.credential_kind == "aws_role":
+        if row.provider == "aws_role":
             return await self._role_token(tenant_id, row, reference)
-        if row.credential_kind == "aws_access_key":
+        if row.provider == "aws_access_key":
             if reference is None or reference.aws_region is None:
                 # An AWS key without a region cannot be used: a misbuilt target.
                 raise ProviderCallError(

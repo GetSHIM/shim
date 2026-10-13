@@ -553,15 +553,10 @@ class ProviderSecret(Base, TimestampMixin):
             "monthly_limit_usd IS NULL OR monthly_limit_usd >= 0",
             name="ck_provider_secret_monthly_limit",
         ),
-        CheckConstraint(
-            "credential_kind IN "
-            "('api_key', 'aws_access_key', 'aws_bedrock_api_key', 'aws_role')",
-            name="ck_provider_secrets_credential_kind",
-        ),
         # A role stores nothing secret: its ARN instead of a secret-store reference.
         CheckConstraint(
-            "((credential_kind = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
-            "((credential_kind = 'aws_role') = (secret_ref IS NULL)) AND "
+            "((provider = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
+            "((provider = 'aws_role') = (secret_ref IS NULL)) AND "
             "((secret_ref IS NULL) = (secret_backend IS NULL)) AND "
             "((secret_ref IS NULL) = (secret_version IS NULL))",
             name="ck_provider_secrets_role_shape",
@@ -579,8 +574,11 @@ class ProviderSecret(Base, TimestampMixin):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
-    # openai, anthropic, google, or azure_entra: an Entra client credential that calls
-    # OpenAI on Azure for its deployments only, which a build without it never selects.
+    # openai, anthropic, google, or a credential that serves only the deployments that
+    # name it, which a build without it never selects: azure_entra (an Entra client
+    # credential for OpenAI on Azure), or for Amazon Bedrock aws_access_key (a
+    # long-term key pair Bedrock API keys are minted from), aws_bedrock_api_key or
+    # aws_role (a role in the tenant's account; nothing secret stored).
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
     secret_ref: Mapped[str | None] = mapped_column(Text)
@@ -589,11 +587,6 @@ class ProviderSecret(Base, TimestampMixin):
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # api_key, or an AWS kind that serves only Bedrock deployments: a long-term
-    # access key pair the gateway mints Bedrock API keys from, or a Bedrock API key.
-    credential_kind: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="api_key", server_default="api_key"
-    )
     aws_role_arn: Mapped[str | None] = mapped_column(String(2048))
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")

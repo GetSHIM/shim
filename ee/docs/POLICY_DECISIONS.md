@@ -320,7 +320,7 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
 | `tenant.provider_key_policy_updated` | `before` and `after` of `allow_customer_provider_keys` when it changed |
-| `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `credential_kind`, `aws_role_arn` (null unless a role), `name`, `monthly_limit_usd`, `key_rotated` (false); an AWS check's rejection adds `step` and `aws_error` |
+| `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `aws_role_arn` (null unless a role), `name`, `monthly_limit_usd`, `key_rotated` (false); an AWS check's rejection adds `step` and `aws_error` |
 | `tenant.provider_secret_updated` | `before` and `after` of `name`, `monthly_limit_usd` and `aws_role_arn` when they changed, and `key_rotated` (true when the update replaced the key) |
 | `tenant.aws_identity_created` | none beyond the organization id in `subject_id`; the external id is never written to the chain |
 | `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |

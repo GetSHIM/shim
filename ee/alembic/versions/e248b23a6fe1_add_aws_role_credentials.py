@@ -20,8 +20,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _ROLE_SHAPE = (
-    "((credential_kind = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
-    "((credential_kind = 'aws_role') = (secret_ref IS NULL)) AND "
+    "((provider = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
+    "((provider = 'aws_role') = (secret_ref IS NULL)) AND "
     "((secret_ref IS NULL) = (secret_backend IS NULL)) AND "
     "((secret_ref IS NULL) = (secret_version IS NULL))"
 )
@@ -52,33 +52,28 @@ def upgrade() -> None:
     op.add_column("provider_secrets", sa.Column("aws_role_arn", sa.String(length=2048)))
     for column in ("secret_ref", "secret_backend", "secret_version"):
         op.alter_column("provider_secrets", column, nullable=True)
-    op.drop_constraint(
-        "ck_provider_secrets_credential_kind", "provider_secrets", type_="check"
-    )
-    op.create_check_constraint(
-        "ck_provider_secrets_credential_kind",
-        "provider_secrets",
-        "credential_kind IN "
-        "('api_key', 'aws_access_key', 'aws_bedrock_api_key', 'aws_role')",
-    )
     op.create_check_constraint(
         "ck_provider_secrets_role_shape", "provider_secrets", _ROLE_SHAPE
     )
 
 
 def downgrade() -> None:
-    # Downgrades are disposable-only: role secrets have no reference to keep.
-    op.execute("DELETE FROM provider_secrets WHERE credential_kind = 'aws_role'")
+    # Disposable data only: a role secret has no reference to keep, and a deployment
+    # that uses one holds it in place (fk_model_deployments_tenant_secret).
+    bind = op.get_bind()
+    if bind.execute(
+        sa.text(
+            "SELECT 1 FROM model_deployments d JOIN provider_secrets s "
+            "ON s.organization_id = d.organization_id AND s.id = d.provider_secret_id "
+            "WHERE s.provider = 'aws_role' LIMIT 1"
+        )
+    ).first():
+        raise RuntimeError(
+            "Remove deployments that use an AWS role before downgrading."
+        )
+    op.execute("DELETE FROM provider_secrets WHERE provider = 'aws_role'")
     op.drop_constraint(
         "ck_provider_secrets_role_shape", "provider_secrets", type_="check"
-    )
-    op.drop_constraint(
-        "ck_provider_secrets_credential_kind", "provider_secrets", type_="check"
-    )
-    op.create_check_constraint(
-        "ck_provider_secrets_credential_kind",
-        "provider_secrets",
-        "credential_kind IN ('api_key', 'aws_access_key', 'aws_bedrock_api_key')",
     )
     for column in ("secret_ref", "secret_backend", "secret_version"):
         op.alter_column("provider_secrets", column, nullable=False)

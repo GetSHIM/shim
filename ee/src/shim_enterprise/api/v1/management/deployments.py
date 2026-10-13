@@ -62,6 +62,7 @@ from shim_enterprise.aws.regions import (
     tier_ceiling,
 )
 from shim_enterprise.secrets.references import AWS_REGION, CredentialReference
+from shim_enterprise.secrets.store import AWS_PROVIDERS
 from shim_enterprise.tenants.deployments import (
     BEDROCK_ARN,
     BEDROCK_MODEL_ID,
@@ -867,7 +868,8 @@ class _DeploymentResource:
         secret = await _owned_provider_secret(
             session, actor, payload.provider_secret_id
         )
-        if (secret.credential_kind != "api_key") != (payload.upstream == "aws_bedrock"):
+        aws = secret.provider in AWS_PROVIDERS
+        if aws != (payload.upstream == "aws_bedrock"):
             raise HTTPException(
                 422,
                 detail="An AWS credential serves only Amazon Bedrock deployments, "
@@ -880,7 +882,7 @@ class _DeploymentResource:
                     detail="An Entra credential can only serve an Azure OpenAI "
                     "deployment",
                 )
-        elif secret.provider != payload.provider:
+        elif secret.provider != payload.provider and not aws:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
             )

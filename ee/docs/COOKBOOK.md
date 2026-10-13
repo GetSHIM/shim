@@ -1005,13 +1005,14 @@ with Bedrock's cache reads and writes priced separately.
    `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`,
    `bedrock:CallWithBearerToken`, `bedrock:GetFoundationModel` and
    `bedrock:GetInferenceProfile`.
-3. Store it: `POST /api/v1/management/providers` with `provider` `anthropic` (or
-   `openai` for open models), `credential_kind: "aws_access_key"` and
-   `aws_access_key: {access_key_id, secret_access_key}`. The view shows `aws:` and
-   the key id's first and last four characters. `POST /providers/{id}/verify` asks
-   STS who the key is: 200 sets `verified_at`, a refusal answers 400. A long-term
-   Bedrock API key instead goes in `key` with `credential_kind:
-   "aws_bedrock_api_key"`; a deployment health check is its check.
+3. Store it: `POST /api/v1/management/providers` with `provider: "aws_access_key"`
+   and `aws_access_key: {access_key_id, secret_access_key}`. One AWS credential
+   serves Bedrock deployments of both formats (`anthropic` and `openai`), and only
+   the deployments that name it. The view shows `aws:` and the key id's first and
+   last four characters. `POST /providers/{id}/verify` asks STS who the key is: 200
+   sets `verified_at`, a refusal answers 400. A long-term Bedrock API key instead
+   goes in `key` with `provider: "aws_bedrock_api_key"`; a deployment health check
+   is its check.
 4. Register the deployment with `upstream: "aws_bedrock"`, `aws_region`, the model
    or inference profile id as `upstream_model`, `deployment_kind: "external"`, and
    no `base_url`. Enter the region's prices, including the cache prices.
@@ -1020,7 +1021,7 @@ with Bedrock's cache reads and writes priced separately.
 ```console
 SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
   -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
-  -d "{\"provider\": \"anthropic\", \"credential_kind\": \"aws_access_key\",
+  -d "{\"provider\": \"aws_access_key\",
        \"aws_access_key\": {\"access_key_id\": \"$AWS_ACCESS_KEY_ID\",
                           \"secret_access_key\": \"$AWS_SECRET_ACCESS_KEY\"}}" | jq -r .id)
 
@@ -1052,9 +1053,8 @@ with shim, and you take access back whenever you want.
    200); `GET` shows it with the trust and permissions policies to paste into IAM.
 3. Create the role with that trust policy and attach the permissions policy;
    narrow its `Resource` to the models and profiles you use.
-4. Store it: `POST /api/v1/management/providers` with `provider` `anthropic` (or
-   `openai`), `credential_kind: "aws_role"` and `aws_role_arn`. Nothing secret is
-   stored (`stores_secret: false`).
+4. Store it: `POST /api/v1/management/providers` with `provider: "aws_role"` and
+   `aws_role_arn`. Nothing secret is stored (`stores_secret: false`).
 5. `POST /providers/{id}/aws-check` (body `{"region"}` optional) walks every step:
    `gateway_identity`, `assume_role` (a fresh session), `token`, and
    `bedrock_access` (a deployment of this secret in the region, else `skipped`).
@@ -1069,7 +1069,7 @@ curl -X POST http://localhost:8000/api/v1/management/aws/identity \
 
 curl -X POST http://localhost:8000/api/v1/management/providers \
   -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"provider": "anthropic", "credential_kind": "aws_role",
+  -d '{"provider": "aws_role",
        "aws_role_arn": "arn:aws:iam::123456789012:role/shim-bedrock"}'
 
 curl -X POST http://localhost:8000/api/v1/management/providers/$SECRET_ID/aws-check \

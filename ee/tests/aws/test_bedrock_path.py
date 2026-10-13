@@ -43,8 +43,7 @@ async def _bedrock(db, key, provider: str, alias: str, model: str) -> ModelDeplo
     secret = ProviderSecret(
         id=uuid4(),
         organization_id=key.organization_id,
-        provider=provider,
-        credential_kind="aws_access_key",
+        provider="aws_access_key",
         secret_ref=f"reference-{uuid4().hex}",
         secret_backend="fernet",
         secret_version="v2",

@@ -215,8 +215,7 @@ async def _bedrock_row(
     secret = ProviderSecret(
         id=uuid4(),
         organization_id=tenant,
-        provider="anthropic",
-        credential_kind=kind,
+        provider=kind,
         **(
             {"aws_role_arn": "arn:aws:iam::000000000000:role/x"}
             if kind == "aws_role"

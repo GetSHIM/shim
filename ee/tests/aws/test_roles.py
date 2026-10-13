@@ -185,7 +185,7 @@ async def test_aws_answers_map_to_provider_errors_and_log_no_secret(
         )
 
     roles, client = await _roles(db, sts)
-    row = SimpleNamespace(id=uuid4(), credential_kind="aws_role", aws_role_arn=ROLE)
+    row = SimpleNamespace(id=uuid4(), provider="aws_role", aws_role_arn=ROLE)
     resolver = ManagedProviderCredentialResolver(
         "anthropic", SimpleNamespace(), None, aws_roles=roles
     )
@@ -210,7 +210,7 @@ async def test_no_gateway_identity_is_not_configured_and_calls_nothing(db) -> No
     roles, client = await _roles(
         db, lambda request: seen.append(request) or httpx.Response(500)
     )
-    row = SimpleNamespace(id=uuid4(), credential_kind="aws_role", aws_role_arn=ROLE)
+    row = SimpleNamespace(id=uuid4(), provider="aws_role", aws_role_arn=ROLE)
     resolver = ManagedProviderCredentialResolver(
         "anthropic", SimpleNamespace(), None, aws_roles=roles
     )
@@ -236,7 +236,7 @@ async def test_the_bedrock_key_never_outlives_the_role_session(
 ) -> None:
     organization, _ = await _tenant(db)
     roles, client = await _roles(db, lambda request: _answer(600))
-    row = SimpleNamespace(id=uuid4(), credential_kind="aws_role", aws_role_arn=ROLE)
+    row = SimpleNamespace(id=uuid4(), provider="aws_role", aws_role_arn=ROLE)
     resolver = ManagedProviderCredentialResolver(
         "anthropic", SimpleNamespace(), None, aws_roles=roles
     )

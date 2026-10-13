@@ -125,8 +125,9 @@ Converse or InvokeModel translation and no `bedrock-mantle`. Rules, each its own
 - `upstream_model` is a model id (`anthropic.claude-...`, `openai.gpt-oss-120b-1:0`),
   a system inference profile id (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`), or
   their ARN; an application inference profile serves the anthropic format only;
-- the credential is an AWS kind, and an AWS credential serves only Bedrock
-  deployments: `aws_access_key` (a long-term `AKIA` key pair; shim mints a
+- the credential's `provider` is an AWS one, which serves only the Bedrock
+  deployments that name it, of either format (a build that predates Bedrock never
+  selects it): `aws_access_key` (a long-term `AKIA` key pair; shim mints a
   short-term Bedrock API key from it locally, for the deployment's region, valid one
   hour and replaced 300 seconds early, so no AWS call happens on the request path) or
   `aws_bedrock_api_key` (a long-term Bedrock API key, used as it is), or

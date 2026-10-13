@@ -431,7 +431,7 @@ class DeploymentResolver:
             if attribution.mode != "session_tags":
                 return None
             kind = await session.scalar(
-                select(ProviderSecret.credential_kind).where(
+                select(ProviderSecret.provider).where(
                     ProviderSecret.organization_id == deployment.organization_id,
                     ProviderSecret.id == deployment.provider_secret_id,
                 )
