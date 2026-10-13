@@ -140,6 +140,7 @@ ERROR_HINTS = {
     "PROVIDER_NOT_ALLOWED": "Use a provider your tenant policy allows, or ask an administrator to allow this one.",
     "ZERO_RETENTION_REQUIRED": "Send a request the provider enforces zero retention for, as your tenant policy requires.",
     "RATE_LIMIT_EXCEEDED": "Wait the number of seconds in Retry-After, then retry.",
+    "CONCURRENCY_LIMITED": "The target is running all the work it allows; wait the seconds in Retry-After, then retry.",
     "TASK_LIMIT_EXCEEDED": "Start a new task, or ask the tenant admin to raise the task cap; retrying this task fails again.",
     "AGENT_LOOP_DETECTED": "The agent repeated the same tool call; change the step instead of sending it again.",
     "PRIVACY_POLICY_BLOCKED": "Remove the content the privacy policy blocks, or ask an administrator to change the policy.",

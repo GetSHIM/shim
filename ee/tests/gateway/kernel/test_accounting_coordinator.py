@@ -117,6 +117,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         route_decision=None,
         attempt=None,
         shadow=None,
+        concurrency_lease=None,
         band=BandSettings(),
         approval_id=None,
         unpriced=False,
@@ -134,6 +135,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             task_calls=None,
             request_digest="digest",
             inflight_duplicate_of=None,
+            queue_wait_ms=None,
         ),
         task_caps=TaskCaps(),
         payload={"messages": []},
@@ -450,6 +452,7 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         route_decision=None,
         attempt=None,
         shadow=None,
+        concurrency_lease=None,
         approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
@@ -997,6 +1000,7 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         route_decision=None,
         attempt=None,
         shadow=None,
+        concurrency_lease=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",

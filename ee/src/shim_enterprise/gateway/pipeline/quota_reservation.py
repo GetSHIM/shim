@@ -402,6 +402,7 @@ class DurableAccountingCoordinator:
                         attempt_number=attempt.number if attempt else None,
                         attempt_reason=attempt.reason if attempt else None,
                         attempt_rule_id=attempt.rule_id if attempt else None,
+                        queue_wait_ms=admission.queue_wait_ms,
                         shadow_of=prepared.shadow.of if prepared.shadow else None,
                         shadow_rule_id=prepared.shadow.rule_id
                         if prepared.shadow

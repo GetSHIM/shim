@@ -483,6 +483,7 @@ except openai.APIStatusError as error:
 | One client IP over `GLOBAL_RATE_LIMIT_PER_MINUTE` (default 1,000) | 429 `RATE_LIMIT_EXCEEDED` on provider routes; elsewhere 429 `{"detail": "Too Many Requests"}` without a code | `Retry-After: 60` |
 | An agent task reached `SHIM_TASK_MAX_CALLS` calls, or its recorded cost reached `SHIM_TASK_MAX_COST_USD`, within `SHIM_TASK_WINDOW_SECONDS` | 429 `TASK_LIMIT_EXCEEDED`; the message names the cap | `x-should-retry: false`: start a new task or raise the cap |
 | With `SHIM_AGENT_LOOP=block`, the same tool call repeated more than `SHIM_AGENT_LOOP_REPEATS` times in one task within `LOOP_WINDOW_SECONDS` | 429 `AGENT_LOOP_DETECTED` | `x-should-retry: false`: change the agent's step |
+| With `SHIM_CONCURRENCY_TOKEN_LIMIT` set, the provider target already runs that many tokens of requests and none ended within `SHIM_CONCURRENCY_MAX_WAIT_MS` | 429 `CONCURRENCY_LIMITED` | `Retry-After: 5` |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
 | Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
 | Provider refused the provider key (401), or Entra ID refused the configured client credential | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
@@ -568,6 +569,15 @@ Notes:
   proxy's IP addresses (not ranges) in `TRUSTED_PROXIES`, comma-separated or as a
   JSON list. shim then takes the client from `cf-connecting-ip`, `x-real-ip`, or
   the right-most untrusted `x-forwarded-for` entry.
+- Work in flight. `SHIM_CONCURRENCY_TOKEN_LIMIT` (1 to 100,000,000, unset by default)
+  caps the tokens of requests one provider target runs at once in this process, a
+  request counting its approximate input tokens plus its output limit. A request that
+  does not fit waits up to `SHIM_CONCURRENCY_MAX_WAIT_MS` (0 to 60,000, default 0), in
+  arrival order, then answers 429 `CONCURRENCY_LIMITED` with `Retry-After: 5`. A
+  request larger than the whole limit runs when nothing else is in flight. The usage
+  event's `queue_wait_ms` says how long a request waited (0 when admitted at once);
+  `shim_concurrency_admissions_total{outcome}` counts `immediate`, `after_wait` and
+  `refused`. Replicas do not share the count.
 
 ## Read warnings
 

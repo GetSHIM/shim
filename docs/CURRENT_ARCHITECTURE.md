@@ -104,6 +104,20 @@ answers in memory. At most `shadow_max_in_flight` copies run per process (enterp
 counted in `shim_shadow_copies_total`, never raised; `drain()` at shutdown cancels a
 copy still running and fails it.
 
+Admission may also hold or refuse work for capacity through the
+`ConcurrencyLimiter` port (`src/shim/gateway/concurrency.py`), the only place that
+does: after the rate, repeat and task checks and before the usage reservation it
+acquires a lease for the request's target (tenant, provider, base URL) sized
+`ceil(input bytes / 4)` plus the resolved output, waiting at most the configured
+time. A refusal is 429 `CONCURRENCY_LIMITED` with `Retry-After` (or
+`x-should-retry: false` when the work can never fit) and the request is rejected
+without a reservation. The lease is released exactly once on every terminal: after a
+JSON postprocess, in a stream's finalizer (heartbeats renew it), on every error after
+admission; an S57 move takes room on the new target first, without waiting, and a
+refusal skips the move (`ATTEMPT_TARGET_SATURATED`); a shadow copy asks with priority
+`low` and is dropped when full. Community offers a one-process adapter
+(`SHIM_CONCURRENCY_TOKEN_LIMIT`), off by default; enterprise passes none yet.
+
 ## Community composition
 
 `src/shim/application.py` constructs the community application explicitly:
@@ -246,6 +260,7 @@ The codes raised are `MISSING_API_KEY`, `INVALID_API_KEY`,
 `INVALID_PROVIDER_CREDENTIAL`, `INVALID_REQUEST`, `REQUEST_TOO_LARGE`,
 `MODEL_NOT_FOUND`, `MODEL_NOT_PRICED`, `MODEL_CONTEXT_EXCEEDED`,
 `MODEL_CAPABILITY_UNSUPPORTED`, `PROVIDER_NOT_ALLOWED`, `TASK_LIMIT_EXCEEDED`,
+`CONCURRENCY_LIMITED`,
 `AGENT_LOOP_DETECTED`,
 `ZERO_RETENTION_REQUIRED`, `RATE_LIMIT_EXCEEDED`, `PRIVACY_POLICY_BLOCKED`,
 `SECRET_BLOCKED`, `PII_BLOCKED`, `RULE_BLOCKED`, `APPROVAL_REQUIRED`,

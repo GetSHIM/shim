@@ -49,6 +49,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             tool_call_repeats=None,
             task_calls=None,
             inflight_duplicate_of=None,
+            queue_wait_ms=None,
         ),
         task_caps=TaskCaps(),
         model_retiring_warning="record",
@@ -1871,6 +1872,22 @@ async def test_the_jsonl_event_carries_transforms_applied_when_the_band_ran(
     assert event.get("transforms_applied") == (
         None if applied is None else list(applied)
     )
+
+
+@pytest.mark.asyncio
+async def test_the_jsonl_event_carries_queue_wait_only_with_a_limiter() -> None:
+    lines = []
+    for wait in (None, 0, 120):
+        stream = StringIO()
+        usage = LocalUsageLifecycle(stream)
+        prepared = _prepared()
+        prepared.admission.queue_wait_ms = wait
+        await usage.finalize(prepared, _terminal())
+        await usage.aclose()
+        lines.append(json.loads(stream.getvalue()))
+
+    assert ["queue_wait_ms" in line for line in lines] == [False, True, True]
+    assert [line.get("queue_wait_ms") for line in lines[1:]] == [0, 120]
 
 
 @pytest.mark.asyncio

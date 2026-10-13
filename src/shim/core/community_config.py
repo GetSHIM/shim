@@ -93,6 +93,9 @@ class CommunitySettings(BaseSettings):
     SHIM_ANTHROPIC_KEEP_THINKING_TURNS: int = Field(default=0, ge=0, le=8)
     SHIM_OPENAI_REASONING_CONTEXT: Literal["off", "current_turn"] = "off"
     SHIM_JSON_COMPACTION: Literal["off", "on"] = "off"
+    # Tokens one provider target may run at once in this process; unset is no limit.
+    SHIM_CONCURRENCY_TOKEN_LIMIT: int | None = Field(default=None, ge=1, le=100_000_000)
+    SHIM_CONCURRENCY_MAX_WAIT_MS: int = Field(default=0, ge=0, le=60_000)
     SHIM_MODEL_LIFECYCLE_FILE: Path | None = None
     SHIM_MODEL_RETIRING_WARNING: Literal["record", "header"] = "record"
     # Azure OpenAI v1 for catalog routes: an Azure key or an Entra app (S52).

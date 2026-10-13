@@ -33,6 +33,7 @@ from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
+from shim.gateway.concurrency import InMemoryConcurrencyLimiter
 from shim.gateway.request_policy import (
     AgentLoop,
     BandSettings,
@@ -210,6 +211,12 @@ def create_community_app(
                         json_compaction=configured.SHIM_JSON_COMPACTION == "on",
                     ),
                 ),
+                concurrency_limiter=None
+                if configured.SHIM_CONCURRENCY_TOKEN_LIMIT is None
+                else InMemoryConcurrencyLimiter(
+                    lambda _target: configured.SHIM_CONCURRENCY_TOKEN_LIMIT
+                ),
+                concurrency_wait_ms=configured.SHIM_CONCURRENCY_MAX_WAIT_MS,
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,
                 loop_repeat_limit=configured.LOOP_REPEAT_LIMIT,

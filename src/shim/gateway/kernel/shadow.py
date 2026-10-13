@@ -138,6 +138,7 @@ def shadow_of(
         settings_applied=None,
         transforms_applied=None,
         provider_betas=(),
+        concurrency_lease=None,
         # Its own verdicts and warnings: the primary's records stay as they were.
         policy_verdicts=list(primary.policy_verdicts),
         warnings=list(primary.warnings),

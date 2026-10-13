@@ -371,6 +371,11 @@ class LocalUsageLifecycle:
             "inflight_duplicate_of": admission.inflight_duplicate_of
             if admission is not None
             else None,
+            **(
+                {"queue_wait_ms": admission.queue_wait_ms}
+                if admission is not None and admission.queue_wait_ms is not None
+                else {}
+            ),
             **({"inflight_share": dict(inflight_share)} if inflight_share else {}),
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None

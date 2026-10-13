@@ -69,6 +69,7 @@ async def test_kernel_runs_the_authoritative_stage_order(
         payload={},
         rules=None,
         band=BandSettings(json_compaction=with_transform),
+        concurrency_lease=None,
     )
     provider_output = object()
     response = Response("ok")
@@ -258,6 +259,7 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
         payload={},
         rules=None,
         band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = ProviderCallError(
         status_code=status_code,
@@ -320,6 +322,7 @@ async def test_kernel_maps_post_reservation_admission_abort(
         payload={},
         rules=None,
         band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = RuntimeError("admission interrupted")
 
@@ -356,6 +359,7 @@ async def test_recovery_session_failure_does_not_mask_original_error(
         payload={},
         rules=None,
         band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = RuntimeError("admission interrupted")
 
@@ -3951,3 +3955,189 @@ async def test_drain_cancels_a_held_copy_and_fails_it(monkeypatch) -> None:
     assert response.status_code == 200 and len(calls) == 2 and sender.compared == []
     primary, copy = lines
     assert (primary["outcome"], copy["outcome"]) == ("completed", "request_aborted")
+
+
+# Concurrency leases (S59): released exactly once on every terminal.
+
+
+class _CountingLimiter:
+    def __init__(self, refuse_after: int | None = None) -> None:
+        from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+
+        self.inner = InMemoryConcurrencyLimiter(lambda _target: 1_000_000)
+        self.acquired = 0
+        self.refuse_after = refuse_after
+
+    async def acquire(self, target, tokens, priority, wait_ms):
+        from shim.gateway.concurrency import ConcurrencyRefused
+
+        self.acquired += 1
+        if self.refuse_after is not None and self.acquired > self.refuse_after:
+            raise ConcurrencyRefused(5)
+        return await self.inner.acquire(target, tokens, priority, wait_ms)
+
+
+async def _leased_call(
+    monkeypatch, *, stream=False, statuses=(), policy=None, limiter=None
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-environment")
+    limiter = limiter or _CountingLimiter()
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "down"}})
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                **_CHAT_REPLY,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.concurrency_limiter = limiter
+            kernel.attempt_policy = policy
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={"authorization": f"Bearer {_GATEWAY_KEY}"},
+                    json={
+                        "model": "gpt-5-nano",
+                        "stream": stream,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+                await response.aread()
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, calls, limiter, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream", "statuses", "code"),
+    [(False, (), 200), (True, (), 200), (False, (503,), 503), (True, (503,), 503)],
+)
+async def test_the_lease_is_released_on_every_terminal(
+    monkeypatch, stream, statuses, code
+) -> None:
+    response, _, limiter, lines = await _leased_call(
+        monkeypatch, stream=stream, statuses=statuses
+    )
+
+    assert response.status_code == code
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+    assert lines[-1]["queue_wait_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spend_reservation_releases_the_lease(monkeypatch) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(self, prepared, *, ephemeral_byok):
+        raise UsageLimitExceeded("no budget")
+
+    monkeypatch.setattr(LocalUsageLifecycle, "reserve_provider_spend", refuse)
+
+    with pytest.raises(UsageLimitExceeded):
+        await _leased_call(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spend_reservation_leaves_no_room_held(monkeypatch) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(self, prepared, *, ephemeral_byok):
+        raise UsageLimitExceeded("no budget")
+
+    limiter = _CountingLimiter()
+    monkeypatch.setattr(LocalUsageLifecycle, "reserve_provider_spend", refuse)
+
+    with pytest.raises(UsageLimitExceeded):
+        await _leased_call(monkeypatch, limiter=limiter)
+
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+
+
+@pytest.mark.asyncio
+async def test_an_extra_attempt_moves_its_room_to_the_new_target(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, limiter, _ = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy
+    )
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert limiter.acquired == 2 and limiter.inner._used == {}
+
+
+@pytest.mark.asyncio
+async def test_a_full_target_ends_the_move(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+    limiter = _CountingLimiter(refuse_after=1)
+
+    response, calls, _, lines = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy, limiter=limiter
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    assert limiter.inner._used == {}
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_TARGET_SATURATED"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> None:
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+
+    lease = SimpleNamespace(renew=AsyncMock(), release=AsyncMock(), waited_ms=0)
+    usage = SimpleNamespace(
+        heartbeat_stream=AsyncMock(),
+        finalize=AsyncMock(),
+        mark_stream_started=AsyncMock(),
+    )
+    prepared = replace(
+        _ATTEMPT_BASE,
+        stream=True,
+        protocol="chat",
+        target=None,
+        concurrency_lease=lease,
+    )
+    session = ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=0, output_hash_salt=None
+    ).create_stream_session(prepared)
+
+    async def events():
+        yield b'data: {"choices": []}\n\n'
+        await asyncio.Event().wait()
+
+    session.bind(events(), close=AsyncMock())
+    await anext(aiter(session))
+    await session.record_stream_heartbeat()
+    assert lease.renew.await_count >= 1
+    await session.aclose()
+    for _ in range(100):
+        if lease.release.await_count:
+            break
+        await asyncio.sleep(0.01)
+
+    lease.release.assert_awaited_once()

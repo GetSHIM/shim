@@ -221,6 +221,7 @@ class QuotaReservationCommand:
     # A copy of a finished request sent to a candidate target.
     shadow_of: str | None = None
     shadow_rule_id: str | None = None
+    queue_wait_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -397,6 +398,11 @@ class DurableAccountingRepository:
                             "attempt_reason": command.attempt_reason,
                             "attempt_rule_id": command.attempt_rule_id,
                         }
+                    ),
+                    **(
+                        {}
+                        if command.queue_wait_ms is None
+                        else {"queue_wait_ms": command.queue_wait_ms}
                     ),
                     **(
                         {}

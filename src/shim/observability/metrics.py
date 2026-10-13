@@ -240,6 +240,11 @@ TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",
 )
+CONCURRENCY_ADMISSIONS_TOTAL = Counter(
+    "shim_concurrency_admissions_total",
+    "Requests the concurrency limiter admitted at once, after waiting, or refused.",
+    ("outcome",),
+)
 SHADOW_COPIES_TOTAL = Counter(
     "shim_shadow_copies_total",
     "Copies of finished requests sent to a candidate target, by outcome.",

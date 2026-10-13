@@ -376,6 +376,31 @@ def test_json_compaction_is_off_unless_turned_on(value, valid) -> None:
     )
 
 
+def test_the_concurrency_limit_is_off_unless_set() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (
+        settings.SHIM_CONCURRENCY_TOKEN_LIMIT,
+        settings.SHIM_CONCURRENCY_MAX_WAIT_MS,
+    ) == (
+        None,
+        0,
+    )
+    configured = CommunitySettings(
+        _env_file=None,
+        SHIM_CONCURRENCY_TOKEN_LIMIT=2_000,
+        SHIM_CONCURRENCY_MAX_WAIT_MS=60_000,
+    )
+    assert configured.SHIM_CONCURRENCY_TOKEN_LIMIT == 2_000
+    for name, value in (
+        ("SHIM_CONCURRENCY_TOKEN_LIMIT", 0),
+        ("SHIM_CONCURRENCY_TOKEN_LIMIT", 100_000_001),
+        ("SHIM_CONCURRENCY_MAX_WAIT_MS", -1),
+        ("SHIM_CONCURRENCY_MAX_WAIT_MS", 60_001),
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
 def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
     settings = CommunitySettings(_env_file=None)
 

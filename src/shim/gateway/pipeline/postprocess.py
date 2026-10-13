@@ -557,8 +557,17 @@ class ResponsePostprocessor:
 
         async def record_stream_heartbeat() -> None:
             await self.usage.heartbeat_stream(prepared)
+            if prepared.concurrency_lease is not None:
+                await prepared.concurrency_lease.renew()
 
         async def finalize_stream(terminal: StreamFinalization) -> None:
+            try:
+                await settle_stream(terminal)
+            finally:
+                if prepared.concurrency_lease is not None:
+                    await prepared.concurrency_lease.release()
+
+        async def settle_stream(terminal: StreamFinalization) -> None:
             warn_after_answer(
                 prepared,
                 None if terminal.usage.estimated else terminal.usage.prompt_tokens,

@@ -388,6 +388,10 @@ has its own tokens and cost, which the tenant pays, and reserves no daily or mon
 request unit (`request_count` 0). The request list and its CSV carry `shadow_of`;
 both keys are absent on every other row.
 
+`queue_wait_ms` is the milliseconds a request waited for room on its target under a
+concurrency limiter (0 when admitted at once), written at reservation; absent when no
+limiter is configured.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is

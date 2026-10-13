@@ -21,6 +21,7 @@ from shim.billing.pricing import (
 )
 from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
+from shim.gateway.concurrency import Lease
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.request_policy import AgentLoop, BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
@@ -159,6 +160,8 @@ class AdmissionState:
     request_digest: str | None = None
     # The identical request already in flight when this one was admitted.
     inflight_duplicate_of: str | None = None
+    # Milliseconds spent waiting for room on the target; None without a limiter.
+    queue_wait_ms: int | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
@@ -250,6 +253,8 @@ class PreparedInference:
     )
     attempt: AttemptInfo | None = None
     shadow: ShadowInfo | None = None
+    # The concurrency lease held for this request's target, released on every terminal.
+    concurrency_lease: Lease | None = field(default=None, repr=False, compare=False)
     route_decision: Mapping[str, Any] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False

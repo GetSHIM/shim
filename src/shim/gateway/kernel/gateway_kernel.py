@@ -22,6 +22,12 @@ from shim.gateway.admission import (
     LoopDetector,
     TaskCounter,
 )
+from shim.gateway.concurrency import (
+    ConcurrencyLimiter,
+    ConcurrencyRefused,
+    concurrency_target,
+    work_tokens,
+)
 from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
 from shim.gateway.kernel.shadow import (
     ShadowObservation,
@@ -141,6 +147,8 @@ class GatewayKernel:
         task_counter: TaskCounter | None = None,
         model_lifecycle: ModelLifecycle | None = None,
         attempt_policy: AttemptPolicy | None = None,
+        concurrency_limiter: ConcurrencyLimiter | None = None,
+        concurrency_wait_ms: int = 0,
         shadow_sender: ShadowSender | None = None,
         shadow_max_in_flight: int = 4,
     ) -> None:
@@ -169,6 +177,8 @@ class GatewayKernel:
         self.approval_gate = approval_gate
         self.honor_trace_parent = honor_trace_parent
         self.attempt_policy = attempt_policy
+        self.concurrency_limiter = concurrency_limiter
+        self.concurrency_wait_ms = concurrency_wait_ms
         self.shadow_sender = shadow_sender
         self.shadow_max_in_flight = shadow_max_in_flight
         # Per process; a copy beyond the bound is dropped, never queued.
@@ -280,6 +290,8 @@ class GatewayKernel:
             task_counter=self.task_counter,
             inflight=self.inflight,
             model_lifecycle=self.model_lifecycle,
+            concurrency_limiter=self.concurrency_limiter,
+            concurrency_wait_ms=self.concurrency_wait_ms,
         )
         try:
             prepared = await run_stage(admission_stage, prepared)
@@ -390,7 +402,12 @@ class GatewayKernel:
                     byok=byok,
                 )
                 if target is not None:
-                    prepared = retargeted(prepared, target)
+                    prepared = (
+                        await self._leased(
+                            prepared, retargeted(prepared, target), target
+                        )
+                        or prepared
+                    )
             if (
                 self.attempt_policy is not None or self.shadow_sender is not None
             ) and prepared.pre_band_payload is None:
@@ -458,9 +475,6 @@ class GatewayKernel:
                         attempts=attempts,
                         byok=byok,
                     )
-                    # This attempt is settled here; the client may see the next one.
-                    await self._fail_safely(prepared, reason=_failure_reason(error))
-                    settled = True
                     following = (
                         None
                         if target is None
@@ -468,6 +482,10 @@ class GatewayKernel:
                             invocation, prepared, target, attempts + 1
                         )
                     )
+                    # Settled after the next attempt's start, so a skip that start
+                    # records lands on this attempt's row too.
+                    await self._fail_safely(prepared, reason=_failure_reason(error))
+                    settled = True
                     if following is None:
                         raise
                     prepared, attempts, settled = following, attempts + 1, False
@@ -551,6 +569,9 @@ class GatewayKernel:
         finally:
             if not handed_off:
                 self.inflight.leave(*inflight_key)
+                # A stream releases its lease when it finalizes.
+                if prepared.concurrency_lease is not None:
+                    await prepared.concurrency_lease.release()
             if admission.inflight_duplicate_of is not None:
                 INFLIGHT_DUPLICATES_TOTAL.labels(shared=str(shared).lower()).inc()
 
@@ -586,6 +607,7 @@ class GatewayKernel:
                 SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated").inc()
                 return
             self._shadow_in_flight += 1
+            lease = None
             try:
                 candidate = await self.shadow_sender.candidate(primary, selection)
                 if candidate is None:
@@ -597,8 +619,20 @@ class GatewayKernel:
                 ) or not candidate.provider_target.credential_reference:
                     SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
                     return
+                shadow = shadow_of(primary, selection, candidate)
+                if self.concurrency_limiter is not None and primary.admission:
+                    try:
+                        lease = await self.concurrency_limiter.acquire(
+                            concurrency_target(shadow),
+                            work_tokens(primary.admission),
+                            "low",
+                            0,
+                        )
+                    except ConcurrencyRefused:
+                        SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated").inc()
+                        return
                 shadow, blocked = await self._bands(
-                    shadow_of(primary, selection, candidate)
+                    replace(shadow, concurrency_lease=lease)
                 )
                 if blocked is not None:
                     SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
@@ -621,6 +655,8 @@ class GatewayKernel:
                 SHADOW_COPIES_TOTAL.labels(outcome="failed").inc()
             finally:
                 self._shadow_in_flight -= 1
+                if lease is not None:
+                    await lease.release()
 
         return copy
 
@@ -722,29 +758,27 @@ class GatewayKernel:
         following, blocked = await self._bands(
             next_attempt(prepared, target, number=number)
         )
-        if blocked is not None:
-            skip_attempt(
-                following,
-                target.reason,
-                target.rule_id,
-                "ATTEMPT_NOT_ADMITTED",
-                outcome="not_admitted",
-            )
+        moved = (
+            None
+            if blocked is not None
+            else await self._leased(prepared, following, target)
+        )
+        if moved is None:
+            if blocked is not None:
+                skip_attempt(
+                    following,
+                    target.reason,
+                    target.rule_id,
+                    "ATTEMPT_NOT_ADMITTED",
+                    outcome="not_admitted",
+                )
             return None
+        following = moved
         assert following.admission is not None
+        admitted = False
         try:
             await self.usage.admit(following, following.admission)
-        except Exception:
-            skip_attempt(
-                following,
-                target.reason,
-                target.rule_id,
-                "ATTEMPT_NOT_ADMITTED",
-                outcome="not_admitted",
-            )
-            await self.usage.reject(following)
-            return None
-        try:
+            admitted = True
             await self.usage.record_privacy(following)
             following = await run_stage(
                 ProviderSpendStage(invocation, self.usage), following
@@ -757,10 +791,35 @@ class GatewayKernel:
                 "ATTEMPT_NOT_ADMITTED",
                 outcome="not_admitted",
             )
-            await self._fail_safely(following, reason="admission_aborted")
+            if admitted:
+                await self._fail_safely(following, reason="admission_aborted")
+            else:
+                await self.usage.reject(following)
+            if following.concurrency_lease is not None:
+                await following.concurrency_lease.release()
             return None
         EXTRA_ATTEMPTS_TOTAL.labels(reason=target.reason, outcome="started").inc()
         return following
+
+    async def _leased(
+        self, current: PreparedInference, moved: PreparedInference, target: Target
+    ) -> PreparedInference | None:
+        # A request moving to another target takes room there first, without waiting,
+        # and then gives back its room on the current one.
+        if self.concurrency_limiter is None or current.admission is None:
+            return moved
+        try:
+            lease = await self.concurrency_limiter.acquire(
+                concurrency_target(moved), work_tokens(current.admission), "normal", 0
+            )
+        except ConcurrencyRefused:
+            skip_attempt(
+                current, target.reason, target.rule_id, "ATTEMPT_TARGET_SATURATED"
+            )
+            return None
+        if current.concurrency_lease is not None:
+            await current.concurrency_lease.release()
+        return replace(moved, concurrency_lease=lease)
 
     async def _leader_answer(
         self, prepared: PreparedInference, leader: InFlightEntry
