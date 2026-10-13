@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from shim.gateway.contracts.ids import RequestId
+from shim.gateway.kernel.attempts import own_records
 from shim.gateway.kernel.result import InferenceTiming, ProviderTarget, ShadowInfo
 from shim.gateway.pipeline.analysis import AnalysisToolCall
 
@@ -141,7 +142,6 @@ def shadow_of(
         concurrency_lease=None,
         # Its own verdicts and warnings: the primary's records stay as they were.
         policy_verdicts=list(primary.policy_verdicts),
-        warnings=list(primary.warnings),
-        rule_matches=list(primary.rule_matches),
         timing=InferenceTiming(),
+        **own_records(primary),
     )

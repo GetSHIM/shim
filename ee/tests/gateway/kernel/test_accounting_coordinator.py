@@ -4124,6 +4124,86 @@ async def test_two_attempts_are_two_rows_each_with_its_own_cost(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_answered", [False, True])
+async def test_a_client_request_settles_one_request_unit_across_its_attempts(
+    db, test_api_key, first_answered
+) -> None:
+    from shim.gateway.kernel.result import AttemptInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+
+    def attempt(group: str | None) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = datetime.now(timezone.utc)
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=False
+        )
+        if group is not None:
+            # As the kernel's next_attempt sets it.
+            prepared.attempt = AttemptInfo(
+                group_id=group,
+                number=2,
+                reason="format_retry" if first_answered else "fallback",
+                rule_id="spare",
+                counted=first_answered,
+            )
+        return prepared
+
+    async def settle(prepared) -> None:
+        await coordinator.finalize(
+            db,
+            FinalizationCommand(
+                tenant_id=prepared.tenant_id,
+                request_id=prepared.request_id,
+                quota_action=TerminalAction.SETTLE,
+                spend_action=TerminalAction.SETTLE,
+                prompt_tokens=20,
+                completion_tokens=2,
+                actual_cost_usd=Decimal("0.00002"),
+                provider_model=prepared.pricing_model,
+                lifecycle_status="completed",
+            ),
+        )
+
+    first = attempt(None)
+    second = attempt(first.request_id)
+    for prepared in (first, second):
+        await usage.admit(prepared, prepared.admission)
+        await usage.record_privacy(prepared)
+        await coordinator.reserve_spend(prepared, False, db)
+    if first_answered:
+        await settle(first)
+    else:
+        await usage.fail(first, reason="request_aborted")
+    await settle(second)
+
+    monthly = (
+        await db.scalars(
+            select(QuotaPeriodUsage)
+            .where(
+                QuotaPeriodUsage.organization_id == test_api_key.organization_id,
+                QuotaPeriodUsage.api_key_id == test_api_key.id,
+                QuotaPeriodUsage.period_type == "monthly",
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).one()
+    assert (monthly.settled_requests, monthly.reserved_requests) == (1, 0)
+
+
+@pytest.mark.asyncio
 async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
     db, test_api_key, monkeypatch
 ) -> None:

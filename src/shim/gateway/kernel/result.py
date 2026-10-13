@@ -180,6 +180,10 @@ ResponseWarning = Literal[
 EMBEDDINGS_PROTOCOLS = frozenset({"embeddings", "embed_content"})
 # Written to the record; in X-Shim-Warnings only when the tenant asks for the header.
 RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
+# Read from the provider's answer: an extra attempt or a copy earns its own.
+ANSWER_WARNINGS = frozenset(
+    {"LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED", "SEMANTIC_WARN"}
+)
 
 
 AttemptReason = Literal[
@@ -195,6 +199,8 @@ class AttemptInfo:
     number: int
     reason: AttemptReason
     rule_id: str
+    # An earlier attempt was answered and settled the client request's request unit.
+    counted: bool = False
 
 
 @dataclass(frozen=True)

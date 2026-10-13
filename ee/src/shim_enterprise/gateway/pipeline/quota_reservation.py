@@ -396,8 +396,11 @@ class DurableAccountingCoordinator:
                             verdict.model_dump(mode="json")
                             for verdict in prepared.policy_verdicts
                         ),
-                        # An extra attempt or a shadow copy uses no request unit.
-                        request_delta=0 if attempt or prepared.shadow else 1,
+                        # One unit per client request: an extra attempt takes it only
+                        # when no earlier one was answered; a shadow copy never does.
+                        request_delta=0
+                        if prepared.shadow or (attempt and attempt.counted)
+                        else 1,
                         attempt_group_id=attempt.group_id if attempt else None,
                         attempt_number=attempt.number if attempt else None,
                         attempt_reason=attempt.reason if attempt else None,

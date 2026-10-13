@@ -9,8 +9,14 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from shim.gateway.contracts.ids import RequestId
-from shim.gateway.kernel.result import AttemptInfo, AttemptReason, ProviderTarget
+from shim.gateway.kernel.result import (
+    ANSWER_WARNINGS,
+    AttemptInfo,
+    AttemptReason,
+    ProviderTarget,
+)
 from shim.observability.metrics import EXTRA_ATTEMPTS_TOTAL
+from shim.rules import KINDS, UnusableRule, in_scope
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
@@ -55,6 +61,36 @@ def _deployment(target: ProviderTarget | None) -> str | None:
     return target.deployment_id if target is not None else None
 
 
+def _privacy_kind(kind: str) -> bool:
+    return kind in KINDS and KINDS[kind].point == "privacy"
+
+
+def _protecting(prepared: PreparedInference) -> frozenset[str]:
+    """The enforced rules that mask, block or hold this request's content at its target."""
+
+    if prepared.rules is None:
+        return frozenset()
+    tags = prepared.admission.tags if prepared.admission is not None else ()
+    return frozenset(
+        rule.id
+        for rule in (*prepared.rules.rules, *prepared.rules.unusable)
+        if (
+            rule.enforced
+            if isinstance(rule, UnusableRule)
+            else rule.state == "enforced"
+            and rule.action in {"mask", "block", "require_approval"}
+            and _privacy_kind(rule.kind)
+        )
+        and in_scope(rule, prepared, tags)
+    )
+
+
+def protects_less(prepared: PreparedInference, moved: PreparedInference) -> bool:
+    """Privacy ran for `prepared`'s target only: a rule that would act on `moved`'s
+    target and not on this one never saw the content."""
+    return not _protecting(moved) <= _protecting(prepared)
+
+
 def guarded(
     prepared: PreparedInference,
     target: Target | None,
@@ -74,9 +110,15 @@ def guarded(
     elif (
         prepared.deployment_kind == "internal"
         and target.deployment_kind != "internal"
-        and ((privacy is not None and privacy.pii_detected) or prepared.rule_matches)
+        and (
+            (privacy is not None and privacy.pii_detected)
+            # A monitor route match or a pin changes nothing about the content.
+            or any(_privacy_kind(match.kind) for match in prepared.rule_matches)
+        )
     ):
         reason = "ATTEMPT_WOULD_LEAVE_INTERNAL"
+    elif protects_less(prepared, _sent_to(prepared, target, payload)):
+        reason = "ATTEMPT_DESTINATION_CHANGED"
     elif (
         prepared.protocol == "responses"
         and (payload.get("previous_response_id") or payload.get("conversation"))
@@ -125,6 +167,17 @@ def _sent_to(
     )
 
 
+def own_records(prepared: PreparedInference) -> dict[str, Any]:
+    """The match and warning lists an extra attempt or a copy starts from: its bands
+    and its answer run again, so their pin matches and answer warnings are left out."""
+    return {
+        "rule_matches": [
+            match for match in prepared.rule_matches if match.kind != "parameter_pin"
+        ],
+        "warnings": [code for code in prepared.warnings if code not in ANSWER_WARNINGS],
+    }
+
+
 def retargeted(prepared: PreparedInference, target: Target) -> PreparedInference:
     """The request on the same row sent to `target`, chosen after privacy."""
 
@@ -148,12 +201,16 @@ def retargeted(prepared: PreparedInference, target: Target) -> PreparedInference
 
 
 def next_attempt(
-    prepared: PreparedInference, target: Target, *, number: int
+    prepared: PreparedInference, target: Target, *, number: int, answered: bool
 ) -> PreparedInference:
-    """Attempt `number`: a new request id and start, the same privacy and admission."""
+    """Attempt `number`: a new request id and start, the same privacy and admission.
+
+    `answered`: `prepared` settled with an answer, so it counted the request unit.
+    """
 
     assert prepared.pre_band_payload is not None
-    group = prepared.attempt.group_id if prepared.attempt else str(prepared.request_id)
+    earlier = prepared.attempt
+    group = earlier.group_id if earlier else str(prepared.request_id)
     return replace(
         _sent_to(prepared, target, prepared.pre_band_payload),
         context=prepared.context.model_copy(
@@ -163,10 +220,15 @@ def next_attempt(
             }
         ),
         attempt=AttemptInfo(
-            group_id=group, number=number, reason=target.reason, rule_id=target.rule_id
+            group_id=group,
+            number=number,
+            reason=target.reason,
+            rule_id=target.rule_id,
+            counted=answered or (earlier is not None and earlier.counted),
         ),
         route_decision=None,
         settings_applied=None,
         transforms_applied=None,
         provider_betas=(),
+        **own_records(prepared),
     )

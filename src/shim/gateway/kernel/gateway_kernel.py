@@ -43,6 +43,7 @@ from shim.gateway.kernel.attempts import (
     Target,
     guarded,
     next_attempt,
+    protects_less,
     retargeted,
     skip_attempt,
 )
@@ -401,7 +402,8 @@ class GatewayKernel:
                     prepared,
                     await self.attempt_policy.choose_target_after_privacy(prepared),
                     attempts=1,
-                    byok=byok,
+                    # No attempt has consumed the BYOK key yet.
+                    byok=False,
                 )
                 if target is not None:
                     prepared = (
@@ -481,7 +483,7 @@ class GatewayKernel:
                         None
                         if target is None
                         else await self._start_attempt(
-                            invocation, prepared, target, attempts + 1
+                            invocation, prepared, target, attempts + 1, answered=False
                         )
                     )
                     # Settled after the next attempt's start, so a skip that start
@@ -538,7 +540,7 @@ class GatewayKernel:
                     # The settled answer is kept aside: it serves only if no next attempt starts.
                     settled = True
                     following = await self._start_attempt(
-                        invocation, prepared, target, attempts + 1
+                        invocation, prepared, target, attempts + 1, answered=True
                     )
                     if following is not None:
                         prepared, attempts, settled = following, attempts + 1, False
@@ -615,13 +617,17 @@ class GatewayKernel:
                 if candidate is None:
                     SHADOW_COPIES_TOTAL.labels(outcome="no_candidate").inc()
                     return
+                shadow = shadow_of(primary, selection, candidate)
                 if (
-                    candidate.deployment_kind != "internal"
-                    and candidate.deployment_kind != primary.deployment_kind
-                ) or not candidate.provider_target.credential_reference:
+                    (
+                        candidate.deployment_kind != "internal"
+                        and candidate.deployment_kind != primary.deployment_kind
+                    )
+                    or not candidate.provider_target.credential_reference
+                    or protects_less(primary, shadow)
+                ):
                     SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
                     return
-                shadow = shadow_of(primary, selection, candidate)
                 if self.concurrency_limiter is not None and primary.admission:
                     try:
                         lease = await self.concurrency_limiter.acquire(
@@ -754,12 +760,26 @@ class GatewayKernel:
         prepared: PreparedInference,
         target: Target,
         number: int,
+        *,
+        answered: bool,
     ) -> PreparedInference | None:
         # Attempt `number`, admitted and reserved, or None. Admission is the usage
         # reservation only: rate limits and the repeat detector never see it.
-        following, blocked = await self._bands(
-            next_attempt(prepared, target, number=number)
-        )
+        try:
+            following, blocked = await self._bands(
+                next_attempt(prepared, target, number=number, answered=answered)
+            )
+        except Exception as exc:
+            # The previous attempt's result stands; a band error never replaces it.
+            logger.warning("Attempt bands failed type=%s", type(exc).__name__)
+            skip_attempt(
+                prepared,
+                target.reason,
+                target.rule_id,
+                "ATTEMPT_NOT_ADMITTED",
+                outcome="not_admitted",
+            )
+            return None
         moved = (
             None
             if blocked is not None
@@ -785,7 +805,9 @@ class GatewayKernel:
             following = await run_stage(
                 ProviderSpendStage(invocation, self.usage), following
             )
-        except Exception:
+        except BaseException as error:
+            # A cancellation too: this attempt's row and room are given back, then it
+            # propagates.
             skip_attempt(
                 following,
                 target.reason,
@@ -793,12 +815,16 @@ class GatewayKernel:
                 "ATTEMPT_NOT_ADMITTED",
                 outcome="not_admitted",
             )
-            if admitted:
-                await self._fail_safely(following, reason="admission_aborted")
-            else:
-                await self.usage.reject(following)
-            if following.concurrency_lease is not None:
-                await following.concurrency_lease.release()
+            try:
+                if admitted:
+                    await self._fail_safely(following, reason="admission_aborted")
+                else:
+                    await self.usage.reject(following)
+            finally:
+                if following.concurrency_lease is not None:
+                    await following.concurrency_lease.release()
+            if not isinstance(error, Exception):
+                raise
             return None
         EXTRA_ATTEMPTS_TOTAL.labels(reason=target.reason, outcome="started").inc()
         return following
@@ -810,6 +836,9 @@ class GatewayKernel:
         # and then gives back its room on the current one.
         if self.concurrency_limiter is None or current.admission is None:
             return moved
+        # The same target: the request already holds its room there.
+        if concurrency_target(moved) == concurrency_target(current):
+            return replace(moved, concurrency_lease=current.concurrency_lease)
         try:
             lease = await self.concurrency_limiter.acquire(
                 concurrency_target(moved), work_tokens(current.admission), "normal", 0

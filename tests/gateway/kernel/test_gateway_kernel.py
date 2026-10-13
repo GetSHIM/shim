@@ -1926,7 +1926,7 @@ async def test_a_failing_scan_is_recorded_and_the_request_goes_on(monkeypatch) -
 _TCKN = "10000000146"
 
 
-def _destination(action="mask", state="enforced", kinds=("external",)):
+def _destination(action="mask", state="enforced", kinds=("external",), scope=None):
     from shim.rules import validate_rule_set
 
     return validate_rule_set(
@@ -1939,7 +1939,9 @@ def _destination(action="mask", state="enforced", kinds=("external",)):
                     "kind": "destination",
                     "action": action,
                     "state": state,
-                    "scope": {"deployment_kinds": list(kinds)},
+                    "scope": {"deployment_kinds": list(kinds)}
+                    if scope is None
+                    else scope,
                     "match": {"entity_types": ["TR_NATIONAL_ID"]},
                 }
             ],
@@ -1948,12 +1950,22 @@ def _destination(action="mask", state="enforced", kinds=("external",)):
 
 
 async def _call_with_destination(
-    rules, route="chat", *, kind="unknown", actions=None, payload=None
+    rules,
+    route="chat",
+    *,
+    kind="unknown",
+    actions=None,
+    payload=None,
+    policy=None,
+    sender=None,
+    statuses=(),
 ):
     calls: list[httpx.Request] = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if len(calls) <= len(statuses):
+            return httpx.Response(statuses[len(calls) - 1], json={"error": {}})
         return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
 
     async def classify(prepared, _headers):
@@ -1975,6 +1987,9 @@ async def _call_with_destination(
             kernel = app.state.gateway_service.kernel
             kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
             kernel.prepare_inference = classify
+            kernel.attempt_policy = policy
+            kernel.shadow_sender = sender
+            kernel.executions["openai"].credential_resolver = _StoredKeys()
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app), base_url="http://shim.test"
             ) as inbound:
@@ -1983,6 +1998,7 @@ async def _call_with_destination(
                     headers={**auth, "x-provider-key": "provider-secret"},
                     json=payload or build(f"TCKN {_TCKN} için başvuru"),
                 )
+            await kernel.postprocessor.drain(5)
     lines = [json.loads(line) for line in events.getvalue().splitlines()]
     return response, calls, lines
 
@@ -3250,6 +3266,8 @@ async def test_a_target_after_a_provider_error_is_a_second_attempt(monkeypatch) 
         str(first.request_id),
         2,
     )
+    # The failed first attempt gave its request unit back: the second one takes it.
+    assert second.attempt.counted is False
     assert response.headers["x-shim-request-id"] == str(second.request_id)
     assert response.headers["x-shim-attempts"] == "2"
     failed, answered = policy.outcomes
@@ -3303,6 +3321,42 @@ async def test_a_byok_request_needs_a_stored_credential_for_another_attempt(
 
 
 @pytest.mark.asyncio
+async def test_a_byok_request_may_take_a_catalog_target_chosen_after_privacy(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_privacy=_target())
+
+    response, calls, _, [line] = await _attempt_call(
+        monkeypatch, policy, [], headers={"x-provider-key": "sk-caller"}
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert calls[0].headers["authorization"] == "Bearer sk-caller"
+    assert "gateway.attempt" not in {v["rule_id"] for v in line["policy_verdicts"]}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_band_on_the_next_attempt_keeps_the_provider_error(
+    monkeypatch,
+) -> None:
+    original = GatewayKernel._bands
+
+    async def bands(self, prepared):
+        if prepared.attempt is not None:
+            raise RuntimeError("band failed")
+        return await original(self, prepared)
+
+    monkeypatch.setattr(GatewayKernel, "_bands", bands)
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, admitted, [line] = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 503 and len(calls) == 1 and len(admitted) == 1
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NOT_ADMITTED"
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_answer_is_settled_and_never_returned(monkeypatch) -> None:
     policy = _StubPolicy(after_answer=[_target("format_retry")])
 
@@ -3311,6 +3365,8 @@ async def test_a_superseded_answer_is_settled_and_never_returned(monkeypatch) ->
     assert len(calls) == 2
     assert response.json()["choices"][0]["message"]["content"] == "answer 2"
     assert [line["outcome"] for line in lines] == ["completed", "completed"]
+    # The answered first attempt settled the request unit.
+    assert admitted[1].attempt.counted is True
     assert policy.outcomes[0].answer["choices"][0]["message"]["content"] == "answer 1"
     assert response.headers["x-shim-attempts"] == "2"
 
@@ -3462,6 +3518,18 @@ def _attempt_base():
 _ATTEMPT_BASE = _attempt_base()
 
 
+def _matched(kind: str, action: str, state: str) -> dict:
+    from shim.privacy.policies import PrivacyAction, PrivacyOutcome
+    from shim.rules import RuleMatch
+
+    return {
+        "privacy": PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
+        "rule_matches": [
+            RuleMatch(rule_id="r", kind=kind, action=action, state=state, count=1)
+        ],
+    }
+
+
 @pytest.mark.parametrize(
     ("changes", "target", "attempts", "byok", "code"),
     [
@@ -3485,6 +3553,28 @@ _ATTEMPT_BASE = _attempt_base()
             1,
             False,
             "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        (
+            _matched("term", "mask", "enforced"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        # A monitor route match or a pin says nothing about the content (night 3 L13).
+        (
+            _matched("route", "route", "monitor"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            None,
+        ),
+        (
+            _matched("parameter_pin", "set", "enforced"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            None,
         ),
         (
             {
@@ -3577,6 +3667,73 @@ def test_a_target_after_privacy_rewrites_the_model_and_keeps_the_masking() -> No
     assert retargeted(_ATTEMPT_BASE, _target()).route_decision["to"] == "catalog"
 
 
+def test_an_extra_attempt_and_a_copy_start_their_own_matches_and_warnings() -> None:
+    from shim.gateway.kernel.attempts import next_attempt
+    from shim.gateway.kernel.shadow import ShadowCandidate, ShadowSelection, shadow_of
+    from shim.rules import RuleMatch
+
+    def match(kind: str) -> RuleMatch:
+        return RuleMatch(
+            rule_id=kind, kind=kind, action="mask", state="enforced", count=1
+        )
+
+    first = replace(
+        _ATTEMPT_BASE,
+        pre_band_payload=_ATTEMPT_BASE.payload,
+        rule_matches=[match("term"), match("parameter_pin")],
+        warnings=["CONTEXT_MAY_EXCEED", "LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED"],
+    )
+
+    second = next_attempt(first, _target(), number=2, answered=False)
+    copy = shadow_of(
+        first,
+        ShadowSelection("shadow_rule", "candidate", False),
+        ShadowCandidate(_registry("c"), "internal"),
+    )
+
+    for moved in (second, copy):
+        assert [m.rule_id for m in moved.rule_matches] == ["term"]
+        assert moved.warnings == ["CONTEXT_MAY_EXCEED"]
+        moved.warn("RULE_WARN")
+    assert len(first.rule_matches) == 2 and "RULE_WARN" not in first.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_pin_counts_once_on_each_attempt_row() -> None:
+    from shim.rules import validate_rule_set
+
+    rules = validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "cool",
+                    "name": "n",
+                    "kind": "parameter_pin",
+                    "action": "set",
+                    "state": "enforced",
+                    "match": {"parameter": "temperature", "value": 0},
+                }
+            ],
+        }
+    )
+    policy = _StubPolicy(
+        after_answer=[
+            _target(
+                "format_retry",
+                provider_target=_registry("b"),
+                deployment_kind="external",
+            )
+        ]
+    )
+
+    response, calls, lines = await _call_with_destination(rules, policy=policy)
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert all(json.loads(call.content)["temperature"] == 0 for call in calls)
+    assert [[m["count"] for m in line["rule_matches"]] for line in lines] == [[1], [1]]
+
+
 @pytest.mark.asyncio
 async def test_an_extra_attempt_runs_the_bands_again_for_its_own_target() -> None:
     from shim.gateway.kernel.attempts import next_attempt
@@ -3626,6 +3783,7 @@ async def test_an_extra_attempt_runs_the_bands_again_for_its_own_target() -> Non
             banded,
             _target(provider_target=_registry("b"), deployment_kind="internal"),
             number=2,
+            answered=False,
         )
     )
 
@@ -4088,12 +4246,70 @@ async def test_an_extra_attempt_moves_its_room_to_the_new_target(monkeypatch) ->
     )
 
     assert response.status_code == 200 and len(calls) == 2
+    # A catalog target again: the room the request holds there moves with it.
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+
+
+@pytest.mark.asyncio
+async def test_a_request_alone_on_its_target_may_try_that_target_again(
+    monkeypatch,
+) -> None:
+    from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+
+    # Every request is larger than the limit, so it runs only on an idle target.
+    limiter = _CountingLimiter()
+    limiter.inner = InMemoryConcurrencyLimiter(lambda _target: 1)
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, lines = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy, limiter=limiter
+    )
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert limiter.inner._used == {}
+    assert "gateway.attempt" not in {v["rule_id"] for v in lines[0]["policy_verdicts"]}
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_start_gives_back_its_row_and_room(
+    monkeypatch,
+) -> None:
+    rejected: list = []
+    original_admit = LocalUsageLifecycle.admit
+    original_reject = LocalUsageLifecycle.reject
+
+    async def admit(self, prepared, admission):
+        if prepared.attempt is not None:
+            raise asyncio.CancelledError
+        return await original_admit(self, prepared, admission)
+
+    async def reject(self, prepared):
+        rejected.append(prepared.request_id)
+        return await original_reject(self, prepared)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "admit", admit)
+    monkeypatch.setattr(LocalUsageLifecycle, "reject", reject)
+    policy = _StubPolicy(
+        after_error=[
+            _target(provider_target=_registry("b"), deployment_kind="external")
+        ]
+    )
+    limiter = _CountingLimiter()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _leased_call(monkeypatch, statuses=(503,), policy=policy, limiter=limiter)
+
     assert limiter.acquired == 2 and limiter.inner._used == {}
+    assert len(rejected) == 1
 
 
 @pytest.mark.asyncio
 async def test_a_full_target_ends_the_move(monkeypatch) -> None:
-    policy = _StubPolicy(after_error=[_target()])
+    policy = _StubPolicy(
+        after_error=[
+            _target(provider_target=_registry("b"), deployment_kind="external")
+        ]
+    )
     limiter = _CountingLimiter(refuse_after=1)
 
     response, calls, _, lines = await _leased_call(
@@ -4104,6 +4320,89 @@ async def test_a_full_target_ends_the_move(monkeypatch) -> None:
     assert limiter.inner._used == {}
     verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
     assert verdicts["gateway.attempt"] == "ATTEMPT_TARGET_SATURATED"
+
+
+# Privacy ran for one target: a move or a copy never takes the content to a target
+# whose destination rules privacy did not apply (night 3 H1).
+
+
+def _moved_to(kind="external"):
+    return _target(provider_target=_registry("b"), deployment_kind=kind)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "kinds", "actions", "moved"),
+    [
+        # The reviewer's repro: a mask scoped to the target the rule picks.
+        ({"models": ["model-b"]}, ("external", "external"), None, False),
+        # Internal to external with the base action off: nothing was detected.
+        (
+            {"deployment_kinds": ["external"]},
+            ("internal", "external"),
+            {"TR_NATIONAL_ID": "off"},
+            False,
+        ),
+        # A rule in scope on both targets already masked the content: the move runs.
+        ({"deployment_kinds": ["external"]}, ("external", "external"), None, True),
+    ],
+)
+async def test_a_target_chosen_after_privacy_never_skips_its_destination_rules(
+    scope, kinds, actions, moved
+) -> None:
+    before, after = kinds
+    policy = _StubPolicy(after_privacy=_moved_to(after))
+
+    response, calls, [line] = await _call_with_destination(
+        _destination(scope=scope), kind=before, actions=actions, policy=policy
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    [call] = calls
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    if moved:
+        assert call.url.host == "models.internal.test"
+        assert _TCKN not in call.content.decode()
+        assert "gateway.attempt" not in verdicts
+    else:
+        assert call.url.host == "api.openai.com"
+        assert verdicts["gateway.attempt"] == "ATTEMPT_DESTINATION_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_a_next_attempt_never_skips_its_destination_rules() -> None:
+    policy = _StubPolicy(after_error=[_moved_to()])
+
+    response, calls, [line] = await _call_with_destination(
+        _destination(scope={"models": ["model-b"]}),
+        kind="external",
+        policy=policy,
+        statuses=(503,),
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    assert calls[0].url.host == "api.openai.com"
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_DESTINATION_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_copy_never_skips_its_destination_rules() -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    skipped = SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard")
+    before = skipped._value.get()
+    sender = _StubSender(kind="external")
+
+    response, calls, _ = await _call_with_destination(
+        _destination(scope={"models": ["candidate-model"]}),
+        kind="external",
+        sender=sender,
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert calls[0].url.host == "api.openai.com" and sender.compared == []
+    assert skipped._value.get() == before + 1
 
 
 @pytest.mark.asyncio
