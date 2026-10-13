@@ -156,7 +156,10 @@ regions, and its prefix alone does not say which (AWS: "Don't rely on the
 geographic prefix"). shim stores the deployment's destinations
 (`aws_destination_regions`): its own region for a model id, otherwise the regions
 of `GetInferenceProfile`'s model ARNs, read on create, when the region or model
-changes, and on every health check; `null` while Bedrock does not say. The view
+changes, and on every health check; `null` while Bedrock does not say. It is read
+with no transaction open and without the tenant lock that every request of the
+tenant waits on; a policy write that lands during an update's read answers 409
+`POLICY_VERSION_CHANGED` (send the update again). The view
 also shows `aws_profile_scope`: `in_region` for a model, else the profile prefix
 (`eu`, `us`, `apac`, `global`).
 

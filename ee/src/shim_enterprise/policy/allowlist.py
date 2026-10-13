@@ -295,15 +295,10 @@ class Unattended(Exception):
     refusals: tuple[PlanRefusal, ...] = ()
 
 
-async def admit_unattended(
-    session: AsyncSession,
-    organization_id: UUID,
-    changes: Sequence[dict[str, Any]],
-    *,
-    risk: str,
-    source: str,
-) -> PlanCheck:
-    """The one gate for the executor and for agents: pause, daily limit, allowlist."""
+async def unattended_gate(
+    session: AsyncSession, organization_id: UUID, *, agent: bool
+) -> None:
+    """Pause and the day's limit, which agents and shim's executor each have."""
     stored = await session.scalar(
         select(OrganizationGatewaySettings.settings).where(
             OrganizationGatewaySettings.organization_id == organization_id
@@ -318,6 +313,7 @@ async def admit_unattended(
     recent = await session.scalar(
         select(func.count()).where(
             PolicyRemediation.organization_id == organization_id,
+            PolicyRemediation.actor_type == ("service" if agent else "system"),
             PolicyRemediation.status != "skipped",
             PolicyRemediation.created_at
             > datetime.now(timezone.utc) - timedelta(days=1),
@@ -329,6 +325,22 @@ async def admit_unattended(
             "REMEDIATION_LIMIT",
             "Too many unattended changes in 24 hours; a person can apply this plan.",
         )
+
+
+async def admit_unattended(
+    session: AsyncSession,
+    organization_id: UUID,
+    changes: Sequence[dict[str, Any]],
+    *,
+    risk: str,
+    source: str,
+    agent: bool,
+) -> PlanCheck:
+    """The one gate for the executor and for agents: pause, daily limit, allowlist.
+
+    It recomputes impact, so callers run it before the tenant lock and run
+    `unattended_gate` again under it."""
+    await unattended_gate(session, organization_id, agent=agent)
     check = await check_plan(
         session, organization_id, changes, risk=risk, source=source
     )
@@ -400,6 +412,15 @@ async def notify_remediation(
     # A skipped finding has no accepted change, so no entry: it counts under "none".
     for entry in entries or ["none"]:
         REMEDIATIONS_TOTAL.labels(entry=entry, phase=phase).inc()
+
+
+async def mark_undone(
+    session: AsyncSession, row: PolicyRemediation, version: int | None, actor: User
+) -> None:
+    """A person's undo applied, at once or when a second approver approved it."""
+    row.status, row.closed_at = "undone", datetime.now(timezone.utc)
+    row.restored_version = version
+    await notify_remediation(session, row, "undone", version, actor=actor)
 
 
 async def open_remediation(

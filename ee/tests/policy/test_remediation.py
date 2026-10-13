@@ -24,7 +24,7 @@ from shim_enterprise.outbox.handlers import (
 )
 from shim_enterprise.outbox.models import OutboxEvent
 from shim_enterprise.outbox.publisher import OutboxMessage
-from shim_enterprise.policy import remediation
+from shim_enterprise.policy import allowlist, remediation
 from shim_enterprise.policy.models import PolicyRemediation, PolicyVersion
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, classify_change
 from shim_enterprise.tenants.models import (
@@ -265,21 +265,34 @@ async def test_one_pass_fixes_at_most_five_findings(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_twenty_first_change_in_a_day_is_skipped(db) -> None:
+async def test_the_twenty_first_change_in_a_day_waits_for_the_next_pass(db) -> None:
     tenant = await _tenant(db)
-    db.add_all(
+    earlier = [
         PolicyRemediation(
             organization_id=tenant, actor_type="system", items=[], status="kept"
         )
         for _ in range(20)
-    )
+    ]
+    # An agent's applies have a limit of their own.
+    agents = [
+        PolicyRemediation(
+            organization_id=tenant, actor_type="service", items=[], status="kept"
+        )
+        for _ in range(20)
+    ]
+    db.add_all([*earlier, *agents])
     await _deployment(db, tenant)
 
     await _pass(db, tenant)
+    limited = [row.status for row in await _rows(db, tenant)]
+    for row in earlier:
+        row.created_at = datetime.now(timezone.utc) - timedelta(days=2)
+    await db.flush()
+    await _pass(db, tenant)
 
-    skipped = [row for row in await _rows(db, tenant) if row.status == "skipped"]
-    assert [row.result["reasons"] for row in skipped] == [["REMEDIATION_LIMIT"]]
-    assert await _versions(db, tenant) == []
+    assert "skipped" not in limited
+    assert [row.status for row in await _rows(db, tenant)].count("watching") == 1
+    assert len(await _versions(db, tenant)) == 1
 
 
 @pytest.mark.asyncio
@@ -351,7 +364,7 @@ async def test_an_apply_error_is_skipped_with_its_code(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_audit_mode_off_leaves_nothing_to_measure_so_the_fix_is_skipped(
+async def test_audit_mode_off_leaves_nothing_to_measure_so_the_fix_waits(
     db, monkeypatch
 ) -> None:
     tenant = await _tenant(db)
@@ -360,11 +373,12 @@ async def test_audit_mode_off_leaves_nothing_to_measure_so_the_fix_is_skipped(
 
     await _pass(db, tenant)
 
-    [row] = await _rows(db, tenant)
-    finding = await _finding(db, row.finding_id)
-    assert (row.status, row.result["reasons"]) == ("skipped", ["proof_unavailable"])
+    # Nothing to measure yet: no row, so the fix runs once audit is on.
+    assert await _rows(db, tenant) == []
     assert await _versions(db, tenant) == []
-    assert finding.remediation["mode"] == "suggest"
+    monkeypatch.setattr(settings, "AI_ACT_AUDIT_ENABLED", True)
+    await _pass(db, tenant)
+    assert [row.status for row in await _rows(db, tenant)] == ["watching"]
 
 
 @pytest.mark.asyncio
@@ -584,3 +598,68 @@ async def test_each_phase_reaches_every_forward_target_without_values(
         f"shim automatic change {row.id} (deployment.disable): applied, policy "
         f"version {row.applied_version}: /api/v1/management/remediations/{row.id}"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_undo_the_item_refuses_closes_its_row_and_the_pass_commits(
+    db, monkeypatch
+) -> None:
+    tenant = await _tenant(db)
+    row = await _watched(db, tenant, hours_ago=30)
+    assert row.window_start is not None
+    await _refused(db, tenant, row.window_start + timedelta(hours=2), 3)
+    # The deployment's origin is no longer approved: re-enabling it is a 422.
+    monkeypatch.setattr(settings, "MODEL_DEPLOYMENT_ALLOWED_ORIGINS", [])
+
+    await remediation.run_remediations(
+        _sessions(await db.connection()), now=datetime.now(timezone.utc)
+    )
+
+    [skipped] = await _rows(db, tenant)
+    assert (skipped.status, skipped.result["reason"]) == (
+        "restore_skipped",
+        "http_422",
+    )
+    assert skipped.result["items"] == {"0": {"baseline": 0, "measured": 3}}
+    assert len(await _versions(db, tenant)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pass_measures_and_plans_before_the_tenant_lock(
+    db, monkeypatch, tenant_lock
+) -> None:
+    tenant = await _tenant(db)
+    row = await _watched(db, tenant, hours_ago=30)
+    assert row.window_start is not None
+    await _refused(db, tenant, row.window_start + timedelta(hours=2), 3)
+    await _deployment(db, tenant)
+    await service.evaluate_organization(db, tenant, now=datetime.now(timezone.utc))
+    locked: dict[str, list[bool]] = {}
+    for module, name in (
+        (remediation, "_measure"),
+        (remediation, "_restore_changes"),
+        (remediation, "finding_changes"),
+        (allowlist, "check_plan"),
+    ):
+
+        async def step(*args, _name=name, _step=getattr(module, name), **kwargs):
+            locked.setdefault(_name, []).append(tenant_lock())
+            return await _step(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, step)
+
+    await remediation.run_remediations(
+        _sessions(await db.connection()), now=datetime.now(timezone.utc)
+    )
+
+    assert sorted(row.status for row in await _rows(db, tenant)) == [
+        "restored",
+        "watching",
+    ]
+    # A request's reservation waits on the tenant lock; none of these hold it.
+    assert locked == {
+        "_measure": [False],
+        "_restore_changes": [False],
+        "finding_changes": [False],
+        "check_plan": [False],
+    }

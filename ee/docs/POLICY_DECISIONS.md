@@ -548,8 +548,9 @@ risk, reason codes; never a before or after value) is committed before the 403.
 An allowlisted plan tightens by construction, so four eyes never holds it.
 Approving and rejecting stay with `plans.approve`, which no service account holds.
 Before the check, a paused tenant (`auto_remediation_paused`) answers 409
-`AUTO_REMEDIATION_PAUSED` and a tenant with 20 unattended changes in 24 hours 429
-`REMEDIATION_LIMIT`. The five entries and what happens after an applied change
+`AUTO_REMEDIATION_PAUSED` and a tenant with 20 agent applies in 24 hours 429
+`REMEDIATION_LIMIT` (shim's own fixes count apart). The check recomputes impact,
+so it runs before the tenant lock; the pause and the limit are checked again under it. The five entries and what happens after an applied change
 (the measurement window, the automatic undo, the undo route) are in
 [automatic fixes](FINDINGS.md#automatic-fixes); the worker's own fixes for `auto`
 findings pass the same check.
@@ -564,7 +565,9 @@ Two decisions there:
   a person asks for is an ordinary restore and four eyes holds it.
 - **One remediation per finding, ever.** A unique index on (tenant, finding) stops
   the worker from retrying a fix that was skipped, set back or undone; that
-  finding only suggests from then on, and a person decides.
+  finding only suggests from then on, and a person decides. A refusal that
+  passes (the day's limit, a pause, `proof_unavailable`) writes no row, so it is
+  retried on the next pass.
 
 ### Rule proposals
 
@@ -622,7 +625,7 @@ needs an active signing key (409 `CONFIG_NO_SIGNING_KEY`).
   file from being replayed. The signature string is `<key_id>.<signature>`, both
   base64url without padding as licence keys are; `key_id` is the first 32 hex
   characters of the SHA-256 of the raw public key. Only an unrevoked key of the
-  tenant whose holder is active verifies; anything else is 403
+  tenant whose holder is active and may still create plans verifies; anything else is 403
   `CONFIG_SIGNATURE_INVALID`, without saying which check failed. Keys belong to
   human users who may create plans, at most ten active per tenant; adding one
   records `tenant.config_signing_key_added` and sends the tenant alert
@@ -640,7 +643,11 @@ needs an active signing key (409 `CONFIG_NO_SIGNING_KEY`).
 - **Applying a file.** `POST /config/apply` (`plans.apply`) verifies the signature,
   parses and validates the file, checks the serial, expires older waiting file
   plans, and turns the differences into one plan with source `file` and `context`
-  `serial`, `key_id`, `signer_user_id` and `file_sha256`: privacy and gateway
+  `serial`, `key_id`, `signer_user_id`, `registered_by` (who registered the key)
+  and `file_sha256`. Parsing, validating and previewing run without the tenant
+  lock, which every request of the tenant waits on; a policy write in between
+  answers 409 `POLICY_VERSION_CHANGED` (push again). A file holds at most 50,000
+  YAML nodes, and one file is parsed at a time: privacy and gateway
   settings one change each, rules deleted first, then updated, then created, so
   the 100-rule limit holds at every step; a file plan holds up to 250 changes. The
   plan applies through the same code as any plan, so a new `enforced` rule still
@@ -651,8 +658,8 @@ needs an active signing key (409 `CONFIG_NO_SIGNING_KEY`).
   signature is valid, and stores nothing.
 - **Four eyes with files.** Under `four_eyes: "relaxing"` a relaxing file waits in
   `pending_approval` (202) like any relaxing plan. Besides the plan's creator and
-  submitter, the person who signed the file (`context.signer_user_id`) cannot
-  approve it, so a loosening change needs a second person even when CI pushed it
+  submitter, the person who signed the file (`context.signer_user_id`) and the
+  person who registered its key (`context.registered_by`) cannot approve it, so a loosening change needs a second person even when CI pushed it
   with a service account. Tightening and neutral files apply at once.
 
 Audit actions: `tenant.config_mode_changed` (before and after `mode` and

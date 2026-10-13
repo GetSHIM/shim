@@ -9,6 +9,7 @@ rise sets the items back. A person sees every row and can undo it.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Literal
@@ -34,8 +35,10 @@ from shim_enterprise.findings.service import (
 )
 from shim_enterprise.policy.allowlist import (
     ALLOWLIST,
+    PlanCheck,
     Unattended,
     admit_unattended,
+    mark_undone,
     notify_remediation,
 )
 from shim_enterprise.policy.api import (
@@ -63,7 +66,12 @@ async def _skip(
     finding_id: UUID,
     reasons: Sequence[str],
 ) -> None:
-    """Record why a finding's fix did not run; the unique index stops any retry."""
+    """Record why a finding's fix did not run; the unique index stops any retry.
+
+    A refusal that passes (the day's limit, a pause, nothing to measure yet) writes
+    no row, so the next pass tries again."""
+    if set(reasons) <= _TRANSIENT:
+        return
     row = PolicyRemediation(
         id=uuid4(),
         organization_id=organization_id,
@@ -79,6 +87,9 @@ async def _skip(
     await notify_remediation(session, row, "skipped", None)
 
 
+_TRANSIENT = {"REMEDIATION_LIMIT", "AUTO_REMEDIATION_PAUSED", "proof_unavailable"}
+
+
 def _error_code(error: HTTPException) -> str:
     detail = error.detail
     if isinstance(detail, dict) and isinstance(detail.get("code"), str):
@@ -86,39 +97,17 @@ def _error_code(error: HTTPException) -> str:
     return f"http_{error.status_code}"
 
 
-async def _remediate(session: AsyncSession, finding: Finding) -> None:
-    organization_id = finding.organization_id
-    actor = system_actor(organization_id)
-    async with session.begin_nested():
-        changes = await finding_changes(session, actor, finding)
-        check = await admit_unattended(
-            session,
-            organization_id,
-            changes,
-            risk=combine_risk(change["risk"] for change in changes),
-            source="auto",
-        )
-        plan = await new_plan(
-            session,
-            actor,
-            organization_id,
-            changes,
-            source="auto",
-            reason=f"finding:{finding.id}",
-        )
-        await _apply_plan(session, actor, plan, admitted=check, finding_id=finding.id)
-        finding.status_id = STATUS_IDS["in_progress"]
-        finding.evidence = {
-            **finding.evidence,
-            "policy_versions": [
-                *(finding.evidence.get("policy_versions") or []),
-                plan.applied_version,
-            ],
-        }
+@dataclass
+class _Fix:
+    finding: Finding
+    changes: list[dict[str, Any]]
+    check: PlanCheck | None
+    reasons: list[str]
 
 
-async def _execute(session: AsyncSession, organization_id: UUID) -> None:
-    """Apply plans for up to MAX_PER_PASS open `auto` findings with no row yet."""
+async def _planned_fixes(session: AsyncSession, organization_id: UUID) -> list[_Fix]:
+    """Up to MAX_PER_PASS open `auto` findings with no row yet, each planned and
+    checked against the allowlist, or the reasons it cannot run."""
     ladder = await finding_ladder(session, organization_id)
     kinds = {entry.action_kind for entry in ALLOWLIST if entry.action_kind}
     rules = [
@@ -127,7 +116,7 @@ async def _execute(session: AsyncSession, organization_id: UUID) -> None:
         if mode == "auto" and rule_id in RULES and RULES[rule_id].ACTION_KIND in kinds
     ]
     if ladder.paused or not rules:
-        return
+        return []
     findings = await session.scalars(
         select(Finding)
         .where(
@@ -142,14 +131,57 @@ async def _execute(session: AsyncSession, organization_id: UUID) -> None:
         .order_by(Finding.first_seen_at, Finding.id)
         .limit(MAX_PER_PASS)
     )
+    actor = system_actor(organization_id)
+    fixes = []
     for finding in findings.all():
         try:
-            await _remediate(session, finding)
+            changes = await finding_changes(session, actor, finding)
+            check = await admit_unattended(
+                session,
+                organization_id,
+                changes,
+                risk=combine_risk(change["risk"] for change in changes),
+                source="auto",
+                agent=False,
+            )
+            fixes.append(_Fix(finding, changes, check, []))
         except Unattended as refused:
-            reasons = [refusal.reason for refusal in refused.refusals]
-            await _skip(session, organization_id, finding.id, reasons or [refused.code])
+            reasons: list[str] = [refusal.reason for refusal in refused.refusals]
+            fixes.append(_Fix(finding, [], None, reasons or [refused.code]))
         except HTTPException as error:
-            await _skip(session, organization_id, finding.id, [_error_code(error)])
+            fixes.append(_Fix(finding, [], None, [_error_code(error)]))
+    return fixes
+
+
+async def _remediate(session: AsyncSession, fix: _Fix) -> None:
+    finding, organization_id = fix.finding, fix.finding.organization_id
+    actor = system_actor(organization_id)
+    assert fix.check is not None
+    try:
+        async with session.begin_nested():
+            plan = await new_plan(
+                session,
+                actor,
+                organization_id,
+                fix.changes,
+                source="auto",
+                reason=f"finding:{finding.id}",
+            )
+            # Its stale check stops a fix whose item changed since it was planned.
+            await _apply_plan(
+                session, actor, plan, admitted=fix.check, finding_id=finding.id
+            )
+    except HTTPException as error:
+        await _skip(session, organization_id, finding.id, [_error_code(error)])
+        return
+    finding.status_id = STATUS_IDS["in_progress"]
+    finding.evidence = {
+        **finding.evidence,
+        "policy_versions": [
+            *(finding.evidence.get("policy_versions") or []),
+            plan.applied_version,
+        ],
+    }
 
 
 def _refusals(
@@ -241,46 +273,19 @@ async def _measure(
     return measured, risen
 
 
-async def _close(session: AsyncSession, row: PolicyRemediation, now: datetime) -> None:
-    measured, risen = await _measure(session, row)
-    row.result = {**row.result, "items": measured}
-    finding = (
-        None if row.finding_id is None else await session.get(Finding, row.finding_id)
-    )
-    if not risen:
-        row.status, row.closed_at = "kept", now
-        if finding is not None and finding.status_id in _OPEN:
-            finding.status_id = STATUS_RESOLVED
-            finding.resolved_at, finding.resolved_by = now, "system"
-        await notify_remediation(session, row, "kept", row.applied_version)
-        return
-    changes = await _restore_changes(session, row)
-    if changes is None:
-        row.status, row.closed_at = "restore_skipped", now
-        row.result = {**row.result, "reason": "item_changed"}
-        await notify_remediation(session, row, "restore_skipped", None)
-        return
-    actor = system_actor(row.organization_id)
-    plan = await new_plan(
-        session,
-        actor,
-        row.organization_id,
-        changes,
-        source="auto",
-        reason=f"remediation:{row.id}:restore",
-    )
-    # The automatic undo is the one relaxing plan four eyes does not hold (`_apply_plan`).
-    await _apply_plan(session, actor, plan)
-    row.status, row.closed_at = "restored", now
-    row.restore_plan_id, row.restored_version = plan.id, plan.applied_version
-    if finding is not None and finding.status_id in _OPEN:
-        finding.status_id = STATUS_IDS["new"]
-    await notify_remediation(session, row, "restored", plan.applied_version)
+@dataclass
+class _Closing:
+    row: PolicyRemediation
+    measured: dict[str, Any]
+    risen: bool
+    # The undo when risen; None when an item changed since the fix.
+    changes: list[dict[str, Any]] | None
 
 
-async def _close_due(
+async def _measured(
     session: AsyncSession, organization_id: UUID, now: datetime
-) -> None:
+) -> list[_Closing]:
+    """Each watching row whose window closed, measured, with its undo planned."""
     due = await session.scalars(
         select(PolicyRemediation)
         .where(
@@ -291,21 +296,78 @@ async def _close_due(
         )
         .order_by(PolicyRemediation.window_end, PolicyRemediation.id)
     )
+    closing = []
     for row in due.all():
         try:
             async with session.begin_nested():
-                await _close(session, row, now)
+                measured, risen = await _measure(session, row)
+                changes = await _restore_changes(session, row) if risen else []
         except DBAPIError as error:
             if getattr(error.orig, "pgcode", None) != QUERY_CANCELED:
                 raise
             # Too slow this pass: the row stays watching for the next one.
             logger.warning("Remediation window measurement timed out")
+            continue
+        closing.append(_Closing(row, measured, risen, changes))
+    return closing
+
+
+async def _close(session: AsyncSession, closing: _Closing, now: datetime) -> None:
+    row = closing.row
+    await session.refresh(row)
+    if row.status != "watching":
+        # A person undid it since it was measured.
+        return
+    row.result = {**row.result, "items": closing.measured}
+    finding = (
+        None if row.finding_id is None else await session.get(Finding, row.finding_id)
+    )
+    if not closing.risen:
+        row.status, row.closed_at = "kept", now
+        if finding is not None and finding.status_id in _OPEN:
+            finding.status_id = STATUS_RESOLVED
+            finding.resolved_at, finding.resolved_by = now, "system"
+        await notify_remediation(session, row, "kept", row.applied_version)
+        return
+    reason = "item_changed"
+    if closing.changes is not None:
+        actor = system_actor(row.organization_id)
+        try:
+            async with session.begin_nested():
+                plan = await new_plan(
+                    session,
+                    actor,
+                    row.organization_id,
+                    closing.changes,
+                    source="auto",
+                    reason=f"remediation:{row.id}:restore",
+                )
+                # The automatic undo is the one relaxing plan four eyes does not
+                # hold (`_apply_plan`); its stale check stops it if an item changed.
+                await _apply_plan(session, actor, plan)
+        except HTTPException as error:
+            # Refused by the item itself (a deployment that no longer validates):
+            # this row only, never the tenant's whole pass.
+            reason = _error_code(error)
+        else:
+            row.status, row.closed_at = "restored", now
+            row.restore_plan_id, row.restored_version = plan.id, plan.applied_version
+            if finding is not None and finding.status_id in _OPEN:
+                finding.status_id = STATUS_IDS["new"]
+            await notify_remediation(session, row, "restored", plan.applied_version)
+            return
+    row.status, row.closed_at = "restore_skipped", now
+    row.result = {**row.result, "reason": reason}
+    await notify_remediation(session, row, "restore_skipped", None)
 
 
 async def run_remediations(
     session_factory: Callable[[], Any], *, now: datetime
 ) -> None:
-    """Close due windows, then fix `auto` findings, one transaction per organization."""
+    """Close due windows, then fix `auto` findings, one transaction per organization.
+
+    Measuring and planning read history, so they run before the tenant lock, which
+    every request of the tenant waits on; only the writes run under it."""
     async with session_factory() as session:
         tenant_ids = (
             await session.scalars(
@@ -316,9 +378,16 @@ async def run_remediations(
         async with session_factory() as session:
             try:
                 await bound_statements(session)
+                closing = await _measured(session, tenant_id, now)
+                fixes = await _planned_fixes(session, tenant_id)
                 await lock_tenant(session, tenant_id)
-                await _close_due(session, tenant_id, now)
-                await _execute(session, tenant_id)
+                for due in closing:
+                    await _close(session, due, now)
+                for fix in fixes:
+                    if fix.check is None:
+                        await _skip(session, tenant_id, fix.finding.id, fix.reasons)
+                    else:
+                        await _remediate(session, fix)
                 await session.commit()
             except Exception as exc:
                 await session.rollback()
@@ -370,7 +439,11 @@ async def _owned(
         PolicyRemediation.organization_id == user.organization_id,
         PolicyRemediation.id == remediation_id,
     )
-    row = await session.scalar(statement.with_for_update() if lock else statement)
+    row = await session.scalar(
+        statement.with_for_update().execution_options(populate_existing=True)
+        if lock
+        else statement
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="Remediation not found")
     return row
@@ -434,6 +507,11 @@ async def undo_remediation(
         )
     organization_id = user.organization_id
     assert organization_id is not None
+    # Planned before the tenant lock (impact reads history); the plan's stale
+    # check guards the items under it.
+    changes = await _restore_changes(
+        session, await _owned(session, user, remediation_id)
+    )
     await lock_tenant(session, organization_id)
     row = await _owned(session, user, remediation_id, lock=True)
     if row.status not in ("watching", "kept"):
@@ -441,7 +519,6 @@ async def undo_remediation(
             status_code=409,
             detail={"code": "REMEDIATION_STATE_CONFLICT", "status": row.status},
         )
-    changes = await _restore_changes(session, row)
     if changes is None:
         raise HTTPException(
             status_code=409,
@@ -456,13 +533,9 @@ async def undo_remediation(
     )
     cleanups = await _apply_plan(session, user, plan)
     row.restore_plan_id = plan.id
-    # A plan four eyes holds leaves the row as it is until a second approver applies it.
+    # A plan four eyes holds leaves the row as it is until its approval (`approve_plan`).
     if cleanups is not None:
-        row.status, row.closed_at = "undone", datetime.now(timezone.utc)
-        row.restored_version = plan.applied_version
-        await notify_remediation(
-            session, row, "undone", plan.applied_version, actor=user
-        )
+        await mark_undone(session, row, plan.applied_version, user)
     await session.commit()
     await session.refresh(row)
     if cleanups is None:

@@ -55,6 +55,7 @@ async def verify_config_signature(
     # Here, not at the top: the operator script signs files without a database.
     from shim_enterprise.config_file.models import ConfigSigningKey
     from shim_enterprise.tenants.models import User
+    from shim_enterprise.tenants.permissions import user_permissions
 
     refused = HTTPException(
         status_code=403,
@@ -65,22 +66,26 @@ async def verify_config_signature(
         },
     )
     signer, _, encoded = signature.partition(".")
-    key = await session.scalar(
-        select(ConfigSigningKey)
-        .join(
-            User,
-            (User.organization_id == ConfigSigningKey.organization_id)
-            & (User.id == ConfigSigningKey.user_id),
+    found = (
+        await session.execute(
+            select(ConfigSigningKey, User)
+            .join(
+                User,
+                (User.organization_id == ConfigSigningKey.organization_id)
+                & (User.id == ConfigSigningKey.user_id),
+            )
+            .where(
+                ConfigSigningKey.organization_id == organization_id,
+                ConfigSigningKey.key_id == signer,
+                ConfigSigningKey.revoked_at.is_(None),
+                User.is_active.is_(True),
+            )
         )
-        .where(
-            ConfigSigningKey.organization_id == organization_id,
-            ConfigSigningKey.key_id == signer,
-            ConfigSigningKey.revoked_at.is_(None),
-            User.is_active.is_(True),
-        )
-    )
-    if key is None:
+    ).first()
+    # A holder demoted since registering no longer signs.
+    if found is None or "plans.create" not in await user_permissions(session, found[1]):
         raise refused
+    key = found[0]
     public_key = load_pem_public_key(key.public_key.encode("ascii"))
     assert isinstance(public_key, Ed25519PublicKey)
     try:

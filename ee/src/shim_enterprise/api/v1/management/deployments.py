@@ -74,7 +74,8 @@ from shim_enterprise.policy.plans import (
     Impact,
     Risk,
     State,
-    lock_tenant,
+    current_version,
+    lock_at_version,
     no_impact,
     version_detail,
 )
@@ -599,7 +600,9 @@ async def update_model_deployment(
     session: AsyncSession = Depends(get_db),
 ):
     tenant_id, item = _tenant_id(user), str(deployment_id)
-    await lock_tenant(session, tenant_id)
+    # Bedrock is asked before the tenant lock, which every request of the tenant
+    # waits on; a policy write in between is a 409 under it.
+    version = await current_version(session, tenant_id)
     before = (await DEPLOYMENTS.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(404, detail="Model deployment not found")
@@ -612,6 +615,7 @@ async def update_model_deployment(
         payload.model_dump(exclude=set(_KEPT_WHEN_ABSENT - payload.model_fields_set)),
     )
     destinations = await _admit_bedrock(session, user, request, before, after)
+    await lock_at_version(session, tenant_id, version)
     await _managed_write(session, user, DEPLOYMENTS, item, before, after)
     await _store_destinations(session, deployment_id, destinations)
     await session.commit()
@@ -631,6 +635,8 @@ async def _destinations(
     secret = await _owned_provider_secret(
         session, user, UUID(str(state["provider_secret_id"]))
     )
+    # Finish the read transaction before AWS I/O.
+    await session.commit()
     try:
         async with asyncio.timeout(5):
             token = await _fresh_resolver(state["provider"], client).resolve_row(

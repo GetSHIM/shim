@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ee.tests.config_file.test_config_api import (
+    add_key,
     call,
     dumped,
     exported,
@@ -101,3 +102,48 @@ async def test_a_tightening_file_applies_at_once_under_four_eyes(db) -> None:
 
     assert response.status_code == 200, response.text
     assert response.json()["plan"]["risk"] == "tightening"
+
+
+@pytest.mark.asyncio
+async def test_whoever_registered_the_signing_key_cannot_approve(db) -> None:
+    users = await tenant(db, "admin", "admin2", "service")
+    owner = users["owner"]
+    # The owner registers a key "held" by admin; admin signs, CI pushes.
+    key = await add_key(db, owner, users["admin"])
+    assert (
+        await call(
+            db,
+            owner,
+            "PUT",
+            f"{MANAGEMENT}/config/mode",
+            json={"mode": "file", "resources": ["privacy"]},
+        )
+    ).status_code == 200
+    await call(
+        db,
+        owner,
+        "PATCH",
+        f"{MANAGEMENT}/gateway-settings",
+        json={"four_eyes": "relaxing"},
+    )
+    document = await exported(db, owner)
+    document["resources"]["privacy"]["entity_actions"] = {"EMAIL_ADDRESS": "monitor"}
+    waiting = await push(
+        db,
+        users["service"],
+        dumped(document),
+        key,
+        organization_id=owner.organization_id,
+    )
+    assert waiting.status_code == 202, waiting.text
+    plan = waiting.json()["plan"]
+
+    by_registrant = await _approve(db, owner, plan)
+    by_other = await _approve(db, users["admin2"], plan)
+
+    assert plan["context"]["registered_by"] == str(owner.id)
+    assert (by_registrant.status_code, by_registrant.json()["detail"]) == (
+        403,
+        {"code": "APPROVER_NOT_ELIGIBLE"},
+    )
+    assert by_other.status_code == 200, by_other.text

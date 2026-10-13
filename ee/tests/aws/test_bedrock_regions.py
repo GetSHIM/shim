@@ -523,3 +523,47 @@ async def test_the_preview_shows_what_a_candidate_lock_would_refuse(db) -> None:
         2,
     )
     assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_bedrock_update_asks_bedrock_before_the_tenant_lock(
+    db, tenant_lock
+) -> None:
+    user = await _admin(db)
+    secret = await _aws_secret(db, user)
+    created = await _call(
+        db,
+        user,
+        "POST",
+        DEPLOYMENTS,
+        json=_deployment(
+            secret, upstream_model="anthropic.claude-haiku-4-5-20251001-v1:0"
+        ),
+    )
+    assert created.status_code == 201, created.text
+    locked: list[bool] = []
+
+    def profile(request: httpx.Request) -> httpx.Response:
+        locked.append(tenant_lock())
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"modelArn": "arn:aws:bedrock:eu-west-1::foundation-model/a"}
+                ]
+            },
+        )
+
+    moved = await _call(
+        db,
+        user,
+        "PUT",
+        f"{DEPLOYMENTS}/{created.json()['id']}",
+        profile,
+        json=_deployment(secret, alias=created.json()["alias"], upstream_model=EU),
+    )
+
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["aws_destination_regions"] == ["eu-west-1"]
+    # A request's reservation waits on the tenant lock; Bedrock is asked without it.
+    assert locked == [False]

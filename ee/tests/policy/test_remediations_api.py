@@ -14,6 +14,7 @@ from ee.tests.policy.test_remediation import (
     _versions,
     _watched,
 )
+from shim_enterprise.policy import remediation
 from shim_enterprise.policy.models import PolicyRemediation
 from shim_enterprise.tenants.models import OrganizationGatewaySettings, User
 
@@ -187,3 +188,46 @@ async def test_under_four_eyes_an_undo_waits_for_a_second_approver(db) -> None:
     )
     assert await _deployment_enabled(db, after) is False
     assert len(await _versions(db, tenant)) == 1
+
+    approved = await _call(
+        db,
+        people["admin"],
+        "POST",
+        f"/api/v1/management/policy/plans/{after.restore_plan_id}/approve",
+        json={},
+    )
+
+    [undone] = await _rows(db, tenant)
+    versions = await _versions(db, tenant)
+    assert approved.status_code == 200, approved.text
+    assert (undone.status, undone.restored_version) == (
+        "undone",
+        versions[-1].version,
+    )
+    assert await _deployment_enabled(db, undone) is True
+    [audit] = await _audits(db, tenant, "tenant.remediation_undone")
+    assert audit["actor_type"] == "user_jwt"
+
+
+@pytest.mark.asyncio
+async def test_an_undo_plans_before_the_tenant_lock(
+    db, monkeypatch, tenant_lock
+) -> None:
+    tenant = await _tenant(db)
+    people = await _people(db, tenant)
+    row = await _watched(db, tenant)
+    locked: list[bool] = []
+    planned = remediation._restore_changes
+
+    async def restore_changes(*args, **kwargs):
+        locked.append(tenant_lock())
+        return await planned(*args, **kwargs)
+
+    monkeypatch.setattr(remediation, "_restore_changes", restore_changes)
+
+    undone = await _call(
+        db, people["owner"], "POST", f"{REMEDIATIONS}/{row.id}/undo", json={}
+    )
+
+    assert undone.status_code == 200, undone.text
+    assert locked == [False]

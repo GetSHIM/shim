@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 import hashlib
 import signal
+import sys
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -47,6 +48,31 @@ class WorkerShutdownProbe:
 @pytest.fixture
 def worker_shutdown_probe() -> WorkerShutdownProbe:
     return WorkerShutdownProbe()
+
+
+@pytest.fixture
+def tenant_lock(monkeypatch) -> Callable[[], bool]:
+    """Whether a session holds the tenant lock now, as a request's reservation
+    (FOR KEY SHARE on the tenant row) would find it: taken by `lock_tenant`, held
+    until that session's transaction ends."""
+    from shim_enterprise.policy import plans
+
+    original = plans.lock_tenant
+    held: list[tuple[object, object]] = []
+
+    async def lock_tenant(session, organization_id) -> None:
+        await original(session, organization_id)
+        held.append((session, session.sync_session.get_transaction()))
+
+    for name, module in list(sys.modules.items()):
+        if name.startswith("shim_enterprise") and (
+            getattr(module, "lock_tenant", None) is original
+        ):
+            monkeypatch.setattr(module, "lock_tenant", lock_tenant)
+    return lambda: any(
+        session.sync_session.get_transaction() is transaction
+        for session, transaction in held
+    )
 
 
 @pytest_asyncio.fixture

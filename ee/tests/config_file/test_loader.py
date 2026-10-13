@@ -6,6 +6,7 @@ import pytest
 
 from shim_enterprise.config_file.loader import (
     MAX_FILE_BYTES,
+    MAX_NODES,
     ConfigFileError,
     load_config,
 )
@@ -114,3 +115,32 @@ def test_the_header_is_checked() -> None:
     assert load_config(_file("resources: {rules: [2026-10-13]}\n")).resources == {
         "rules": [date(2026, 10, 13)]
     }
+
+
+def test_a_file_of_many_small_nodes_is_refused_before_it_is_built() -> None:
+    items = _refused(_file("resources: {rules: [" + "1," * MAX_NODES + "1]}\n"))
+    keys = _refused(
+        _file(
+            "resources:\n  gateway_settings:\n"
+            + "".join(f"    k{index}: 1\n" for index in range(MAX_NODES // 2))
+        )
+    )
+
+    assert "at most 50000 nodes" in str(items) and "at most" in str(keys)
+    # A full file of 100 rules is about 5,000 nodes.
+    rules = "".join(
+        f"    - {{id: r{index}, kind: term, match: {{terms: [a, b, c]}}}}\n"
+        for index in range(100)
+    )
+    assert (
+        len(load_config(_file("resources:\n  rules:\n" + rules)).resources["rules"])
+        == 100
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["resources: {? [1] : x}\n", "resources: {rules: [2024-02-30]}\n"],
+)
+def test_an_unhashable_key_or_an_impossible_date_is_a_file_error(body) -> None:
+    assert _refused(_file(body)).path == "file"

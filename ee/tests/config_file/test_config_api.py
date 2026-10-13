@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shim_enterprise.api.enterprise_deps import get_current_user
 from shim_enterprise.api.v1.router import management_router
 from shim_enterprise.compliance.models import ComplianceForwardTarget
+from shim_enterprise.config_file import api as config_api
 from shim_enterprise.config_file.loader import ConfigLoader
 from shim_enterprise.config_file.models import OrganizationConfigMode
 from shim_enterprise.config_file.signing import key_id, sign
@@ -549,6 +550,7 @@ async def test_apply_refuses_in_api_mode_stale_serials_and_other_tenants(db) -> 
         "serial",
         "key_id",
         "signer_user_id",
+        "registered_by",
         "file_sha256",
     }
     assert (stale.status_code, stale.json()["detail"]) == (
@@ -721,3 +723,78 @@ async def test_a_file_with_an_anchor_is_invalid_and_a_missing_section_is_named(
         "CONFIG_FILE_INVALID",
     )
     assert without_privacy.json()["detail"]["path"] == "resources.privacy"
+
+
+@pytest.mark.asyncio
+async def test_a_file_is_parsed_checked_and_previewed_before_the_tenant_lock(
+    db, monkeypatch, tenant_lock
+) -> None:
+    users = await tenant(db)
+    owner = users["owner"]
+    key = await file_mode(db, owner, "rules")
+    document = await exported(db, owner)
+    document["resources"]["rules"] = [rule("atlas")]
+    locked: dict[str, bool] = {}
+    for name in ("_document", "_file_changes", "_planned"):
+
+        async def step(*args, _name=name, _step=getattr(config_api, name), **kwargs):
+            locked[_name] = tenant_lock()
+            return await _step(*args, **kwargs)
+
+        monkeypatch.setattr(config_api, name, step)
+
+    applied = await push(db, owner, dumped(document), key)
+
+    assert applied.status_code == 200, applied.text
+    # A request's reservation waits on the tenant lock; none of these hold it.
+    assert locked == {"_document": False, "_file_changes": False, "_planned": False}
+    assert await stored_rule_ids(db, owner.organization_id) == ["atlas"]
+
+
+@pytest.mark.asyncio
+async def test_a_policy_write_while_a_file_is_previewed_is_a_409(
+    db, monkeypatch
+) -> None:
+    users = await tenant(db)
+    owner = users["owner"]
+    key = await file_mode(db, owner, "rules")
+    document = await exported(db, owner)
+    document["resources"]["rules"] = [rule("atlas")]
+    planned = config_api._planned
+
+    async def meanwhile(*args, **kwargs):
+        monkeypatch.setattr(config_api, "_planned", planned)
+        # The panel can still change what the file does not manage.
+        changed = await call(
+            db,
+            owner,
+            "PUT",
+            "/api/v1/management/settings/pii",
+            json={"entity_actions": {"EMAIL_ADDRESS": "monitor"}},
+        )
+        assert changed.status_code == 200, changed.text
+        return await planned(*args, **kwargs)
+
+    monkeypatch.setattr(config_api, "_planned", meanwhile)
+
+    refused = await push(db, owner, dumped(document), key)
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == "POLICY_VERSION_CHANGED"
+    assert await stored_rule_ids(db, owner.organization_id) == []
+    assert (await mode_row(db, owner.organization_id)).last_serial == 0
+
+
+@pytest.mark.asyncio
+async def test_a_non_string_privacy_key_is_a_file_error(db) -> None:
+    users = await tenant(db)
+    owner = users["owner"]
+    key = await file_mode(db, owner, "privacy")
+    data = dumped(await exported(db, owner)).replace(
+        b"privacy:\n", b"privacy:\n  1: x\n", 1
+    )
+
+    refused = await push(db, owner, data, key)
+
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["code"] == "CONFIG_FILE_INVALID"

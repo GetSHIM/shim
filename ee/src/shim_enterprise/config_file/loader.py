@@ -12,6 +12,8 @@ from yaml.constructor import ConstructorError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 MAX_FILE_BYTES = 1_000_000
+# A full file of 100 rules is about 5,000 nodes; parsing time follows the count.
+MAX_NODES = 50_000
 _BOOL = "tag:yaml.org,2002:bool"
 
 
@@ -28,11 +30,18 @@ class ConfigLoader(yaml.SafeLoader):
     `no` stay the strings a setting such as `response_scan: off` means.
     """
 
+    nodes = 0
+
     def compose_node(self, parent: Any, index: Any) -> Any:
         event = self.peek_event()
         if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
             raise ComposerError(
                 None, None, "anchors and aliases are not allowed", event.start_mark
+            )
+        self.nodes += 1
+        if self.nodes > MAX_NODES:
+            raise ComposerError(
+                None, None, f"a file holds at most {MAX_NODES} nodes", event.start_mark
             )
         return super().compose_node(parent, index)
 
@@ -80,6 +89,11 @@ def load_config(data: bytes) -> ConfigFileV1:
         raise ConfigFileError("file", "the file is not UTF-8") from None
     except RecursionError:
         raise ConfigFileError("file", "the file nests too deeply") from None
+    except (TypeError, ValueError):
+        # An unhashable key (`? [1]`) or an impossible date (2024-02-30).
+        raise ConfigFileError(
+            "file", "the file holds a key or value YAML cannot read"
+        ) from None
     except yaml.MarkedYAMLError as error:
         mark = error.problem_mark or error.context_mark
         where = f"line {mark.line + 1}, column {mark.column + 1}" if mark else "file"

@@ -6,6 +6,7 @@ import hashlib
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import select
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from fastapi import HTTPException
@@ -128,3 +129,16 @@ async def test_every_failed_check_answers_the_same_403(db) -> None:
             },
         )
     ] * len(cases)
+
+
+@pytest.mark.asyncio
+async def test_a_key_stops_signing_when_its_holder_may_no_longer_plan(db) -> None:
+    tenant, private_key = await _registered(db)
+    holder = await db.scalar(select(User).where(User.organization_id == tenant))
+    holder.role = "member"
+    await db.flush()
+
+    with pytest.raises(HTTPException) as refused:
+        await verify_config_signature(db, tenant, FILE, sign(private_key, tenant, FILE))
+
+    assert refused.value.detail["code"] == "CONFIG_SIGNATURE_INVALID"

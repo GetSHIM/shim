@@ -58,6 +58,7 @@ from shim_enterprise.policy.plans import (
     State,
     combine_risk,
     current_version,
+    lock_at_version,
     lock_tenant,
     state_at,
 )
@@ -172,15 +173,50 @@ def _file_bytes(payload: FileInput) -> bytes:
         raise _invalid("file", "the file is not valid UTF-8") from None
 
 
+# One parse at a time: pure-Python YAML holds the GIL, and the default executor
+# is the one privacy runs on.
+_PARSES = asyncio.Semaphore(1)
+
+
 async def _document(data: bytes, organization_id: UUID) -> ConfigFileV1:
     # Off the event loop: a megabyte of YAML takes the pure-Python parser a while.
     try:
-        document = await asyncio.to_thread(load_config, data)
+        async with _PARSES:
+            document = await asyncio.to_thread(load_config, data)
     except ConfigFileError as error:
         raise _invalid(error.path, str(error)) from None
     if document.organization_id != organization_id:
         raise _invalid("organization_id", "the file is for another organization")
     return document
+
+
+async def _file_mode_row(
+    session: AsyncSession, organization_id: UUID
+) -> OrganizationConfigMode:
+    row = await _mode_row(session, organization_id)
+    if row is None or row.mode != "file":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONFIG_FILE_MODE_OFF",
+                "message": "This tenant does not manage its policy from a file.",
+                "hint": "Turn on file mode or use the panel.",
+            },
+        )
+    return row
+
+
+def _check_serial(document: ConfigFileV1, row: OrganizationConfigMode) -> None:
+    if document.serial <= row.last_serial:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONFIG_SERIAL_STALE",
+                "last_serial": row.last_serial,
+                "message": "The file's serial is not above the last applied one.",
+                "hint": "Raise serial above last_serial, sign the file and push it.",
+            },
+        )
 
 
 async def _file_changes(
@@ -240,7 +276,9 @@ async def _file_changes(
         before = current["_"]
         if name == "privacy":
             # Every field: the section is the whole truth, nothing is left as it was.
-            for field in sorted(set(PrivacySettings.model_fields) ^ set(section)):
+            for field in sorted(
+                set(PrivacySettings.model_fields) ^ set(section), key=str
+            ):
                 raise _invalid(
                     f"{prefix}.{field}",
                     "unknown field" if field in section else "field required",
@@ -620,31 +658,26 @@ async def apply_config(
 ) -> FileApplyView:
     organization_id = _tenant_id(user)
     data = _file_bytes(payload)
-    await lock_tenant(session, organization_id)
-    row = await _mode_row(session, organization_id)
-    if row is None or row.mode != "file":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "CONFIG_FILE_MODE_OFF",
-                "message": "This tenant does not manage its policy from a file.",
-                "hint": "Turn on file mode or use the panel.",
-            },
-        )
+    # Parsed, checked and previewed before the tenant lock, which every request of
+    # the tenant waits on; a policy write in between is a 409 under it.
+    version = await current_version(session, organization_id)
+    row = await _file_mode_row(session, organization_id)
     key = await verify_config_signature(
         session, organization_id, data, payload.signature or ""
     )
     document = await _document(data, organization_id)
-    if document.serial <= row.last_serial:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "CONFIG_SERIAL_STALE",
-                "last_serial": row.last_serial,
-                "message": "The file's serial is not above the last applied one.",
-                "hint": "Raise serial above last_serial, sign the file and push it.",
-            },
-        )
+    _check_serial(document, row)
+    changes = await _file_changes(
+        session, user, organization_id, document, list(row.resources)
+    )
+    planned = await _planned(session, organization_id, changes)
+    await lock_at_version(session, organization_id, version)
+    # Not versioned: another push's serial, and a revoked key or its holder.
+    await session.refresh(row)
+    _check_serial(document, row)
+    key = await verify_config_signature(
+        session, organization_id, data, payload.signature or ""
+    )
     # A newer file supersedes the ones still waiting.
     await session.execute(
         update(PolicyPlan)
@@ -655,9 +688,6 @@ async def apply_config(
         )
         .values(status="expired")
     )
-    changes = await _file_changes(
-        session, user, organization_id, document, list(row.resources)
-    )
     file_sha256 = hashlib.sha256(data).hexdigest()
     row.last_serial, row.last_file_sha256 = document.serial, file_sha256
     row.last_applied_at = datetime.now(timezone.utc)
@@ -667,13 +697,15 @@ async def apply_config(
             session,
             user,
             organization_id,
-            await _planned(session, organization_id, changes),
+            planned,
             source="file",
             reason=None,
             context={
                 "serial": document.serial,
                 "key_id": key.key_id,
                 "signer_user_id": str(key.user_id),
+                # Whoever registered the key signs with it, whomever it names.
+                "registered_by": key.created_by,
                 "file_sha256": file_sha256,
             },
         )

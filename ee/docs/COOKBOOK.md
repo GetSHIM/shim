@@ -1596,10 +1596,14 @@ management token comes from `SHIM_MANAGEMENT_TOKEN` only.
    one signed for another tenant, is 403 `CONFIG_SIGNATURE_INVALID`; an invalid file
    is 422 `CONFIG_FILE_INVALID` with the `path` that is wrong. Under
    [four eyes](#require-a-second-admin-for-loosening-changes) a loosening file waits
-   for a second administrator, who may not be its signer.
+   for a second administrator, who may be neither its signer nor whoever
+   registered the signing key. A 409 `POLICY_VERSION_CHANGED` means a policy write
+   landed while the file was checked: push it again.
 6. **Undo** by exporting an earlier policy version and pushing it:
    `export --version 41 --out shim-config.yaml`, raise nothing (the export already
-   carries the next serial), sign, push.
+   carries the next serial), sign, push. A rule the export brings back counts as
+   new: it starts in `monitor` unless it has a preview, so an `enforced` rule that
+   was deleted comes back in monitor; enforce it again after its preview.
 7. **Rotate** a key by adding the new one, pushing with it, then revoking the old one
    (`DELETE /config/signing-keys/{key_id}`); the last key cannot be revoked while the
    mode is `file`.
@@ -1795,7 +1799,7 @@ curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
 Notes: the window closes on the first worker pass after its end plus
 `REMEDIATION_WINDOW_GRACE_SECONDS` (default 900). A finding gets one automatic
 fix, ever; after an undo it only suggests. Measuring needs refusal rows, so with
-audit mode `off` the fix is skipped (`proof_unavailable`). What may be automatic
+audit mode `off` the fix waits (`proof_unavailable`) and runs once audit is on. What may be automatic
 and what never is: [automatic fixes](FINDINGS.md#automatic-fixes).
 
 ## Import LiteLLM spend logs

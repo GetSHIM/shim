@@ -127,8 +127,8 @@ team's limits or a budget, and moving a detection type from `off` to `monitor`
 `PLAN_NOT_ALLOWLISTED` with a reason per change. Its applied changes are watched
 like shim's own: `list_remediations` shows them with `actor_type: "service"`, a
 rise in refusals inside the window sets them back, and only a person undoes one.
-A paused tenant answers 409 `AUTO_REMEDIATION_PAUSED`, 20 unattended changes in
-24 hours 429 `REMEDIATION_LIMIT`.
+A paused tenant answers 409 `AUTO_REMEDIATION_PAUSED`, 20 agent applies in 24
+hours 429 `REMEDIATION_LIMIT` (shim's own fixes have a separate 20).
 
 ## Resources and prompts
 

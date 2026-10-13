@@ -21,10 +21,17 @@ from shim_enterprise.policy.allowlist import (
     PlanCheck,
     Unattended,
     admit_unattended,
+    mark_undone,
     open_remediation,
+    unattended_gate,
 )
 from shim_enterprise.outbox.publisher import OutboxWriter
-from shim_enterprise.policy.models import PlanStatus, PolicyPlan, PolicyVersion
+from shim_enterprise.policy.models import (
+    PlanStatus,
+    PolicyPlan,
+    PolicyRemediation,
+    PolicyVersion,
+)
 from shim_enterprise.policy.plans import (
     Impact,
     Risk,
@@ -36,6 +43,7 @@ from shim_enterprise.policy.plans import (
     current_version,
     four_eyes_on,
     key_holders,
+    lock_at_version,
     lock_tenant,
     record_managed_write,
     refuse_file_managed,
@@ -227,10 +235,12 @@ async def _admit_agent(
     source: str,
     plan_id: UUID | None,
 ) -> PlanCheck:
-    """The unattended gate for an agent; a refusal is audited and committed first."""
+    """The unattended gate for an agent; a refusal is audited and committed first.
+
+    It recomputes impact, so it runs before the tenant lock."""
     try:
         return await admit_unattended(
-            session, organization_id, changes, risk=risk, source=source
+            session, organization_id, changes, risk=risk, source=source, agent=True
         )
     except Unattended as refused:
         if refused.code != "PLAN_NOT_ALLOWLISTED":
@@ -388,7 +398,18 @@ async def _apply_plan(
         raise HTTPException(
             status_code=409, detail={"code": "PLAN_STALE", "items": stale}
         )
-    if admitted is None and actor.kind != "system":
+    if admitted is not None:
+        # Admitted before the lock; a pause or the day's limit since then still holds.
+        try:
+            await unattended_gate(
+                session, organization_id, agent=actor.kind != "system"
+            )
+        except Unattended as refused:
+            raise HTTPException(
+                status_code=refused.status,
+                detail={"code": refused.code, "hint": refused.hint},
+            ) from None
+    elif actor.kind != "system":
         if _allowlisted_only(await user_permissions(session, actor)):
             # Allowlisted plans tighten by construction, so four eyes never holds one.
             admitted = await _admit_agent(
@@ -523,7 +544,11 @@ async def _owned_plan(
     statement = select(PolicyPlan).where(
         PolicyPlan.organization_id == organization_id, PolicyPlan.id == plan_id
     )
-    plan = await session.scalar(statement.with_for_update() if lock else statement)
+    plan = await session.scalar(
+        statement.with_for_update().execution_options(populate_existing=True)
+        if lock
+        else statement
+    )
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan not found")
     return plan
@@ -689,9 +714,23 @@ async def apply_plan(
 ) -> PolicyPlan:
     organization_id = _tenant(user)
     await _expire_overdue(session, organization_id, PolicyPlan.id == plan_id)
+    admitted = None
+    plan = await _owned_plan(session, organization_id, plan_id)
+    if plan.status == "draft" and _allowlisted_only(
+        await user_permissions(session, user)
+    ):
+        admitted = await _admit_agent(
+            session,
+            user,
+            organization_id,
+            plan.changes,
+            risk=plan.risk,
+            source=plan.source,
+            plan_id=plan.id,
+        )
     await lock_tenant(session, organization_id)
     plan = await _owned_plan(session, organization_id, plan_id, lock=True)
-    cleanups = await _apply_plan(session, user, plan)
+    cleanups = await _apply_plan(session, user, plan, admitted=admitted)
     await session.commit()
     if cleanups is None:
         response.status_code = 202
@@ -710,13 +749,14 @@ async def _pending_for(session: AsyncSession, user: User, plan_id: UUID) -> Poli
             status_code=409,
             detail={"code": "PLAN_STATE_CONFLICT", "status": plan.status},
         )
-    # The person who signed a file's loosening change cannot approve it either.
+    # Who signed a file's loosening change, or registered its key, cannot approve it.
     authors = {
         UUID(author)
         for author in (
             plan.created_by,
             plan.submitted_by,
             plan.context.get("signer_user_id"),
+            plan.context.get("registered_by"),
         )
         if author
     }
@@ -746,8 +786,20 @@ async def approve_plan(
     _keep_note(plan, payload.note)
     cleanups = await _apply_plan(session, user, plan, status="pending_approval")
     assert cleanups is not None
-    if plan.source == "restore":
+    if plan.source == "restore" and "target_version" in plan.context:
         await _finish_restore(session, user, plan, plan.context["target_version"])
+    # A person's undo of an automatic change that waited for this approval.
+    undone = await session.scalar(
+        select(PolicyRemediation)
+        .where(
+            PolicyRemediation.organization_id == plan.organization_id,
+            PolicyRemediation.restore_plan_id == plan.id,
+            PolicyRemediation.status.in_(("watching", "kept")),
+        )
+        .with_for_update()
+    )
+    if undone is not None:
+        await mark_undone(session, undone, plan.applied_version, user)
     await _audit(
         session,
         user,
@@ -878,7 +930,6 @@ async def restore_version(
     session: AsyncSession = Depends(get_db),
 ) -> RestoreView:
     organization_id = _tenant(user)
-    await lock_tenant(session, organization_id)
     latest = await current_version(session, organization_id)
     if not 0 <= version <= latest:
         raise HTTPException(status_code=404, detail="Policy version not found")
@@ -980,10 +1031,11 @@ async def restore_version(
             status_code=422, detail=f"A plan holds at most {_MAX_CHANGES} changes"
         )
     plan = None
+    admitted: PlanCheck | None = None
     cleanups: list[PostCommit] | None = []
     if changes and _allowlisted_only(await user_permissions(session, user)):
         # A refused restore creates no plan.
-        await _admit_agent(
+        admitted = await _admit_agent(
             session,
             user,
             organization_id,
@@ -992,6 +1044,8 @@ async def restore_version(
             source="restore",
             plan_id=None,
         )
+    # Planned without the tenant lock: impact reads history.
+    await lock_at_version(session, organization_id, latest)
     if changes:
         plan = await new_plan(
             session,
@@ -1001,7 +1055,7 @@ async def restore_version(
             source="restore",
             reason=payload.reason,
         )
-        cleanups = await _apply_plan(session, user, plan)
+        cleanups = await _apply_plan(session, user, plan, admitted=admitted)
         if cleanups is None:
             # The rest of the restore runs when the plan is approved.
             plan.context = {"target_version": version}

@@ -228,8 +228,32 @@ async def test_an_allowlisted_plan_applies_and_the_impact_is_measured_at_apply(
 
 
 @pytest.mark.asyncio
+async def test_an_agent_apply_checks_the_allowlist_before_the_tenant_lock(
+    db, monkeypatch, tenant_lock
+) -> None:
+    monkeypatch.setattr(allowlist, "ALLOWLIST", (MASK_EMAIL,))
+    users = await _tenant(db)
+    agent = users["agent"]
+    await _monitoring_email(db, users)
+    plan = (await _call(db, agent, "POST", f"{POLICY}/plans", json=TIGHTEN)).json()
+    locked: list[bool] = []
+    check_plan = allowlist.check_plan
+
+    async def checked(*args, **kwargs):
+        locked.append(tenant_lock())
+        return await check_plan(*args, **kwargs)
+
+    monkeypatch.setattr(allowlist, "check_plan", checked)
+
+    applied = await _call(db, agent, "POST", f"{POLICY}/plans/{plan['id']}/apply")
+
+    assert applied.status_code == 200, applied.text
+    assert locked == [False]
+
+
+@pytest.mark.asyncio
 async def test_a_restore_by_a_recommender_passes_the_same_check(
-    db, monkeypatch
+    db, monkeypatch, tenant_lock
 ) -> None:
     users = await _tenant(db)
     agent, owner = users["agent"], users["owner"]
@@ -255,6 +279,14 @@ async def test_a_restore_by_a_recommender_passes_the_same_check(
     )
     no_plan = await _count(db, PolicyPlan, tenant)
     monkeypatch.setattr(allowlist, "ALLOWLIST", (MASK_EMAIL,))
+    locked: list[bool] = []
+    check_plan = allowlist.check_plan
+
+    async def checked(*args, **kwargs):
+        locked.append(tenant_lock())
+        return await check_plan(*args, **kwargs)
+
+    monkeypatch.setattr(allowlist, "check_plan", checked)
     restored = await _call(
         db, agent, "POST", f"{POLICY}/versions/{target - 1}/restore", json={}
     )
@@ -265,6 +297,8 @@ async def test_a_restore_by_a_recommender_passes_the_same_check(
     assert no_plan == plans
     assert restored.status_code == 200, restored.text
     assert restored.json()["plan"]["source"] == "restore"
+    # Checked once, before the tenant lock that every request waits on.
+    assert locked == [False]
     assert read.status_code == 200
     [audit] = await _audits(db, tenant, "tenant.policy_plan_apply_refused")
     assert audit["plan_id"] is None
@@ -378,11 +412,22 @@ async def test_an_agent_apply_is_watched_paused_and_limited_like_shims_own(
         "/api/v1/management/gateway-settings",
         json={"auto_remediation_paused": False},
     )
+    # shim's own fixes have a limit of their own.
     db.add_all(
         PolicyRemediation(
             organization_id=tenant, actor_type="system", items=[], status="kept"
         )
-        for _ in range(19)
+        for _ in range(20)
+    )
+    await db.flush()
+    under_limit = await _call(
+        db, agent, "POST", f"{POLICY}/plans/{await _counting_plan(db, users)}/apply"
+    )
+    db.add_all(
+        PolicyRemediation(
+            organization_id=tenant, actor_type="service", items=[], status="kept"
+        )
+        for _ in range(18)
     )
     await db.flush()
     over_limit = await _call(
@@ -402,6 +447,7 @@ async def test_an_agent_apply_is_watched_paused_and_limited_like_shims_own(
         409,
         "AUTO_REMEDIATION_PAUSED",
     )
+    assert under_limit.status_code == 200, under_limit.text
     assert (over_limit.status_code, over_limit.json()["detail"]["code"]) == (
         429,
         "REMEDIATION_LIMIT",
@@ -409,4 +455,4 @@ async def test_an_agent_apply_is_watched_paused_and_limited_like_shims_own(
     assert [
         audit["entries"]
         for audit in await _audits(db, tenant, "tenant.remediation_kept")
-    ] == [["privacy.start_counting"]]
+    ] == [["privacy.start_counting"], ["privacy.start_counting"]]

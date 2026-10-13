@@ -156,8 +156,9 @@ exactly these entries:
 Never automatic: anything that masks or blocks content, any rule change (route
 rules included, whatever their `match.on`), any gateway setting, creates,
 deletes and loosening moves. An unattended plan holds at most 5 changes, and a
-tenant at most 20 unattended changes in 24 hours (skipped ones not counted;
-above it 429 `REMEDIATION_LIMIT`).
+tenant at most 20 unattended changes by shim and another 20 by agents in 24
+hours (skipped ones not counted; above it 429 `REMEDIATION_LIMIT`), so an agent
+cannot use up the executor's day.
 
 **Who applies.** The reconciliation worker, right after each findings pass, as
 the system actor (`actor: "system"`, versions with source `auto` and actor type
@@ -165,11 +166,15 @@ the system actor (`actor: "system"`, versions with source `auto` and actor type
 `auto`, oldest first, that have no remediation yet. And an agent holding
 `plans.apply_allowlisted` without `plans.apply` (the
 [recommender](MCP.md#what-a-recommender-can-apply)) when it applies a plan: its
-change is watched the same way, with `actor_type: "service"`. Every refusal
-(not on the list, wrong direction, impact above the bound, `proof_unavailable`
-when the tenant's audit mode is `off`, a stale item, a file-managed resource)
-writes a `skipped` row with the reasons and changes nothing. A finding gets one
-remediation, ever: after a skip or an undo shim only suggests it.
+change is watched the same way, with `actor_type: "service"`. A refusal that
+passes (the day's limit, a pause, or `proof_unavailable` while the tenant's audit
+mode is `off`) writes nothing, and the next pass tries again. Every other refusal
+(not on the list, wrong direction, impact above the bound, a stale item, a
+file-managed resource, an item that refuses the change) writes a `skipped` row
+with the reasons and changes nothing. A finding gets one remediation, ever:
+after a skip or an undo shim only suggests it. The worker measures and plans
+without the tenant lock that every request of the tenant waits on, and takes it
+only to write.
 
 **The window.** An applied change with a proof is `watching` for the largest
 proof window (24 hours). The window is closed on the first pass after
@@ -184,7 +189,9 @@ moved, applied as the system actor even under four eyes (it returns each item to
 a state a person set, and the stale check stops it when anything else changed);
 the row is `restored` and the finding goes back to `new`. When someone changed an
 item since, nothing is written: `restore_skipped` with reason `item_changed`, and
-a notification so a person decides. A measurement that runs out of its 10-second
+a notification so a person decides. An item that refuses the undo (a deployment
+whose origin is no longer approved) gives `restore_skipped` with its error code
+(`http_422`) for that row only; the rest of the pass goes on. A measurement that runs out of its 10-second
 statement timeout leaves the row `watching` for the next pass. A change with no
 proof is `kept` at once.
 
@@ -196,7 +203,8 @@ before, after, proof), status, window, result, plans, versions and actor.
 gets 403 `UNDO_NEEDS_HUMAN`), body `{"reason"}`, sets a `watching` or `kept`
 row's items back through a plan with source `restore`, applied as the caller,
 and marks the row `undone`. Under four eyes the undo answers 202 with the plan
-waiting for a second approver and the row unchanged. Any other status is 409
+waiting for a second approver and the row unchanged; approving the plan marks
+the row `undone`. Any other status is 409
 `REMEDIATION_STATE_CONFLICT`; an item changed since is 409 `PLAN_STALE`.
 
 **The kill switch.** `PATCH /gateway-settings {"auto_remediation_paused": true}`

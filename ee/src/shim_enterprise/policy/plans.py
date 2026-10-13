@@ -98,6 +98,20 @@ async def lock_tenant(session: AsyncSession, organization_id: UUID) -> None:
     )
 
 
+async def lock_at_version(
+    session: AsyncSession, organization_id: UUID, version: int
+) -> None:
+    """The tenant lock for work planned without it (every request of the tenant waits
+    on the lock); 409 when a policy write landed after `version` was read."""
+    await lock_tenant(session, organization_id)
+    latest = await current_version(session, organization_id)
+    if latest != version:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
+        )
+
+
 async def current_version(session: AsyncSession, organization_id: UUID) -> int:
     return int(
         await session.scalar(
