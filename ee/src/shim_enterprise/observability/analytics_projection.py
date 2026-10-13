@@ -132,6 +132,7 @@ def _projection_values(message: OutboxMessage) -> dict:
             "usage_estimated": bool(payload.get("usage_estimated")),
             "pricing_resolution": payload.get("pricing_resolution"),
             "team_id": payload.get("team_id"),
+            "task_id": payload.get("task_id"),
             **{field: payload.get(field) for field in _DIAGNOSTIC_FIELDS},
         },
         "cost_center": payload.get("cost_center"),

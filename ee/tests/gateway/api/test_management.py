@@ -405,6 +405,7 @@ async def test_request_activity_is_tenant_scoped_filterable_and_safe() -> None:
         "shim_latency_ms",
         "pii_detected",
         "tags",
+        "task_id",
         "cost_center",
         "provider",
         "team",
@@ -2210,6 +2211,118 @@ async def test_requests_filter_by_api_key_without_widening_member_scope(
     assert len(list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))) == 1
     assert widened.json()["total"] == 0
     assert malformed.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_requests_filter_by_task_id_within_the_tenant_and_member_scope(
+    db, test_user_with_org, test_api_key, test_tier
+) -> None:
+    user = test_user_with_org
+    colleague = User(
+        id=uuid4(),
+        organization_id=user.organization_id,
+        email=f"colleague-{uuid4().hex}@example.com",
+        role="member",
+        is_active=True,
+        is_verified=True,
+    )
+    other_tenant = Organization(
+        id=uuid4(), name="Other", slug=f"other-{uuid4().hex}", tier="enterprise"
+    )
+    db.add_all([colleague, other_tenant])
+    await db.flush()
+    stranger = User(
+        id=uuid4(),
+        organization_id=other_tenant.id,
+        email=f"stranger-{uuid4().hex}@example.com",
+        role="owner",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(stranger)
+    await db.flush()
+    keys = [
+        ApiKey(
+            id=uuid4(),
+            user_id=owner_id,
+            organization_id=organization_id,
+            key_hash=uuid4().hex,
+            prefix=f"sk-shim-task{index}",
+            name=f"Task key {index}",
+            tier=test_tier,
+            is_active=True,
+        )
+        for index, (owner_id, organization_id) in enumerate(
+            [(colleague.id, user.organization_id), (stranger.id, other_tenant.id)]
+        )
+    ]
+    db.add_all(keys)
+    await db.flush()
+    now = datetime.now(timezone.utc)
+    db.add_all(
+        RequestLog(
+            request_id=f"req_task_{uuid4().hex}",
+            api_key_id=key_id,
+            organization_id=organization_id,
+            timestamp=now - timedelta(seconds=index),
+            details={"task_id": task_id} if task_id else {},
+            tags=["agent"],
+        )
+        for index, (key_id, organization_id, task_id) in enumerate(
+            [
+                (test_api_key.id, user.organization_id, "agent-run.1"),
+                (keys[0].id, user.organization_id, "agent-run.1"),
+                (test_api_key.id, user.organization_id, "agent-run.10"),
+                (test_api_key.id, user.organization_id, None),
+                (keys[1].id, other_tenant.id, "agent-run.1"),
+            ]
+        )
+    )
+    await db.flush()
+    application = FastAPI()
+    application.include_router(management_router, prefix="/api/v1")
+    application.dependency_overrides[enterprise_deps.get_current_user] = lambda: user
+    application.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        user.role = "owner"
+        listed = await client.get(
+            "/api/v1/management/requests", params={"task_id": "agent-run.1"}
+        )
+        everything = await client.get("/api/v1/management/requests")
+        exported = await client.get(
+            "/api/v1/management/requests/export", params={"task_id": "agent-run.10"}
+        )
+        user.role = "member"
+        scoped = await client.get(
+            "/api/v1/management/requests", params={"task_id": "agent-run.1"}
+        )
+        malformed = [
+            (
+                await client.get(
+                    f"/api/v1/management/{path}", params={"task_id": value}
+                )
+            ).status_code
+            for path in ("requests", "requests/export")
+            for value in ("-agent", "agent run", "a" * 129)
+        ]
+
+    assert listed.json()["total"] == 2
+    assert {item["task_id"] for item in listed.json()["items"]} == {"agent-run.1"}
+    assert sorted(str(item["task_id"]) for item in everything.json()["items"]) == [
+        "None",
+        "agent-run.1",
+        "agent-run.1",
+        "agent-run.10",
+    ]
+    rows = list(csv.DictReader(io.StringIO(exported.text.lstrip("\ufeff"))))
+    assert [row["task_id"] for row in rows] == ["agent-run.10"]
+    header = list(rows[0])
+    assert header.index("task_id") == header.index("tags") + 1
+    assert scoped.json()["total"] == 1
+    assert malformed == [422] * 6
 
 
 def _analysed_lifecycle(organization_id, request_id: str, api_key_id, analysis):

@@ -240,8 +240,13 @@ a placeholder.
 
 `task_id` and `trace_id` are written at reservation: `task_id` is the request's
 `X-Shim-Task-Id` (up to 128 characters), else the trace id of a valid incoming
-`traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
-the lifecycle metadata only; reads and filters by task come with the task view.
+`traceparent`; `trace_id` is that trace id; each is `null` when absent. `task_id`
+is also in the analytics row, the request list (`task_id`, filter `?task_id=`, an
+exact match) and the CSV (the column after `tags`); it stays out of the audit chain,
+which keeps no caller-chosen identifier. `trace_id` is in the lifecycle metadata only.
+The [tasks read](COOKBOOK.md#see-what-an-agent-task-cost) groups lifecycle rows by
+`task_id`: its `calls` are client requests (rows without `attempt_number`, or with
+`attempt_number` 1), its `attempts` every row, extra attempts included.
 
 `tool_call_repeats` (how many times the latest tool call of the request's history
 was seen for its task, else its key, within the loop window) and `task_calls` (the

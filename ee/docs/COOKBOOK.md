@@ -44,6 +44,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Why is my request expensive](#why-is-my-request-expensive)
 - [Read latency per team and app](#read-latency-per-team-and-app)
+- [See what an agent task cost](#see-what-an-agent-task-cost)
+- [Preview a task cap before you set it](#preview-a-task-cap-before-you-set-it)
 - [How much more do Turkish answers cost on each model](#how-much-more-do-turkish-answers-cost-on-each-model)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
@@ -279,7 +281,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
-| `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. |
+| `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. Preview first: [what a task cap would have refused](#preview-a-task-cap-before-you-set-it). |
 | `agent_loop` | `count`, 5 | `action` (`off`, `count`, `block`) and `repeats` for the repeated-tool-call signal. |
 | `inflight_sharing_api_key_ids` | `[]` | API keys (at most 1,000 of this organization) whose identical JSON requests in flight on one replica share the first one's answer; see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). |
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
@@ -1453,6 +1455,62 @@ tag or deployment are one group with `id: null`. Each statement of the read may
 take 10 seconds; past that the answer is 503 `QUERY_TIMEOUT`: ask for a shorter
 window. How speed and concurrency are derived is in
 [diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
+
+## See what an agent task cost
+
+An agent answers one question with many model calls. When it sends
+`X-Shim-Task-Id` (or a `traceparent`, whose trace id becomes the task id), shim
+groups those calls:
+
+```console
+curl -s "http://localhost:8000/api/v1/management/tasks?sort=cost" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Any signed-in user may call it; a member sees the tasks of the keys they own or
+administer, as on the request list. The window defaults to the last seven days
+(`start` and `end` with an offset, at most 31 days); `api_key_id` narrows it and
+`sort` is `cost` (the default), `calls` or `last_seen`. Each item has the task id,
+its `trace_id`, `first_seen`, `last_seen` and `duration_seconds`, `calls` (client
+requests) and `attempts` (every request, extra attempts included), settled
+`prompt_tokens` and `completion_tokens` (estimated usage counts 0, as in the request
+summary), settled `cost_usd` with `cost_complete` (false when one of its requests
+was unpriced), up to five `models` and `api_keys`, `outcomes` per answer ending,
+`failed` (provider errors, timeouts, internal errors and failures), `loop_signals`
+(requests carrying the `task.agent_loop` verdict), `against_caps` and a
+`requests_url` that lists its requests. `against_caps` is `null` until a
+[task cap](#change-the-gateway-settings) is set; then `calls_share` and
+`cost_share` are the calls and settled cost of the task's busiest window over each
+cap (above 1 when the task would have been refused). At most 200 tasks are listed
+(`truncated: true` beyond); the totals give `tasks`, `requests_with_task`,
+`requests_without_task` and the settled `cost_usd` of task requests.
+
+A call a task cap refused has no request row, so it is not in this read; count
+refusals with `shim_task_limit_refusals_total`.
+
+## Preview a task cap before you set it
+
+Before you set `task_caps`, see what it would have refused over the last seven
+days:
+
+```console
+curl -s "http://localhost:8000/api/v1/management/tasks/cap-preview?max_calls=40&window_seconds=3600" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Readers only (`usage.read`). The parameters are the setting's own (`max_calls` 1 to
+100,000, `max_cost_usd` above 0 up to 100,000, `window_seconds` 60 to 86,400,
+default 3600); at least one cap is required. The preview replays each task's
+requests in time order as the gateway counts them: a window opens at a task's call
+and lasts `window_seconds`, every call after the first `max_calls` of a window is refused, a
+call is refused once the settled cost of the window's earlier calls reached
+`max_cost_usd`, a refused call adds no cost, and extra attempts never count as
+calls. It answers `tasks_considered`, `tasks_affected`, `requests_considered`,
+`requests_refused`, their settled `refused_cost_usd`, `refused_share`, up to 20
+`affected` task ids with their refused counts, and two `caveats`: calls of one task
+that run at the same time can pass a cost cap together, and requests without a task
+id are never capped. Nothing is stored. More than 200,000 task requests in the
+seven days is 422; narrow with `api_key_id`.
 
 ## How much more do Turkish answers cost on each model
 

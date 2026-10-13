@@ -90,6 +90,7 @@ ANY_USER_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/v1/management/api-keys/{api_key_id}"),
     ("GET", "/api/v1/management/requests"),
     ("GET", "/api/v1/management/requests/export"),
+    ("GET", "/api/v1/management/tasks"),
     ("GET", "/api/v1/management/request-archive/openings"),
     ("POST", "/api/v1/management/team/invites/accept"),
     ("GET", "/api/v1/management/usage/mine"),

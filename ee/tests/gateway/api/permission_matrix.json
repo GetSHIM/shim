@@ -629,6 +629,24 @@
   "service_auditor": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/tasks": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "team_admin": "200"
+ },
+ "GET /api/v1/management/tasks/cap-preview": {
+  "admin": "422",
+  "auditor": "422",
+  "member": "403 Organization reader required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "422",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/team/invites": {
   "admin": "200",
   "auditor": "403 Organization admin required",

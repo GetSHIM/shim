@@ -16,6 +16,25 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AffectedTaskView": {
+        "properties": {
+          "requests_refused": {
+            "minimum": 1.0,
+            "title": "Requests Refused",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "requests_refused"
+        ],
+        "title": "AffectedTaskView",
+        "type": "object"
+      },
       "AgentLoop": {
         "additionalProperties": false,
         "description": "What a tool call repeated in one task's history does: counted by default.",
@@ -12776,6 +12795,18 @@
             "title": "Tags",
             "type": "array"
           },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent task (X-Shim-Task-Id, else the trace id); null without one and on older rows.",
+            "title": "Task Id"
+          },
           "team": {
             "anyOf": [
               {
@@ -14773,6 +14804,118 @@
         "title": "SubscriptionView",
         "type": "object"
       },
+      "TaskAgainstCapsView": {
+        "properties": {
+          "calls_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Calls of the busiest window over the calls cap; null without one.",
+            "title": "Calls Share"
+          },
+          "cost_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settled cost of the busiest window over the cost cap; null without one.",
+            "title": "Cost Share"
+          }
+        },
+        "required": [
+          "calls_share",
+          "cost_share"
+        ],
+        "title": "TaskAgainstCapsView",
+        "type": "object"
+      },
+      "TaskCapPreviewView": {
+        "properties": {
+          "affected": {
+            "items": {
+              "$ref": "#/components/schemas/AffectedTaskView"
+            },
+            "maxItems": 20,
+            "title": "Affected",
+            "type": "array"
+          },
+          "caps": {
+            "$ref": "#/components/schemas/TaskCaps-Output"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Caveats",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          },
+          "refused_cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Refused Cost Usd",
+            "type": "string"
+          },
+          "refused_share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused Share"
+          },
+          "requests_considered": {
+            "description": "Calls with a task id: extra attempts excluded.",
+            "minimum": 0.0,
+            "title": "Requests Considered",
+            "type": "integer"
+          },
+          "requests_refused": {
+            "minimum": 0.0,
+            "title": "Requests Refused",
+            "type": "integer"
+          },
+          "tasks_affected": {
+            "minimum": 0.0,
+            "title": "Tasks Affected",
+            "type": "integer"
+          },
+          "tasks_considered": {
+            "minimum": 0.0,
+            "title": "Tasks Considered",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "caps",
+          "tasks_considered",
+          "tasks_affected",
+          "requests_considered",
+          "requests_refused",
+          "refused_cost_usd",
+          "refused_share",
+          "affected",
+          "caveats"
+        ],
+        "title": "TaskCapPreviewView",
+        "type": "object"
+      },
       "TaskCaps-Input": {
         "additionalProperties": false,
         "description": "Calls and settled cost one agent task may use; off until a cap is set.",
@@ -14856,6 +14999,188 @@
           }
         },
         "title": "TaskCaps",
+        "type": "object"
+      },
+      "TaskPage": {
+        "properties": {
+          "cost_usd": {
+            "description": "Settled cost of the task requests.",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          },
+          "requests_with_task": {
+            "minimum": 0.0,
+            "title": "Requests With Task",
+            "type": "integer"
+          },
+          "requests_without_task": {
+            "minimum": 0.0,
+            "title": "Requests Without Task",
+            "type": "integer"
+          },
+          "tasks": {
+            "minimum": 0.0,
+            "title": "Tasks",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "period",
+          "items",
+          "truncated",
+          "tasks",
+          "requests_with_task",
+          "requests_without_task",
+          "cost_usd"
+        ],
+        "title": "TaskPage",
+        "type": "object"
+      },
+      "TaskView": {
+        "properties": {
+          "against_caps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAgainstCapsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while the tenant has no task cap set."
+          },
+          "api_keys": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "attempts": {
+            "description": "Every request, extra attempts included.",
+            "minimum": 0.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "calls": {
+            "description": "Client requests: extra attempts excluded.",
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "minimum": 0.0,
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "minimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "failed": {
+            "minimum": 0.0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "title": "First Seen",
+            "type": "string"
+          },
+          "last_seen": {
+            "format": "date-time",
+            "title": "Last Seen",
+            "type": "string"
+          },
+          "loop_signals": {
+            "minimum": 0.0,
+            "title": "Loop Signals",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Models",
+            "type": "array"
+          },
+          "outcomes": {
+            "$ref": "#/components/schemas/PromptVersionOutcomes"
+          },
+          "prompt_tokens": {
+            "minimum": 0.0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "requests_url": {
+            "title": "Requests Url",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "required": [
+          "task_id",
+          "trace_id",
+          "first_seen",
+          "last_seen",
+          "duration_seconds",
+          "calls",
+          "attempts",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "cost_complete",
+          "models",
+          "api_keys",
+          "outcomes",
+          "failed",
+          "loop_signals",
+          "against_caps",
+          "requests_url"
+        ],
+        "title": "TaskView",
         "type": "object"
       },
       "TeamInput": {
@@ -23505,6 +23830,25 @@
             }
           },
           {
+            "description": "Only requests of this agent task (exact).",
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests of this agent task (exact).",
+              "title": "Task Id"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -23864,6 +24208,25 @@
               ],
               "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
               "title": "Soft Refusal"
+            }
+          },
+          {
+            "description": "Only requests of this agent task (exact).",
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests of this agent task (exact).",
+              "title": "Task Id"
             }
           }
         ],
@@ -24624,6 +24987,215 @@
           }
         ],
         "summary": "Get Subscription",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/tasks": {
+      "get": {
+        "operationId": "list_tasks_api_v1_management_tasks_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to seven days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to seven days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "cost",
+              "enum": [
+                "cost",
+                "calls",
+                "last_seen"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Tasks",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/tasks/cap-preview": {
+      "get": {
+        "operationId": "preview_task_cap_api_v1_management_tasks_cap_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "max_calls",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Calls"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_cost_usd",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Cost Usd"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_seconds",
+            "required": false,
+            "schema": {
+              "default": 3600,
+              "title": "Window Seconds",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCapPreviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Task Cap",
         "tags": [
           "management"
         ]
