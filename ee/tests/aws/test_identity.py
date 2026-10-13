@@ -58,7 +58,7 @@ async def test_imds_takes_a_token_then_the_first_role(monkeypatch) -> None:
         return httpx.Response(200, json=ANSWER)
 
     async with _client(imds) as client:
-        identity = GatewayIdentity(client)
+        identity = GatewayIdentity(client, client)
         first = await identity.credentials("eu-central-1")
         again = await identity.credentials("eu-central-1")
 
@@ -88,7 +88,7 @@ async def test_the_container_source_sends_the_token_file(monkeypatch, tmp_path) 
         return httpx.Response(200, json=ANSWER)
 
     async with _client(pod) as client:
-        found = await GatewayIdentity(client).credentials("eu-central-1")
+        found = await GatewayIdentity(client, client).credentials("eu-central-1")
 
     assert found.access_key_id == "ASIA0000000000000001"
     assert seen[0].headers["authorization"] == "pod-token"
@@ -151,7 +151,7 @@ async def test_a_google_id_token_is_cached_per_audience_until_its_expiry(
         return httpx.Response(200, text=f"e30.{payload}.sig")
 
     async with _client(metadata) as client:
-        identity = GatewayIdentity(client)
+        identity = GatewayIdentity(client, client)
         tokens = await asyncio.gather(
             identity.google_id_token("shim-aws:a"),
             identity.google_id_token("shim-aws:a"),
@@ -175,7 +175,7 @@ async def test_a_metadata_answer_that_fails_or_hangs_is_unavailable(
 
     async with _client(slow) as client:
         with pytest.raises(IdentityUnavailable) as failed:
-            await GatewayIdentity(client).credentials("eu-central-1")
+            await GatewayIdentity(client, client).credentials("eu-central-1")
 
     assert failed.value.source == "imds"
 
@@ -213,3 +213,62 @@ def test_startup_fails_without_the_sources_variables(
         Settings(**ENTERPRISE_REQUIRED_VALUES, _env_file=None).AWS_GATEWAY_IDENTITY
         == "none"
     )
+
+
+@pytest.mark.asyncio
+async def test_metadata_calls_never_cross_a_proxy_or_a_redirect(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "AWS_GATEWAY_IDENTITY", "imds")
+    monkeypatch.setattr(settings, "AWS_IMDS_URL", "http://imds.test")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.bank.test:3128")
+    made: list[dict] = []
+    real = httpx.AsyncClient
+
+    def imds(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT":
+            return httpx.Response(200, text="imds-token")
+        if request.url.path.endswith("security-credentials/"):
+            return httpx.Response(200, text="gateway-role")
+        return httpx.Response(200, json=ANSWER)
+
+    def client(**kwargs) -> httpx.AsyncClient:
+        made.append(kwargs)
+        return real(transport=httpx.MockTransport(imds), **kwargs)
+
+    async with _client(lambda request: httpx.Response(500)) as shared:
+        monkeypatch.setattr(httpx, "AsyncClient", client)
+        found = await GatewayIdentity(shared).credentials("eu-central-1")
+
+    assert found.access_key_id == "ASIA0000000000000001"
+    assert made and all(
+        (kwargs["trust_env"], kwargs["follow_redirects"]) == (False, False)
+        for kwargs in made
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_gateways_own_web_identity_refusal_is_unavailable(
+    monkeypatch, tmp_path
+) -> None:
+    token = tmp_path / "token"
+    token.write_text("oidc-token")
+    monkeypatch.setattr(settings, "AWS_GATEWAY_IDENTITY", "web_identity_file")
+    monkeypatch.setattr(settings, "AWS_STS_URL_TEMPLATE", "https://sts.{region}.test")
+    monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(token))
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::000000000000:role/gateway")
+
+    def sts(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            text="<ErrorResponse><Error><Code>InvalidClientTokenId</Code></Error>"
+            "</ErrorResponse>",
+        )
+
+    async with _client(sts) as client:
+        with pytest.raises(IdentityUnavailable) as refused:
+            await GatewayIdentity(client).credentials("eu-central-1")
+        token.unlink()
+        with pytest.raises(IdentityUnavailable) as missing:
+            await GatewayIdentity(client).credentials("eu-central-1")
+
+    assert (refused.value.source, refused.value.status) == ("web_identity_file", 403)
+    assert missing.value.source == "web_identity_file"

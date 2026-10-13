@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from urllib.parse import urlencode
 from xml.etree import ElementTree
 
@@ -15,6 +16,7 @@ from shim_enterprise.core.config import settings
 STS_VERSION = "2011-06-15"
 MAX_ANSWER_BYTES = 64 * 1024
 _FORM = "application/x-www-form-urlencoded; charset=utf-8"
+_CODE = re.compile(r"[A-Za-z][A-Za-z0-9.]{0,63}")
 
 
 class StsError(Exception):
@@ -65,7 +67,11 @@ async def _call(
     except ElementTree.ParseError:
         raise StsError(502, "ANSWER_NOT_XML") from None
     if response.status_code != 200:
-        raise StsError(response.status_code, _text(root, "Code"))
+        code = _text(root, "Code")
+        # A bounded vocabulary: it reaches audits, logs and the check view.
+        if code is not None and not _CODE.fullmatch(code):
+            code = "unrecognized"
+        raise StsError(response.status_code, code)
     return root
 
 

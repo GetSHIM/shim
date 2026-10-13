@@ -68,6 +68,7 @@ async def _roles(db, handler) -> tuple[AwsRoles, httpx.AsyncClient]:
     return AwsRoles(
         client,
         lambda: AsyncSession(bind=connection, join_transaction_mode="create_savepoint"),
+        client,
     ), client
 
 
@@ -167,6 +168,9 @@ async def test_the_hosted_cloud_trades_a_google_token_for_the_role(
         (400, "InvalidIdentityToken", "INVALID_PROVIDER_CREDENTIAL", 401),
         (400, "ExpiredTokenException", "INVALID_PROVIDER_CREDENTIAL", 401),
         (500, "InternalFailure", "PROVIDER_UNAVAILABLE", 503),
+        # The gateway's own keys are bad: not the tenant's refusal.
+        (403, "InvalidClientTokenId", "PROVIDER_UNAVAILABLE", 503),
+        (403, "SignatureDoesNotMatch", "PROVIDER_UNAVAILABLE", 503),
         (200, None, "PROVIDER_UNAVAILABLE", 503),
     ],
 )

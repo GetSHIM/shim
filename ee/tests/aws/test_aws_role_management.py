@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ee.tests.aws.test_bedrock_management import (
@@ -407,3 +408,70 @@ async def test_with_attribution_on_the_check_tags_a_session(db) -> None:
         "aws_error": "AccessDenied",
     }
     assert refused.json()["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_bad_gateway_keys_fail_the_gateway_step_and_keep_the_roles_check(
+    db,
+) -> None:
+    user = await _admin(db)
+    await _call(db, user, "POST", IDENTITY)
+    secret = await _role(db, user)
+    row = await db.get(ProviderSecret, secret["id"])
+    assert row is not None
+    row.verified_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    def bad_keys(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            text="<ErrorResponse><Error><Code>InvalidClientTokenId</Code></Error>"
+            "</ErrorResponse>",
+        )
+
+    checked = await _call(
+        db, user, "POST", f"{PROVIDERS}/{secret['id']}/aws-check", bad_keys, json={}
+    )
+    verify = await _call(
+        db, user, "POST", f"{PROVIDERS}/{secret['id']}/verify", bad_keys
+    )
+    await db.refresh(row)
+
+    assert checked.json()["steps"] == [
+        {
+            "step": "gateway_identity",
+            "status": "failed",
+            "aws_error": "InvalidClientTokenId",
+        },
+        {"step": "bedrock_access", "status": "skipped", "aws_error": None},
+    ]
+    assert verify.status_code == 503
+    assert row.verified_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_role_patched_during_its_check_is_not_marked_verified(
+    db, monkeypatch
+) -> None:
+    user = await _admin(db)
+    await _call(db, user, "POST", IDENTITY)
+    secret = await _role(db, user)
+    assume = providers.AwsRoles.credentials
+
+    async def patched_meanwhile(self, *args, **kwargs):
+        await db.execute(
+            update(ProviderSecret)
+            .where(ProviderSecret.id == UUID(secret["id"]))
+            .values(aws_role_arn=DENIED, verified_at=None)
+        )
+        return await assume(self, *args, **kwargs)
+
+    monkeypatch.setattr(providers.AwsRoles, "credentials", patched_meanwhile)
+
+    checked = await _call(
+        db, user, "POST", f"{PROVIDERS}/{secret['id']}/aws-check", aws({}), json={}
+    )
+    row = await db.get(ProviderSecret, secret["id"], populate_existing=True)
+
+    assert checked.json()["ok"] is True
+    assert (row.aws_role_arn, row.verified_at) == (DENIED, None)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 
 import pytest
@@ -138,3 +138,36 @@ def test_the_token_has_its_shape_and_no_secret_is_printed() -> None:
     assert re.fullmatch(r"bedrock-api-key-[A-Za-z0-9+/=]+", token)
     assert "X-Amz-Expires=43200" in _token_url(token)
     assert "0" * 40 not in repr(SESSION) and "0" * 64 not in repr(SESSION)
+
+
+def test_a_time_in_another_zone_signs_the_same_utc_instant() -> None:
+    istanbul = NOW.astimezone(timezone(timedelta(hours=3)))
+    sign = {
+        "method": "POST",
+        "url": "https://sts.eu-central-1.amazonaws.com/",
+        "headers": {"Content-Type": FORM},
+        "body": ASSUME_ROLE,
+    }
+
+    assert sign_headers(
+        sign["method"],
+        sign["url"],
+        sign["headers"],
+        sign["body"],
+        service="sts",
+        region="eu-central-1",
+        credentials=KEY,
+        now=istanbul,
+    ) == sign_headers(
+        sign["method"],
+        sign["url"],
+        sign["headers"],
+        sign["body"],
+        service="sts",
+        region="eu-central-1",
+        credentials=KEY,
+        now=NOW,
+    )
+    assert bedrock_bearer_token(
+        KEY, region="eu-central-1", now=istanbul, expires_seconds=60
+    ) == bedrock_bearer_token(KEY, region="eu-central-1", now=NOW, expires_seconds=60)

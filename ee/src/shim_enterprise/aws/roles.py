@@ -33,6 +33,16 @@ REFUSALS = frozenset(
         "ExpiredTokenException",
     }
 )
+# What AWS says when the gateway's own credentials are bad: not the tenant's role.
+GATEWAY_FAULTS = frozenset(
+    {
+        "InvalidClientTokenId",
+        "SignatureDoesNotMatch",
+        "IncompleteSignature",
+        "ExpiredToken",
+        "MissingAuthenticationToken",
+    }
+)
 
 
 def web_identity_audience(external_id: str) -> str:
@@ -75,10 +85,11 @@ class AwsRoles:
         self,
         http_client: httpx.AsyncClient,
         session_factory: async_sessionmaker[AsyncSession],
+        metadata_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.http_client = http_client
         self.session_factory = session_factory
-        self.identity = GatewayIdentity(http_client)
+        self.identity = GatewayIdentity(http_client, metadata_client)
         self._sessions: ExpiringCache[AwsCredentials] = ExpiringCache()
 
     async def external_id(self, tenant_id: UUID) -> str | None:
@@ -195,7 +206,8 @@ class AwsRoles:
                 tags=tags,
             )
         except StsError as error:
-            refused = error.status == 403 or error.code in REFUSALS
+            gateway = error.code in GATEWAY_FAULTS
+            refused = not gateway and (error.status == 403 or error.code in REFUSALS)
             # The action, the status and AWS's code: never a credential, token,
             # external id or role ARN.
             logger.warning(
@@ -204,7 +216,9 @@ class AwsRoles:
                 error.status,
                 error.code,
             )
-            raise RoleRefused("assume_role", refused, error.code) from None
+            raise RoleRefused(
+                "gateway_identity" if gateway else "assume_role", refused, error.code
+            ) from None
         except IdentityUnavailable as error:
             logger.warning(
                 "AWS gateway identity failed source=%s status=%s",

@@ -300,13 +300,9 @@ class ManagedProviderCredentialResolver:
                 )
 
             return await self.bedrock.token(
-                (
-                    tenant_id,
-                    row.id,
-                    row.secret_version,
-                    region,
-                    reference.session_tag,
-                ),
+                # A rotation changes the reference (a Fernet version is always
+                # "v2"), so a rotated key never reuses a token.
+                (tenant_id, row.id, row.secret_ref, region, reference.session_tag),
                 region,
                 load,
             )

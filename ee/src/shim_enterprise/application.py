@@ -241,7 +241,9 @@ def _create_gateway_kernel(
         },
         chain_store=chain_store,
         policy_resolver=policy_resolver,
-        prepare_inference=DeploymentResolver(AsyncSessionLocal).resolve,
+        prepare_inference=DeploymentResolver(
+            AsyncSessionLocal, policy_resolver.policy_service
+        ).resolve,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
         loop_repeat_limit=settings.LOOP_REPEAT_LIMIT,

@@ -82,3 +82,17 @@ async def test_an_answer_that_is_too_large_or_not_xml_is_refused(body, code) -> 
         await _call(200, body)
 
     assert refused.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_a_code_outside_the_vocabulary_is_unrecognized() -> None:
+    body = (
+        "<ErrorResponse><Error><Code>Bad code &lt;script&gt; "
+        + "x" * 500
+        + "</Code></Error></ErrorResponse>"
+    ).encode()
+
+    with pytest.raises(StsError) as refused:
+        await _call(403, body)
+
+    assert (refused.value.status, refused.value.code) == (403, "unrecognized")

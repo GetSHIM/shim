@@ -424,8 +424,13 @@ def _list_direction(before: list[str], after: list[str]) -> Direction | None:
 def _region_lock_direction(
     before: BedrockRegionLock, after: BedrockRegionLock
 ) -> Direction:
-    """Toward enforce tightens; with the mode kept and on, a list that narrows
-    tightens and one that widens or empties relaxes; both parts at once relax."""
+    """A mode change alone decides (off < monitor < enforce): lists under `off`
+    are inert, monitor refuses nothing, and enforce refuses at least what monitor
+    did. With the mode kept and on, a list that narrows tightens and one that
+    widens or empties relaxes."""
+    if before.mode != after.mode:
+        raised = _LOCK_LEVELS.index(after.mode) > _LOCK_LEVELS.index(before.mode)
+        return "tightening" if raised else "relaxing"
     lists = [
         found
         for found in (
@@ -434,11 +439,6 @@ def _region_lock_direction(
         )
         if found is not None
     ]
-    if before.mode != after.mode:
-        if lists:
-            return "relaxing"
-        raised = _LOCK_LEVELS.index(after.mode) > _LOCK_LEVELS.index(before.mode)
-        return "tightening" if raised else "relaxing"
     if after.mode == "off" or not lists:
         return "neutral"
     return "relaxing" if "relaxing" in lists else "tightening"

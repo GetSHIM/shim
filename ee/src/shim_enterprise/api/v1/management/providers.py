@@ -613,6 +613,8 @@ async def _aws_check(
             step = (
                 "assume_role" if failure.step == "assume_role" else "gateway_identity"
             )
+            # The gateway's own credentials failed at AssumeRole: that step, once.
+            steps = [done for done in steps if done.step != step]
             steps.append(
                 AwsCheckStep(step=step, status="failed", aws_error=failure.aws_error)
             )
@@ -675,8 +677,10 @@ async def _aws_check(
             AwsCheckStep(step="bedrock_access", status="ok" if reached else "failed")
         )
     ok = all(step.status != "failed" for step in steps)
-    if ok or refused:
-        row = await _owned_provider_secret(session, user, secret_id)
+    row = await _owned_provider_secret(session, user, secret_id)
+    await session.refresh(row)
+    # A role patched during the check is another trust: this check says nothing of it.
+    if (ok or refused) and row.aws_role_arn == role_arn:
         row.verified_at = datetime.now(timezone.utc) if ok else None
         failed = next((step for step in steps if step.status == "failed"), None)
         await _audit(

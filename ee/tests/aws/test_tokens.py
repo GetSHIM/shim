@@ -103,3 +103,61 @@ async def test_a_rotation_or_another_region_is_another_token() -> None:
     }
 
     assert len(tokens) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_waiter_mints_for_itself_when_the_minting_request_goes_away() -> None:
+    cache, calls = BedrockTokenCache(), []
+    leader = asyncio.create_task(
+        cache.token("k", "eu-central-1", _loader(calls, delay=10), now=NOW)
+    )
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(
+        cache.token("k", "eu-central-1", _loader(calls), now=NOW)
+    )
+    await asyncio.sleep(0)
+
+    leader.cancel()
+    token = await asyncio.wait_for(waiter, 1)
+
+    assert token.startswith("bedrock-api-key-")
+    assert leader.cancelled() and calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_rotated_access_key_never_reuses_the_old_keys_token() -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from shim.gateway.contracts.ids import TenantId
+    from shim_enterprise.secrets.references import CredentialReference
+    from shim_enterprise.secrets.store import ManagedProviderCredentialResolver
+
+    class Store:
+        async def get_secret(self, tenant_id, secret_ref, *, expected_purpose=None):
+            number = str(secret_ref)[-1]
+            return (
+                f'{{"access_key_id": "AKIA{number * 16}", '
+                f'"secret_access_key": "{"0" * 40}"}}'
+            )
+
+    resolver = ManagedProviderCredentialResolver("anthropic", Store(), None)
+    row = SimpleNamespace(
+        id=uuid4(),
+        provider="aws_access_key",
+        secret_ref="fernet:v2:key-1",
+        secret_version="v2",
+    )
+    reference = CredentialReference(row.id, "eu-central-1")
+
+    tenant = TenantId(uuid4())
+    first = await resolver.resolve_row(tenant, row, reference)
+    # A rotation: a new reference, and a Fernet version that is "v2" again.
+    row.secret_ref = "fernet:v2:key-2"
+    rotated = await resolver.resolve_row(tenant, row, reference)
+
+    assert "AKIA2222" in _url(rotated) and "AKIA1111" in _url(first)
+
+
+def _url(token: str) -> str:
+    return base64.b64decode(token.removeprefix("bedrock-api-key-")).decode()

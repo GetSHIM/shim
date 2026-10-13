@@ -7,7 +7,10 @@ by the hosted cloud instead of AWS credentials, is cached per audience the same 
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -17,7 +20,7 @@ import httpx
 from pydantic import SecretStr
 
 from shim_enterprise.aws.sigv4 import AwsCredentials
-from shim_enterprise.aws.sts import assume_role_with_web_identity
+from shim_enterprise.aws.sts import StsError, assume_role_with_web_identity
 from shim_enterprise.aws.tokens import ExpiringCache
 from shim_enterprise.core.config import settings
 
@@ -62,9 +65,23 @@ def _token_expiry(token: str, now: datetime) -> datetime:
         return now + timedelta(seconds=600)
 
 
+async def _read_file(path: str, source: str) -> str:
+    try:
+        return (await asyncio.to_thread(Path(path).read_text)).strip()
+    except OSError:
+        raise IdentityUnavailable(source) from None
+
+
 class GatewayIdentity:
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        http_client: httpx.AsyncClient,
+        metadata_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        # STS goes through the shared client; metadata and container credentials
+        # through `metadata_client`, else a client of their own (`_metadata`).
         self.http_client = http_client
+        self.metadata_client = metadata_client
         self.source = settings.AWS_GATEWAY_IDENTITY
         self._credentials: ExpiringCache[AwsCredentials] = ExpiringCache(1)
         self._tokens: ExpiringCache[str] = ExpiringCache(64)
@@ -96,11 +113,20 @@ class GatewayIdentity:
 
         return await self._tokens.get(audience, mint, now=now)
 
+    @asynccontextmanager
+    async def _metadata(self) -> AsyncIterator[httpx.AsyncClient]:
+        if self.metadata_client is not None:
+            yield self.metadata_client
+            return
+        # Plain HTTP to a link-local address: never through a proxy from the
+        # environment, as AWS SDKs do, and never redirected.
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+            yield client
+
     async def _get(self, url: str, *, source: str, **kwargs) -> httpx.Response:
         try:
-            response = await self.http_client.get(
-                url, timeout=METADATA_TIMEOUT, **kwargs
-            )
+            async with self._metadata() as client:
+                response = await client.get(url, timeout=METADATA_TIMEOUT, **kwargs)
         except httpx.HTTPError:
             raise IdentityUnavailable(source) from None
         if response.status_code != 200:
@@ -117,15 +143,21 @@ class GatewayIdentity:
                 session_token=SecretStr(token) if token else None,
             )
         if self.source == "web_identity_file":
-            token = Path(environ["AWS_WEB_IDENTITY_TOKEN_FILE"]).read_text().strip()
-            return await assume_role_with_web_identity(
-                self.http_client,
-                region=region,
-                role_arn=environ["AWS_ROLE_ARN"],
-                session_name=environ.get("AWS_ROLE_SESSION_NAME") or "shim-gateway",
-                web_identity_token=token,
-                duration_seconds=settings.AWS_ROLE_SESSION_SECONDS,
+            token = await _read_file(
+                environ["AWS_WEB_IDENTITY_TOKEN_FILE"], "web_identity_file"
             )
+            try:
+                return await assume_role_with_web_identity(
+                    self.http_client,
+                    region=region,
+                    role_arn=environ["AWS_ROLE_ARN"],
+                    session_name=environ.get("AWS_ROLE_SESSION_NAME") or "shim-gateway",
+                    web_identity_token=token,
+                    duration_seconds=settings.AWS_ROLE_SESSION_SECONDS,
+                )
+            except StsError as error:
+                # The gateway's own exchange: never a tenant's refusal.
+                raise IdentityUnavailable("web_identity_file", error.status) from None
         if self.source == "container":
             url = environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI") or (
                 "http://169.254.170.2"
@@ -133,7 +165,7 @@ class GatewayIdentity:
             )
             token_file = environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")
             authorization = (
-                Path(token_file).read_text().strip()
+                await _read_file(token_file, "container")
                 if token_file
                 else environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN")
             )
@@ -145,11 +177,12 @@ class GatewayIdentity:
             return _container_credentials(response)
         if self.source == "imds":
             try:
-                token = await self.http_client.put(
-                    f"{settings.AWS_IMDS_URL}/latest/api/token",
-                    headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
-                    timeout=METADATA_TIMEOUT,
-                )
+                async with self._metadata() as client:
+                    token = await client.put(
+                        f"{settings.AWS_IMDS_URL}/latest/api/token",
+                        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+                        timeout=METADATA_TIMEOUT,
+                    )
             except httpx.HTTPError:
                 raise IdentityUnavailable("imds") from None
             if token.status_code != 200:

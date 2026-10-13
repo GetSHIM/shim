@@ -304,3 +304,20 @@ async def test_a_team_keeps_its_cost_tag_when_a_put_leaves_it_out(db) -> None:
     )
     assert cleared.json()["aws_cost_tag"] is None
     assert refused.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_tag_a_spreadsheet_would_run_is_quoted_in_the_csv(db) -> None:
+    user = await _admin(db)
+    await _bedrock_request(db, await _key(db, user), tag="=HYPERLINK(1)", cost="0.10")
+
+    csv = await _call(
+        db,
+        user,
+        "GET",
+        ATTRIBUTION,
+        params={"from": str(TODAY), "to": str(TODAY), "format": "csv"},
+    )
+
+    [row] = csv.text.splitlines()[1:]
+    assert ",'=HYPERLINK(1)," in row

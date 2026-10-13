@@ -30,6 +30,7 @@ from shim_enterprise.aws.regions import (
     tier_ceiling,
 )
 from shim_enterprise.billing.models import RequestLifecycle, UsageLedger
+from shim_enterprise.compliance.reporting import safe_csv
 from shim_enterprise.core.database import bounded_read, get_db
 from shim_enterprise.tenants.gateway_settings import (
     BedrockRegionLock,
@@ -277,7 +278,7 @@ async def bedrock_attribution(
         writer = csv.writer(out)
         writer.writerow(list(AttributionRow.model_fields))
         for row in rows:
-            writer.writerow(row.model_dump(mode="json").values())
+            writer.writerow(map(safe_csv, row.model_dump(mode="json").values()))
         return Response(out.getvalue(), media_type="text/csv")
     return Attribution(tag_key=tag_key, aws_column=f"iamPrincipal/{tag_key}", rows=rows)
 

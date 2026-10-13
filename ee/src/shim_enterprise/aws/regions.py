@@ -6,7 +6,8 @@ never the profile's prefix alone (AWS: "Don't rely on the geographic prefix").
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -101,9 +102,14 @@ def ceiling_allows(ceiling: Sequence[str], destinations: Sequence[str] | None) -
 async def tier_ceiling(session: AsyncSession, tier: str | None) -> tuple[str, ...]:
     """The tier's `provider_policy.allowed_regions`: for Bedrock, an always-enforced
     ceiling; no shipped tier sets it."""
-    features = await session.scalar(
-        select(TierDefinition.features).where(TierDefinition.slug == tier)
+    return ceiling_of(
+        await session.scalar(
+            select(TierDefinition.features).where(TierDefinition.slug == tier)
+        )
     )
+
+
+def ceiling_of(features: Mapping[str, Any] | None) -> tuple[str, ...]:
     policy = (features or {}).get("provider_policy")
     if not isinstance(policy, dict):
         return ()

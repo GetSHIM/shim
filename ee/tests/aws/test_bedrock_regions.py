@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ee.tests.aws.test_bedrock_management import (
@@ -168,7 +169,19 @@ def test_scopes_and_the_ceiling() -> None:
             "relaxing",
         ),
         ({"mode": "enforce", "regions": ["eu"]}, {"mode": "enforce"}, "relaxing"),
-        ({"mode": "monitor"}, {"mode": "enforce", "scopes": ["eu"]}, "relaxing"),
+        # A mode change alone decides: turning the lock on with its lists tightens.
+        ({"mode": "monitor"}, {"mode": "enforce", "scopes": ["eu"]}, "tightening"),
+        ({}, {"mode": "enforce", "regions": ["eu"]}, "tightening"),
+        (
+            {"mode": "monitor", "regions": ["eu"]},
+            {"mode": "enforce", "regions": ["eu", "us"]},
+            "tightening",
+        ),
+        (
+            {"mode": "enforce", "regions": ["eu", "us"]},
+            {"mode": "monitor", "regions": ["eu"]},
+            "relaxing",
+        ),
         ({}, {"regions": ["eu"]}, "neutral"),
     ],
 )
@@ -246,9 +259,14 @@ async def _bedrock_row(
     )
 
 
-async def _admission(db, deployment, key, gateway: GatewaySettings):
+async def _admission(db, deployment, key, gateway: GatewaySettings, tiers=None):
     connection = await db.connection()
     opened: list[int] = []
+    secret_provider = await db.scalar(
+        select(ProviderSecret.provider).where(
+            ProviderSecret.id == deployment.provider_secret_id
+        )
+    )
 
     def factory() -> AsyncSession:
         opened.append(1)
@@ -256,8 +274,8 @@ async def _admission(db, deployment, key, gateway: GatewaySettings):
 
     prepared = _Prepared(tenant_gateway_settings=gateway, policy_verdicts=[])
     try:
-        tag = await DeploymentResolver(factory)._bedrock_admission(
-            prepared, deployment, key
+        tag = await DeploymentResolver(factory, tiers)._bedrock_admission(
+            prepared, deployment, key, secret_provider
         )
         refused = None
     except HTTPException as error:
@@ -567,3 +585,34 @@ async def test_a_bedrock_update_asks_bedrock_before_the_tenant_lock(
     assert moved.json()["aws_destination_regions"] == ["eu-west-1"]
     # A request's reservation waits on the tenant lock; Bedrock is asked without it.
     assert locked == [False]
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_comes_from_the_tier_cache_the_policy_resolver_fills(
+    db, test_api_key, monkeypatch
+) -> None:
+    from shim_enterprise.aws import regions
+
+    async def no_read(session, tier):
+        raise AssertionError("the tier is read from the cache")
+
+    monkeypatch.setattr(regions, "tier_ceiling", no_read)
+    asked: list[str] = []
+
+    class Tiers:
+        async def tier_definition(self, slug, session):
+            asked.append(slug)
+            return {"features": {"provider_policy": {"allowed_regions": ["us"]}}}
+
+    deployment = await _bedrock_row(
+        db, test_api_key.organization_id, model=EU, destinations=["eu-central-1"]
+    )
+    await db.flush()
+
+    _, error, verdicts, _ = await _admission(
+        db, deployment, test_api_key, GatewaySettings(), Tiers()
+    )
+
+    assert asked == [test_api_key.tier]
+    assert error is not None
+    assert verdicts == [("aws.region_lock", "deny", "BEDROCK_REGION_NOT_ALLOWED")]

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 from urllib.parse import parse_qsl, quote, urlsplit
@@ -107,6 +107,7 @@ def sign_headers(
     now: datetime,
 ) -> dict[str, str]:
     """`headers` plus `x-amz-date`, the session token if any, and `authorization`."""
+    now = now.astimezone(timezone.utc)
     parts = urlsplit(url)
     signed_headers = {name.lower(): value for name, value in headers.items()}
     signed_headers["host"] = parts.netloc
@@ -136,6 +137,7 @@ def bedrock_bearer_token(
     """A short-term Bedrock API key for `region`, minted locally from the credentials."""
     if not 1 <= expires_seconds <= MAX_TOKEN_SECONDS:
         raise ValueError(f"expires_seconds is 1 to {MAX_TOKEN_SECONDS}")
+    now = now.astimezone(timezone.utc)
     query = [
         ("Action", "CallWithBearerToken"),
         ("X-Amz-Algorithm", ALGORITHM),

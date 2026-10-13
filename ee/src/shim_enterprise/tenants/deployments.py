@@ -8,7 +8,7 @@ import ipaddress
 import logging
 import math
 import re
-from typing import cast, Literal
+from typing import TYPE_CHECKING, cast, Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -37,6 +37,9 @@ from shim_enterprise.tenants.models import (
 )
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
+
+if TYPE_CHECKING:
+    from shim_enterprise.tenants.policy import TenantPolicyService
 
 logger = logging.getLogger(__name__)
 # After this, the per-tenant provider circuit breaker guards a failing deployment.
@@ -166,8 +169,14 @@ async def require_model_aliases(
 
 
 class DeploymentResolver:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tiers: TenantPolicyService | None = None,
+    ) -> None:
         self.session_factory = session_factory
+        # The tier-definition cache the policy resolver fills; without it, a read.
+        self.tiers = tiers
 
     async def resolve(self, prepared: PreparedInference) -> PreparedInference:
         async with self.session_factory() as session:
@@ -203,14 +212,24 @@ class DeploymentResolver:
                         "message": "The gateway key does not permit this model.",
                     },
                 )
-            deployment = (
+            found = (
                 await session.execute(
-                    select(ModelDeployment).where(
+                    select(ModelDeployment, ProviderSecret.provider)
+                    .join(
+                        ProviderSecret,
+                        (
+                            ProviderSecret.organization_id
+                            == ModelDeployment.organization_id
+                        )
+                        & (ProviderSecret.id == ModelDeployment.provider_secret_id),
+                    )
+                    .where(
                         ModelDeployment.organization_id == prepared.tenant_id,
                         ModelDeployment.alias == prepared.model,
                     )
                 )
-            ).scalar_one_or_none()
+            ).one_or_none()
+        deployment, secret_provider = found if found is not None else (None, None)
         if deployment is None:
             if not settings.MODEL_DEPLOYMENT_REQUIRED and (
                 DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
@@ -322,7 +341,7 @@ class DeploymentResolver:
                 },
             ) from None
         session_tag = (
-            await self._bedrock_admission(prepared, deployment, key)
+            await self._bedrock_admission(prepared, deployment, key, secret_provider)
             if bedrock
             else None
         )
@@ -374,13 +393,18 @@ class DeploymentResolver:
         )
 
     async def _bedrock_admission(
-        self, prepared: PreparedInference, deployment: ModelDeployment, key: ApiKey
+        self,
+        prepared: PreparedInference,
+        deployment: ModelDeployment,
+        key: ApiKey,
+        secret_provider: str | None,
     ) -> str | None:
         """The region lock and the operator's ceiling, before any AWS call; then the
         session tag that carries the key's team onto the AWS bill, if any."""
         # Here, not at the top: the AWS helpers import this module.
         from shim_enterprise.aws.regions import (
             ceiling_allows,
+            ceiling_of,
             lock_reasons,
             profile_scope,
             tier_ceiling,
@@ -391,7 +415,11 @@ class DeploymentResolver:
         lock, attribution = current.bedrock_region_lock, current.bedrock_attribution
         destinations = deployment.aws_destination_regions
         async with self.session_factory() as session:
-            ceiling = await tier_ceiling(session, key.tier)
+            if self.tiers is None:
+                ceiling = await tier_ceiling(session, key.tier)
+            else:
+                tier = await self.tiers.tier_definition(key.tier, session)
+                ceiling = ceiling_of(tier["features"] if tier is not None else None)
             reasons = (
                 []
                 if lock.mode == "off"
@@ -430,14 +458,8 @@ class DeploymentResolver:
                     )
             if attribution.mode != "session_tags":
                 return None
-            kind = await session.scalar(
-                select(ProviderSecret.provider).where(
-                    ProviderSecret.organization_id == deployment.organization_id,
-                    ProviderSecret.id == deployment.provider_secret_id,
-                )
-            )
             # Session tags exist only on assumed roles.
-            if kind != "aws_role":
+            if secret_provider != "aws_role":
                 return None
             team_tag = (
                 await session.scalar(

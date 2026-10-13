@@ -12,7 +12,8 @@ import re
 from uuid import UUID
 
 AWS_REGION = re.compile(r"^[a-z]{2}(-[a-z]+)+-[0-9]$")
-_TAG = re.compile(r"^[A-Za-z0-9_.:/=+@ -]{0,256}$")
+# `<key>=<value>`: AWS allows a 128-character key and a 256-character value.
+_TAG = re.compile(r"^[A-Za-z0-9_.:/=+@ -]{0,385}$")
 
 
 @dataclass(frozen=True)

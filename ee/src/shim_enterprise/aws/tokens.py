@@ -38,7 +38,14 @@ class ExpiringCache[T]:
             self._values.move_to_end(key)
             return cached[0]
         if (pending := self._minting.get(key)) is not None:
-            return await asyncio.shield(pending)
+            try:
+                return await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if not pending.cancelled() or (task and task.cancelling()):
+                    raise
+                # The minting request went away (its client left): mint here.
+                return await self.get(key, mint, now=now)
         future: asyncio.Future[T] = asyncio.get_running_loop().create_future()
         self._minting[key] = future
         try:
@@ -62,7 +69,7 @@ class ExpiringCache[T]:
 
 
 class BedrockTokenCache:
-    """Per (tenant, secret, secret version, region, session tag), one live Bedrock key.
+    """Per (tenant, secret, secret reference, region, session tag), one live Bedrock key.
 
     Minting is local: no AWS call happens on the request path, and the credentials
     are loaded only on a miss.
