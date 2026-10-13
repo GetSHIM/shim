@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from functools import reduce
+from functools import cache, reduce
+from importlib.resources import files
 import operator
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -62,6 +63,7 @@ from shim_enterprise.observability.model_inventory import (
 )
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
+    DeploymentHardwareCost,
     ModelDeployment,
     Organization,
     OrganizationGatewaySettings,
@@ -88,6 +90,8 @@ DEAD_TOOLS = "gateway.dead_tools"
 CACHE_ORDER_CHURN = "gateway.cache_order_churn"
 COLD_START = "gateway.cold_start"
 QUEUEING = "gateway.queueing"
+IDLE_INFERENCE_CAPACITY = "gateway.idle_inference_capacity"
+INFERENCE_QUEUE_SATURATED = "gateway.inference_queue_saturated"
 LITELLM_UNREGISTERED_MODEL = "litellm.unregistered_model"
 LITELLM_ERROR_RATE = "litellm.error_rate"
 LITELLM_SLOW_FIRST_TOKEN = "litellm.slow_first_token"
@@ -152,6 +156,13 @@ COLD_START_MIN_IDLE_SECONDS = 600
 COLD_START_LATENCY_FACTOR = 5
 COLD_START_MIN_FIRST_BYTE_MS = 10_000
 COLD_START_MIN_EVENTS = 3
+IDLE_CAPACITY_WINDOW_DAYS = 7
+IDLE_CAPACITY_MIN_SAMPLES = 1_000
+IDLE_CAPACITY_MAX_BUSY_SHARE = 0.10
+QUEUE_SATURATED_WINDOW_HOURS = 24
+QUEUE_SATURATED_MIN_HOUR_SAMPLES = 30
+QUEUE_SATURATED_MIN_QUEUED_SHARE = 0.5
+QUEUE_SATURATED_MIN_HOURS = 2
 QUEUEING_WINDOW_HOURS = 24
 QUEUEING_BASELINE_DAYS = 7
 QUEUEING_MIN_BASELINE_STREAMS = 50
@@ -212,6 +223,30 @@ class RuleSpec:
     ACTION_KIND: str | None = None
     # Where the evidence comes from: shim's own records or an imported log.
     SOURCE: Literal["gateway", "litellm"] = "gateway"
+
+
+_DOC_LIMIT = 16 * 1024
+
+
+@cache
+def _findings_doc() -> str:
+    # A packaged copy of ee/docs/FINDINGS.md; a test keeps the two identical.
+    return files("shim_enterprise.findings").joinpath("FINDINGS.md").read_text("utf-8")
+
+
+def rule_doc(rule_id: str) -> str | None:
+    """The rule's `## <rule_id>` section of FINDINGS.md, at most 16 KB; None without one."""
+    text = _findings_doc()
+    start = text.find(f"\n## {rule_id}\n")
+    if start < 0:
+        return None
+    end = text.find("\n## ", start + 1)
+    section = text[start + 1 : end if end >= 0 else len(text)].rstrip("\n") + "\n"
+    encoded = section.encode()
+    if len(encoded) <= _DOC_LIMIT:
+        return section
+    cut = encoded[:_DOC_LIMIT].decode("utf-8", "ignore")
+    return cut[: cut.rfind("\n") + 1] + "..."
 
 
 def _playbook(rule_id: str) -> str:
@@ -629,6 +664,51 @@ RULES: dict[str, RuleSpec] = {
         RISK_CLASS="reliability",
         PLAYBOOK=_playbook(QUEUEING),
     ),
+    IDLE_INFERENCE_CAPACITY: RuleSpec(
+        TITLE="A model server is mostly idle",
+        SEVERITY_ID=2,
+        SUMMARY={
+            "en": "Of {samples} readings of this deployment's server in "
+            "{window_days} days, {busy_share} had a request running.",
+            "tr": "Bu dağıtımın sunucusundan {window_days} günde alınan {samples} "
+            "ölçümün {busy_share} kadarında çalışan bir istek vardı.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Move this deployment's callers to a shared deployment, lower its "
+            "replica count, or let the server unload the model when idle.",
+            "tr": "Bu dağıtımın çağıranlarını paylaşılan bir dağıtıma taşıyın, kopya "
+            "sayısını düşürün ya da sunucunun boşta modeli bellekten çıkarmasına "
+            "izin verin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="cost",
+        PLAYBOOK=_playbook(IDLE_INFERENCE_CAPACITY),
+    ),
+    INFERENCE_QUEUE_SATURATED: RuleSpec(
+        TITLE="A model server's queue stays full",
+        SEVERITY_ID=3,
+        SUMMARY={
+            "en": "In {saturated_hours} hours of the last {window_hours}, requests "
+            "waited in this deployment's server queue in at least half the "
+            "readings, with up to {waiting_peak} waiting.",
+            "tr": "Son {window_hours} saatin {saturated_hours} saatinde bu dağıtımın "
+            "sunucusunda ölçümlerin en az yarısında bekleyen istek vardı; en çok "
+            "{waiting_peak} istek bekledi.",
+        },
+        REMEDIATION_TEXT={
+            "en": "Add capacity to the deployment, set a concurrency budget for it, "
+            "or send long requests to their own lane.",
+            "tr": "Dağıtıma kapasite ekleyin, onun için bir eşzamanlılık bütçesi "
+            "tanımlayın ya da uzun istekleri kendi şeridine gönderin.",
+        },
+        MAX_MODE="observe",
+        REVERSIBLE=True,
+        BLAST_RADIUS="deployment",
+        RISK_CLASS="reliability",
+        PLAYBOOK=_playbook(INFERENCE_QUEUE_SATURATED),
+    ),
     LITELLM_UNREGISTERED_MODEL: RuleSpec(
         TITLE="LiteLLM serves a model outside the registry",
         SEVERITY_ID=2,
@@ -737,17 +817,66 @@ RULES: dict[str, RuleSpec] = {
 }
 
 
-def effective_mode(rule_id: str, modes: Mapping[str, Mode]) -> Mode:
-    mode = min(modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index)
-    # No executor applies anything yet (E56): auto works as suggest.
-    return "suggest" if mode == "auto" else mode
+AutoUnavailable = Literal[
+    "auto_paused", "proof_unavailable", "no_allowlist_entry", "remediation_restored"
+]
+
+
+@dataclass(frozen=True)
+class Ladder:
+    """A tenant's finding modes and what decides whether `auto` can run."""
+
+    modes: Mapping[str, Mode]
+    paused: bool = False
+    # Audit mode off: refusals leave no row, so a proof cannot be measured.
+    audit_off: bool = False
+    # Findings whose remediation was restored, skipped or undone: shim only suggests.
+    closed: frozenset[str] = frozenset()
+
+
+def _stored_mode(rule_id: str, ladder: Ladder) -> Mode:
+    return min(
+        ladder.modes.get(rule_id, "observe"), RULES[rule_id].MAX_MODE, key=MODES.index
+    )
+
+
+def auto_unavailable(
+    rule_id: str, ladder: Ladder, finding_id: str | None = None
+) -> AutoUnavailable | None:
+    """Why a rule set to auto works as suggest, or None when it is auto."""
+    if _stored_mode(rule_id, ladder) != "auto":
+        return None
+    # Here, not at the top: the policy package imports the findings routes.
+    from shim_enterprise.policy.allowlist import ALLOWLIST
+
+    kind = RULES[rule_id].ACTION_KIND
+    entries = [entry for entry in ALLOWLIST if kind and entry.action_kind == kind]
+    if not entries:
+        return "no_allowlist_entry"
+    if ladder.paused:
+        return "auto_paused"
+    if ladder.audit_off and all(entry.proof is not None for entry in entries):
+        return "proof_unavailable"
+    if finding_id is not None and finding_id in ladder.closed:
+        return "remediation_restored"
+    return None
+
+
+def effective_mode(rule_id: str, ladder: Ladder, finding_id: str | None = None) -> Mode:
+    mode = _stored_mode(rule_id, ladder)
+    if mode == "auto" and auto_unavailable(rule_id, ladder, finding_id) is not None:
+        return "suggest"
+    return mode
 
 
 def ladder_remediation(
-    rule_id: str, subject: Mapping[str, Any], modes: Mapping[str, Mode]
+    rule_id: str,
+    subject: Mapping[str, Any],
+    ladder: Ladder,
+    finding_id: str | None = None,
 ) -> dict[str, Any]:
     """The ladder fields a finding stores: built from its subject, never from content."""
-    spec, mode = RULES[rule_id], effective_mode(rule_id, modes)
+    spec, mode = RULES[rule_id], effective_mode(rule_id, ladder, finding_id)
     action = None
     if mode != "observe" and spec.ACTION_KIND == "deployment.disable":
         action = {
@@ -760,13 +889,20 @@ def ladder_remediation(
         "action": action,
         "reversible": spec.REVERSIBLE,
         "blast_radius": spec.BLAST_RADIUS,
-        "proof_after": None,
+        # What an automatic fix must not make worse, measured after it applies.
+        "proof_after": {
+            "metric": "refusals",
+            "window_hours": 24,
+            "baseline": None,
+            "threshold": None,
+            "comparison": "lte",
+        }
+        if mode == "auto"
+        else None,
     }
 
 
-async def apply_modes(
-    session: AsyncSession, tenant_id: UUID, modes: Mapping[str, Mode]
-) -> None:
+async def apply_modes(session: AsyncSession, tenant_id: UUID, ladder: Ladder) -> None:
     """Bring every open finding to the tenant's modes, fired in this pass or not."""
     for row in await session.scalars(
         select(Finding).where(
@@ -775,9 +911,13 @@ async def apply_modes(
             Finding.rule_id.in_(list(RULES)),
         )
     ):
-        ladder = ladder_remediation(row.rule_id, row.subject, modes)
-        if any(row.remediation.get(key) != value for key, value in ladder.items()):
-            row.remediation = {**row.remediation, **ladder}
+        ladder_fields = ladder_remediation(
+            row.rule_id, row.subject, ladder, str(row.id)
+        )
+        if any(
+            row.remediation.get(key) != value for key, value in ladder_fields.items()
+        ):
+            row.remediation = {**row.remediation, **ladder_fields}
 
 
 async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySettings:
@@ -789,8 +929,31 @@ async def _tenant_settings(session: AsyncSession, tenant_id: UUID) -> GatewaySet
     return GatewaySettings() if stored is None else stored_settings(stored)
 
 
-async def finding_modes(session: AsyncSession, tenant_id: UUID) -> dict[str, Mode]:
-    return (await _tenant_settings(session, tenant_id)).finding_modes
+async def finding_ladder(
+    session: AsyncSession,
+    tenant_id: UUID,
+    settings: GatewaySettings | None = None,
+) -> Ladder:
+    # Here, not at the top: the policy package imports the findings routes.
+    from shim_enterprise.policy.allowlist import tenant_audit_mode
+    from shim_enterprise.policy.models import PolicyRemediation
+
+    current = settings or await _tenant_settings(session, tenant_id)
+    closed = await session.scalars(
+        select(PolicyRemediation.finding_id).where(
+            PolicyRemediation.organization_id == tenant_id,
+            PolicyRemediation.finding_id.is_not(None),
+            PolicyRemediation.status.in_(
+                ("restored", "restore_skipped", "skipped", "undone")
+            ),
+        )
+    )
+    return Ladder(
+        modes=current.finding_modes,
+        paused=current.auto_remediation_paused,
+        audit_off=await tenant_audit_mode(session, tenant_id) == "off",
+        closed=frozenset(str(finding_id) for finding_id in closed),
+    )
 
 
 # A retry storm's fix follows the class most of its repeats belong to.
@@ -2400,6 +2563,137 @@ async def _queueing(
     ]
 
 
+async def _server_load(
+    session: AsyncSession, tenant_id: UUID, now: datetime
+) -> list[Detection]:
+    """From the servers' own metrics (vLLM and TGI): mostly idle, or a full queue."""
+    # Here, not at the top: the hourly model lives with the scraper.
+    from shim_enterprise.observability.models import InferenceMetricsHourly as load
+
+    week = now - timedelta(days=IDLE_CAPACITY_WINDOW_DAYS)
+    deployment_id = RequestLifecycle.lifecycle_metadata["deployment_id"].as_string()
+    detections = []
+    idle = await session.execute(
+        select(
+            load.deployment_id,
+            func.sum(load.samples).label("samples"),
+            func.sum(load.busy_samples).label("busy"),
+            func.max(load.running_max).label("running_peak"),
+            func.sum(load.cache_usage_sum).label("cache_sum"),
+        )
+        .where(
+            load.organization_id == tenant_id,
+            load.server.in_(("vllm", "tgi")),
+            load.hour >= week,
+        )
+        .group_by(load.deployment_id)
+        .having(func.sum(load.samples) >= IDLE_CAPACITY_MIN_SAMPLES)
+    )
+    for row in idle:
+        busy_share = int(row.busy) / int(row.samples)
+        if busy_share >= IDLE_CAPACITY_MAX_BUSY_SHARE:
+            continue
+        requests = await session.scalar(
+            select(func.count()).where(
+                RequestLifecycle.organization_id == tenant_id,
+                RequestLifecycle.started_at >= week,
+                deployment_id == str(row.deployment_id),
+            )
+        )
+        cost = await session.execute(
+            select(
+                DeploymentHardwareCost.amount, DeploymentHardwareCost.currency
+            ).where(
+                DeploymentHardwareCost.organization_id == tenant_id,
+                DeploymentHardwareCost.deployment_id == row.deployment_id,
+                DeploymentHardwareCost.period == f"{now:%Y-%m}",
+            )
+        )
+        month = cost.first()
+        detections.append(
+            Detection(
+                rule_id=IDLE_INFERENCE_CAPACITY,
+                subject_key=str(row.deployment_id),
+                subject={"deployment_id": str(row.deployment_id)},
+                evidence={
+                    "window_days": IDLE_CAPACITY_WINDOW_DAYS,
+                    "samples": int(row.samples),
+                    "busy_share": round(busy_share, 4),
+                    "running_peak": int(row.running_peak or 0),
+                    "cache_usage_avg": round(
+                        float(row.cache_sum) / int(row.samples), 4
+                    ),
+                    "gateway_requests": int(requests or 0),
+                    # The month's hardware cost in its own currency, never converted.
+                    **(
+                        {
+                            "hardware_cost_month": str(month.amount),
+                            "currency": month.currency,
+                        }
+                        if month is not None
+                        else {}
+                    ),
+                },
+                impact={"cost_usd": None, "requests": int(requests or 0)},
+            )
+        )
+    day = now - timedelta(hours=QUEUE_SATURATED_WINDOW_HOURS)
+    hours: dict[UUID, list[Any]] = {}
+    for row in await session.execute(
+        select(load)
+        .where(
+            load.organization_id == tenant_id,
+            load.server.in_(("vllm", "tgi")),
+            load.hour >= day,
+            load.samples >= QUEUE_SATURATED_MIN_HOUR_SAMPLES,
+            load.queued_samples >= load.samples * QUEUE_SATURATED_MIN_QUEUED_SHARE,
+        )
+        .order_by(load.deployment_id, load.hour)
+    ):
+        hours.setdefault(row[0].deployment_id, []).append(row[0])
+    for deployment, saturated in sorted(hours.items(), key=lambda item: str(item[0])):
+        if len(saturated) < QUEUE_SATURATED_MIN_HOURS:
+            continue
+        worst = max(saturated, key=lambda hour: hour.queued_samples / hour.samples)
+        in_hours = await session.scalar(
+            select(func.count()).where(
+                RequestLifecycle.organization_id == tenant_id,
+                deployment_id == str(deployment),
+                or_(
+                    *(
+                        and_(
+                            RequestLifecycle.started_at >= hour.hour,
+                            RequestLifecycle.started_at
+                            < hour.hour + timedelta(hours=1),
+                        )
+                        for hour in saturated
+                    )
+                ),
+            )
+        )
+        detections.append(
+            Detection(
+                rule_id=INFERENCE_QUEUE_SATURATED,
+                subject_key=str(deployment),
+                subject={"deployment_id": str(deployment)},
+                evidence={
+                    "window_hours": QUEUE_SATURATED_WINDOW_HOURS,
+                    "saturated_hours": len(saturated),
+                    "worst_queued_share": round(
+                        worst.queued_samples / worst.samples, 4
+                    ),
+                    "waiting_peak": max(hour.waiting_max or 0 for hour in saturated),
+                    "running_peak": max(hour.running_max or 0 for hour in saturated),
+                    "cache_usage_peak": max(
+                        hour.cache_usage_max or 0.0 for hour in saturated
+                    ),
+                },
+                impact={"cost_usd": None, "requests": int(in_hours or 0)},
+            )
+        )
+    return detections
+
+
 def _litellm_rows(tenant_id: UUID, end: datetime, window: timedelta) -> tuple[Any, ...]:
     record = ExternalUsageRecord
     return (
@@ -2626,7 +2920,7 @@ async def evaluate_litellm(
     rule id with whether its finding was opened (True) or updated.
     """
     now = datetime.now(timezone.utc)
-    modes = await finding_modes(session, tenant_id)
+    modes = await finding_ladder(session, tenant_id)
     results = []
     for rule in (
         _litellm_unregistered_models,
@@ -2651,7 +2945,7 @@ async def upsert_detection(
     detection: Detection,
     *,
     now: datetime,
-    modes: Mapping[str, Mode],
+    modes: Ladder,
 ) -> bool:
     """One open finding per rule and subject; True when this opened it."""
     spec = RULES[detection.rule_id]
@@ -2684,7 +2978,16 @@ async def upsert_detection(
                     "last_seen_at": now,
                     "occurrences": Finding.occurrences + 1,
                     "summary": statement.excluded.summary,
-                    "evidence": statement.excluded.evidence,
+                    # A fresh detection replaces the evidence but keeps the policy
+                    # versions an automatic fix recorded.
+                    "evidence": statement.excluded.evidence.op("||")(
+                        func.jsonb_strip_nulls(
+                            func.jsonb_build_object(
+                                "policy_versions",
+                                Finding.evidence["policy_versions"],
+                            )
+                        )
+                    ),
                     "impact": statement.excluded.impact,
                     "rule_version": statement.excluded.rule_version,
                     "remediation": statement.excluded.remediation,
@@ -2725,10 +3028,15 @@ async def evaluate_organization(
         (_cache_order_churn, (CACHE_ORDER_CHURN,), "shape" in analysed),
         (_cold_starts, (COLD_START,), registry),
         (_queueing, (QUEUEING,), registry),
+        (
+            _server_load,
+            (IDLE_INFERENCE_CAPACITY, INFERENCE_QUEUE_SATURATED),
+            registry,
+        ),
     )
     detections: list[Detection] = []
     failed: list[str] = []
-    modes = settings.finding_modes
+    modes = await finding_ladder(session, tenant_id, settings)
 
     async def run(rule: Any, rule_ids: tuple[str, ...]) -> None:
         try:
@@ -2871,6 +3179,11 @@ def finding_from_row(row: Finding) -> FindingV1:
             evidence=[
                 FindingEvidence(kind="request", id=request_id)
                 for request_id in _request_evidence(row.evidence)
+            ]
+            # The policy versions an automatic fix wrote for this finding.
+            + [
+                FindingEvidence(kind="policy_version", id=str(version))
+                for version in row.evidence.get("policy_versions") or []
             ],
             measurements=values,
             impact=FindingImpact(

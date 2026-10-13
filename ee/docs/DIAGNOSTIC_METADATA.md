@@ -18,6 +18,7 @@ provider attempt rule are unchanged.
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution; tenant rules treat `unknown` as external. A row labelled `internal` outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` resolves as `external`. | New unclassified requests use `unknown`; historical rows use `null`. |
 | `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
+| `aws_bedrock` | An [Amazon Bedrock](MODEL_DEPLOYMENTS.md) request's `region` (the deployment's source region), `model` (the upstream model or profile id), `scope` (`in_region` or the profile prefix), `lock` (`off`, `pass` or `outside` of the tenant's region lock) and `session_tag` (the team's cost tag value, or `null`). Written at reservation from the request alone. Ids and tenant labels only. | Absent on every non-Bedrock request; a refused request carries the `aws.region_lock` verdict instead. |
 | `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
@@ -86,7 +87,9 @@ The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
 metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
 `LOOP_WINDOW_SECONDS`.
 
-`deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
+The hardware cost allocation and the capacity forecast read `deployment_id`.
+
+`deployment_id`, `aws_bedrock` and `repeat_digest` are lifecycle-only keys: they are in
 `request_lifecycle.metadata` and not in the analytics row, the request list, its
 CSV or the audit completion. Community JSONL does not carry them.
 
@@ -240,8 +243,13 @@ a placeholder.
 
 `task_id` and `trace_id` are written at reservation: `task_id` is the request's
 `X-Shim-Task-Id` (up to 128 characters), else the trace id of a valid incoming
-`traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
-the lifecycle metadata only; reads and filters by task come with the task view.
+`traceparent`; `trace_id` is that trace id; each is `null` when absent. `task_id`
+is also in the analytics row, the request list (`task_id`, filter `?task_id=`, an
+exact match) and the CSV (the column after `tags`); it stays out of the audit chain,
+which keeps no caller-chosen identifier. `trace_id` is in the lifecycle metadata only.
+The [tasks read](COOKBOOK.md#see-what-an-agent-task-cost) groups lifecycle rows by
+`task_id`: its `calls` are client requests (rows without `attempt_number`, or with
+`attempt_number` 1), its `attempts` every row, extra attempts included.
 
 `tool_call_repeats` (how many times the latest tool call of the request's history
 was seen for its task, else its key, within the loop window) and `task_calls` (the
@@ -344,6 +352,11 @@ run (those show as a `rule.<id>` verdict). A match is ids and counts, never the 
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+A [preview](POLICY_DECISIONS.md#tenant-rules) of a new `destination` rule reads
+`pii_entities` and `monitored_entities`; one of a `request_limit` rule reads the
+quota reservation's `prompt_tokens`, `media_parts`, `warnings` and
+`response_analysis.shape`. Both read the scope keys (`team_id`, `tags`,
+`deployment_kind`) and never a value.
 
 `settings_applied` lists the settings band steps that set a provider parameter on
 the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)

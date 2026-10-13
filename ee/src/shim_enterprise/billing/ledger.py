@@ -224,6 +224,8 @@ class QuotaReservationCommand:
     queue_wait_ms: int | None = None
     # Where a route rule sent, or would have sent, the conversation's start.
     route_decision: dict[str, Any] | None = None
+    # Bedrock requests only: source region, model, profile scope, lock, session tag.
+    aws_bedrock: dict[str, str | None] | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -418,6 +420,11 @@ class DurableAccountingRepository:
                         {}
                         if command.route_decision is None
                         else {"route_decision": command.route_decision}
+                    ),
+                    **(
+                        {"aws_bedrock": command.aws_bedrock}
+                        if command.aws_bedrock is not None
+                        else {}
                     ),
                 },
             },

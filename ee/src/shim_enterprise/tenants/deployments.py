@@ -10,7 +10,8 @@ import hmac
 import ipaddress
 import logging
 import math
-from typing import cast, Literal
+import re
+from typing import TYPE_CHECKING, cast, Literal
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
@@ -32,9 +33,20 @@ from shim.rules.route import conversation_id, owned, route_reason, start_view
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
-from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
+from shim_enterprise.secrets.references import format_reference
+from shim_enterprise.tenants.gateway_settings import GatewaySettings
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ModelDeployment,
+    ProviderSecret,
+    Team,
+    User,
+)
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
+
+if TYPE_CHECKING:
+    from shim_enterprise.tenants.policy import TenantPolicyService
 
 logger = logging.getLogger(__name__)
 # After this, the per-tenant provider circuit breaker guards a failing deployment.
@@ -67,6 +79,22 @@ def _operator_origins(items: list[str]) -> set[tuple[str, str | None, int]]:
         and not parsed.fragment
         and parsed.username is None
     }
+
+
+# A Bedrock model or system inference profile id, such as
+# eu.anthropic.claude-sonnet-4-5-20250929-v1:0 or openai.gpt-oss-120b-1:0.
+BEDROCK_MODEL_ID = re.compile(r"^[a-z0-9-]+\.[A-Za-z0-9._:-]{1,200}$")
+BEDROCK_ARN = re.compile(
+    r"^arn:aws[a-z-]*:bedrock:[a-z]{2}(-[a-z]+)+-[0-9]:(\d{12})?:"
+    r"(?P<kind>foundation-model|inference-profile|application-inference-profile)"
+    r"/[A-Za-z0-9._:-]{1,200}$"
+)
+
+
+def bedrock_base_url(provider: str, region: str) -> str:
+    """Bedrock's Anthropic-native or OpenAI-compatible route in the region."""
+    runtime = settings.AWS_BEDROCK_RUNTIME_URL_TEMPLATE.format(region=region)
+    return runtime + ("/anthropic" if provider == "anthropic" else "/openai/v1")
 
 
 def internal_origin_approved(url: str) -> bool:
@@ -147,13 +175,17 @@ async def require_model_aliases(
         )
 
 
-def deployment_target(deployment: ModelDeployment, base_url: str) -> ProviderTarget:
+def deployment_target(
+    deployment: ModelDeployment, base_url: str, session_tag: str | None = None
+) -> ProviderTarget:
     """The invocation destination of an approved deployment row."""
     return ProviderTarget(
         deployment_id=str(deployment.id),
         base_url=base_url,
         upstream_model=deployment.upstream_model,
-        credential_reference=str(deployment.provider_secret_id),
+        credential_reference=format_reference(
+            deployment.provider_secret_id, deployment.aws_region, session_tag
+        ),
         timeout_seconds=deployment.timeout_seconds,
         declared_version=deployment.declared_version,
         input_per_million=deployment.input_price_per_million,
@@ -213,8 +245,14 @@ def _conversation_key() -> bytes:
 
 
 class DeploymentResolver:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tiers: TenantPolicyService | None = None,
+    ) -> None:
         self.session_factory = session_factory
+        # The tier-definition cache the policy resolver fills; without it, a read.
+        self.tiers = tiers
 
     async def resolve(
         self, prepared: PreparedInference, headers: Mapping[str, str]
@@ -323,14 +361,24 @@ class DeploymentResolver:
                         "message": "The gateway key does not permit this model.",
                     },
                 )
-            deployment = (
+            found = (
                 await session.execute(
-                    select(ModelDeployment).where(
+                    select(ModelDeployment, ProviderSecret.provider)
+                    .join(
+                        ProviderSecret,
+                        (
+                            ProviderSecret.organization_id
+                            == ModelDeployment.organization_id
+                        )
+                        & (ProviderSecret.id == ModelDeployment.provider_secret_id),
+                    )
+                    .where(
                         ModelDeployment.organization_id == prepared.tenant_id,
                         ModelDeployment.alias == prepared.model,
                     )
                 )
-            ).scalar_one_or_none()
+            ).one_or_none()
+        deployment, secret_provider = found if found is not None else (None, None)
         if deployment is None:
             if not settings.MODEL_DEPLOYMENT_REQUIRED and (
                 DEFAULT_PRICE_BOOK.supports(prepared.model, str(prepared.provider))
@@ -404,8 +452,28 @@ class DeploymentResolver:
                 },
                 headers={"Retry-After": str(retry_after), "x-should-retry": "false"},
             )
+        bedrock = deployment.upstream == "aws_bedrock"
+        if bedrock and prepared.protocol == "count_tokens":
+            prepared.record_verdict(
+                "deployment.registry",
+                stage="admission",
+                outcome="deny",
+                reason_code="MODEL_CAPABILITY_UNSUPPORTED",
+                policy=registry_policy,
+            )
+            raise HTTPException(
+                400,
+                detail={
+                    "code": "MODEL_CAPABILITY_UNSUPPORTED",
+                    "message": "Token counting is not available for Bedrock deployments.",
+                },
+            )
         try:
-            base_url = validate_deployment_url(deployment.base_url)
+            base_url = validate_deployment_url(
+                bedrock_base_url(deployment.provider, cast(str, deployment.aws_region))
+                if bedrock
+                else deployment.base_url
+            )
         except ValueError:
             prepared.record_verdict(
                 "deployment.destination",
@@ -421,6 +489,11 @@ class DeploymentResolver:
                     "message": "The deployment destination is not approved.",
                 },
             ) from None
+        session_tag = (
+            await self._bedrock_admission(prepared, deployment, key, secret_provider)
+            if bedrock
+            else None
+        )
         prepared.record_verdict(
             "deployment.registry",
             stage="admission",
@@ -450,8 +523,89 @@ class DeploymentResolver:
             prepared,
             payload={**prepared.payload, "model": deployment.upstream_model},
             deployment_kind=kind,
-            target=deployment_target(deployment, base_url),
+            target=deployment_target(deployment, base_url, session_tag),
         )
+
+    async def _bedrock_admission(
+        self,
+        prepared: PreparedInference,
+        deployment: ModelDeployment,
+        key: ApiKey,
+        secret_provider: str | None,
+    ) -> str | None:
+        """The region lock and the operator's ceiling, before any AWS call; then the
+        session tag that carries the key's team onto the AWS bill, if any."""
+        # Here, not at the top: the AWS helpers import this module.
+        from shim_enterprise.aws.regions import (
+            ceiling_allows,
+            ceiling_of,
+            lock_reasons,
+            profile_scope,
+            tier_ceiling,
+        )
+
+        gateway = prepared.tenant_gateway_settings
+        current = gateway if isinstance(gateway, GatewaySettings) else GatewaySettings()
+        lock, attribution = current.bedrock_region_lock, current.bedrock_attribution
+        destinations = deployment.aws_destination_regions
+        async with self.session_factory() as session:
+            if self.tiers is None:
+                ceiling = await tier_ceiling(session, key.tier)
+            else:
+                tier = await self.tiers.tier_definition(key.tier, session)
+                ceiling = ceiling_of(tier["features"] if tier is not None else None)
+            reasons = (
+                []
+                if lock.mode == "off"
+                else lock_reasons(
+                    lock, profile_scope(deployment.upstream_model), destinations
+                )
+            )
+            within = ceiling_allows(ceiling, destinations)
+            if lock.mode != "off" or ceiling:
+                policy = {
+                    "lock": lock.model_dump(),
+                    "ceiling": list(ceiling),
+                    "destinations": destinations,
+                }
+                if within and not reasons:
+                    outcome, code = "allow", "BEDROCK_REGION_ALLOWED"
+                elif within and lock.mode == "monitor":
+                    outcome, code = "allow", "BEDROCK_REGION_OUTSIDE_LOCK"
+                else:
+                    outcome, code = "deny", "BEDROCK_REGION_NOT_ALLOWED"
+                prepared.record_verdict(
+                    "aws.region_lock",
+                    stage="admission",
+                    outcome=outcome,
+                    reason_code=code,
+                    policy=policy,
+                )
+                if outcome == "deny":
+                    raise HTTPException(
+                        403,
+                        detail={
+                            "code": code,
+                            "message": "The Bedrock deployment's inference profile can "
+                            "route outside the regions this tenant allows.",
+                        },
+                    )
+            if attribution.mode != "session_tags":
+                return None
+            # Session tags exist only on assumed roles.
+            if secret_provider != "aws_role":
+                return None
+            team_tag = (
+                await session.scalar(
+                    select(Team.aws_cost_tag).where(
+                        Team.organization_id == deployment.organization_id,
+                        Team.id == key.team_id,
+                    )
+                )
+                if key.team_id is not None
+                else None
+            )
+        return f"{attribution.tag_key}={team_tag or attribution.unassigned_value}"
 
     async def catalog(
         self, principal: AuthenticatedPrincipal, provider: str

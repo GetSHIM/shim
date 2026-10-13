@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal, Self
 from uuid import UUID
@@ -31,6 +32,22 @@ class Settings(CommunitySettings):
     MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES: list[str] = []
     # Empty: a deployment is internal when its tenant says so.
     MODEL_DEPLOYMENT_INTERNAL_ORIGINS: list[str] = []
+    # Where AWS is reached; a VPC interface endpoint or a test double replaces them.
+    AWS_BEDROCK_RUNTIME_URL_TEMPLATE: str = (
+        "https://bedrock-runtime.{region}.amazonaws.com"
+    )
+    AWS_BEDROCK_CONTROL_URL_TEMPLATE: str = "https://bedrock.{region}.amazonaws.com"
+    AWS_STS_URL_TEMPLATE: str = "https://sts.{region}.amazonaws.com"
+    # The gateway's own AWS identity, the one that assumes tenants' roles. Chosen by
+    # the operator; no metadata address is probed unless chosen here.
+    AWS_GATEWAY_IDENTITY: Literal[
+        "none", "env", "web_identity_file", "container", "imds", "gcp_metadata"
+    ] = "none"
+    AWS_GATEWAY_PRINCIPAL_ARN: str | None = None
+    AWS_GCP_SERVICE_ACCOUNT_ID: str | None = Field(default=None, pattern=r"^\d{1,32}$")
+    AWS_GCP_METADATA_URL: str = "http://metadata.google.internal"
+    AWS_IMDS_URL: str = "http://169.254.169.254"
+    AWS_ROLE_SESSION_SECONDS: int = Field(default=3_600, ge=900, le=3_600)
     ALERT_ALLOWED_ORIGINS: list[str] = []
     # The model-deployment name shipped in 0.1.4; existing installs still set it.
     OUTBOUND_CA_BUNDLE: str | None = Field(
@@ -97,6 +114,11 @@ class Settings(CommunitySettings):
     GATEWAY_RECONCILIATION_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
     BUDGET_EVALUATION_INTERVAL_SECONDS: int = Field(default=300, ge=30, le=86_400)
     FINDINGS_EVALUATION_INTERVAL_SECONDS: int = Field(default=900, ge=60, le=86_400)
+    # How often the reconciliation worker reads the metrics of the model servers
+    # tenants listed in their inference_metrics setting.
+    INFERENCE_METRICS_INTERVAL_SECONDS: int = Field(default=60, ge=15, le=3_600)
+    # How long past a remediation's window to wait for refusals still in the outbox.
+    REMEDIATION_WINDOW_GRACE_SECONDS: int = Field(default=900, ge=0, le=3_600)
 
     GATEWAY_OUTBOX_INTERVAL_SECONDS: int = Field(default=5, ge=1, le=3_600)
     GATEWAY_OUTBOX_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
@@ -168,6 +190,57 @@ class Settings(CommunitySettings):
             ):
                 raise ValueError(error)
         return value
+
+    @field_validator(
+        "AWS_BEDROCK_RUNTIME_URL_TEMPLATE",
+        "AWS_BEDROCK_CONTROL_URL_TEMPLATE",
+        "AWS_STS_URL_TEMPLATE",
+    )
+    @classmethod
+    def validate_aws_url_template(cls, value: str) -> str:
+        parsed = urlsplit(value.replace("{region}", "region"))
+        if (
+            value.count("{region}") > 1
+            or value.replace("{region}", "").count("{")
+            or value.replace("{region}", "").count("}")
+            or parsed.scheme not in {"https", "http"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "An AWS URL template is an absolute http(s) URL with no path, query "
+                "or credentials and at most one {region}"
+            )
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def aws_identity_has_its_variables(self) -> Self:
+        needed = {
+            "env": [("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")],
+            "web_identity_file": [("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN")],
+            "container": [
+                ("AWS_CONTAINER_CREDENTIALS_FULL_URI",),
+                ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",),
+            ],
+        }.get(self.AWS_GATEWAY_IDENTITY)
+        if needed is not None and not any(
+            all(os.environ.get(name) for name in group) for group in needed
+        ):
+            names = " or ".join(" and ".join(group) for group in needed)
+            raise ValueError(
+                f"AWS_GATEWAY_IDENTITY={self.AWS_GATEWAY_IDENTITY} needs {names}"
+            )
+        if (
+            self.AWS_GATEWAY_IDENTITY == "gcp_metadata"
+            and self.AWS_GCP_SERVICE_ACCOUNT_ID is None
+        ):
+            raise ValueError(
+                "AWS_GATEWAY_IDENTITY=gcp_metadata needs AWS_GCP_SERVICE_ACCOUNT_ID"
+            )
+        return self
 
     @field_validator("MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES")
     @classmethod

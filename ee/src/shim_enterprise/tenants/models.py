@@ -114,13 +114,15 @@ class User(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("organization_id", "id", name="uq_users_tenant_id"),
         CheckConstraint(
-            "role IN ('owner', 'admin', 'member', 'auditor')", name="ck_users_role"
+            "role IN ('owner', 'admin', 'member', 'auditor', 'recommender')",
+            name="ck_users_role",
         ),
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
         Index("ix_users_organization_id", "organization_id"),
         CheckConstraint("kind IN ('human', 'service')", name="ck_users_kind"),
         CheckConstraint(
-            "kind = 'human' OR role IN ('admin', 'auditor')",
+            "(kind = 'human' AND role <> 'recommender') OR "
+            "(kind = 'service' AND role IN ('admin', 'auditor', 'recommender'))",
             name="ck_users_service_role",
         ),
         ForeignKeyConstraint(
@@ -336,6 +338,10 @@ class Team(Base, TimestampMixin):
             "monthly_token_limit IS NULL OR monthly_token_limit >= 0",
             name="ck_teams_monthly_tokens",
         ),
+        CheckConstraint(
+            "aws_cost_tag ~ '^[A-Za-z0-9 _.:/=+@-]+$'",
+            name="ck_teams_aws_cost_tag",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -348,6 +354,8 @@ class Team(Base, TimestampMixin):
     daily_request_limit: Mapped[int | None] = mapped_column(Integer)
     monthly_request_limit: Mapped[int | None] = mapped_column(Integer)
     monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+    # The STS session tag value this team's Bedrock requests carry onto the AWS bill.
+    aws_cost_tag: Mapped[str | None] = mapped_column(String(256))
 
 
 class TeamMembership(Base, TimestampMixin):
@@ -545,6 +553,14 @@ class ProviderSecret(Base, TimestampMixin):
             "monthly_limit_usd IS NULL OR monthly_limit_usd >= 0",
             name="ck_provider_secret_monthly_limit",
         ),
+        # A role stores nothing secret: its ARN instead of a secret-store reference.
+        CheckConstraint(
+            "((provider = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
+            "((provider = 'aws_role') = (secret_ref IS NULL)) AND "
+            "((secret_ref IS NULL) = (secret_backend IS NULL)) AND "
+            "((secret_ref IS NULL) = (secret_version IS NULL))",
+            name="ck_provider_secrets_role_shape",
+        ),
         Index(
             "ix_provider_secrets_tenant_provider",
             "organization_id",
@@ -558,18 +574,46 @@ class ProviderSecret(Base, TimestampMixin):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
-    # openai, anthropic, google, or azure_entra: an Entra client credential that calls
-    # OpenAI on Azure for its deployments only, which a build without it never selects.
+    # openai, anthropic, google, or a credential that serves only the deployments that
+    # name it, which a build without it never selects: azure_entra (an Entra client
+    # credential for OpenAI on Azure), or for Amazon Bedrock aws_access_key (a
+    # long-term key pair Bedrock API keys are minted from), aws_bedrock_api_key or
+    # aws_role (a role in the tenant's account; nothing secret stored).
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
-    secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
-    secret_backend: Mapped[str] = mapped_column(String(32), nullable=False)
-    secret_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    secret_ref: Mapped[str | None] = mapped_column(Text)
+    secret_backend: Mapped[str | None] = mapped_column(String(32))
+    secret_version: Mapped[str | None] = mapped_column(String(128))
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    aws_role_arn: Mapped[str | None] = mapped_column(String(2048))
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
+
+
+class OrganizationAwsIdentity(Base):
+    """The tenant's external id: what its AWS role's trust policy asks shim for."""
+
+    __tablename__ = "organization_aws_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "external_id", name="uq_organization_aws_identities_external_id"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_aws_identities_organization_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ModelDeployment(Base, TimestampMixin):
@@ -618,8 +662,17 @@ class ModelDeployment(Base, TimestampMixin):
             name="ck_model_deployments_cache_prices",
         ),
         CheckConstraint(
-            "upstream IN ('generic', 'azure_openai')",
+            "upstream IN ('generic', 'azure_openai', 'aws_bedrock')",
             name="ck_model_deployments_upstream",
+        ),
+        CheckConstraint(
+            "((upstream = 'aws_bedrock') = (aws_region IS NOT NULL)) AND "
+            "(aws_region IS NULL OR aws_region ~ '^[a-z]{2}(-[a-z]+)+-[0-9]$')",
+            name="ck_model_deployments_aws_region",
+        ),
+        CheckConstraint(
+            "capacity_concurrent_requests BETWEEN 1 AND 100000",
+            name="ck_model_deployments_capacity",
         ),
     )
 
@@ -658,6 +711,61 @@ class ModelDeployment(Base, TimestampMixin):
     upstream: Mapped[str] = mapped_column(
         String(32), nullable=False, default="generic", server_default="generic"
     )
+    aws_region: Mapped[str | None] = mapped_column(String(32))
+    # Where a Bedrock profile can route, from GetInferenceProfile; null when unknown.
+    aws_destination_regions: Mapped[list[str] | None] = mapped_column(JSONB)
+    aws_destinations_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # Concurrent requests the serving hardware holds, as the admin states it.
+    capacity_concurrent_requests: Mapped[int | None] = mapped_column(Integer)
+
+
+class DeploymentHardwareCost(Base, TimestampMixin):
+    """What an internal deployment's hardware cost in one month, in its own currency."""
+
+    __tablename__ = "deployment_hardware_costs"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "deployment_id",
+            "period",
+            name="uq_deployment_hardware_costs_period",
+        ),
+        CheckConstraint(
+            "period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'",
+            name="ck_deployment_hardware_costs_period",
+        ),
+        CheckConstraint("amount > 0", name="ck_deployment_hardware_costs_amount"),
+        CheckConstraint(
+            "currency ~ '^[A-Z]{3}$'", name="ck_deployment_hardware_costs_currency"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            name="fk_deployment_hardware_costs_organization",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    deployment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "model_deployments.id",
+            name="fk_deployment_hardware_costs_deployment",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(200))
+    entered_by: Mapped[str | None] = mapped_column(String(64))
 
 
 class RecordSet(Base, TimestampMixin):

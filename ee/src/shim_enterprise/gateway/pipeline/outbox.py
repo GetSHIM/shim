@@ -194,6 +194,8 @@ def analytics_terminal_intent(
         "team": lifecycle_metadata.get("team"),
         "team_id": lifecycle_metadata.get("team_id"),
         "tags": list(lifecycle_metadata.get("tags") or []),
+        # Not a diagnostic field: those enter the immutable audit chain too.
+        "task_id": lifecycle_metadata.get("task_id"),
         **{field: lifecycle_metadata.get(field) for field in _DIAGNOSTIC_FIELDS},
     }
     return GatewayOutboxIntent(

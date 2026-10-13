@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
+from pydantic import SecretStr
 from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +18,10 @@ from shim.gateway.contracts.ids import SecretRef, TenantId
 from shim.gateway.pipeline.provider_execution import ProviderCallError
 from shim.secrets.azure import EntraClientCredential, EntraTokenCache
 from shim.secrets.credentials import EphemeralProviderCredential
+from shim_enterprise.aws.roles import AwsRoles, RoleRefused
+from shim_enterprise.aws.sigv4 import AwsCredentials
+from shim_enterprise.aws.tokens import BedrockTokenCache
+from shim_enterprise.secrets.references import CredentialReference, parse_reference
 
 if TYPE_CHECKING:
     from shim_enterprise.tenants.models import ProviderSecret
@@ -199,13 +204,19 @@ def get_secret_store() -> SecretStore:
     return _store_singleton
 
 
+# Credentials for Amazon Bedrock deployments only, which always name them.
+AWS_PROVIDERS = ("aws_access_key", "aws_bedrock_api_key", "aws_role")
+# Unlike provider:<p>:api-key, so a build that predates them never reads one.
+_PURPOSES = {
+    "azure_entra": "provider:openai:azure-entra-client",
+    "aws_access_key": "provider:aws:access-key",
+    "aws_bedrock_api_key": "provider:aws:bedrock-api-key",
+}
+
+
 def provider_secret_purpose(provider: str) -> str:
     """The store purpose a provider secret is kept under."""
-    return (
-        "provider:openai:azure-entra-client"
-        if provider == "azure_entra"
-        else f"provider:{provider}:api-key"
-    )
+    return _PURPOSES.get(provider, f"provider:{provider}:api-key")
 
 
 def provider_secret_query(
@@ -213,16 +224,19 @@ def provider_secret_query(
 ) -> Select[tuple[ProviderSecret]]:
     """The secret a request of `provider` uses: its deployment's own, else the newest
     of the provider's. An Entra credential (provider azure_entra) serves its OpenAI
-    deployments only. The credential resolver and the spend policy both read this."""
+    deployments only, an AWS credential its Bedrock deployments of either format.
+    The credential resolver and the spend policy both read this."""
     from shim_enterprise.tenants.models import ProviderSecret
 
-    providers = (provider, "azure_entra") if provider == "openai" else (provider,)
+    providers = (provider, *AWS_PROVIDERS)
+    if provider == "openai":
+        providers += ("azure_entra",)
     return (
         select(ProviderSecret)
         .where(
             ProviderSecret.organization_id == tenant_id,
             ProviderSecret.provider.in_(providers)
-            & (ProviderSecret.id == UUID(reference))
+            & (ProviderSecret.id == parse_reference(reference).secret_id)
             if reference is not None
             else ProviderSecret.provider == provider,
         )
@@ -240,6 +254,8 @@ class ManagedProviderCredentialResolver:
         store: SecretStore,
         session_factory: async_sessionmaker[AsyncSession],
         entra: EntraTokenCache | None = None,
+        bedrock: BedrockTokenCache | None = None,
+        aws_roles: AwsRoles | None = None,
     ) -> None:
         if provider not in {"openai", "anthropic", "google"}:
             raise ValueError("unsupported provider credential")
@@ -247,14 +263,50 @@ class ManagedProviderCredentialResolver:
         self.store = store
         self.session_factory = session_factory
         self.entra = entra
+        self.bedrock = bedrock if bedrock is not None else BedrockTokenCache()
+        self.aws_roles = aws_roles
 
-    async def resolve_row(self, tenant_id: TenantId, row: ProviderSecret) -> str:
-        """An API key as stored, or an Entra token for an Entra client credential."""
-        secret = await self.store.get_secret(
+    async def _secret(self, tenant_id: TenantId, row: ProviderSecret) -> str:
+        assert row.secret_ref is not None, "a role secret stores nothing"
+        return await self.store.get_secret(
             tenant_id,
             SecretRef(row.secret_ref),
             expected_purpose=provider_secret_purpose(row.provider),
         )
+
+    async def resolve_row(
+        self,
+        tenant_id: TenantId,
+        row: ProviderSecret,
+        reference: CredentialReference | None = None,
+    ) -> str:
+        """An API key as stored, an Entra token for an Entra client credential, or a
+        Bedrock API key minted for the reference's region from an AWS access key."""
+        if row.provider == "aws_role":
+            return await self._role_token(tenant_id, row, reference)
+        if row.provider == "aws_access_key":
+            if reference is None or reference.aws_region is None:
+                # An AWS key without a region cannot be used: a misbuilt target.
+                raise ProviderCallError(
+                    503, "PROVIDER_UNAVAILABLE", False, provider=self.provider
+                )
+            region = reference.aws_region
+
+            async def load() -> AwsCredentials:
+                stored = json.loads(await self._secret(tenant_id, row))
+                return AwsCredentials(
+                    access_key_id=stored["access_key_id"],
+                    secret_access_key=SecretStr(stored["secret_access_key"]),
+                )
+
+            return await self.bedrock.token(
+                # A rotation changes the reference (a Fernet version is always
+                # "v2"), so a rotated key never reuses a token.
+                (tenant_id, row.id, row.secret_ref, region, reference.session_tag),
+                region,
+                load,
+            )
+        secret = await self._secret(tenant_id, row)
         if row.provider != "azure_entra":
             return secret
         if self.entra is None:
@@ -271,6 +323,37 @@ class ManagedProviderCredentialResolver:
         # A rotation changes the reference (a Fernet version is always "v2"), so a
         # rotated secret never reuses a token.
         return await self.entra.token((tenant_id, row.id, row.secret_ref), credential)
+
+    async def _role_token(
+        self,
+        tenant_id: TenantId,
+        row: ProviderSecret,
+        reference: CredentialReference | None,
+    ) -> str:
+        """A Bedrock API key minted from a session of the tenant's role."""
+        if reference is None or reference.aws_region is None:
+            raise ProviderCallError(
+                503, "PROVIDER_UNAVAILABLE", False, provider=self.provider
+            )
+        if self.aws_roles is None:
+            raise RoleRefused("not_configured", False, None).provider_error(
+                self.provider
+            )
+        roles, region, role_arn = self.aws_roles, reference.aws_region, row.aws_role_arn
+        assert role_arn is not None
+
+        async def load() -> AwsCredentials:
+            try:
+                return await roles.credentials(
+                    tenant_id, row.id, role_arn, region, reference.session_tag
+                )
+            except RoleRefused as refused:
+                raise refused.provider_error(self.provider) from None
+
+        # The token never outlives the session it was minted from (BedrockTokenCache).
+        return await self.bedrock.token(
+            (tenant_id, row.id, role_arn, region, reference.session_tag), region, load
+        )
 
     async def resolve(
         self,
@@ -297,4 +380,6 @@ class ManagedProviderCredentialResolver:
             )
         if row is None:
             return None
-        return await self.resolve_row(tenant_id, row)
+        return await self.resolve_row(
+            tenant_id, row, None if reference is None else parse_reference(reference)
+        )

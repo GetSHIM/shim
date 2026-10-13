@@ -178,6 +178,102 @@ class TransformPatch(BaseModel):
     json_compaction: Literal["off", "on"] | None = None
 
 
+LockMode = Literal["off", "monitor", "enforce"]
+# A profile prefix, or in_region (hence the underscore).
+LockScope = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{1,15}$")]
+# A region code or a geography prefix: eu-central-1, eu, us-gov.
+LockRegion = Annotated[str, Field(pattern=r"^[a-z]{2}(-[a-z]+)*(-[0-9])?$")]
+# A subset of AWS's tag value characters, without `|` (the credential reference's).
+COST_TAG = r"^[A-Za-z0-9 _.:/=+@-]{1,256}$"
+TagKey = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:/+@-]{1,128}$")]
+
+
+def _unique(value: list[str]) -> list[str]:
+    if len(set(value)) != len(value):
+        raise ValueError("entries must be unique")
+    return value
+
+
+def _not_aws_prefix(value: str | None) -> str | None:
+    if value is not None and value.lower().startswith("aws:"):
+        raise ValueError("a tag key may not start with aws:")
+    return value
+
+
+class BedrockRegionLock(BaseModel):
+    """Which Bedrock inference profiles a tenant's requests may use."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: LockMode = "off"
+    # Profile prefixes (eu, us, apac, global) or in_region; empty allows any.
+    scopes: list[LockScope] = Field(default=[], max_length=20)
+    # Region codes or geography prefixes every destination must fall in; empty allows any.
+    regions: list[LockRegion] = Field(default=[], max_length=50)
+
+    @field_validator("scopes", "regions")
+    @classmethod
+    def unique(cls, value: list[str]) -> list[str]:
+        return _unique(value)
+
+
+class BedrockRegionLockPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: LockMode | None = None
+    scopes: list[LockScope] | None = Field(default=None, max_length=20)
+    regions: list[LockRegion] | None = Field(default=None, max_length=50)
+
+
+class BedrockAttribution(BaseModel):
+    """Session tags that carry each team onto the AWS bill (role credentials only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: Literal["off", "session_tags"] = "off"
+    tag_key: TagKey = "shim-team"
+    unassigned_value: str = Field(default="unassigned", pattern=COST_TAG)
+
+    @field_validator("tag_key")
+    @classmethod
+    def not_aws(cls, value: str | None) -> str | None:
+        return _not_aws_prefix(value)
+
+
+class BedrockAttributionPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["off", "session_tags"] | None = None
+    tag_key: TagKey | None = None
+    unassigned_value: str | None = Field(default=None, pattern=COST_TAG)
+
+    @field_validator("tag_key")
+    @classmethod
+    def not_aws(cls, value: str | None) -> str | None:
+        return _not_aws_prefix(value)
+
+
+class InferenceMetricsSource(BaseModel):
+    """An internal deployment whose model server shim reads the load of."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    deployment_id: UUID
+    server: Literal["vllm", "tgi", "ollama"]
+    # Send the deployment's stored credential; vLLM's /metrics needs none.
+    send_credential: bool = False
+
+
+def _one_per_deployment(
+    value: list[InferenceMetricsSource] | None,
+) -> list[InferenceMetricsSource] | None:
+    if value is not None and len({source.deployment_id for source in value}) != len(
+        value
+    ):
+        raise ValueError("at most one inference_metrics entry per deployment")
+    return value
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -200,6 +296,18 @@ class GatewaySettings(BaseModel):
     tool_search: ToolSearchSettings = ToolSearchSettings()
     thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
     transforms: TransformSettings = TransformSettings()
+    # Stops new automatic and agent applies; automatic undo keeps running.
+    auto_remediation_paused: bool = False
+    bedrock_region_lock: BedrockRegionLock = BedrockRegionLock()
+    bedrock_attribution: BedrockAttribution = BedrockAttribution()
+    inference_metrics: list[InferenceMetricsSource] = Field(default=[], max_length=64)
+
+    @field_validator("inference_metrics")
+    @classmethod
+    def one_per_deployment(
+        cls, value: list[InferenceMetricsSource]
+    ) -> list[InferenceMetricsSource]:
+        return _one_per_deployment(value) or []
 
     @field_validator("response_analysis")
     @classmethod
@@ -229,6 +337,20 @@ class GatewaySettingsPatch(BaseModel):
     tool_search: ToolSearchPatch | None = None
     thinking_history: ThinkingHistoryPatch | None = None
     transforms: TransformPatch | None = None
+    auto_remediation_paused: bool | None = None
+    bedrock_region_lock: BedrockRegionLockPatch | None = None
+    bedrock_attribution: BedrockAttributionPatch | None = None
+    # Replaces the whole list.
+    inference_metrics: list[InferenceMetricsSource] | None = Field(
+        default=None, max_length=64
+    )
+
+    @field_validator("inference_metrics")
+    @classmethod
+    def one_per_deployment(
+        cls, value: list[InferenceMetricsSource] | None
+    ) -> list[InferenceMetricsSource] | None:
+        return _one_per_deployment(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -384,6 +506,40 @@ def _loop_direction(before: AgentLoop, after: AgentLoop) -> Direction:
     )
 
 
+_LOCK_LEVELS = ("off", "monitor", "enforce")
+
+
+def _list_direction(before: list[str], after: list[str]) -> Direction | None:
+    if before == after:
+        return None
+    if (not before and after) or (set(after) < set(before) and after):
+        return "tightening"
+    return "relaxing"
+
+
+def _region_lock_direction(
+    before: BedrockRegionLock, after: BedrockRegionLock
+) -> Direction:
+    """A mode change alone decides (off < monitor < enforce): lists under `off`
+    are inert, monitor refuses nothing, and enforce refuses at least what monitor
+    did. With the mode kept and on, a list that narrows tightens and one that
+    widens or empties relaxes."""
+    if before.mode != after.mode:
+        raised = _LOCK_LEVELS.index(after.mode) > _LOCK_LEVELS.index(before.mode)
+        return "tightening" if raised else "relaxing"
+    lists = [
+        found
+        for found in (
+            _list_direction(before.scopes, after.scopes),
+            _list_direction(before.regions, after.regions),
+        )
+        if found is not None
+    ]
+    if after.mode == "off" or not lists:
+        return "neutral"
+    return "relaxing" if "relaxing" in lists else "tightening"
+
+
 # A field without a row here classifies as relaxing: a new switch fails closed.
 SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # Measurement only: what analyzers run changes no request.
@@ -409,10 +565,22 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     "thinking_history": neutral,
     # Lossless: the model reads the same values in fewer characters.
     "transforms": neutral,
+    # Pausing stops unattended changes; resuming lets them run again.
+    "auto_remediation_paused": toward(False),
+    "bedrock_region_lock": _region_lock_direction,
+    # Measurement only: a tag on the session loosens no control.
+    "bedrock_attribution": neutral,
+    # Reads the tenant's own server; changes no request.
+    "inference_metrics": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.
 SETTING_AVAILABILITY: dict[str, Callable[[], str | None]] = {
+    "bedrock_attribution": lambda: (
+        None
+        if settings.AWS_GATEWAY_IDENTITY != "none"
+        else "off, needs AWS_GATEWAY_IDENTITY in this installation"
+    ),
     "request_archive": lambda: (
         None
         if settings.REQUEST_ARCHIVE_ENABLED

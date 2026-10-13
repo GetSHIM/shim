@@ -9,9 +9,19 @@ from shim_enterprise.secrets.store import parse_secret_ref
 
 
 class SecretReferenceRow(Protocol):
-    secret_ref: str
-    secret_backend: str
-    secret_version: str
+    # Properties, so a row whose reference may be absent (an AWS role) fits too.
+    @property
+    def secret_ref(self) -> str | None: ...
+    @secret_ref.setter
+    def secret_ref(self, value: str) -> None: ...
+    @property
+    def secret_backend(self) -> str | None: ...
+    @secret_backend.setter
+    def secret_backend(self, value: str) -> None: ...
+    @property
+    def secret_version(self) -> str | None: ...
+    @secret_version.setter
+    def secret_version(self, value: str) -> None: ...
 
 
 def assign_secret_reference(row: SecretReferenceRow, secret_ref: SecretRef) -> None:

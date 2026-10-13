@@ -169,7 +169,7 @@ class TenantPolicyService:
             raise TenantPolicyConfigurationError(
                 "tenant gateway settings are invalid"
             ) from exc
-        tier = await self._tier_definition(api_key.tier, session)
+        tier = await self.tier_definition(api_key.tier, session)
         switches = dict(pii_config or {})
         # Every key but the five switches is a setting of its own; an entry cached
         # before rules existed has no rules_revision, which correctly means none.
@@ -301,7 +301,7 @@ class TenantPolicyService:
         await self.cache.set_pii_config(cache_key, value)
         return value
 
-    async def _tier_definition(
+    async def tier_definition(
         self,
         slug: str,
         session: AsyncSession,

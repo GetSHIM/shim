@@ -27,6 +27,7 @@ IDENTITIES = (
     "team_admin",
     "service_admin",
     "service_auditor",
+    "service_recommender",
 )
 EXPECTED = Path(__file__).with_name("permission_matrix.json")
 _PATH_VALUES = {"period": "2026-09", "control_id": "A.2.2"}
@@ -92,6 +93,7 @@ async def _identities(session: AsyncSession) -> dict[str, UUID]:
             ("team_admin", "member", "human"),
             ("service_admin", "admin", "service"),
             ("service_auditor", "auditor", "service"),
+            ("service_recommender", "recommender", "service"),
         )
     }
     session.add_all(users.values())

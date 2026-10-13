@@ -131,6 +131,30 @@ array in the token. Actual Entra tenant acceptance remains required. LDAP/AD
 federation belongs in the chosen IdP. Direct LDAP, SCIM, SAML, and local passwords
 are not supported.
 
+## The gateway's AWS identity
+
+To reach Amazon Bedrock through roles in tenants' AWS accounts (no stored key), the
+gateway needs an AWS identity of its own. `AWS_GATEWAY_IDENTITY` picks one source;
+nothing is probed, and no metadata address is contacted unless chosen here.
+
+| Value | Where the credentials come from |
+| --- | --- |
+| `none` (default) | No identity: role secrets answer 503 `PROVIDER_NOT_CONFIGURED`. |
+| `env` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`, read again every 5 minutes. |
+| `web_identity_file` | `AssumeRoleWithWebIdentity` with `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` (session `AWS_ROLE_SESSION_NAME` or `shim-gateway`): EKS service-account roles. |
+| `container` | `AWS_CONTAINER_CREDENTIALS_FULL_URI`, else `http://169.254.170.2` plus `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, with `Authorization` from `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` or `AWS_CONTAINER_AUTHORIZATION_TOKEN`: EKS Pod Identity, ECS. |
+| `imds` | EC2 IMDSv2 at `AWS_IMDS_URL` (default `http://169.254.169.254`): a session token, then the first role under `iam/security-credentials/`. |
+| `gcp_metadata` | No AWS credentials: a Google ID token from `AWS_GCP_METADATA_URL` for the audience `shim-aws:<external id>`, traded at STS by `AssumeRoleWithWebIdentity`. Needs `AWS_GCP_SERVICE_ACCOUNT_ID`. The hosted cloud uses it. |
+
+Startup fails when the chosen source lacks its variables. Base credentials and ID
+tokens are kept until 300 seconds before they expire; metadata and container
+calls time out after 2 seconds and STS calls after 10, with no retry. Set
+`AWS_GATEWAY_PRINCIPAL_ARN` to the gateway's role or user so the trust policy
+template names it. Tenant sessions last `AWS_ROLE_SESSION_SECONDS` (900 to 3,600,
+default 3,600). A tenant revokes access by removing the trust policy or the role:
+new sessions stop at once, and sessions already handed out end within that time
+(IAM's "revoke active sessions" ends them at once).
+
 ## Vault KV v2
 
 Set `SECRET_BACKEND=vault`, `VAULT_ADDR=https://vault.internal`,

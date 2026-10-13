@@ -55,6 +55,7 @@ from shim.gateway.pipeline.admission import AdmissionStage
 from shim.gateway.request_policy import BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
+from shim_enterprise.gateway.pipeline.outbox import audit_completion_intent
 from shim.gateway.pipeline.provider_execution import (
     ProviderCallError,
     ProviderExecutionStage,
@@ -296,6 +297,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
             deployment_kind="internal",
             deployment_id=deployment_id,
             repeat_digest="b" * 64,
+            task_id="agent-run.1",
         ),
     )
     command = FinalizationCommand(
@@ -370,6 +372,18 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
     assert all(event.payload[key] == value for key, value in expected.items())
     assert "deployment_id" not in event.payload
     assert "repeat_digest" not in event.payload
+    assert event.payload["task_id"] == "agent-run.1"
+    audit = audit_completion_intent(
+        lifecycle,
+        SimpleNamespace(input_hash=None, pii_entities={}),
+        SimpleNamespace(prompt_tokens=20, completion_tokens=3, estimated=True),
+        None,
+        lifecycle_status="client_disconnected",
+        output_hash=None,
+        completed_at=started_at,
+    )
+    # The immutable chain keeps no caller-chosen identifier.
+    assert "task_id" not in audit.payload["extra"]
 
     @asynccontextmanager
     async def session_scope():
@@ -389,6 +403,7 @@ async def test_diagnostic_metadata_survives_terminal_and_outbox_replay(
     assert all(projected.details[key] == value for key, value in expected.items())
     assert projected.details["lifecycle_status"] == "client_disconnected"
     assert projected.details["usage_estimated"] is True
+    assert projected.details["task_id"] == "agent-run.1"
 
 
 @pytest.mark.asyncio

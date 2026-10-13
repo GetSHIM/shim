@@ -446,29 +446,24 @@ async def test_the_import_needs_rules_write_besides_plans_create(db) -> None:
 
 @pytest.mark.asyncio
 async def test_the_import_plans_its_changes_before_it_takes_the_tenant_lock(
-    db, monkeypatch
+    db, monkeypatch, tenant_lock
 ) -> None:
     owner = await _owner(db)
-    calls: list[str] = []
-    planned_change, lock_tenant = rules_api.planned_change, rules_api.lock_tenant
+    locked: list[bool] = []
+    planned_change = rules_api.planned_change
 
     async def planned(*args, **kwargs):
-        calls.append("planned")
+        locked.append(tenant_lock())
         return await planned_change(*args, **kwargs)
 
-    async def lock(*args, **kwargs):
-        calls.append("lock")
-        return await lock_tenant(*args, **kwargs)
-
     monkeypatch.setattr(rules_api, "planned_change", planned)
-    monkeypatch.setattr(rules_api, "lock_tenant", lock)
     body = {"rules": [_term_rule(), _term_rule("atlas", terms=["Atlas Raporu"])]}
 
     imported = await _call(db, owner, "POST", IMPORT, json=body)
 
     assert imported.status_code == 201, imported.text
     # The history queries behind each planned change run without the lock.
-    assert calls == ["planned", "planned", "lock"]
+    assert locked == [False, False]
 
 
 @pytest.mark.asyncio

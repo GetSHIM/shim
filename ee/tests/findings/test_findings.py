@@ -25,6 +25,8 @@ from shim_enterprise.gateway.pipeline.quota_reservation import (
     EPHEMERAL_BYOK_SPEND_POLICY_VERSION,
 )
 from shim_enterprise.observability.model_inventory import UNSPECIFIED_MODEL
+from shim_enterprise.policy import allowlist
+from shim_enterprise.policy.models import PolicyRemediation
 from shim_enterprise.tenants.gateway_settings import GatewaySettings, classify_change
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -672,6 +674,12 @@ _SUBJECTS = {
     service.CACHE_ORDER_CHURN: {"api_key_id": "11111111-1111-1111-1111-111111111111"},
     service.COLD_START: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
     service.QUEUEING: {"deployment_id": "22222222-2222-2222-2222-222222222222"},
+    service.IDLE_INFERENCE_CAPACITY: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222"
+    },
+    service.INFERENCE_QUEUE_SATURATED: {
+        "deployment_id": "22222222-2222-2222-2222-222222222222"
+    },
     service.IDLE_INTERNAL_DEPLOYMENT: {
         "deployment_id": "22222222-2222-2222-2222-222222222222",
         "alias": "kurum-llama",
@@ -679,6 +687,24 @@ _SUBJECTS = {
     service.LITELLM_RETRY_BURST: {"litellm_key": "litellm:ce77089fa9483163"},
 }
 _EVIDENCE = {
+    service.IDLE_INFERENCE_CAPACITY: {
+        "window_days": 7,
+        "samples": 1000,
+        "busy_share": 0.05,
+        "running_peak": 1,
+        "cache_usage_avg": 0.2,
+        "gateway_requests": 12,
+        "hardware_cost_month": "120000.00",
+        "currency": "TRY",
+    },
+    service.INFERENCE_QUEUE_SATURATED: {
+        "window_hours": 24,
+        "saturated_hours": 2,
+        "worst_queued_share": 0.75,
+        "waiting_peak": 4,
+        "running_peak": 8,
+        "cache_usage_peak": 0.9,
+    },
     service.LITELLM_UNREGISTERED_MODEL: {
         "requests": 12,
         "window_days": 7,
@@ -2256,11 +2282,86 @@ async def test_the_worker_writes_the_mode_and_action_each_pass(
     assert (
         automatic[service.UNUSED_DEPLOYMENT]["mode"],
         automatic[service.UNUSED_DEPLOYMENT]["action"],
-    ) == ("suggest", action)
+        automatic[service.UNUSED_DEPLOYMENT]["proof_after"],
+    ) == (
+        "auto",
+        action,
+        {
+            "metric": "refusals",
+            "window_hours": 24,
+            "baseline": None,
+            "threshold": None,
+            "comparison": "lte",
+        },
+    )
     assert all(
         _published(service.finding_from_row(row))
         for row in await _findings(db, test_api_key)
     )
+
+
+@pytest.mark.parametrize(
+    "reason", ["auto_paused", "proof_unavailable", "no_allowlist_entry"]
+)
+@pytest.mark.asyncio
+async def test_auto_works_as_suggest_while_it_cannot_run(
+    db, test_api_key, monkeypatch, reason
+) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "auto"})
+    if reason == "auto_paused":
+        row = await db.get(OrganizationGatewaySettings, tenant)
+        row.settings = {**row.settings, "auto_remediation_paused": True}
+    elif reason == "proof_unavailable":
+        monkeypatch.setattr(settings, "AI_ACT_AUDIT_ENABLED", False)
+    else:
+        monkeypatch.setattr(allowlist, "ALLOWLIST", ())
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+
+    async with _client(db, await _owner(db, tenant, "auditor")) as client:
+        rules = (await client.get("/api/v1/management/findings/rules")).json()
+
+    unused = next(
+        item for item in rules if item["rule_id"] == service.UNUSED_DEPLOYMENT
+    )
+    assert (unused["effective_mode"], unused["unavailable_reason"]) == (
+        "suggest",
+        reason,
+    )
+    assert (finding.remediation["mode"], finding.remediation["proof_after"]) == (
+        "suggest",
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_finding_whose_fix_was_set_back_only_suggests(db, test_api_key) -> None:
+    tenant = test_api_key.organization_id
+    await _deployment(db, test_api_key, age=timedelta(days=40))
+    await _set_modes(db, tenant, {service.UNUSED_DEPLOYMENT: "auto"})
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+    db.add(
+        PolicyRemediation(
+            organization_id=tenant,
+            finding_id=finding.id,
+            actor_type="system",
+            items=[],
+            status="restored",
+        )
+    )
+    await _evaluate(db, test_api_key)
+    [finding] = await _findings(db, test_api_key)
+    ladder = await service.finding_ladder(db, tenant)
+
+    assert finding.remediation["mode"] == "suggest"
+    assert (
+        service.auto_unavailable(service.UNUSED_DEPLOYMENT, ladder, str(finding.id))
+        == "remediation_restored"
+    )
+    assert service.auto_unavailable(service.UNUSED_DEPLOYMENT, ladder) is None
 
 
 @pytest.mark.asyncio
@@ -2384,8 +2485,8 @@ async def test_the_rules_read_lists_every_rule_with_its_modes(db, test_api_key) 
         "max_mode": "auto",
         "action_kind": "deployment.disable",
         "mode": "auto",
-        "effective_mode": "suggest",
-        "unavailable_reason": "auto_executor_not_installed",
+        "effective_mode": "auto",
+        "unavailable_reason": None,
         "open_findings": 1,
     }
     storm = next(item for item in items if item["rule_id"] == service.RETRY_STORM)

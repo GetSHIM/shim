@@ -40,6 +40,7 @@ also remains outside tenant decision evidence.
 | `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
 | `rules.evaluated` | A rule matcher ran for the request (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent when none ran: no rules, none in scope, or only rules this release cannot run. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
+| `aws.region_lock` | A Bedrock deployment met the tenant's region lock and the operator's ceiling: `BEDROCK_REGION_ALLOWED`, `BEDROCK_REGION_OUTSIDE_LOCK` (monitor mode, allowed) or `BEDROCK_REGION_NOT_ALLOWED` (403, before any AWS call). Not recorded when the lock is off and no ceiling is set. |
 
 `allow` means that individual check passed; it does not imply that the entire
 request completed. `mask`, `deny`, `error`, and `skip` are distinct outcomes.
@@ -376,8 +377,9 @@ written, so these details are readable through `GET /api/v1/compliance/audit/log
 | `tenant.budget_created` / `tenant.budget_deleted` | `after` / `before`: scope, limits, period, thresholds, enabled flag, and notify targets as `kind` and `endpoint_origin` only |
 | `tenant.budget_updated` | `before` and `after` of the fields that changed |
 | `tenant.provider_key_policy_updated` | `before` and `after` of `allow_customer_provider_keys` when it changed |
-| `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `name`, `monthly_limit_usd`, `key_rotated` (false) |
-| `tenant.provider_secret_updated` | `before` and `after` of `name` and `monthly_limit_usd` when they changed, and `key_rotated` (true when the update replaced the key) |
+| `tenant.provider_secret_created` / `_verified` / `_rejected` / `_deleted` | `provider`, `aws_role_arn` (null unless a role), `name`, `monthly_limit_usd`, `key_rotated` (false); an AWS check's rejection adds `step` and `aws_error` |
+| `tenant.provider_secret_updated` | `before` and `after` of `name`, `monthly_limit_usd` and `aws_role_arn` when they changed, and `key_rotated` (true when the update replaced the key) |
+| `tenant.aws_identity_created` | none beyond the organization id in `subject_id`; the external id is never written to the chain |
 | `tenant.profile_updated` | `full_name_changed` (the name itself is never written to the immutable chain) and, on a rename, `before` and `after` of `organization_name` |
 | `tenant.api_key_updated` | `before` and `after` of the changed fields (`cost_center`, `team`, `team_id`, `allowed_models`) |
 | `tenant.model_deployment_updated` | `before` and `after` of the changed configuration fields |
@@ -548,7 +550,8 @@ owner override below.
 - `POST /policy/plans/{id}/approve` (`plans.approve`) applies it with the stale
   check, `approved_by` and `approved_at`; `POST .../reject` makes it `rejected`.
   Either needs a `pending_approval` plan (409 `PLAN_STATE_CONFLICT`) and a human
-  who neither created nor submitted it, nor created or rotated a key of the
+  who neither created, submitted nor (for a configuration file) signed it, nor
+  created or rotated a key of the
   service account that did (403 `APPROVER_NOT_ELIGIBLE`). An
   optional `note` is kept on the plan as `context.decision_note`.
 - Turning `four_eyes` off is relaxing. While fewer than two users can approve,
@@ -574,6 +577,153 @@ Tightening and neutral writes and plans are unchanged, and with `four_eyes`
 `tenant.policy_plan_approved` and `tenant.policy_plan_rejected` (`plan_id`,
 `risk`, `resources`).
 
+### The recommender and its apply limit
+
+A service account with the role `recommender` (an agent, through the MCP server)
+creates plans for any resource, since what it may change is decided when the plan
+is applied, not when it is proposed. `POST /policy/plans/{id}/apply` and `POST
+/policy/versions/{version}/restore` take `plans.apply` or `plans.apply_allowlisted`.
+A caller with only the second is checked by `policy/allowlist.py` after the stale
+check and before anything is written:
+
+- the plan must be `tightening` (`plan_not_tightening`) and not a rule proposal
+  (`proposal_needs_human`);
+- each change must change an existing item (`create_or_delete`) through an
+  allowlist entry for its resource (`not_allowlisted`), only in the entry's fields
+  (`extra_fields`) and in the allowed direction (`wrong_direction`);
+- an entry with an impact bound recomputes the change's impact now, over its
+  window, and refuses when it is unknown (`impact_unknown`) or above the bound
+  (`impact_too_large`);
+- an entry with a proof needs refusal rows to measure: audit mode `off` refuses
+  it (`proof_unavailable`);
+- a plan holds at most 5 changes (`too_many_changes`).
+
+Any refusal answers 403 `{"code": "PLAN_NOT_ALLOWLISTED", "changes": [{"index",
+"resource", "item", "reason"}], "message", "hint"}`. The plan stays `draft` (a
+refused restore creates none), and `tenant.policy_plan_apply_refused` (plan id,
+risk, reason codes; never a before or after value) is committed before the 403.
+An allowlisted plan tightens by construction, so four eyes never holds it.
+Approving and rejecting stay with `plans.approve`, which no service account holds.
+Before the check, a paused tenant (`auto_remediation_paused`) answers 409
+`AUTO_REMEDIATION_PAUSED` and a tenant with 20 agent applies in 24 hours 429
+`REMEDIATION_LIMIT` (shim's own fixes count apart). The check recomputes impact,
+so it runs before the tenant lock; the pause and the limit are checked again under it. The five entries and what happens after an applied change
+(the measurement window, the automatic undo, the undo route) are in
+[automatic fixes](FINDINGS.md#automatic-fixes); the worker's own fixes for `auto`
+findings pass the same check.
+
+Two decisions there:
+
+- **The automatic undo skips four eyes.** It is relaxing by classification, but it
+  returns each item to the exact state a person had in place, and the stale check
+  stops it when anything else changed since. Holding it for a second approver
+  would keep a change that measurably broke traffic in place while it waits. The
+  condition is narrow: source `auto` and a reason starting `remediation:`. An undo
+  a person asks for is an ordinary restore and four eyes holds it.
+- **One remediation per finding, ever.** A unique index on (tenant, finding) stops
+  the worker from retrying a fix that was skipped, set back or undone; that
+  finding only suggests from then on, and a person decides. A refusal that
+  passes (the day's limit, a pause, `proof_unavailable`) writes no row, so it is
+  retried on the next pass.
+
+### Rule proposals
+
+An agent turns the user's own sentence into rules and sends them to `POST
+/rules/proposals` (`plans.create`). shim calls no model and parses no sentence: it
+judges whether each rule is concrete from the examples the user gave, with the
+same matcher the gateway uses (`count_rule_matches`).
+
+- **A vague sentence gives no rule.** A `term` or `pattern` rule needs at least one
+  example it must catch. It is refused with a question when it has none
+  (`missing_examples`), when a term is a generic word for a kind of information
+  (`too_generic`, against a packaged stoplist of Turkish and English words, compared
+  after Turkish folding), when it fires on a packaged 3,000-word neutral office text
+  (`too_broad`), when it misses its own example (`example_not_matched`) or catches a
+  counter-example (`no_match_example_matched`). A search that times out counts as a
+  miss on an example and as a hit on the neutral text. No rule at all is `no_rules`.
+  `destination` rules name entity types and a scope and need no text examples. Any
+  question answers 422 `RULE_PROPOSAL_NEEDS_EXAMPLES` with every question of every
+  rule; a shape or set error answers 422 `RULE_PROPOSAL_INVALID` with field paths at
+  the request's own indices. The stoplist, the text and the checks carry
+  `PROPOSAL_CHECKS_VERSION` (now 1), recorded on every proposal.
+- **Proposals only add rules**, of the kinds `term`, `pattern` and `destination`, all
+  in `monitor`; an id already in the set is `RULE_ID_EXISTS`. At most 20 proposals
+  wait per tenant (409 `RULE_PROPOSAL_LIMIT`). In file mode nothing is stored: the
+  409 `CONFIG_FILE_MANAGED` carries `validated_rules` for the signed file.
+- **The sentence is never stored.** The plan (source `proposal`) holds the rules and
+  `context.proposal`: the checks version, an HMAC of the sentence with whitespace
+  collapsed (`sentence_digest`, keyed per purpose from the installation's base key),
+  its length, its language, the channel (`mcp` or `api`) and how many examples each
+  rule had. The examples are never stored, logged, audited or returned. Audit
+  `tenant.rule_proposal_created`: plan id, rule count, count per kind, term count,
+  channel.
+- **Only a person turns a proposal on.** A plan with source `proposal` is applied only
+  by a human holding `plans.apply`; any service account, of any role, gets 403
+  `PROPOSAL_NEEDS_HUMAN` (a recommender is already refused by the allowlist with
+  `proposal_needs_human`). Adding monitor rules loosens nothing, so four eyes does not
+  hold it. Enforcing a rule afterwards is a separate change by a person.
+
+### Configuration file
+
+A tenant can manage `privacy`, `gateway_settings` and `rules`, or any non-empty
+subset of them, from a signed YAML file instead of the panel ([keep the policy in
+Git](COOKBOOK.md#keep-the-policy-in-git)). The mode is its own managed resource,
+`config_mode` (item `_`, fields `mode` and `resources`), stored in
+`organization_config_modes`; no row means `api`. It is never file-managed and every
+change to it is neutral, since it decides where changes come from, not what they
+allow. `PUT /config/mode` is owner-only (`config.manage`) and turning file mode on
+needs an active signing key (409 `CONFIG_NO_SIGNING_KEY`).
+
+- **What a signature covers.** Ed25519 over `shim-config-v1\n`, the pushing
+  tenant's lowercase id, `\n` and the file's exact bytes. The prefix stops a config
+  signature from verifying as anything else, the tenant id stops a file signed for
+  one tenant from applying to another, and the file's `serial`, which must be
+  above the last applied one (409 `CONFIG_SERIAL_STALE`), stops an older signed
+  file from being replayed. The signature string is `<key_id>.<signature>`, both
+  base64url without padding as licence keys are; `key_id` is the first 32 hex
+  characters of the SHA-256 of the raw public key. Only an unrevoked key of the
+  tenant whose holder is active and may still create plans verifies; anything else is 403
+  `CONFIG_SIGNATURE_INVALID`, without saying which check failed. Keys belong to
+  human users who may create plans, at most ten active per tenant; adding one
+  records `tenant.config_signing_key_added` and sends the tenant alert
+  `config_signing_key_added`, because a new key can change policy. Revoking the
+  last key while the mode is `file` is 409 `CONFIG_LAST_SIGNING_KEY`; revoking a key
+  expires its file plans still waiting.
+- **The 409.** While a resource is file-managed, every write to it from another
+  source is refused before the route body runs: 409 `CONFIG_FILE_MANAGED` with the
+  resource and a hint. This covers direct API writes (`PUT /settings/pii`, `PATCH
+  /gateway-settings`, `PUT /rules`), plans from any other source at creation
+  (`api`, `import`, and later `mcp`, `proposal`, `auto`), a plan created before the
+  switch when it is applied, and restores, which skip file-managed items and list
+  them in `not_restored` with reason `file_managed`. The check runs before the
+  four-eyes check. Reads are unchanged.
+- **Applying a file.** `POST /config/apply` (`plans.apply`) verifies the signature,
+  parses and validates the file, checks the serial, expires older waiting file
+  plans, and turns the differences into one plan with source `file` and `context`
+  `serial`, `key_id`, `signer_user_id`, `registered_by` (who registered the key)
+  and `file_sha256`. Parsing, validating and previewing run without the tenant
+  lock, which every request of the tenant waits on; a policy write in between
+  answers 409 `POLICY_VERSION_CHANGED` (push again). A file holds at most 50,000
+  YAML nodes, and one file is parsed at a time: privacy and gateway
+  settings one change each, rules deleted first, then updated, then created, so
+  the 100-rule limit holds at every step; a file plan holds up to 250 changes. The
+  plan applies through the same code as any plan, so a new `enforced` rule still
+  needs its preview. Anything refused rolls back the whole push, serial included.
+  A file with no difference only moves the serial (`status: unchanged`). Audit
+  `tenant.config_file_applied` (serial, key id, plan id, status, file SHA-256).
+  `POST /config/plan` (`plans.create`) computes the same plan, says whether a given
+  signature is valid, and stores nothing.
+- **Four eyes with files.** Under `four_eyes: "relaxing"` a relaxing file waits in
+  `pending_approval` (202) like any relaxing plan. Besides the plan's creator and
+  submitter, the person who signed the file (`context.signer_user_id`) and the
+  person who registered its key (`context.registered_by`) cannot approve it, so a loosening change needs a second person even when CI pushed it
+  with a service account. Tightening and neutral files apply at once.
+
+Audit actions: `tenant.config_mode_changed` (before and after `mode` and
+`resources`), `tenant.config_signing_key_added` (key id, holder),
+`tenant.config_signing_key_revoked` (key id), `tenant.config_exported` (version,
+resources) and `tenant.config_file_applied`.
+
 ## Rule previews
 
 The gateway keeps no prompt, so it cannot replay last week's traffic against a
@@ -586,8 +736,24 @@ new term list. A preview counts only what is honest:
   a rule stored before that table existed is bounded by the set's last write).
   Requests whose matches were cut at 32 make it a lower bound.
 - `metadata`: a kind whose condition can be checked on stored request metadata
-  registers an estimator under its kind or `<kind>:<match.on>`. None is
-  registered yet: `term` and `pattern` need content.
+  registers an estimator under its kind or `<kind>:<match.on>`
+  (`rules/estimators.py`). The scope is the gateway's: the model the request
+  reached (date suffix stripped, case folded), never the alias, and `unknown`
+  targets count as `external`.
+  - `destination` counts requests whose record shows a named type in
+    `pii_entities` or `monitored_entities`. A type whose base action is `off`
+    was not detected, so it is not counted and the note names it; a type the
+    base action blocked is not counted, because the rule would not change that
+    request.
+  - `request_limit` counts each request that crossed any cap once: the byte cap
+    on the quota reservation (requests with media parts left out and counted in
+    the note), the price tier on the settled `LARGE_CONTEXT_PRICE` warning (an
+    upper bound of what an enforced block refuses before the call), and the
+    tool, document and history caps on the `shape` analyzer's counts, which only
+    some rows carry (the note says how many). With a shape cap and no shape row
+    in the window, it gives no estimate.
+  - `term`, `pattern`, `record_set`, `parameter_pin` and most `route` variants
+    need content or have no estimator.
 - `none`: anything else, or a query over 10 seconds.
 
 So content rules start in `monitor`, and their preview becomes real after they
@@ -595,9 +761,10 @@ have run. A new rule may be stored enforced only with an unexpired preview row o
 the same kind, action, scope and match that covered a whole window of at least 7
 days; a restore may re-create an enforced rule without one, because it brings
 back exactly what was there. A new rule has no monitor history, so only a
-`metadata` estimator can give it such a preview: until one is registered, no
-`rule_previews` row is written and every new rule starts in `monitor`. The path
-stays for the estimators later PRDs add. Every write to the rule set goes through
+`metadata` estimator can give it such a preview: `destination` and
+`request_limit` rules can start enforced after one, other kinds start in
+`monitor`, and so does a `request_limit` rule with a tool, document or history
+cap for a tenant without the `shape` analyzer. Every write to the rule set goes through
 one path, which also keeps the definition rows.
 
 AIUC rule files are imported one way. Rule ids become `aiuc_<slug>` (Turkish

@@ -20,6 +20,7 @@ Permission = Literal[
     "budgets.manage",
     "teams.manage",
     "keys.own",
+    "keys.hold",
     "keys.manage",
     "members.read",
     "members.manage",
@@ -33,6 +34,7 @@ Permission = Literal[
     "incidents.manage",
     "plans.create",
     "plans.apply",
+    "plans.apply_allowlisted",
     "plans.approve",
     "requests.approve",
     "content.read",
@@ -63,14 +65,33 @@ RESERVED_PERMISSIONS: frozenset[Permission] = frozenset(
         "requests.approve",
     }
 )
+# Owners and admins apply any plan (plans.apply) and mint keys (keys.own); the
+# allowlisted limit and holding a key someone else issued are for agents.
+_HUMAN_ADMIN = PERMISSIONS - {"plans.apply_allowlisted", "keys.hold"}
 BUILTIN_ROLE_PERMISSIONS: Mapping[str, frozenset[Permission]] = {
-    "owner": PERMISSIONS,
-    "admin": PERMISSIONS - {"roles.manage", "config.manage"},
+    "owner": _HUMAN_ADMIN,
+    "admin": _HUMAN_ADMIN - {"roles.manage", "config.manage"},
     "member": frozenset({"settings.read", "keys.own"}),
     "auditor": READ_PERMISSIONS,
+    # Service accounts only (ck_users_service_role): an agent reads and proposes,
+    # and applies only plans whose every change is on the allowlist.
+    "recommender": frozenset(
+        {
+            "settings.read",
+            "rules.read",
+            "deployments.read",
+            "findings.read",
+            "usage.read",
+            "plans.create",
+            "plans.apply_allowlisted",
+            "keys.hold",
+        }
+    ),
 }
+# Who may hold an active gateway key: who mints its own, or holds one an owner issued.
+KEY_HOLDING: frozenset[Permission] = frozenset({"keys.own", "keys.hold"})
 KEY_OWNER_ROLES = frozenset(
-    role for role, granted in BUILTIN_ROLE_PERMISSIONS.items() if "keys.own" in granted
+    role for role, granted in BUILTIN_ROLE_PERMISSIONS.items() if granted & KEY_HOLDING
 )
 
 # Routes any signed-in user may call; each scopes its result to the caller in its query.
@@ -90,6 +111,9 @@ ANY_USER_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/v1/management/api-keys/{api_key_id}"),
     ("GET", "/api/v1/management/requests"),
     ("GET", "/api/v1/management/requests/export"),
+    ("GET", "/api/v1/management/tasks"),
+    # Authorization per tool, in the dispatched route.
+    ("POST", "/api/v1/mcp"),
     ("GET", "/api/v1/management/request-archive/openings"),
     ("POST", "/api/v1/management/team/invites/accept"),
     ("GET", "/api/v1/management/usage/mine"),

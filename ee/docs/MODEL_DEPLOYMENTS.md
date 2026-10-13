@@ -110,6 +110,77 @@ rotating the credential starts a new token. A `PUT` that leaves out `upstream`,
 `price_model` or a cache price keeps the stored value, so a client that predates
 them never erases them; every other field still follows the body.
 
+`aws_bedrock` reaches Amazon Bedrock in `aws_region` (such as `eu-central-1`)
+through its own Anthropic-native and OpenAI-compatible routes, executed exactly as
+the other deployments: a client speaks Anthropic Messages or OpenAI Chat to shim and
+Bedrock answers in the same format, streams and errors included. There is no
+Converse or InvokeModel translation and no `bedrock-mantle`. Rules, each its own 422:
+
+- provider `anthropic` (Bedrock's `/anthropic` route) or `openai` (its
+  `/openai/v1` route, for OpenAI's open models, Mistral, Qwen and others);
+  `deployment_kind` `external`;
+- `base_url` is derived: `AWS_BEDROCK_RUNTIME_URL_TEMPLATE` for the region plus
+  `/anthropic` or `/openai/v1`, checked against `MODEL_DEPLOYMENT_ALLOWED_ORIGINS` or
+  the suffix list (`.amazonaws.com`); a client-sent `base_url` that differs is
+  refused, and changing the region or provider moves it;
+- `upstream_model` is a model id (`anthropic.claude-...`, `openai.gpt-oss-120b-1:0`),
+  a system inference profile id (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`), or
+  their ARN; an application inference profile serves the anthropic format only;
+- the credential's `provider` is an AWS one, which serves only the Bedrock
+  deployments that name it, of either format (a build that predates Bedrock never
+  selects it): `aws_access_key` (a long-term `AKIA` key pair; shim mints a
+  short-term Bedrock API key from it locally, for the deployment's region, valid one
+  hour and replaced 300 seconds early, so no AWS call happens on the request path) or
+  `aws_bedrock_api_key` (a long-term Bedrock API key, used as it is), or
+  `aws_role` (a role in the tenant's AWS account: shim stores its ARN and nothing
+  secret, assumes it with the tenant's external id for at most an hour, and mints
+  the Bedrock key from that session; see [connect Bedrock with an AWS
+  role](COOKBOOK.md#connect-bedrock-with-an-aws-role)).
+
+Token counting is not available for Bedrock deployments: `count_tokens` answers 400
+`MODEL_CAPABILITY_UNSUPPORTED` before any call. The health check reads the model
+(`GET /foundation-models/{id}`) or the inference profile (`GET
+/inference-profiles/{id}`, for an id with two dots before any `:` or a profile ARN)
+on `AWS_BEDROCK_CONTROL_URL_TEMPLATE` with the Bedrock key; 200 is `healthy`.
+Bedrock prices follow the calling region and the profile type (global profiles cost
+about 10 percent less than geographic ones), so enter the deployment's prices,
+including the cache read and write prices Bedrock bills separately; `price_model`
+gives only an approximation. The three AWS URL templates
+(`AWS_BEDROCK_RUNTIME_URL_TEMPLATE`, `AWS_BEDROCK_CONTROL_URL_TEMPLATE`,
+`AWS_STS_URL_TEMPLATE`) are operator settings for VPC interface endpoints and tests:
+an absolute http(s) URL with no path, query or credentials and at most one
+`{region}`; startup fails otherwise. Their hosts are never tenant input. A `PUT`
+that leaves out `upstream` and `aws_region` keeps both.
+
+**Where a Bedrock deployment can route.** An inference profile routes to several
+regions, and its prefix alone does not say which (AWS: "Don't rely on the
+geographic prefix"). shim stores the deployment's destinations
+(`aws_destination_regions`): its own region for a model id, otherwise the regions
+of `GetInferenceProfile`'s model ARNs, read on create, when the region or model
+changes, and on every health check; `null` while Bedrock does not say. It is read
+with no transaction open and without the tenant lock that every request of the
+tenant waits on; a policy write that lands during an update's read answers 409
+`POLICY_VERSION_CHANGED` (send the update again). The view
+also shows `aws_profile_scope`: `in_region` for a model, else the profile prefix
+(`eu`, `us`, `apac`, `global`).
+
+**The region lock** is the gateway setting `bedrock_region_lock`: `mode` (`off`,
+`monitor`, `enforce`), `scopes` (allowed profile prefixes or `in_region`; empty
+allows any) and `regions` (region codes or geography prefixes such as `eu`;
+every destination must equal one or start with one followed by `-`; empty allows
+any, and unknown destinations fail a non-empty list). It is checked before any AWS
+call: `monitor` records `aws.region_lock` `BEDROCK_REGION_OUTSIDE_LOCK` and lets
+the request through, `enforce` answers 403 `BEDROCK_REGION_NOT_ALLOWED`, and
+creating or moving a deployment the enforced lock refuses answers 422 with that
+code. `GET /api/v1/management/aws/region-lock/preview` (`settings.read`, optional
+`mode`, `scopes`, `regions`) shows, per Bedrock deployment, what a lock would do
+and how many requests it served in the last 7 days. A tier's
+`features.provider_policy.allowed_regions` is the operator's ceiling for Bedrock:
+always enforced, unknown destinations refused; no shipped tier sets it. Under four
+eyes, a change of `mode` alone decides its direction (`off` < `monitor` <
+`enforce`), whatever the lists do in the same change; with the mode kept and on, a
+narrower list tightens and a wider or emptied one relaxes.
+
 Without a stated price, public catalog prices apply to recognized upstream model
 names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero
 placeholder with `pricing_resolution=unknown`, and usage reports carry
@@ -196,6 +267,82 @@ requests after a quiet spell of at least 10 minutes come back late or time out;
 busy hours. `GET /api/v1/management/latency?group_by=deployment` shows the first
 byte, queue time, output speed and peak concurrency per hour. shim does not change
 a server's keep-alive or a deployment's timeout by itself.
+
+## Hardware cost and capacity
+
+An internal deployment's hardware costs money every month whether it is called or
+not. Enter that cost per month in its own currency: `PUT
+/api/v1/management/model-deployments/{id}/hardware-costs/{YYYY-MM}` with `amount`
+(above 0, 2 decimals), `currency` (three capital letters, such as `TRY` or `USD`)
+and an optional `note` (`deployments.manage`; internal deployments only, else 422).
+`DELETE` the same path removes it, `GET .../hardware-costs` lists them
+(`deployments.read`); each write is audited as `tenant.deployment_hardware_cost_set`
+or `_deleted` with the amount and currency before and after.
+
+`GET /api/v1/management/cost/hardware?period=YYYY-MM` (`usage.read`; the current
+month or one of the last 24) shares each cost out by tokens (input plus output) of
+the requests the deployment served that month, per API key and per team.
+Amounts are rounded to cents so they add up exactly to the entered amount (the
+leftover cents go to the largest remainders, ties to the smaller key id). A month
+with no entry uses the latest entry of the 12 months before (`carried_from`); a
+deployment with a cost and no tokens shows the whole amount as `unattributed`.
+Totals are given per currency and never added across currencies; no exchange rate
+is applied. Requests are matched by the `deployment_id` recorded at reservation, so
+renaming an alias keeps its history; `attributed_since` says from when the month is
+covered. It is a report: no settlement, budget, quota or spend limit changes.
+
+`capacity_concurrent_requests` (1 to 100,000) is how many requests the hardware
+holds at once, as you state it; a `PUT` that leaves it out keeps it.
+`GET /api/v1/management/capacity/forecast` (`usage.read`) takes, per internal
+deployment over the last 56 days, each hour's average number of requests in flight
+(request durations from the provider's start to completion or failure, counted in
+the hour they started), each day's busiest hour, and the straight-line trend of
+those days. A day without traffic since the deployment was created counts as 0; days
+before it existed are left out. It answers `days_with_traffic`, `current_peak` (the busiest hour of the
+last 7 days), `slope_per_day`, `capacity` and, when the trend reaches the capacity
+within 365 days, `projected_date`, with a `status`: `not_enough_data` (fewer than 14
+days with traffic), `no_capacity`, `at_capacity`, `not_growing`, `projected` or
+`beyond_horizon`. It measures busy-hour average concurrency from gateway records;
+instantaneous peaks are higher.
+
+## Server metrics
+
+The model server knows what the gateway cannot: how many requests it runs now,
+how many wait in its queue, and how full its cache is. List internal deployments in
+the gateway setting `inference_metrics` (each `deployment_id`, `server` `vllm`,
+`tgi` or `ollama`, `send_credential`; at most 64, one per deployment; a PATCH
+replaces the list) and the reconciliation worker reads them every
+`INFERENCE_METRICS_INTERVAL_SECONDS` (default 60, 15 to 3,600).
+
+- **Where.** The deployment's own approved origin plus a fixed path: `/metrics`
+  for vLLM and TGI, `/api/ps` for Ollama. Never a tenant-given URL; an origin that
+  is no longer approved is not read (`origin_not_approved`). One GET, no redirects,
+  no proxy from the environment, the operator's CA bundle, 5 seconds, at most 1 MiB,
+  at most 8 servers at once, and a pass deadline of `min(50 s, interval - 5 s)`. With
+  no deployment listed the worker sends no request at all.
+- **Credential.** Only with `send_credential`: the deployment's stored key as
+  `Authorization: Bearer`. vLLM's `/metrics` is outside its `--api-key` prefixes and
+  needs none. A 401 or 403 records `unauthorized`; a key the secret store cannot
+  return records `credential_unavailable`, and the server is not read without it.
+- **What is kept.** vLLM: `vllm:num_requests_running`, `vllm:num_requests_waiting`
+  (summed over models) and `vllm:kv_cache_usage_perc` (or the older
+  `vllm:gpu_cache_usage_perc`; the highest, at most 1). TGI: `tgi_batch_current_size`
+  and `tgi_queue_size`. Ollama: whether the deployment's `upstream_model` is loaded,
+  and its VRAM; Ollama reports neither running nor waiting requests. Every other
+  line of a page, model names and label values included, is never stored or logged.
+- **How.** Hourly aggregates per deployment (samples, busy and queued samples, sums
+  and maxima, errors and the last error), kept 90 days; no raw series.
+
+`GET /api/v1/management/inference-metrics?hours=24` (`deployments.read`, 1 to 744
+hours) shows, per listed deployment, the last read and its error, the busy and
+queued shares, running and waiting averages and peaks, cache use, Ollama's loaded
+share and VRAM, and `utilisation` (average running over the entered capacity).
+The [capacity forecast](#hardware-cost-and-capacity) gains `measured_peak` and
+`measured_capacity` (the concurrency of the busiest hour in which the server
+queued); without an entered capacity it uses the measured one
+(`capacity_source: "measured"`). Two findings read the same rows:
+[`gateway.idle_inference_capacity`](FINDINGS.md#gatewayidle_inference_capacity)
+and [`gateway.inference_queue_saturated`](FINDINGS.md#gatewayinference_queue_saturated).
 
 ## Idle deployments
 
