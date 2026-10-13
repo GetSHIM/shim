@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shim.rules import RuleSet, count_rule_matches
+from shim.rules import LIMITS, RuleSet, count_rule_matches
 from shim.rules.content import turkish_fold
 from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.api.v1.management._common import bounded_body
@@ -217,16 +217,18 @@ async def propose_rules(
         ) from None
     errors = []
     sets: list[RuleSet] = []
+    # The whole set first: its limits refuse in milliseconds what each rule's
+    # regex probes would take seconds to reach.
+    if proposal.rules:
+        try:
+            checked_set(1, [proposed.rule() for proposed in proposal.rules])
+        except HTTPException as exc:
+            raise _invalid([_set_error(exc)]) from None
     for index, proposed in enumerate(proposal.rules):
         try:
             sets.append(checked_set(1, [proposed.rule()]))
         except HTTPException as exc:
             errors.append(_set_error(exc, index))
-    if not errors and proposal.rules:
-        try:
-            checked_set(1, [proposed.rule() for proposed in proposal.rules])
-        except HTTPException as exc:
-            errors.append(_set_error(exc))
     if errors:
         raise _invalid(errors)
 
@@ -261,7 +263,9 @@ async def propose_rules(
     stored_dicts = (
         [rule.model_dump(mode="json") for rule in stored.rules] if stored else []
     )
-    taken = {rule["id"] for rule in stored_dicts}
+    # A rule this release cannot run keeps its id and its place in the set.
+    unusable = {rule.id for rule in stored.unusable} if stored else set()
+    taken = {rule["id"] for rule in stored_dicts} | unusable
     existing = [
         {
             "path": f"rules[{index}].id",
@@ -274,6 +278,20 @@ async def propose_rules(
     if existing:
         raise _invalid(existing)
     proposed_rules = [proposed.rule() for proposed in proposal.rules]
+    if (
+        len(stored_dicts) + len(unusable) + len(proposed_rules)
+        > LIMITS["rules_per_set"]
+    ):
+        raise _invalid(
+            [
+                {
+                    "path": "rules",
+                    "code": "RULE_SET_INVALID",
+                    "message": "A rule set holds at most 100 rules, with the "
+                    f"{len(unusable)} this release cannot run.",
+                }
+            ]
+        )
     try:
         checked_set(1, stored_dicts + proposed_rules)
     except HTTPException as exc:

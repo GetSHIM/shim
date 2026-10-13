@@ -157,3 +157,17 @@ def test_only_modern_results_carry_result_type_and_cache_fields() -> None:
         "resultType": "complete",
     }
     assert protocol.SUPPORTED[0] == protocol.MODERN
+
+
+@pytest.mark.parametrize(
+    ("method", "params"),
+    [
+        ("tools/call", {"name": ["get_rules"]}),
+        ("tools/call", {"name": {"a": 1}}),
+        ("resources/read", {"uri": 7}),
+    ],
+)
+def test_a_name_or_uri_that_is_not_a_string_is_invalid_params(method, params) -> None:
+    rejected = _rejected(_body(method, params), {})
+
+    assert (rejected.code, rejected.id) == (protocol.INVALID_PARAMS, 1)

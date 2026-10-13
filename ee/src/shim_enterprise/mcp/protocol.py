@@ -118,6 +118,8 @@ def parse(body: bytes, headers: Mapping[str, str]) -> Call:
         raise Rejected(400, INVALID_REQUEST, "Invalid Request")
     request_id, method = message.get("id"), message["method"]
     params: dict[str, Any] = message.get("params") or {}
+    if any(not isinstance(params.get(field, ""), str) for field in ("name", "uri")):
+        raise Rejected(200, INVALID_PARAMS, "Invalid params", request_id)
     header = headers.get("mcp-protocol-version")
     # Notifications carry no mirrored headers in either era.
     if method in NOTIFICATIONS:

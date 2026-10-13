@@ -25,7 +25,7 @@ from shim_enterprise.core.database import bounded_read, get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.findings.service import STATUS_IDS
 from shim_enterprise.policy.models import PolicyPlan, PolicyRemediation, PolicyVersion
-from shim_enterprise.policy.plans import lock_tenant
+from shim_enterprise.policy.plans import key_holders, lock_tenant
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.deployments import require_model_aliases
 from shim_enterprise.tenants.models import (
@@ -97,6 +97,16 @@ async def issue_agent_gateway_key(
     account = await _service_account(session, user, account_id, lock=True)
     if not account.is_active or await _credential(session, account) is None:
         raise HTTPException(status_code=404, detail="Service account not found")
+    # Whoever else mints the plaintext could approve the key's held requests (§15).
+    if user.id not in await key_holders(session, tenant_id, {account.id}):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "AGENT_KEY_ISSUER_NOT_HOLDER",
+                "message": "Only whoever created or last rotated the account's "
+                "credential issues its gateway key.",
+            },
+        )
     if "keys.hold" not in await user_permissions(session, account):
         raise HTTPException(
             status_code=409,
@@ -107,7 +117,10 @@ async def issue_agent_gateway_key(
         )
     held = await session.scalar(
         select(func.count()).where(
-            ApiKey.user_id == account.id, ApiKey.is_active.is_(True)
+            ApiKey.user_id == account.id,
+            ApiKey.is_active.is_(True),
+            ApiKey.expires_at.is_(None)
+            | (ApiKey.expires_at > datetime.now(timezone.utc)),
         )
     )
     if (held or 0) >= MAX_AGENT_KEYS:
@@ -115,7 +128,7 @@ async def issue_agent_gateway_key(
             status_code=409,
             detail={
                 "code": "AGENT_KEY_LIMIT",
-                "hint": "Rotate or revoke the current key.",
+                "hint": "Revoke a current key.",
             },
         )
     await require_model_aliases(session, tenant_id, payload.allowed_models)

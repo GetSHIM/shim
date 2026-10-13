@@ -439,3 +439,62 @@ async def test_a_service_account_through_mcp_is_labelled_mcp(db) -> None:
 
     assert response.status_code == 201, response.text
     assert response.json()["plan"]["context"]["proposal"]["channel"] == "mcp"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_rule_this_release_cannot_run_still_holds_its_id_and_place(
+    db,
+) -> None:
+    owner = (await tenant(db))["owner"]
+    stored = [
+        {**term(f"stored_{n:03d}", terms=(f"Kod{n:03d}x",)), "state": "monitor"}
+        for n in range(99)
+    ]
+    for rule in stored:
+        rule.pop("examples")
+    # A newer build's kind: kept as it is, unusable here.
+    stored.append(
+        {"id": "future_rule", "kind": "hologram", "action": "mask", "state": "monitor"}
+    )
+    db.add(
+        OrganizationRuleSet(
+            organization_id=owner.organization_id, revision=1, rules=stored
+        )
+    )
+    await db.flush()
+
+    exists = await propose(db, owner, {**term(), "id": "future_rule"})
+    full = await propose(db, owner, term())
+
+    assert detail(exists)["errors"][0]["code"] == "RULE_ID_EXISTS"
+    assert detail(full)["code"] == "RULE_PROPOSAL_INVALID"
+    assert detail(full)["errors"][0]["path"] == "rules"
+
+
+@pytest.mark.asyncio
+async def test_a_set_over_its_regex_limit_is_refused_before_each_rule_is_probed(
+    db, monkeypatch
+) -> None:
+    owner = (await tenant(db))["owner"]
+    checked: list[int] = []
+    checked_set = proposals.checked_set
+
+    def counted(version, rules):
+        checked.append(len(rules))
+        return checked_set(version, rules)
+
+    monkeypatch.setattr(proposals, "checked_set", counted)
+    rules = [
+        pattern(
+            f"code_{n}",
+            regexes=[rf"PRJ{n:02d}{k:02d}-[0-9]{{4}}" for k in range(32)],
+        )
+        for n in range(20)
+    ]
+
+    refused = await propose(db, owner, *rules)
+
+    assert detail(refused)["code"] == "RULE_PROPOSAL_INVALID"
+    assert detail(refused)["errors"][0]["path"].startswith("rules")
+    # One check of the whole set; no rule's probes ran.
+    assert checked == [20]

@@ -103,7 +103,9 @@ async def _dispatch(request: Request, tool: Tool, arguments: Any) -> dict[str, A
     path = tool.path.format(**{name: values.pop(name) for name in names})
     body = values.pop("body", None)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=request.app), base_url="http://shim.internal"
+        # A route that raises answers 500 to the agent as a tool error.
+        transport=httpx.ASGITransport(app=request.app, raise_app_exceptions=False),
+        base_url="http://shim.internal",
     ) as client:
         try:
             response = await asyncio.wait_for(

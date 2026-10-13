@@ -22,6 +22,7 @@ from shim_enterprise.gateway.pipeline.quota_reservation import AccountingPolicyL
 from shim_enterprise.mcp import api as mcp_api
 from shim_enterprise.policy.models import PolicyPlan, PolicyRemediation, PolicyVersion
 from shim_enterprise.tenants.models import (
+    ApiKey,
     Organization,
     Team,
     TeamMembership,
@@ -455,3 +456,46 @@ async def test_the_agents_key_passes_the_reservation_through_its_team(db) -> Non
     assert policy.team_policy is not None
     assert policy.team_policy.daily_request_limit == 5
     assert outside.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_only_whoever_holds_the_accounts_credential_issues_its_key(db) -> None:
+    people = await _tenant(db)
+    owner = people["owner"]
+    other_owner = User(
+        id=uuid4(),
+        organization_id=owner.organization_id,
+        email=f"agents-{uuid4().hex}@example.com",
+        role="owner",
+        is_active=True,
+        is_verified=True,
+    )
+    db.add(other_owner)
+    await db.flush()
+    account, _ = await _account(db, owner)
+
+    # The other owner could approve the key's held requests, so may not mint it.
+    refused = await _issue(db, other_owner, account)
+    issued = await _issue(db, owner, account)
+
+    assert (refused.status_code, refused.json()["detail"]["code"]) == (
+        403,
+        "AGENT_KEY_ISSUER_NOT_HOLDER",
+    )
+    assert issued.status_code == 201, issued.text
+
+
+@pytest.mark.asyncio
+async def test_an_expired_agent_key_does_not_count_toward_the_limit(db) -> None:
+    people = await _tenant(db)
+    owner = people["owner"]
+    account, _ = await _account(db, owner)
+    for _ in range(2):
+        assert (await _issue(db, owner, account)).status_code == 201
+    for key in await db.scalars(select(ApiKey).where(ApiKey.user_id == account.id)):
+        key.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db.flush()
+
+    issued = await _issue(db, owner, account)
+
+    assert issued.status_code == 201, issued.text
