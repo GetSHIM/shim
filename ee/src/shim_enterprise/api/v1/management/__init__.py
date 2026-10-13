@@ -8,7 +8,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -27,6 +27,7 @@ from shim_enterprise.findings.service import (
     finding_from_row,
     finding_modes,
     ocsf_detection_finding,
+    rule_doc,
 )
 from shim_enterprise.tenants.audit import (
     change_details,
@@ -217,6 +218,53 @@ async def get_finding(
     session: AsyncSession = Depends(get_db),
 ) -> FindingV1:
     return finding_from_row(await _owned_finding(session, user, finding_id, lock=False))
+
+
+class FindingRuleFacts(BaseModel):
+    rule_id: str
+    rule_version: int
+    title: str
+    max_mode: FindingMode
+    action_kind: str | None
+    blast_radius: str
+    playbook: str
+    doc: str | None = Field(
+        description="The rule's section of FINDINGS.md (markdown, at most 16 KB); "
+        "null when the rule has none."
+    )
+
+
+class FindingExplanation(BaseModel):
+    finding: FindingV1
+    rule: FindingRuleFacts | None = Field(
+        description="Null for a rule this build no longer knows."
+    )
+
+
+@router.get("/findings/{finding_id}/explain", response_model=FindingExplanation)
+async def explain_finding(
+    finding_id: UUID,
+    user: User = Depends(require("findings.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> FindingExplanation:
+    # The facts an agent explains a finding from; shim calls no model.
+    row = await _owned_finding(session, user, finding_id, lock=False)
+    spec = FINDING_RULES.get(row.rule_id)
+    return FindingExplanation(
+        finding=finding_from_row(row),
+        rule=None
+        if spec is None
+        else FindingRuleFacts(
+            rule_id=row.rule_id,
+            rule_version=RULE_VERSIONS.get(row.rule_id, RULE_VERSION),
+            title=spec.TITLE,
+            max_mode=spec.MAX_MODE,
+            action_kind=spec.ACTION_KIND,
+            blast_radius=spec.BLAST_RADIUS,
+            playbook=spec.PLAYBOOK,
+            doc=rule_doc(row.rule_id),
+        ),
+    )
 
 
 @router.patch("/findings/{finding_id}", response_model=FindingV1)

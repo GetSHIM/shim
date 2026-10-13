@@ -4908,6 +4908,30 @@
         "title": "FindingEvidence",
         "type": "object"
       },
+      "FindingExplanation": {
+        "properties": {
+          "finding": {
+            "$ref": "#/components/schemas/Finding"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingRuleFacts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a rule this build no longer knows."
+          }
+        },
+        "required": [
+          "finding",
+          "rule"
+        ],
+        "title": "FindingExplanation",
+        "type": "object"
+      },
       "FindingImpact": {
         "properties": {
           "requests": {
@@ -5222,6 +5246,74 @@
           "text"
         ],
         "title": "FindingRemediation",
+        "type": "object"
+      },
+      "FindingRuleFacts": {
+        "properties": {
+          "action_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Kind"
+          },
+          "blast_radius": {
+            "title": "Blast Radius",
+            "type": "string"
+          },
+          "doc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The rule's section of FINDINGS.md (markdown, at most 16 KB); null when the rule has none.",
+            "title": "Doc"
+          },
+          "max_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Max Mode",
+            "type": "string"
+          },
+          "playbook": {
+            "title": "Playbook",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "title",
+          "max_mode",
+          "action_kind",
+          "blast_radius",
+          "playbook",
+          "doc"
+        ],
+        "title": "FindingRuleFacts",
         "type": "object"
       },
       "FindingRuleView": {
@@ -22399,6 +22491,54 @@
         ]
       }
     },
+    "/api/v1/management/findings/{finding_id}/explain": {
+      "get": {
+        "operationId": "explain_finding_api_v1_management_findings__finding_id__explain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingExplanation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Explain Finding",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/findings/{finding_id}/plan": {
       "post": {
         "operationId": "plan_from_finding_api_v1_management_findings__finding_id__plan_post",
@@ -26939,6 +27079,35 @@
         "summary": "My Usage",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/mcp": {
+      "post": {
+        "operationId": "mcp_endpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "MCP endpoint for agents with a service account key",
+        "tags": [
+          "mcp"
         ]
       }
     },

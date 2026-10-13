@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,11 +12,16 @@ from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.core.database import get_db
 from shim_enterprise.findings.models import Finding
 from shim_enterprise.findings.service import STATUS_IDS
-from shim_enterprise.policy.api import PlanView, new_plan, planned_change
+from shim_enterprise.policy.api import (
+    PlanView,
+    authorize_change,
+    new_plan,
+    plan_source,
+    planned_change,
+)
 from shim_enterprise.policy.models import PolicyPlan
 from shim_enterprise.policy.resources import REGISTRY
 from shim_enterprise.tenants.models import User
-from shim_enterprise.tenants.permissions import user_permissions
 
 router = APIRouter(prefix="/management/findings", tags=["findings"])
 
@@ -26,6 +31,7 @@ _OPEN = (STATUS_IDS["new"], STATUS_IDS["in_progress"])
 @router.post("/{finding_id}/plan", response_model=PlanView, status_code=201)
 async def plan_from_finding(
     finding_id: UUID,
+    request: Request,
     user: User = Depends(require("plans.create")),
     session: AsyncSession = Depends(get_db),
 ) -> PolicyPlan:
@@ -50,10 +56,7 @@ async def plan_from_finding(
             status_code=409, detail="This build cannot plan the finding's action"
         )
     deployments = REGISTRY["deployments"]
-    if deployments.permission not in await user_permissions(session, user):
-        raise HTTPException(
-            status_code=403, detail=f"Permission required: {deployments.permission}"
-        )
+    await authorize_change(session, user, deployments)
     before = (await deployments.snapshot(session, tenant_id, [item])).get(item)
     if before is None:
         raise HTTPException(status_code=422, detail="Item not found")
@@ -69,7 +72,7 @@ async def plan_from_finding(
                 session, tenant_id, "deployments", item, before, after, 7
             )
         ],
-        source="api",
+        source=plan_source(request, user),
         reason=f"finding:{finding.id}",
     )
     await session.commit()

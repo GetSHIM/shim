@@ -185,7 +185,7 @@ def _summary(row: PolicyVersion) -> dict[str, Any]:
     }
 
 
-async def _authorize(
+async def authorize_change(
     session: AsyncSession, actor: User, resource: ManagedResource
 ) -> None:
     granted = await user_permissions(session, actor)
@@ -194,6 +194,13 @@ async def _authorize(
         raise HTTPException(
             status_code=403, detail=f"Permission required: {resource.permission}"
         )
+
+
+def plan_source(request: Request, actor: User) -> Literal["api", "mcp"]:
+    """`mcp` for a service account calling through the MCP server; a label, never an authority."""
+    if actor.kind == "service" and request.headers.get("x-shim-channel") == "mcp":
+        return "mcp"
+    return "api"
 
 
 def _allowlisted_only(granted: frozenset[str]) -> bool:
@@ -296,7 +303,7 @@ async def new_plan(
     organization_id: UUID,
     changes: list[dict[str, Any]],
     *,
-    source: Literal["api", "restore", "import", "file"],
+    source: Literal["api", "restore", "import", "file", "mcp"],
     reason: str | None,
     context: dict[str, Any] | None = None,
 ) -> PolicyPlan:
@@ -347,7 +354,7 @@ async def _apply_plan(
     for change in plan.changes:
         resource = REGISTRY[change["resource"]]
         # The one who applies may hold less than the one who planned.
-        await _authorize(session, actor, resource)
+        await authorize_change(session, actor, resource)
         current = await resource.snapshot(session, organization_id, [change["item"]])
         if current.get(change["item"]) != change["before"]:
             stale.append({"resource": change["resource"], "item": change["item"]})
@@ -497,7 +504,7 @@ async def create_plan(
                     "errors": f"Unknown resource {change.resource}",
                 },
             )
-        await _authorize(session, user, resource)
+        await authorize_change(session, user, resource)
         if change.item is None and not resource.creatable:
             raise HTTPException(
                 status_code=422,
@@ -568,7 +575,12 @@ async def create_plan(
             )
         )
     plan = await new_plan(
-        session, user, organization_id, changes, source="api", reason=payload.reason
+        session,
+        user,
+        organization_id,
+        changes,
+        source=plan_source(request, user),
+        reason=payload.reason,
     )
     await session.commit()
     return plan
@@ -878,7 +890,7 @@ async def restore_version(
                         resource=name, item=item, reason="deployment_not_deletable"
                     )
                 )
-            await _authorize(session, user, resource)
+            await authorize_change(session, user, resource)
             try:
                 if target is not None:
                     # What the item's own route would refuse is skipped, not fatal.

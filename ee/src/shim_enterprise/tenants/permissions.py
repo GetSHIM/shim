@@ -107,6 +107,8 @@ ANY_USER_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/management/requests"),
     ("GET", "/api/v1/management/requests/export"),
     ("GET", "/api/v1/management/tasks"),
+    # Authorization per tool, in the dispatched route.
+    ("POST", "/api/v1/mcp"),
     ("GET", "/api/v1/management/request-archive/openings"),
     ("POST", "/api/v1/management/team/invites/accept"),
     ("GET", "/api/v1/management/usage/mine"),

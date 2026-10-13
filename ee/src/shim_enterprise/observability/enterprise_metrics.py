@@ -46,3 +46,30 @@ LICENSE_DAYS_REMAINING = Gauge(
     "license_days_remaining",
     "Days until the enterprise licence expires; negative inside the grace period.",
 )
+# Bounded: method is an MCP method name or "other"; tool a TOOLS name or "unknown".
+MCP_METHOD_LABELS = frozenset(
+    {
+        "initialize",
+        "server/discover",
+        "ping",
+        "tools/list",
+        "tools/call",
+        "prompts/list",
+        "prompts/get",
+        "resources/list",
+        "resources/read",
+        "notifications/initialized",
+        "notifications/cancelled",
+        "other",
+    }
+)
+MCP_REQUESTS_TOTAL = Counter(
+    "shim_mcp_requests_total",
+    "MCP endpoint requests by method and outcome (ok, tool_error, protocol_error).",
+    ("method", "outcome"),
+)
+MCP_TOOL_CALLS_TOTAL = Counter(
+    "shim_mcp_tool_calls_total",
+    "MCP tool calls by tool and outcome (ok, error).",
+    ("tool", "outcome"),
+)

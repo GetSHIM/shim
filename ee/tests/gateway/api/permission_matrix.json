@@ -469,6 +469,16 @@
   "service_recommender": "404",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/findings/{finding_id}/explain": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Organization reader required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "404",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/gateway-settings": {
   "admin": "200",
   "auditor": "200",

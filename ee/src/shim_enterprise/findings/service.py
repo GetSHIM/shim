@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from functools import reduce
+from functools import cache, reduce
+from importlib.resources import files
 import operator
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -212,6 +213,30 @@ class RuleSpec:
     ACTION_KIND: str | None = None
     # Where the evidence comes from: shim's own records or an imported log.
     SOURCE: Literal["gateway", "litellm"] = "gateway"
+
+
+_DOC_LIMIT = 16 * 1024
+
+
+@cache
+def _findings_doc() -> str:
+    # A packaged copy of ee/docs/FINDINGS.md; a test keeps the two identical.
+    return files("shim_enterprise.findings").joinpath("FINDINGS.md").read_text("utf-8")
+
+
+def rule_doc(rule_id: str) -> str | None:
+    """The rule's `## <rule_id>` section of FINDINGS.md, at most 16 KB; None without one."""
+    text = _findings_doc()
+    start = text.find(f"\n## {rule_id}\n")
+    if start < 0:
+        return None
+    end = text.find("\n## ", start + 1)
+    section = text[start + 1 : end if end >= 0 else len(text)].rstrip("\n") + "\n"
+    encoded = section.encode()
+    if len(encoded) <= _DOC_LIMIT:
+        return section
+    cut = encoded[:_DOC_LIMIT].decode("utf-8", "ignore")
+    return cut[: cut.rfind("\n") + 1] + "..."
 
 
 def _playbook(rule_id: str) -> str:

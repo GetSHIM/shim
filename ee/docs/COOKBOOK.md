@@ -33,6 +33,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
+- [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
@@ -1022,6 +1023,27 @@ content, writes settings or rules directly, approves anything or owns gateway
 keys. Every action it takes is in the audit log with `actor_type: service` and
 `actor_role: recommender`. Details: [team access](team-access.md#service-accounts)
 and [the apply limit](POLICY_DECISIONS.md#the-recommender-and-its-apply-limit).
+
+## Let Claude Code read findings and draft plans
+
+With a [recommender key](#give-an-agent-a-recommender-key) in
+`SHIM_MANAGEMENT_KEY`:
+
+```console
+claude mcp add --transport http shim https://shim.example/api/v1/mcp \
+  --header "Authorization: Bearer ${SHIM_MANAGEMENT_KEY}"
+claude -p "List the open shim findings, explain the newest one and quote its \
+  evidence ids. Then create a plan that fixes it and tell me whether you could apply it." \
+  --allowedTools 'mcp__shim__*'
+```
+
+Claude Code lists the findings, reads one with `explain_finding` (the finding, its
+rule's facts and documentation; shim calls no model), drafts a plan with
+`plan_from_finding` or `create_plan`, and reads its impact back with `get_plan`.
+`apply_plan` succeeds only for changes that tighten or cheapen; otherwise it reports
+`PLAN_NOT_ALLOWLISTED` with the reasons and the plan waits for a person. Plans it
+created show `source: "mcp"` in `GET /api/v1/management/policy/plans`. The tools,
+the error mapping and Codex and Cursor settings are in [MCP](MCP.md).
 
 ## Give someone exactly the access they need
 
