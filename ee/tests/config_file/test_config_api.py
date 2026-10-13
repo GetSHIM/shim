@@ -790,9 +790,10 @@ async def test_a_non_string_privacy_key_is_a_file_error(db) -> None:
     users = await tenant(db)
     owner = users["owner"]
     key = await file_mode(db, owner, "privacy")
-    data = dumped(await exported(db, owner)).replace(
-        b"privacy:\n", b"privacy:\n  1: x\n", 1
-    )
+    document = await exported(db, owner)
+    # With another unknown field: an int and a str key must be ordered together.
+    document["resources"]["privacy"] |= {1: "x", "extra": "y"}
+    data = dumped(document)
 
     refused = await push(db, owner, data, key)
 
