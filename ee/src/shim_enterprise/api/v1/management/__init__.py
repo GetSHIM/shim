@@ -51,6 +51,7 @@ from shim_enterprise.api.v1.management import (
     usage,
     deployments,
     agents,
+    hardware,
 )
 from shim_enterprise.api.v1.management._common import (
     _MAX_SYNC_REQUEST_EXPORT_ROWS,
@@ -351,5 +352,6 @@ for _module in (
     usage,
     deployments,
     agents,
+    hardware,
 ):
     router.include_router(_module.router)

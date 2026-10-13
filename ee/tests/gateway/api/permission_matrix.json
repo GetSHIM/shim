@@ -59,6 +59,16 @@
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
  },
+ "DELETE /api/v1/management/model-deployments/{deployment_id}/hardware-costs/{period}": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization admin required",
+  "team_admin": "403 Organization admin required"
+ },
  "DELETE /api/v1/management/providers/{secret_id}": {
   "admin": "404",
   "auditor": "403 Auditor access is read-only",
@@ -419,6 +429,16 @@
   "service_recommender": "200",
   "team_admin": "403 Organization reader required"
  },
+ "GET /api/v1/management/capacity/forecast": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "403 Organization reader required",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "403 Organization reader required"
+ },
  "GET /api/v1/management/config/export": {
   "admin": "200",
   "auditor": "200",
@@ -457,6 +477,16 @@
   "service_admin": "200",
   "service_auditor": "200",
   "service_recommender": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/cost/hardware": {
+  "admin": "422",
+  "auditor": "422",
+  "member": "403 Organization reader required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "422",
+  "service_recommender": "422",
   "team_admin": "403 Organization reader required"
  },
  "GET /api/v1/management/findings": {
@@ -547,6 +577,16 @@
   "service_admin": "200",
   "service_auditor": "200",
   "service_recommender": "200",
+  "team_admin": "403 Organization reader required"
+ },
+ "GET /api/v1/management/model-deployments/{deployment_id}/hardware-costs": {
+  "admin": "404",
+  "auditor": "404",
+  "member": "403 Organization reader required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "404",
+  "service_recommender": "404",
   "team_admin": "403 Organization reader required"
  },
  "GET /api/v1/management/model-inventory": {
@@ -1550,6 +1590,16 @@
   "team_admin": "403 Permission required: config.manage"
  },
  "PUT /api/v1/management/model-deployments/{deployment_id}": {
+  "admin": "422",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization admin required",
+  "team_admin": "403 Organization admin required"
+ },
+ "PUT /api/v1/management/model-deployments/{deployment_id}/hardware-costs/{period}": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
   "member": "403 Organization admin required",

@@ -3559,6 +3559,32 @@
         "title": "ByScopeView",
         "type": "object"
       },
+      "CapacityForecast": {
+        "properties": {
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentForecast"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "measure": {
+            "default": "busy-hour average concurrency from gateway records; instantaneous peaks are higher",
+            "title": "Measure",
+            "type": "string"
+          },
+          "window_days": {
+            "default": 56,
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deployments"
+        ],
+        "title": "CapacityForecast",
+        "type": "object"
+      },
       "ChainBreak": {
         "properties": {
           "id": {
@@ -4613,6 +4639,25 @@
         "title": "CreatedTeamInvite",
         "type": "object"
       },
+      "CurrencyTotal": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "amount"
+        ],
+        "title": "CurrencyTotal",
+        "type": "object"
+      },
       "CustomRoleInput": {
         "properties": {
           "name": {
@@ -4832,6 +4877,182 @@
         ],
         "title": "Delivery",
         "type": "string"
+      },
+      "DeploymentAllocation": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "by_key": {
+            "items": {
+              "$ref": "#/components/schemas/KeyShare"
+            },
+            "title": "By Key",
+            "type": "array"
+          },
+          "by_team": {
+            "items": {
+              "$ref": "#/components/schemas/TeamShare"
+            },
+            "title": "By Team",
+            "type": "array"
+          },
+          "carried_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earlier month whose entry applies, when this one has none.",
+            "title": "Carried From"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "estimated_share": {
+            "title": "Estimated Share",
+            "type": "number"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "unattributed": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The whole amount, when the deployment served no tokens.",
+            "title": "Unattributed"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "amount",
+          "currency",
+          "carried_from",
+          "tokens",
+          "estimated_share",
+          "by_key",
+          "by_team",
+          "unattributed"
+        ],
+        "title": "DeploymentAllocation",
+        "type": "object"
+      },
+      "DeploymentForecast": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "capacity_source": {
+            "anyOf": [
+              {
+                "const": "entered",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity Source"
+          },
+          "current_peak": {
+            "description": "The busiest hour of the last 7 days.",
+            "title": "Current Peak",
+            "type": "number"
+          },
+          "days_with_traffic": {
+            "title": "Days With Traffic",
+            "type": "integer"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "projected_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projected Date"
+          },
+          "slope_per_day": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slope Per Day"
+          },
+          "status": {
+            "enum": [
+              "not_enough_data",
+              "no_capacity",
+              "at_capacity",
+              "not_growing",
+              "projected",
+              "beyond_horizon"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "days_with_traffic",
+          "current_peak",
+          "slope_per_day",
+          "capacity",
+          "capacity_source",
+          "projected_date",
+          "status"
+        ],
+        "title": "DeploymentForecast",
+        "type": "object"
       },
       "DetectiveOverview": {
         "properties": {
@@ -7928,6 +8149,151 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HardwareAllocation": {
+        "properties": {
+          "allocation": {
+            "const": "tokens",
+            "default": "tokens",
+            "title": "Allocation",
+            "type": "string"
+          },
+          "attributed_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earliest request of the month that names its deployment.",
+            "title": "Attributed Since"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentAllocation"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "totals": {
+            "description": "One per currency; never summed.",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyTotal"
+            },
+            "title": "Totals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "period",
+          "attributed_since",
+          "deployments",
+          "totals"
+        ],
+        "title": "HardwareAllocation",
+        "type": "object"
+      },
+      "HardwareCostInput": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,16}|(?=[\\d.]{1,19}0*$)\\d{0,16}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "title": "HardwareCostInput",
+        "type": "object"
+      },
+      "HardwareCostView": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "entered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entered By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period",
+          "amount",
+          "currency",
+          "note",
+          "entered_by",
+          "updated_at"
+        ],
+        "title": "HardwareCostView",
+        "type": "object"
+      },
       "HarmBlockMethod": {
         "description": "The method for blocking content.\n\nIf not specified, the default behavior is to use the probability score. This\nenum is not supported in Gemini API.",
         "enum": [
@@ -8558,6 +8924,68 @@
         "type": "object"
       },
       "JsonValue": {},
+      "KeyShare": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "share": {
+            "title": "Share",
+            "type": "number"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "api_key_id",
+          "name",
+          "team_id",
+          "tokens",
+          "share",
+          "amount"
+        ],
+        "title": "KeyShare",
+        "type": "object"
+      },
       "Language": {
         "description": "Programming language of the `code`.",
         "enum": [
@@ -9453,6 +9881,20 @@
             "description": "USD per million input tokens written to the cache; needs the input price.",
             "title": "Cache Write Price Per Million"
           },
+          "capacity_concurrent_requests": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Concurrent requests the serving hardware holds; the capacity forecast compares the measured busy hour with it.",
+            "title": "Capacity Concurrent Requests"
+          },
           "context_window": {
             "anyOf": [
               {
@@ -9691,6 +10133,20 @@
             ],
             "description": "USD per million input tokens written to the cache; needs the input price.",
             "title": "Cache Write Price Per Million"
+          },
+          "capacity_concurrent_requests": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Concurrent requests the serving hardware holds; the capacity forecast compares the measured busy hour with it.",
+            "title": "Capacity Concurrent Requests"
           },
           "context_window": {
             "anyOf": [
@@ -17351,6 +17807,49 @@
         "title": "TeamRolePatch",
         "type": "object"
       },
+      "TeamShare": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "name": {
+            "description": "The team, or \"no team\".",
+            "title": "Name",
+            "type": "string"
+          },
+          "share": {
+            "title": "Share",
+            "type": "number"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "team_id",
+          "name",
+          "tokens",
+          "share",
+          "amount"
+        ],
+        "title": "TeamShare",
+        "type": "object"
+      },
       "TeamView": {
         "properties": {
           "aws_cost_tag": {
@@ -23043,6 +23542,33 @@
         ]
       }
     },
+    "/api/v1/management/capacity/forecast": {
+      "get": {
+        "description": "Per internal deployment: the daily busy hour over 56 days, its trend, and\nwhen the trend reaches the entered capacity.",
+        "operationId": "capacity_forecast_api_v1_management_capacity_forecast_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityForecast"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Capacity Forecast",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/config/apply": {
       "post": {
         "operationId": "apply_config_api_v1_management_config_apply_post",
@@ -23623,6 +24149,55 @@
           }
         ],
         "summary": "Update Budget",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/cost/hardware": {
+      "get": {
+        "description": "Each internal deployment's hardware cost for the month, shared by tokens.",
+        "operationId": "hardware_allocation_api_v1_management_cost_hardware_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareAllocation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Hardware Allocation",
         "tags": [
           "management"
         ]
@@ -24469,6 +25044,175 @@
           }
         ],
         "summary": "Update Model Deployment",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}/hardware-costs": {
+      "get": {
+        "operationId": "list_hardware_costs_api_v1_management_model_deployments__deployment_id__hardware_costs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HardwareCostView"
+                  },
+                  "title": "Response List Hardware Costs Api V1 Management Model Deployments  Deployment Id  Hardware Costs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Hardware Costs",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}/hardware-costs/{period}": {
+      "delete": {
+        "operationId": "delete_hardware_cost_api_v1_management_model_deployments__deployment_id__hardware_costs__period__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Hardware Cost",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "set_hardware_cost_api_v1_management_model_deployments__deployment_id__hardware_costs__period__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HardwareCostInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Hardware Cost",
         "tags": [
           "management"
         ]

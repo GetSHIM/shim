@@ -87,6 +87,8 @@ The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
 metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
 `LOOP_WINDOW_SECONDS`.
 
+The hardware cost allocation and the capacity forecast read `deployment_id`.
+
 `deployment_id`, `aws_bedrock` and `repeat_digest` are lifecycle-only keys: they are in
 `request_lifecycle.metadata` and not in the analytics row, the request list, its
 CSV or the audit completion. Community JSONL does not carry them.

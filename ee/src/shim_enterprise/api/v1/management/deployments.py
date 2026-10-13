@@ -101,6 +101,7 @@ _KEPT_WHEN_ABSENT = frozenset(
     {
         "upstream",
         "aws_region",
+        "capacity_concurrent_requests",
         "price_model",
         "cache_read_price_per_million",
         "cache_write_price_per_million",
@@ -151,6 +152,13 @@ class ModelDeploymentInput(BaseModel):
         default="generic",
         description="azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. "
         "aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
+    )
+    capacity_concurrent_requests: int | None = Field(
+        default=None,
+        ge=1,
+        le=100_000,
+        description="Concurrent requests the serving hardware holds; the capacity "
+        "forecast compares the measured busy hour with it.",
     )
     aws_region: str | None = Field(
         default=None,
@@ -807,6 +815,8 @@ _DEPLOYMENT_DIRECTIONS: Directions = {
     "declared_version": neutral,
     "owner": neutral,
     "timeout_seconds": neutral,
+    # A planning figure: what the forecast compares with, never a limit.
+    "capacity_concurrent_requests": neutral,
 }
 
 

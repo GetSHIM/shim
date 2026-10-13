@@ -677,6 +677,10 @@ class ModelDeployment(Base, TimestampMixin):
             "(aws_region IS NULL OR aws_region ~ '^[a-z]{2}(-[a-z]+)+-[0-9]$')",
             name="ck_model_deployments_aws_region",
         ),
+        CheckConstraint(
+            "capacity_concurrent_requests BETWEEN 1 AND 100000",
+            name="ck_model_deployments_capacity",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -720,6 +724,50 @@ class ModelDeployment(Base, TimestampMixin):
     aws_destinations_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # Concurrent requests the serving hardware holds, as the admin states it.
+    capacity_concurrent_requests: Mapped[int | None] = mapped_column(Integer)
+
+
+class DeploymentHardwareCost(Base, TimestampMixin):
+    """What an internal deployment's hardware cost in one month, in its own currency."""
+
+    __tablename__ = "deployment_hardware_costs"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "deployment_id",
+            "period",
+            name="uq_deployment_hardware_costs_period",
+        ),
+        CheckConstraint(
+            "period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'",
+            name="ck_deployment_hardware_costs_period",
+        ),
+        CheckConstraint("amount > 0", name="ck_deployment_hardware_costs_amount"),
+        CheckConstraint(
+            "currency ~ '^[A-Z]{3}$'", name="ck_deployment_hardware_costs_currency"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        SqlUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    deployment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "model_deployments.id",
+            name="fk_deployment_hardware_costs_deployment",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(200))
+    entered_by: Mapped[str | None] = mapped_column(String(64))
 
 
 class RecordSet(Base, TimestampMixin):

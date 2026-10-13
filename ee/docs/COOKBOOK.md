@@ -36,6 +36,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
 - [Lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)
 - [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
+- [Allocate hardware cost to teams](#allocate-hardware-cost-to-teams)
+- [Read the capacity forecast](#read-the-capacity-forecast)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
@@ -1091,6 +1093,39 @@ curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
 Notes: loosening or turning the lock off is relaxing (four eyes applies when on);
 one PATCH or a version restore takes it back. Destinations refresh on each health
 check.
+
+## Allocate hardware cost to teams
+
+Share the monthly cost of your own model servers among the teams that use them.
+
+1. Enter the month's cost of each internal deployment, in its currency.
+2. Read the allocation: per deployment, per team and per key, by tokens.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/model-deployments/$DEPLOYMENT_ID/hardware-costs/2026-10 \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"amount": "120000.00", "currency": "TRY", "note": "4 x GPU, colocation"}'
+
+curl "http://localhost:8000/api/v1/management/cost/hardware?period=2026-10" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: amounts in different currencies are never added together. Tokens are the
+measure; a team that sends long prompts carries more of the cost. Details:
+[hardware cost and capacity](MODEL_DEPLOYMENTS.md#hardware-cost-and-capacity).
+
+## Read the capacity forecast
+
+See when the current hardware stops being enough at the current growth.
+
+1. State each internal deployment's capacity: `capacity_concurrent_requests` in its
+   `PUT /model-deployments/{id}`.
+2. `GET /api/v1/management/capacity/forecast`.
+
+Notes: the measure is the busiest hour's average number of requests in flight,
+from gateway records. Short bursts inside an hour go higher than that, so
+`projected_date` is when the busy hour on average reaches the capacity, not when
+the first request waits. Fewer than 14 days with traffic answers `not_enough_data`.
 
 ## See team costs on the AWS bill
 

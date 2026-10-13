@@ -245,6 +245,42 @@ busy hours. `GET /api/v1/management/latency?group_by=deployment` shows the first
 byte, queue time, output speed and peak concurrency per hour. shim does not change
 a server's keep-alive or a deployment's timeout by itself.
 
+## Hardware cost and capacity
+
+An internal deployment's hardware costs money every month whether it is called or
+not. Enter that cost per month in its own currency: `PUT
+/api/v1/management/model-deployments/{id}/hardware-costs/{YYYY-MM}` with `amount`
+(above 0, 2 decimals), `currency` (three capital letters, such as `TRY` or `USD`)
+and an optional `note` (`deployments.manage`; internal deployments only, else 422).
+`DELETE` the same path removes it, `GET .../hardware-costs` lists them
+(`deployments.read`); each write is audited as `tenant.deployment_hardware_cost_set`
+or `_deleted` with the amount and currency before and after.
+
+`GET /api/v1/management/cost/hardware?period=YYYY-MM` (`usage.read`; the current
+month or one of the last 24) shares each cost out by tokens (input plus output) of
+the requests the deployment served that month, per API key and per team.
+Amounts are rounded to cents so they add up exactly to the entered amount (the
+leftover cents go to the largest remainders, ties to the smaller key id). A month
+with no entry uses the latest entry of the 12 months before (`carried_from`); a
+deployment with a cost and no tokens shows the whole amount as `unattributed`.
+Totals are given per currency and never added across currencies; no exchange rate
+is applied. Requests are matched by the `deployment_id` recorded at reservation, so
+renaming an alias keeps its history; `attributed_since` says from when the month is
+covered. It is a report: no settlement, budget, quota or spend limit changes.
+
+`capacity_concurrent_requests` (1 to 100,000) is how many requests the hardware
+holds at once, as you state it; a `PUT` that leaves it out keeps it.
+`GET /api/v1/management/capacity/forecast` (`usage.read`) takes, per internal
+deployment over the last 56 days, each hour's average number of requests in flight
+(request durations from the provider's start to completion or failure, counted in
+the hour they started), each day's busiest hour, and the straight-line trend of
+those days. It answers `days_with_traffic`, `current_peak` (the busiest hour of the
+last 7 days), `slope_per_day`, `capacity` and, when the trend reaches the capacity
+within 365 days, `projected_date`, with a `status`: `not_enough_data` (fewer than 14
+days with traffic), `no_capacity`, `at_capacity`, `not_growing`, `projected` or
+`beyond_horizon`. It measures busy-hour average concurrency from gateway records;
+instantaneous peaks are higher.
+
 ## Idle deployments
 
 An internal deployment that served between 1 and 299 requests in 30 days raises
