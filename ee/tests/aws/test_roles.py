@@ -251,3 +251,62 @@ async def test_the_bedrock_key_never_outlives_the_role_session(
     assert "X-Amz-Credential=ASIA0000000000000009" in url
     assert "X-Amz-Security-Token=role-session-token" in url
     assert 500 <= expires <= 540
+
+
+@pytest.mark.asyncio
+async def test_a_session_tag_rides_on_assume_role_and_is_its_own_session(
+    db, env_identity
+) -> None:
+    organization, _ = await _tenant(db)
+    seen: list[dict] = []
+
+    def sts(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(httpx.QueryParams(request.content.decode())))
+        return _answer(3_600)
+
+    roles, client = await _roles(db, sts)
+    secret = uuid4()
+    async with client:
+        for tag in ("shim-team=payments", "shim-team=payments", "shim-team=unassigned"):
+            await roles.credentials(organization.id, secret, ROLE, "eu-central-1", tag)
+
+    assert [(f["Tags.member.1.Key"], f["Tags.member.1.Value"]) for f in seen] == [
+        ("shim-team", "payments"),
+        ("shim-team", "unassigned"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_hosted_cloud_chains_its_session_to_carry_a_tag(
+    db, monkeypatch
+) -> None:
+    organization, external_id = await _tenant(db)
+    monkeypatch.setattr(settings, "AWS_GATEWAY_IDENTITY", "gcp_metadata")
+    monkeypatch.setattr(settings, "AWS_GCP_METADATA_URL", "http://metadata.test")
+    monkeypatch.setattr(settings, "AWS_STS_URL_TEMPLATE", "https://sts.{region}.test")
+    monkeypatch.setattr(settings, "AWS_ROLE_SESSION_SECONDS", 3_600)
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.host == "metadata.test":
+            return httpx.Response(200, text="e30.e30.sig")
+        return _answer(3_600)
+
+    roles, client = await _roles(db, answer)
+    async with client:
+        await roles.credentials(
+            organization.id, uuid4(), ROLE, "eu-central-1", "shim-team=payments"
+        )
+
+    web, chained = [dict(httpx.QueryParams(r.content.decode())) for r in seen[1:]]
+    assert (
+        web["Action"] == "AssumeRoleWithWebIdentity" and "Tags.member.1.Key" not in web
+    )
+    assert (chained["Action"], chained["ExternalId"], chained["DurationSeconds"]) == (
+        "AssumeRole",
+        external_id,
+        "3600",
+    )
+    assert chained["Tags.member.1.Value"] == "payments"
+    assert "authorization" in seen[2].headers

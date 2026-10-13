@@ -13,7 +13,15 @@ import pytest
 from unittest.mock import AsyncMock
 from sqlalchemy import select
 
-from ee.tests.tenants.test_deployments import _gateway, db, test_org  # noqa: F401
+from ee.tests.tenants.test_deployments import (  # noqa: F401
+    _deployments,
+    _gateway,
+    _success,
+    db,
+    origins,
+    test_org,
+)
+from shim_enterprise.tenants.deployments import DeploymentResolver
 from shim_enterprise.billing.models import UsageLedger
 from shim_enterprise.core.config import settings
 from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
@@ -216,3 +224,30 @@ async def test_an_open_model_on_bedrock_goes_through_the_openai_route(
     )
     assert refused.status_code == 403
     assert "PROVIDER_REJECTED_REQUEST" in refused.text
+
+
+@pytest.mark.asyncio
+async def test_a_registry_deployment_reads_no_bedrock_setting(
+    db,  # noqa: F811
+    test_api_key,
+    origins,  # noqa: F811
+    monkeypatch,
+) -> None:
+    async def never(*args, **kwargs):
+        raise AssertionError("only aws_bedrock deployments read the region lock")
+
+    monkeypatch.setattr(DeploymentResolver, "_bedrock_admission", never)
+    rows = await _deployments(db, test_api_key)
+
+    async with _gateway(
+        db, test_api_key, lambda request: _success(request, False, "chat")
+    ) as (client, _, _store):
+        answered = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": rows[0].alias,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    assert answered.status_code == 200, answered.text

@@ -390,7 +390,8 @@ async def test_the_health_check_asks_the_control_plane_with_a_minted_key(
     )
 
     assert checked.json()["health"] == health
-    [request] = seen
+    # The health read, then, for a profile, the destination read (E60).
+    request = seen[0]
     assert request.url.raw_path.decode() == path
     assert request.headers["authorization"].startswith("Bearer bedrock-api-key-")
 

@@ -37,6 +37,7 @@ also remains outside tenant decision evidence.
 | `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
 | `rules.evaluated` | A rule matcher ran for the request (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent when none ran: no rules, none in scope, or only rules this release cannot run. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
+| `aws.region_lock` | A Bedrock deployment met the tenant's region lock and the operator's ceiling: `BEDROCK_REGION_ALLOWED`, `BEDROCK_REGION_OUTSIDE_LOCK` (monitor mode, allowed) or `BEDROCK_REGION_NOT_ALLOWED` (403, before any AWS call). Not recorded when the lock is off and no ceiling is set. |
 
 `allow` means that individual check passed; it does not imply that the entire
 request completed. `mask`, `deny`, `error`, and `skip` are distinct outcomes.

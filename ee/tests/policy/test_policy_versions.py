@@ -228,6 +228,7 @@ async def test_every_resource_snapshots_only_its_managed_fields(db, origins) -> 
         "daily_request_limit": None,
         "monthly_request_limit": None,
         "monthly_token_limit": None,
+        "aws_cost_tag": None,
     }
     assert resources["api_keys"][str(key.id)] == {
         "allowed_models": None,

@@ -34,6 +34,8 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
 - [Use Amazon Bedrock](#use-amazon-bedrock)
 - [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
+- [Lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)
+- [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
@@ -300,6 +302,8 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
 | `auto_remediation_paused` | `false` | `true` stops new automatic and agent applies; windows keep closing and automatic undo keeps running ([let shim switch off unused deployments](#let-shim-switch-off-unused-deployments-and-see-what-it-did)). |
+| `bedrock_region_lock` | `off` | `mode`, `scopes`, `regions`: which Bedrock inference profiles requests may use ([lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)). |
+| `bedrock_attribution` | `off` | `mode` `session_tags`, `tag_key`, `unassigned_value`: each team's tag on its Bedrock role sessions ([see team costs on the AWS bill](#see-team-costs-on-the-aws-bill)); needs `AWS_GATEWAY_IDENTITY`. |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -1065,6 +1069,50 @@ gateway without an AWS identity answers 503 `PROVIDER_NOT_CONFIGURED`. To revoke
 remove the trust policy or the role: new sessions stop at once, and open ones end
 within `AWS_ROLE_SESSION_SECONDS` (at most an hour), or at once with IAM's "revoke
 active sessions". The external id never changes, and shim has no route to rotate it.
+
+## Lock Bedrock to EU regions
+
+Keep every Bedrock request inside the regions you allow, by where its inference
+profile can route, not by its name.
+
+1. See what a lock would refuse first:
+   `GET /api/v1/management/aws/region-lock/preview?mode=enforce&scopes=eu&regions=eu`.
+2. Turn it on in `monitor`: requests outside it still run, and the request list
+   shows `aws_bedrock.lock: "outside"` on them.
+3. Switch to `enforce`: those requests answer 403 `BEDROCK_REGION_NOT_ALLOWED`
+   before any AWS call, and registering such a deployment answers 422.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"bedrock_region_lock": {"mode": "enforce", "scopes": ["eu"], "regions": ["eu"]}}'
+```
+
+Notes: loosening or turning the lock off is relaxing (four eyes applies when on);
+one PATCH or a version restore takes it back. Destinations refresh on each health
+check.
+
+## See team costs on the AWS bill
+
+Tag each team's Bedrock requests so AWS's own bill shows what each team spent. It
+needs a [role connection](#connect-bedrock-with-an-aws-role): session tags exist
+only on assumed roles.
+
+1. Give teams a tag value: `PUT /api/v1/management/teams/{id}` with `aws_cost_tag`.
+2. Turn it on: `PATCH /gateway-settings` with `{"bedrock_attribution": {"mode":
+   "session_tags"}}` (`tag_key` `shim-team` and `unassigned_value` `unassigned` by
+   default). Every role session then carries `shim-team=<the key's team tag>`.
+3. Add `sts:TagSession` to the role's trust policy (`GET /aws/identity` shows it);
+   `aws-check` reports a `tag_session` step.
+4. In AWS Billing, activate `iamPrincipal/shim-team` as a cost allocation tag.
+   AWS shows it per usage type and day, from up to 24 hours after activation, and
+   never for earlier days.
+5. Read shim's side: `GET /api/v1/management/aws/attribution?from=...&to=...`
+   (`format=csv` for a spreadsheet), and paste AWS's daily numbers into `POST
+   /aws/attribution/compare` to see the difference per day and tag.
+
+Notes: shim calls no AWS billing API and stores no AWS figure; per-request detail
+stays in shim's request list.
 
 ## Automate management with a service account
 

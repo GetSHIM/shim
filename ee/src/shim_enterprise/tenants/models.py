@@ -338,6 +338,10 @@ class Team(Base, TimestampMixin):
             "monthly_token_limit IS NULL OR monthly_token_limit >= 0",
             name="ck_teams_monthly_tokens",
         ),
+        CheckConstraint(
+            "aws_cost_tag ~ '^[A-Za-z0-9 _.:/=+@-]+$'",
+            name="ck_teams_aws_cost_tag",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -350,6 +354,8 @@ class Team(Base, TimestampMixin):
     daily_request_limit: Mapped[int | None] = mapped_column(Integer)
     monthly_request_limit: Mapped[int | None] = mapped_column(Integer)
     monthly_token_limit: Mapped[int | None] = mapped_column(Integer)
+    # The STS session tag value this team's Bedrock requests carry onto the AWS bill.
+    aws_cost_tag: Mapped[str | None] = mapped_column(String(256))
 
 
 class TeamMembership(Base, TimestampMixin):
@@ -709,6 +715,11 @@ class ModelDeployment(Base, TimestampMixin):
         String(32), nullable=False, default="generic", server_default="generic"
     )
     aws_region: Mapped[str | None] = mapped_column(String(32))
+    # Where a Bedrock profile can route, from GetInferenceProfile; null when unknown.
+    aws_destination_regions: Mapped[list[str] | None] = mapped_column(JSONB)
+    aws_destinations_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 class RecordSet(Base, TimestampMixin):

@@ -8,12 +8,19 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -38,7 +45,22 @@ from shim_enterprise.tenants.gateway_settings import (
     neutral,
     toward,
 )
-from shim_enterprise.tenants.models import ModelDeployment, User
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
+from shim_enterprise.tenants.models import (
+    ModelDeployment,
+    Organization,
+    OrganizationGatewaySettings,
+    User,
+)
+from shim_enterprise.aws.regions import (
+    bedrock_model_url,
+    ceiling_allows,
+    fetch_destinations,
+    is_profile,
+    lock_reasons,
+    profile_scope,
+    tier_ceiling,
+)
 from shim_enterprise.secrets.references import AWS_REGION, CredentialReference
 from shim_enterprise.tenants.deployments import (
     BEDROCK_ARN,
@@ -252,6 +274,22 @@ class ModelDeploymentView(ModelDeploymentInput):
     health_checked_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    aws_destination_regions: list[str] | None = Field(
+        default=None,
+        description="aws_bedrock: the regions the profile can route to, from "
+        "GetInferenceProfile; null when unknown.",
+    )
+    aws_destinations_checked_at: datetime | None = None
+
+    @computed_field
+    @property
+    def aws_profile_scope(self) -> str | None:
+        """aws_bedrock: in_region for a model, else the profile's prefix (eu, us, global)."""
+        return (
+            profile_scope(self.upstream_model)
+            if self.upstream == "aws_bedrock"
+            else None
+        )
 
 
 @router.get("/model-deployments", response_model=list[ModelDeploymentView])
@@ -530,12 +568,15 @@ async def model_inventory(
 @router.post("/model-deployments", response_model=ModelDeploymentView, status_code=201)
 async def create_model_deployment(
     payload: ModelDeploymentInput,
+    request: Request,
     user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
     item = str(uuid4())
     after = await DEPLOYMENTS.validate(session, user, None, None, payload.model_dump())
+    destinations = await _admit_bedrock(session, user, request, None, after)
     await _managed_write(session, user, DEPLOYMENTS, item, None, after)
+    await _store_destinations(session, UUID(item), destinations)
     await session.commit()
     return await _refreshed(session, ModelDeployment, UUID(item))
 
@@ -544,6 +585,7 @@ async def create_model_deployment(
 async def update_model_deployment(
     deployment_id: UUID,
     payload: ModelDeploymentInput,
+    request: Request,
     user: User = Depends(require("deployments.manage", legacy_detail=ADMIN_REQUIRED)),
     session: AsyncSession = Depends(get_db),
 ):
@@ -560,9 +602,93 @@ async def update_model_deployment(
         before,
         payload.model_dump(exclude=set(_KEPT_WHEN_ABSENT - payload.model_fields_set)),
     )
+    destinations = await _admit_bedrock(session, user, request, before, after)
     await _managed_write(session, user, DEPLOYMENTS, item, before, after)
+    await _store_destinations(session, deployment_id, destinations)
     await session.commit()
     return await _refreshed(session, ModelDeployment, deployment_id)
+
+
+_UNSET: Any = object()
+
+
+async def _destinations(
+    session: AsyncSession, user: User, client: httpx.AsyncClient, state: State
+) -> list[str] | None:
+    """Where an aws_bedrock deployment can route; None when Bedrock does not say."""
+    region, model = state["aws_region"], state["upstream_model"]
+    if not is_profile(model):
+        return [region]
+    secret = await _owned_provider_secret(
+        session, user, UUID(str(state["provider_secret_id"]))
+    )
+    try:
+        async with asyncio.timeout(5):
+            token = await _fresh_resolver(state["provider"], client).resolve_row(
+                TenantId(_tenant_id(user)),
+                secret,
+                CredentialReference(secret.id, region),
+            )
+            return await fetch_destinations(client, token, region, model)
+    except (httpx.HTTPError, ValueError, TimeoutError, ProviderCallError):
+        return None
+
+
+async def _admit_bedrock(
+    session: AsyncSession,
+    user: User,
+    request: Request,
+    before: State | None,
+    after: State,
+) -> Any:
+    """Fresh destinations when a Bedrock deployment is created or moves (else
+    _UNSET), refused with 422 when an enforced lock or the ceiling refuses them."""
+    if after["upstream"] != "aws_bedrock" or (
+        before is not None
+        and before["upstream"] == "aws_bedrock"
+        and (before["aws_region"], before["upstream_model"])
+        == (after["aws_region"], after["upstream_model"])
+    ):
+        return _UNSET
+    destinations = await _destinations(
+        session, user, request.app.state.http_client, after
+    )
+    tenant_id = _tenant_id(user)
+    stored = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == tenant_id
+        )
+    )
+    lock = (
+        GatewaySettings() if stored is None else stored_settings(stored)
+    ).bedrock_region_lock
+    organization = await session.get(Organization, tenant_id)
+    ceiling = await tier_ceiling(session, organization.tier if organization else None)
+    refused = (
+        lock.mode == "enforce"
+        and lock_reasons(lock, profile_scope(after["upstream_model"]), destinations)
+    ) or not ceiling_allows(ceiling, destinations)
+    if refused:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "BEDROCK_REGION_NOT_ALLOWED",
+                "message": "The Bedrock deployment's inference profile can route "
+                "outside the regions this tenant allows.",
+            },
+        )
+    return destinations
+
+
+async def _store_destinations(
+    session: AsyncSession, deployment_id: UUID, destinations: Any
+) -> None:
+    if destinations is _UNSET:
+        return
+    row = await session.get(ModelDeployment, deployment_id)
+    assert row is not None
+    row.aws_destination_regions = destinations
+    row.aws_destinations_checked_at = datetime.now(timezone.utc)
 
 
 @router.post(
@@ -589,6 +715,7 @@ async def check_model_deployment_health(
     await session.commit()
     client = request.app.state.http_client
     healthy = False
+    destinations: list[str] | None = None
     try:
         async with asyncio.timeout(5):
             credential = await _fresh_resolver(provider, client).resolve_row(
@@ -620,6 +747,11 @@ async def check_model_deployment_health(
                 healthy = response.status_code in (
                     {200, 404} if upstream == "azure_openai" else {200}
                 )
+            if upstream == "aws_bedrock":
+                assert region is not None
+                destinations = await fetch_destinations(
+                    client, credential, region, model
+                )
     except (httpx.HTTPError, ValueError, TimeoutError, ProviderCallError):
         healthy = False
     # Locked, so an update committing now cannot be overwritten by a stale result.
@@ -630,6 +762,9 @@ async def check_model_deployment_health(
         )
     row.health = "healthy" if healthy else "unhealthy"
     row.health_checked_at = datetime.now(timezone.utc)
+    if upstream == "aws_bedrock":
+        row.aws_destination_regions = destinations
+        row.aws_destinations_checked_at = row.health_checked_at
     await _audit(
         session,
         user,
@@ -640,25 +775,6 @@ async def check_model_deployment_health(
     await session.commit()
     await session.refresh(row)
     return row
-
-
-def bedrock_model_url(region: str, model: str) -> str:
-    """The control-plane read of a model, or of an inference profile.
-
-    A system profile id has at least two dots before any colon
-    (eu.anthropic.claude-...); a model id has one (anthropic.claude-...).
-    """
-    control = validate_deployment_url(
-        settings.AWS_BEDROCK_CONTROL_URL_TEMPLATE.format(region=region)
-    )
-    arn = BEDROCK_ARN.fullmatch(model)
-    profile = (
-        arn["kind"] != "foundation-model"
-        if arn is not None
-        else model.split(":", 1)[0].count(".") >= 2
-    )
-    resource = "inference-profiles" if profile else "foundation-models"
-    return f"{control}/{resource}/{quote(model, safe='')}"
 
 
 async def _owned_model_deployment(

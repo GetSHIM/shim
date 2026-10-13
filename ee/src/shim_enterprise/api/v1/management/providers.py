@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, require
-from shim_enterprise.api.v1.management.deployments import bedrock_model_url
+from shim_enterprise.aws.regions import bedrock_model_url
 from shim_enterprise.aws.roles import AwsRoles, RoleRefused, web_identity_audience
 from shim_enterprise.aws.sigv4 import AwsCredentials
 from shim_enterprise.aws.sts import StsError, get_caller_identity
@@ -42,9 +42,11 @@ from shim_enterprise.tenants.audit import (
     change_details,
     record_management_action as _audit,
 )
+from shim_enterprise.tenants.gateway_settings import GatewaySettings, stored_settings
 from shim_enterprise.tenants.models import (
     ModelDeployment,
     OrganizationAwsIdentity,
+    OrganizationGatewaySettings,
     ProviderSecret,
     User,
 )
@@ -502,7 +504,12 @@ class AwsCheckInput(BaseModel):
 
 class AwsCheckStep(BaseModel):
     step: Literal[
-        "gateway_identity", "assume_role", "caller_identity", "token", "bedrock_access"
+        "gateway_identity",
+        "assume_role",
+        "tag_session",
+        "caller_identity",
+        "token",
+        "bedrock_access",
     ]
     status: Literal["ok", "failed", "skipped"]
     aws_error: str | None = None
@@ -571,6 +578,14 @@ async def _aws_check(
         None,
     )
     secret_id, kind, role_arn = row.id, row.credential_kind, row.aws_role_arn
+    gateway_row = await session.scalar(
+        select(OrganizationGatewaySettings.settings).where(
+            OrganizationGatewaySettings.organization_id == tenant_id
+        )
+    )
+    attribution = (
+        GatewaySettings() if gateway_row is None else stored_settings(gateway_row)
+    ).bedrock_attribution
     # Finish the read transaction before AWS I/O.
     await session.commit()
     steps: list[AwsCheckStep] = []
@@ -594,6 +609,24 @@ async def _aws_check(
             steps.append(
                 AwsCheckStep(step=step, status="failed", aws_error=failure.aws_error)
             )
+        if credentials is not None and attribution.mode == "session_tags":
+            try:
+                await roles.credentials(
+                    tenant_id,
+                    secret_id,
+                    role_arn,
+                    region,
+                    f"{attribution.tag_key}=shim-check",
+                    fresh=True,
+                )
+                steps.append(AwsCheckStep(step="tag_session", status="ok"))
+            except RoleRefused as failure:
+                # AccessDenied here: the trust policy lacks sts:TagSession.
+                steps.append(
+                    AwsCheckStep(
+                        step="tag_session", status="failed", aws_error=failure.aws_error
+                    )
+                )
     else:
         stored = await _aws_access_key(row, tenant_id)
         try:
@@ -818,34 +851,45 @@ class AwsIdentityView(BaseModel):
 def _aws_identity_view(found: OrganizationAwsIdentity) -> AwsIdentityView:
     google = settings.AWS_GATEWAY_IDENTITY == "gcp_metadata"
     audience = web_identity_audience(found.external_id) if google else None
+    # sts:TagSession lets team cost tags ride on the session (bedrock_attribution).
+    tagged = {
+        "Effect": "Allow",
+        "Action": ["sts:AssumeRole", "sts:TagSession"],
+        "Condition": {"StringEquals": {"sts:ExternalId": found.external_id}},
+    }
     if google:
-        statement = {
-            "Effect": "Allow",
-            "Principal": {"Federated": "accounts.google.com"},
-            "Action": "sts:AssumeRoleWithWebIdentity",
-            "Condition": {
-                "StringEquals": {
-                    "accounts.google.com:aud": settings.AWS_GCP_SERVICE_ACCOUNT_ID,
-                    "accounts.google.com:sub": settings.AWS_GCP_SERVICE_ACCOUNT_ID,
-                    "accounts.google.com:oaud": audience,
-                }
+        statements = [
+            {
+                "Effect": "Allow",
+                "Principal": {"Federated": "accounts.google.com"},
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                    "StringEquals": {
+                        "accounts.google.com:aud": settings.AWS_GCP_SERVICE_ACCOUNT_ID,
+                        "accounts.google.com:sub": settings.AWS_GCP_SERVICE_ACCOUNT_ID,
+                        "accounts.google.com:oaud": audience,
+                    }
+                },
             },
-        }
+            # A web-identity session carries no tags: shim chains it into the
+            # same role with them, so the role must trust itself.
+            {**tagged, "Principal": {"AWS": "REPLACE_WITH_THIS_ROLE_ARN"}},
+        ]
     else:
-        statement = {
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": settings.AWS_GATEWAY_PRINCIPAL_ARN
-                or "REPLACE_WITH_GATEWAY_PRINCIPAL_ARN"
-            },
-            "Action": "sts:AssumeRole",
-            "Condition": {"StringEquals": {"sts:ExternalId": found.external_id}},
-        }
+        statements = [
+            {
+                **tagged,
+                "Principal": {
+                    "AWS": settings.AWS_GATEWAY_PRINCIPAL_ARN
+                    or "REPLACE_WITH_GATEWAY_PRINCIPAL_ARN"
+                },
+            }
+        ]
     return AwsIdentityView(
         external_id=found.external_id,
         gateway_identity=settings.AWS_GATEWAY_IDENTITY,
         web_identity_audience=audience,
-        trust_policy={"Version": "2012-10-17", "Statement": [statement]},
+        trust_policy={"Version": "2012-10-17", "Statement": statements},
         permissions_policy={
             "Version": "2012-10-17",
             "Statement": [

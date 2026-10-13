@@ -304,6 +304,8 @@ _READ_ONLY_POSTS = frozenset(
         ("POST", "/api/v1/compliance/reports/audit"),
         ("POST", "/api/v1/compliance/reports/kvkk"),
         ("POST", "/api/v1/compliance/reports/readiness"),
+        # Compares numbers the caller brings with shim's; stores nothing.
+        ("POST", "/api/v1/management/aws/attribution/compare"),
     }
 )
 

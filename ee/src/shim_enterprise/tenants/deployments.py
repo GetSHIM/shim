@@ -27,7 +27,14 @@ from shim.api.v1.chat import model_record
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
 from shim_enterprise.secrets.references import format_reference
-from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
+from shim_enterprise.tenants.gateway_settings import GatewaySettings
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ModelDeployment,
+    ProviderSecret,
+    Team,
+    User,
+)
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
 
@@ -314,6 +321,11 @@ class DeploymentResolver:
                     "message": "The deployment destination is not approved.",
                 },
             ) from None
+        session_tag = (
+            await self._bedrock_admission(prepared, deployment, key)
+            if bedrock
+            else None
+        )
         prepared.record_verdict(
             "deployment.registry",
             stage="admission",
@@ -348,7 +360,7 @@ class DeploymentResolver:
                 base_url=base_url,
                 upstream_model=deployment.upstream_model,
                 credential_reference=format_reference(
-                    deployment.provider_secret_id, deployment.aws_region
+                    deployment.provider_secret_id, deployment.aws_region, session_tag
                 ),
                 timeout_seconds=deployment.timeout_seconds,
                 declared_version=deployment.declared_version,
@@ -360,6 +372,84 @@ class DeploymentResolver:
                 cache_write_per_million=deployment.cache_write_price_per_million,
             ),
         )
+
+    async def _bedrock_admission(
+        self, prepared: PreparedInference, deployment: ModelDeployment, key: ApiKey
+    ) -> str | None:
+        """The region lock and the operator's ceiling, before any AWS call; then the
+        session tag that carries the key's team onto the AWS bill, if any."""
+        # Here, not at the top: the AWS helpers import this module.
+        from shim_enterprise.aws.regions import (
+            ceiling_allows,
+            lock_reasons,
+            profile_scope,
+            tier_ceiling,
+        )
+
+        gateway = prepared.tenant_gateway_settings
+        current = gateway if isinstance(gateway, GatewaySettings) else GatewaySettings()
+        lock, attribution = current.bedrock_region_lock, current.bedrock_attribution
+        destinations = deployment.aws_destination_regions
+        async with self.session_factory() as session:
+            ceiling = await tier_ceiling(session, key.tier)
+            reasons = (
+                []
+                if lock.mode == "off"
+                else lock_reasons(
+                    lock, profile_scope(deployment.upstream_model), destinations
+                )
+            )
+            within = ceiling_allows(ceiling, destinations)
+            if lock.mode != "off" or ceiling:
+                policy = {
+                    "lock": lock.model_dump(),
+                    "ceiling": list(ceiling),
+                    "destinations": destinations,
+                }
+                if within and not reasons:
+                    outcome, code = "allow", "BEDROCK_REGION_ALLOWED"
+                elif within and lock.mode == "monitor":
+                    outcome, code = "allow", "BEDROCK_REGION_OUTSIDE_LOCK"
+                else:
+                    outcome, code = "deny", "BEDROCK_REGION_NOT_ALLOWED"
+                prepared.record_verdict(
+                    "aws.region_lock",
+                    stage="admission",
+                    outcome=outcome,
+                    reason_code=code,
+                    policy=policy,
+                )
+                if outcome == "deny":
+                    raise HTTPException(
+                        403,
+                        detail={
+                            "code": code,
+                            "message": "The Bedrock deployment's inference profile can "
+                            "route outside the regions this tenant allows.",
+                        },
+                    )
+            if attribution.mode != "session_tags":
+                return None
+            kind = await session.scalar(
+                select(ProviderSecret.credential_kind).where(
+                    ProviderSecret.organization_id == deployment.organization_id,
+                    ProviderSecret.id == deployment.provider_secret_id,
+                )
+            )
+            # Session tags exist only on assumed roles.
+            if kind != "aws_role":
+                return None
+            team_tag = (
+                await session.scalar(
+                    select(Team.aws_cost_tag).where(
+                        Team.organization_id == deployment.organization_id,
+                        Team.id == key.team_id,
+                    )
+                )
+                if key.team_id is not None
+                else None
+            )
+        return f"{attribution.tag_key}={team_tag or attribution.unassigned_value}"
 
     async def catalog(
         self, principal: AuthenticatedPrincipal, provider: str

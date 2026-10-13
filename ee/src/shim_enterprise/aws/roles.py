@@ -100,11 +100,15 @@ class AwsRoles:
         fresh: bool = False,
     ) -> AwsCredentials:
         if fresh:
-            return await self._assume(tenant_id, secret_id, role_arn, region)
+            return await self._assume(
+                tenant_id, secret_id, role_arn, region, session_tag
+            )
         now = datetime.now(timezone.utc)
 
         async def mint() -> tuple[AwsCredentials, datetime]:
-            found = await self._assume(tenant_id, secret_id, role_arn, region)
+            found = await self._assume(
+                tenant_id, secret_id, role_arn, region, session_tag
+            )
             assert found.expires_at is not None
             return found, found.expires_at
 
@@ -137,12 +141,37 @@ class AwsRoles:
         return external_id
 
     async def _assume(
-        self, tenant_id: UUID, secret_id: UUID, role_arn: str, region: str
+        self,
+        tenant_id: UUID,
+        secret_id: UUID,
+        role_arn: str,
+        region: str,
+        session_tag: str | None = None,
     ) -> AwsCredentials:
         external_id = await self._external_id(tenant_id)
         name = session_name(tenant_id, secret_id)
+        tags: tuple[tuple[str, str], ...] = ()
+        if session_tag is not None:
+            key, _, value = session_tag.partition("=")
+            tags = ((key, value),)
         action = "AssumeRole"
         try:
+            if settings.AWS_GATEWAY_IDENTITY == "gcp_metadata" and tags:
+                # A web-identity session cannot carry our tags: chain the untagged
+                # session into the same role with them (role chaining: at most 1 h).
+                untagged = await self.credentials(
+                    tenant_id, secret_id, role_arn, region
+                )
+                return await assume_role(
+                    self.http_client,
+                    untagged,
+                    region=region,
+                    role_arn=role_arn,
+                    session_name=name,
+                    external_id=external_id,
+                    duration_seconds=min(settings.AWS_ROLE_SESSION_SECONDS, 3_600),
+                    tags=tags,
+                )
             if settings.AWS_GATEWAY_IDENTITY == "gcp_metadata":
                 action = "AssumeRoleWithWebIdentity"
                 return await assume_role_with_web_identity(
@@ -163,6 +192,7 @@ class AwsRoles:
                 session_name=name,
                 external_id=external_id,
                 duration_seconds=settings.AWS_ROLE_SESSION_SECONDS,
+                tags=tags,
             )
         except StsError as error:
             refused = error.status == 403 or error.code in REFUSALS

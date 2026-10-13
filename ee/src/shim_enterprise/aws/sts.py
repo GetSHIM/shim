@@ -119,8 +119,15 @@ async def assume_role(
     session_name: str,
     external_id: str,
     duration_seconds: int,
+    tags: tuple[tuple[str, str], ...] = (),
 ) -> AwsCredentials:
-    """Temporary credentials of a tenant's role, asked with the gateway's own."""
+    """Temporary credentials of a tenant's role, asked with the gateway's own; `tags`
+    become session tags (the trust policy must allow sts:TagSession)."""
+    tagged = {
+        f"Tags.member.{index}.{part}": value
+        for index, (key, value) in enumerate(tags, start=1)
+        for part, value in (("Key", key), ("Value", value))
+    }
     root = await _call(
         http_client,
         credentials,
@@ -131,6 +138,7 @@ async def assume_role(
             "RoleSessionName": session_name,
             "ExternalId": external_id,
             "DurationSeconds": str(duration_seconds),
+            **tagged,
         },
     )
     return _credentials(root)

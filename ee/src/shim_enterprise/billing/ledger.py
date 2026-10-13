@@ -212,6 +212,8 @@ class QuotaReservationCommand:
     repeat_digest: str | None = None
     audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
     policy_verdicts: tuple[dict[str, Any], ...] = ()
+    # Bedrock requests only: source region, model, profile scope, lock, session tag.
+    aws_bedrock: dict[str, str | None] | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -379,6 +381,11 @@ class DurableAccountingRepository:
                     "repeat_digest": command.repeat_digest,
                     "audit_policy_mode": command.audit_policy_mode,
                     "policy_verdicts": list(command.policy_verdicts),
+                    **(
+                        {"aws_bedrock": command.aws_bedrock}
+                        if command.aws_bedrock is not None
+                        else {}
+                    ),
                 },
             },
         )

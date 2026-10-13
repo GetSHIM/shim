@@ -63,6 +63,10 @@ from shim_enterprise.tenants.models import (
 )
 
 
+# A request whose app has no HTTP client: only Bedrock deployments call out on write.
+NO_HTTP = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(http_client=None)))
+
+
 @pytest_asyncio.fixture
 async def db(async_engine):
     factory = async_sessionmaker(async_engine, expire_on_commit=False)
@@ -471,7 +475,7 @@ async def test_registry_tenant_isolation_and_credential_fk(db, test_api_key, ori
         owner="Platform",
     )
     with pytest.raises(HTTPException) as error:
-        await create_model_deployment(payload, owner, db)
+        await create_model_deployment(payload, NO_HTTP, owner, db)
     assert error.value.status_code == 404
 
 
@@ -563,6 +567,7 @@ async def test_deployment_writes_reread_the_row_under_a_lock(
             declared_version="sha256:locked",
             owner="Platform",
         ),
+        NO_HTTP,
         test_user_with_org,
         db,
     )
@@ -960,6 +965,7 @@ async def test_unhealthy_deployment_gets_no_traffic_until_healthy_or_updated(
                 declared_version="sha256:updated",
                 owner="Platform",
             ),
+            NO_HTTP,
             test_user_with_org,
             db,
         )

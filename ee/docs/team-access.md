@@ -53,9 +53,10 @@ permission: a team administrator manages the keys and ordinary members of the
 teams they administer, and everyone manages their own keys.
 
 A write (any method but GET, HEAD and OPTIONS) by a user who holds only read
-permissions answers 403 "Auditor access is read-only", except the four report
-and verification POSTs readers may call (`/compliance/audit/verify` and
-`/compliance/reports/audit`, `kvkk` and `readiness`). For a member with a
+permissions answers 403 "Auditor access is read-only", except the five report,
+verification and comparison POSTs readers may call (`/compliance/audit/verify`,
+`/compliance/reports/audit`, `kvkk` and `readiness`, and
+`/management/aws/attribution/compare`). For a member with a
 [custom role](#custom-roles) the rule covers organization writes, the routes
 that ask for a permission; their own profile (`PUT /auth/me`), the teams they
 administer, and their own keys, which follow `keys.own`, stay theirs. Only a

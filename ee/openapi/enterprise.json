@@ -1550,6 +1550,120 @@
         "title": "AspectRatio",
         "type": "string"
       },
+      "Attribution": {
+        "properties": {
+          "aws_column": {
+            "description": "The Cost Explorer and CUR 2.0 column.",
+            "title": "Aws Column",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "tag_key": {
+            "title": "Tag Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag_key",
+          "aws_column",
+          "rows"
+        ],
+        "title": "Attribution",
+        "type": "object"
+      },
+      "AttributionRow": {
+        "properties": {
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when any request is unpriced.",
+            "title": "Cost Usd"
+          },
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "session_tag": {
+            "title": "Session Tag",
+            "type": "string"
+          },
+          "unpriced_requests": {
+            "title": "Unpriced Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "session_tag",
+          "region",
+          "model",
+          "requests",
+          "prompt_tokens",
+          "completion_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd",
+          "unpriced_requests"
+        ],
+        "title": "AttributionRow",
+        "type": "object"
+      },
       "AudioResponseFormat": {
         "additionalProperties": false,
         "description": "Configuration for audio-specific output formatting.",
@@ -2368,6 +2482,7 @@
             "enum": [
               "gateway_identity",
               "assume_role",
+              "tag_session",
               "caller_identity",
               "token",
               "bedrock_access"
@@ -2407,6 +2522,42 @@
           "steps"
         ],
         "title": "AwsCheckView",
+        "type": "object"
+      },
+      "AwsCost": {
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "tag": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Tag",
+            "type": "string"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "day",
+          "tag",
+          "usd"
+        ],
+        "title": "AwsCost",
         "type": "object"
       },
       "AwsIdentityView": {
@@ -2495,6 +2646,174 @@
           "client_secret"
         ],
         "title": "AzureEntraInput",
+        "type": "object"
+      },
+      "BedrockAttribution": {
+        "additionalProperties": false,
+        "description": "Session tags that carry each team onto the AWS bill (role credentials only).",
+        "properties": {
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "session_tags"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "tag_key": {
+            "default": "shim-team",
+            "pattern": "^[A-Za-z0-9_.:/+@-]{1,128}$",
+            "title": "Tag Key",
+            "type": "string"
+          },
+          "unassigned_value": {
+            "default": "unassigned",
+            "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+            "title": "Unassigned Value",
+            "type": "string"
+          }
+        },
+        "title": "BedrockAttribution",
+        "type": "object"
+      },
+      "BedrockAttributionPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "session_tags"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "tag_key": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_.:/+@-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag Key"
+          },
+          "unassigned_value": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unassigned Value"
+          }
+        },
+        "title": "BedrockAttributionPatch",
+        "type": "object"
+      },
+      "BedrockRegionLock": {
+        "additionalProperties": false,
+        "description": "Which Bedrock inference profiles a tenant's requests may use.",
+        "properties": {
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "monitor",
+              "enforce"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "regions": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z]{2}(-[a-z]+)*(-[0-9])?$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Regions",
+            "type": "array"
+          },
+          "scopes": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_-]{1,15}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "title": "BedrockRegionLock",
+        "type": "object"
+      },
+      "BedrockRegionLockPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "monitor",
+                  "enforce"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "regions": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z]{2}(-[a-z]+)*(-[0-9])?$",
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regions"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z][a-z0-9_-]{1,15}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "BedrockRegionLockPatch",
         "type": "object"
       },
       "Behavior": {
@@ -3400,6 +3719,119 @@
           "models"
         ],
         "title": "CodexModelListView",
+        "type": "object"
+      },
+      "CompareInput": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AwsCost"
+            },
+            "maxItems": 5000,
+            "title": "Rows",
+            "type": "array"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows"
+        ],
+        "title": "CompareInput",
+        "type": "object"
+      },
+      "ComparedRow": {
+        "properties": {
+          "aws_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Aws Usd",
+            "type": "string"
+          },
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "difference_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Difference Usd",
+            "type": "string"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_usd / shim_usd; null when shim is 0.",
+            "title": "Ratio"
+          },
+          "shim_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Shim Usd",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "tag",
+          "shim_usd",
+          "aws_usd",
+          "difference_usd",
+          "ratio"
+        ],
+        "title": "ComparedRow",
+        "type": "object"
+      },
+      "Comparison": {
+        "properties": {
+          "only_in_aws": {
+            "items": {
+              "$ref": "#/components/schemas/DayTag"
+            },
+            "title": "Only In Aws",
+            "type": "array"
+          },
+          "only_in_shim": {
+            "items": {
+              "$ref": "#/components/schemas/DayTag"
+            },
+            "title": "Only In Shim",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ComparedRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "only_in_shim",
+          "only_in_aws"
+        ],
+        "title": "Comparison",
         "type": "object"
       },
       "ComputerUse": {
@@ -4352,6 +4784,25 @@
           "cost_usd"
         ],
         "title": "DailyUsageView",
+        "type": "object"
+      },
+      "DayTag": {
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "tag"
+        ],
+        "title": "DayTag",
         "type": "object"
       },
       "DecisionInput": {
@@ -6427,6 +6878,22 @@
             "title": "Auto Remediation Paused",
             "type": "boolean"
           },
+          "bedrock_attribution": {
+            "$ref": "#/components/schemas/BedrockAttribution",
+            "default": {
+              "mode": "off",
+              "tag_key": "shim-team",
+              "unassigned_value": "unassigned"
+            }
+          },
+          "bedrock_region_lock": {
+            "$ref": "#/components/schemas/BedrockRegionLock",
+            "default": {
+              "mode": "off",
+              "regions": [],
+              "scopes": []
+            }
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -6539,6 +7006,26 @@
               }
             ],
             "title": "Auto Remediation Paused"
+          },
+          "bedrock_attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BedrockAttributionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bedrock_region_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BedrockRegionLockPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "finding_modes": {
             "anyOf": [
@@ -8586,6 +9073,113 @@
         "title": "Links",
         "type": "object"
       },
+      "LockPreview": {
+        "properties": {
+          "ceiling": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ceiling",
+            "type": "array"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/LockPreviewItem"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "lock": {
+            "$ref": "#/components/schemas/BedrockRegionLock"
+          }
+        },
+        "required": [
+          "lock",
+          "ceiling",
+          "deployments"
+        ],
+        "title": "LockPreview",
+        "type": "object"
+      },
+      "LockPreviewItem": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "aws_region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Region"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "destinations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destinations"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "scope",
+                "region",
+                "unknown_destinations",
+                "ceiling"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "requests_7d": {
+            "title": "Requests 7D",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "upstream_model": {
+            "title": "Upstream Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "aws_region",
+          "upstream_model",
+          "scope",
+          "destinations",
+          "allowed",
+          "reasons",
+          "requests_7d"
+        ],
+        "title": "LockPreviewItem",
+        "type": "object"
+      },
       "ManagementActivity": {
         "properties": {
           "plans_by_status": {
@@ -9004,6 +9598,46 @@
             "title": "Alias",
             "type": "string"
           },
+          "aws_destination_regions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_bedrock: the regions the profile can route to, from GetInferenceProfile; null when unknown.",
+            "title": "Aws Destination Regions"
+          },
+          "aws_destinations_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Destinations Checked At"
+          },
+          "aws_profile_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_bedrock: in_region for a model, else the profile's prefix (eu, us, global).",
+            "readOnly": true,
+            "title": "Aws Profile Scope"
+          },
           "aws_region": {
             "anyOf": [
               {
@@ -9221,7 +9855,8 @@
           "health",
           "health_checked_at",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "aws_profile_scope"
         ],
         "title": "ModelDeploymentView",
         "type": "object"
@@ -16456,6 +17091,19 @@
       },
       "TeamInput": {
         "properties": {
+          "aws_cost_tag": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The STS session tag value this team's Bedrock requests carry onto the AWS bill (bedrock_attribution).",
+            "title": "Aws Cost Tag"
+          },
           "daily_request_limit": {
             "anyOf": [
               {
@@ -16705,6 +17353,19 @@
       },
       "TeamView": {
         "properties": {
+          "aws_cost_tag": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The STS session tag value this team's Bedrock requests carry onto the AWS bill (bedrock_attribution).",
+            "title": "Aws Cost Tag"
+          },
           "daily_request_limit": {
             "anyOf": [
               {
@@ -21805,6 +22466,125 @@
         ]
       }
     },
+    "/api/v1/management/aws/attribution": {
+      "get": {
+        "operationId": "bedrock_attribution_api_v1_management_aws_attribution_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attribution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bedrock Attribution",
+        "tags": [
+          "aws"
+        ]
+      }
+    },
+    "/api/v1/management/aws/attribution/compare": {
+      "post": {
+        "description": "shim's settled cost per day and tag next to the numbers copied from AWS.",
+        "operationId": "compare_bedrock_attribution_api_v1_management_aws_attribution_compare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Compare Bedrock Attribution",
+        "tags": [
+          "aws"
+        ]
+      }
+    },
     "/api/v1/management/aws/identity": {
       "get": {
         "operationId": "get_aws_identity_api_v1_management_aws_identity_get",
@@ -21863,6 +22643,104 @@
         "summary": "Create Aws Identity",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/management/aws/region-lock/preview": {
+      "get": {
+        "description": "Had this lock been on for the last 7 days: what each Bedrock deployment would\nhave met. With no query, the tenant's current lock.",
+        "operationId": "preview_region_lock_api_v1_management_aws_region_lock_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "off",
+                    "monitor",
+                    "enforce"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mode"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scopes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scopes"
+            }
+          },
+          {
+            "in": "query",
+            "name": "regions",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Regions"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Region Lock",
+        "tags": [
+          "aws"
         ]
       }
     },

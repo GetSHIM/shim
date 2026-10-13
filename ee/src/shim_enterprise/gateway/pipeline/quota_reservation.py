@@ -61,6 +61,7 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
 from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.aws.regions import bedrock_record
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -395,6 +396,7 @@ class DurableAccountingCoordinator:
                             verdict.model_dump(mode="json")
                             for verdict in prepared.policy_verdicts
                         ),
+                        aws_bedrock=bedrock_record(prepared),
                     ),
                 )
                 await session.commit()

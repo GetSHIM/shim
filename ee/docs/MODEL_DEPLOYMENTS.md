@@ -150,6 +150,29 @@ an absolute http(s) URL with no path, query or credentials and at most one
 `{region}`; startup fails otherwise. Their hosts are never tenant input. A `PUT`
 that leaves out `upstream` and `aws_region` keeps both.
 
+**Where a Bedrock deployment can route.** An inference profile routes to several
+regions, and its prefix alone does not say which (AWS: "Don't rely on the
+geographic prefix"). shim stores the deployment's destinations
+(`aws_destination_regions`): its own region for a model id, otherwise the regions
+of `GetInferenceProfile`'s model ARNs, read on create, when the region or model
+changes, and on every health check; `null` while Bedrock does not say. The view
+also shows `aws_profile_scope`: `in_region` for a model, else the profile prefix
+(`eu`, `us`, `apac`, `global`).
+
+**The region lock** is the gateway setting `bedrock_region_lock`: `mode` (`off`,
+`monitor`, `enforce`), `scopes` (allowed profile prefixes or `in_region`; empty
+allows any) and `regions` (region codes or geography prefixes such as `eu`;
+every destination must equal one or start with one followed by `-`; empty allows
+any, and unknown destinations fail a non-empty list). It is checked before any AWS
+call: `monitor` records `aws.region_lock` `BEDROCK_REGION_OUTSIDE_LOCK` and lets
+the request through, `enforce` answers 403 `BEDROCK_REGION_NOT_ALLOWED`, and
+creating or moving a deployment the enforced lock refuses answers 422 with that
+code. `GET /api/v1/management/aws/region-lock/preview` (`settings.read`, optional
+`mode`, `scopes`, `regions`) shows, per Bedrock deployment, what a lock would do
+and how many requests it served in the last 7 days. A tier's
+`features.provider_policy.allowed_regions` is the operator's ceiling for Bedrock:
+always enforced, unknown destinations refused; no shipped tier sets it.
+
 Without a stated price, public catalog prices apply to recognized upstream model
 names. Other custom models are explicitly unpriced: ledger arithmetic uses a zero
 placeholder with `pricing_resolution=unknown`, and usage reports carry

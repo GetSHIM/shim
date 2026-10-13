@@ -359,6 +359,16 @@
   "service_recommender": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/aws/attribution": {
+  "admin": "422",
+  "auditor": "422",
+  "member": "403 Permission required: usage.read",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "422",
+  "service_recommender": "422",
+  "team_admin": "403 Permission required: usage.read"
+ },
  "GET /api/v1/management/aws/identity": {
   "admin": "404",
   "auditor": "403 Organization admin required",
@@ -368,6 +378,16 @@
   "service_auditor": "403 Organization admin required",
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"
+ },
+ "GET /api/v1/management/aws/region-lock/preview": {
+  "admin": "200",
+  "auditor": "200",
+  "member": "200",
+  "owner": "200",
+  "service_admin": "200",
+  "service_auditor": "200",
+  "service_recommender": "200",
+  "team_admin": "200"
  },
  "GET /api/v1/management/billing/breakdown": {
   "admin": "200",
@@ -1148,6 +1168,16 @@
   "service_auditor": "403 Auditor access is read-only",
   "service_recommender": "403 Permission required: requests.approve",
   "team_admin": "403 Permission required: requests.approve"
+ },
+ "POST /api/v1/management/aws/attribution/compare": {
+  "admin": "422",
+  "auditor": "422",
+  "member": "403 Permission required: usage.read",
+  "owner": "422",
+  "service_admin": "422",
+  "service_auditor": "422",
+  "service_recommender": "422",
+  "team_admin": "403 Permission required: usage.read"
  },
  "POST /api/v1/management/aws/identity": {
   "admin": "200",

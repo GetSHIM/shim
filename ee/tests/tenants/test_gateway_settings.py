@@ -127,14 +127,22 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
             "auto_remediation_paused": False,
+            "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
+            "bedrock_attribution": {
+                "mode": "off",
+                "tag_key": "shim-team",
+                "unassigned_value": "unassigned",
+            },
         },
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
         "available_analyzers": ["shape", "language"],
         "unavailable": {
+            "bedrock_attribution": "off, needs AWS_GATEWAY_IDENTITY in this "
+            "installation",
             "request_archive": "off, needs REQUEST_ARCHIVE_ENABLED in this "
-            "installation (self-hosted only)"
+            "installation (self-hosted only)",
         },
         "request_archive_state": "off",
     }

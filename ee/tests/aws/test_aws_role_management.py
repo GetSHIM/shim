@@ -125,7 +125,7 @@ async def test_the_identity_is_created_once_and_shows_its_trust_policy(db) -> No
         == shown.json()["external_id"]
     )
     assert body["external_id"].startswith("shim-") and len(body["external_id"]) == 37
-    assert statement["Action"] == "sts:AssumeRole"
+    assert statement["Action"] == ["sts:AssumeRole", "sts:TagSession"]
     assert statement["Principal"] == {"AWS": "REPLACE_WITH_GATEWAY_PRINCIPAL_ARN"}
     assert statement["Condition"] == {
         "StringEquals": {"sts:ExternalId": body["external_id"]}
@@ -148,7 +148,7 @@ async def test_the_hosted_cloud_trusts_a_google_token_with_the_tenants_audience(
 
     body = (await _call(db, user, "POST", IDENTITY)).json()
 
-    statement = body["trust_policy"]["Statement"][0]
+    statement, chained = body["trust_policy"]["Statement"]
     audience = f"shim-aws:{body['external_id']}"
     assert body["web_identity_audience"] == audience
     assert statement["Principal"] == {"Federated": "accounts.google.com"}
@@ -157,6 +157,13 @@ async def test_the_hosted_cloud_trusts_a_google_token_with_the_tenants_audience(
         "accounts.google.com:aud": "000000000000000000000",
         "accounts.google.com:sub": "000000000000000000000",
         "accounts.google.com:oaud": audience,
+    }
+    # Session tags chain the web-identity session into the role itself.
+    assert chained == {
+        "Effect": "Allow",
+        "Action": ["sts:AssumeRole", "sts:TagSession"],
+        "Condition": {"StringEquals": {"sts:ExternalId": body["external_id"]}},
+        "Principal": {"AWS": "REPLACE_WITH_THIS_ROLE_ARN"},
     }
 
 
@@ -354,3 +361,51 @@ async def test_archiving_a_workspace_skips_the_role_in_the_store(
     assert [purpose for _, purpose in secrets if purpose.startswith("provider:")] == [
         "provider:anthropic:api-key"
     ]
+
+
+@pytest.mark.asyncio
+async def test_with_attribution_on_the_check_tags_a_session(db) -> None:
+    from shim_enterprise.tenants.models import OrganizationGatewaySettings
+
+    user = await _admin(db)
+    await _call(db, user, "POST", IDENTITY)
+    db.add(
+        OrganizationGatewaySettings(
+            organization_id=user.organization_id,
+            settings={"bedrock_attribution": {"mode": "session_tags"}},
+        )
+    )
+    await db.flush()
+    ok = await _role(db, user)
+    notag = await _role(db, user, "arn:aws:iam::000000000000:role/notag")
+
+    def sts(request: httpx.Request) -> httpx.Response:
+        form = dict(httpx.QueryParams(request.content.decode()))
+        if form.get("RoleArn", "").endswith("/notag") and "Tags.member.1.Key" in form:
+            return httpx.Response(
+                403,
+                text="<ErrorResponse><Error><Code>AccessDenied</Code></Error></ErrorResponse>",
+            )
+        return aws({})(request)
+
+    passed = await _call(
+        db, user, "POST", f"{PROVIDERS}/{ok['id']}/aws-check", sts, json={}
+    )
+    refused = await _call(
+        db, user, "POST", f"{PROVIDERS}/{notag['id']}/aws-check", sts, json={}
+    )
+
+    def tag_step(response) -> dict:
+        return next(s for s in response.json()["steps"] if s["step"] == "tag_session")
+
+    assert tag_step(passed) == {
+        "step": "tag_session",
+        "status": "ok",
+        "aws_error": None,
+    }
+    assert tag_step(refused) == {
+        "step": "tag_session",
+        "status": "failed",
+        "aws_error": "AccessDenied",
+    }
+    assert refused.json()["ok"] is False

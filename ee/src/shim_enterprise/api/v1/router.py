@@ -8,6 +8,7 @@ from shim.api.v1.responses import router as responses_router
 from shim_enterprise.ai_act.api import router as ai_act_router
 from shim_enterprise.api.v1 import management, scan
 from shim_enterprise.approvals.api import router as approvals_router
+from shim_enterprise.aws.attribution import router as aws_router
 from shim_enterprise.compliance.api import router as compliance_router
 from shim_enterprise.findings.api import router as findings_router
 from shim_enterprise.incidents.api import router as incidents_router
@@ -36,6 +37,7 @@ management_router.include_router(
     tags=["management"],
 )
 management_router.include_router(compliance_router)
+management_router.include_router(aws_router, prefix="/management", tags=["aws"])
 management_router.include_router(incidents_router)
 management_router.include_router(ai_act_router)
 management_router.include_router(policy_router)
