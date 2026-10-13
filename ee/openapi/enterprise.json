@@ -2322,6 +2322,136 @@
         "title": "AwsAccessKeyInput",
         "type": "object"
       },
+      "AwsCheckInput": {
+        "additionalProperties": false,
+        "properties": {
+          "region": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the region of a Bedrock deployment using this secret, else us-east-1.",
+            "title": "Region"
+          }
+        },
+        "title": "AwsCheckInput",
+        "type": "object"
+      },
+      "AwsCheckStep": {
+        "properties": {
+          "aws_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Error"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "gateway_identity",
+              "assume_role",
+              "caller_identity",
+              "token",
+              "bedrock_access"
+            ],
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "status"
+        ],
+        "title": "AwsCheckStep",
+        "type": "object"
+      },
+      "AwsCheckView": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "region": {
+            "title": "Region",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AwsCheckStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "region",
+          "steps"
+        ],
+        "title": "AwsCheckView",
+        "type": "object"
+      },
+      "AwsIdentityView": {
+        "properties": {
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "gateway_identity": {
+            "title": "Gateway Identity",
+            "type": "string"
+          },
+          "permissions_policy": {
+            "additionalProperties": true,
+            "title": "Permissions Policy",
+            "type": "object"
+          },
+          "trust_policy": {
+            "additionalProperties": true,
+            "title": "Trust Policy",
+            "type": "object"
+          },
+          "web_identity_audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Google ID token audience on the hosted cloud, else null.",
+            "title": "Web Identity Audience"
+          }
+        },
+        "required": [
+          "external_id",
+          "gateway_identity",
+          "web_identity_audience",
+          "trust_policy",
+          "permissions_policy"
+        ],
+        "title": "AwsIdentityView",
+        "type": "object"
+      },
       "AzureEntraInput": {
         "additionalProperties": false,
         "description": "A Microsoft Entra ID app registration's client secret.",
@@ -12035,6 +12165,20 @@
               }
             ]
           },
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "pattern": "^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_role: the role in the tenant's AWS account shim assumes; nothing secret is stored.",
+            "title": "Aws Role Arn"
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -12051,7 +12195,8 @@
             "enum": [
               "api_key",
               "aws_access_key",
-              "aws_bedrock_api_key"
+              "aws_bedrock_api_key",
+              "aws_role"
             ],
             "title": "Credential Kind",
             "type": "string"
@@ -12127,6 +12272,19 @@
               }
             ]
           },
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "pattern": "^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Arn"
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -12184,6 +12342,17 @@
       },
       "ProviderSecretView": {
         "properties": {
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Arn"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -12193,7 +12362,8 @@
             "enum": [
               "api_key",
               "aws_access_key",
-              "aws_bedrock_api_key"
+              "aws_bedrock_api_key",
+              "aws_role"
             ],
             "title": "Credential Kind",
             "type": "string"
@@ -12234,6 +12404,12 @@
             "title": "Provider",
             "type": "string"
           },
+          "stores_secret": {
+            "description": "False for a role: shim keeps its ARN and nothing secret.",
+            "readOnly": true,
+            "title": "Stores Secret",
+            "type": "boolean"
+          },
           "verified_at": {
             "anyOf": [
               {
@@ -12253,9 +12429,11 @@
           "credential_kind",
           "name",
           "masked_key",
+          "aws_role_arn",
           "created_at",
           "monthly_limit_usd",
-          "verified_at"
+          "verified_at",
+          "stores_secret"
         ],
         "title": "ProviderSecretView",
         "type": "object"
@@ -21627,6 +21805,67 @@
         ]
       }
     },
+    "/api/v1/management/aws/identity": {
+      "get": {
+        "operationId": "get_aws_identity_api_v1_management_aws_identity_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Aws Identity",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "description": "The tenant's external id, created once and never changed.",
+        "operationId": "create_aws_identity_api_v1_management_aws_identity_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Aws Identity",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/billing/breakdown": {
       "get": {
         "operationId": "billing_breakdown_api_v1_management_billing_breakdown_get",
@@ -24558,6 +24797,71 @@
           }
         ],
         "summary": "Update Provider Secret",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/providers/{secret_id}/aws-check": {
+      "post": {
+        "operationId": "check_aws_secret_api_v1_management_providers__secret_id__aws_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "secret_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Secret Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AwsCheckInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsCheckView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Check Aws Secret",
         "tags": [
           "management"
         ]

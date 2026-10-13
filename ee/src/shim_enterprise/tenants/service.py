@@ -314,7 +314,11 @@ async def _archive_workspace(
                 ProviderSecret.secret_ref,
                 ProviderSecret.provider,
                 ProviderSecret.credential_kind,
-            ).where(ProviderSecret.organization_id == tenant_id)
+            ).where(
+                ProviderSecret.organization_id == tenant_id,
+                # A role stores nothing in the secret store.
+                ProviderSecret.secret_ref.is_not(None),
+            )
         )
     ]
     secrets_to_delete += [

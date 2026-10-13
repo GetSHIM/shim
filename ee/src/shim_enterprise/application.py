@@ -47,6 +47,7 @@ from shim.observability.logging import configure_error_reporting, configure_logg
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.privacy.chain_store import RedisPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim_enterprise.aws.roles import AwsRoles
 from shim_enterprise.secrets.store import (
     ManagedProviderCredentialResolver,
     get_secret_store,
@@ -196,6 +197,8 @@ def _create_gateway_kernel(
         AsyncSessionLocal,
     )
     secret_store = get_secret_store()
+    # One gateway AWS identity and one role session cache for both Bedrock formats.
+    aws_roles = AwsRoles(http_client, AsyncSessionLocal)
     chain_store = RedisPrivacyContinuationStore(cache)
     usage = DurableUsageLifecycle(DurableAccountingCoordinator(), AsyncSessionLocal)
     return GatewayKernel(
@@ -208,6 +211,7 @@ def _create_gateway_kernel(
                     entra=EntraTokenCache(
                         http_client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
                     ),
+                    aws_roles=aws_roles,
                 ),
                 circuit_for=tenant_target_circuit("openai", cache),
                 settings=settings,
@@ -217,7 +221,7 @@ def _create_gateway_kernel(
             ),
             "anthropic": AnthropicExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
-                    "anthropic", secret_store, AsyncSessionLocal
+                    "anthropic", secret_store, AsyncSessionLocal, aws_roles=aws_roles
                 ),
                 circuit_for=tenant_target_circuit("anthropic", cache),
                 settings=settings,

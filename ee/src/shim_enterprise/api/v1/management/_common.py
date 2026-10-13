@@ -26,6 +26,7 @@ from shim.secrets.azure import EntraTokenCache
 from shim_enterprise.core.config import settings
 from shim_enterprise.core.database import AsyncSessionLocal
 from shim.gateway.contracts.ids import SecretRef, TenantId
+from shim_enterprise.aws.roles import AwsRoles
 from shim_enterprise.secrets.store import (
     ManagedProviderCredentialResolver,
     get_secret_store,
@@ -87,7 +88,8 @@ class BillingPeriodView(BaseModel):
 def _fresh_resolver(
     provider: str, client: httpx.AsyncClient
 ) -> ManagedProviderCredentialResolver:
-    """A resolver with a token cache of its own, so a check always asks Entra afresh."""
+    """A resolver with token and session caches of its own, so a check always asks
+    Entra or AWS afresh."""
     return ManagedProviderCredentialResolver(
         provider,
         get_secret_store(),
@@ -95,6 +97,7 @@ def _fresh_resolver(
         entra=EntraTokenCache(
             client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
         ),
+        aws_roles=AwsRoles(client, AsyncSessionLocal),
     )
 
 

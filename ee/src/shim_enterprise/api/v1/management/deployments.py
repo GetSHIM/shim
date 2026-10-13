@@ -599,7 +599,7 @@ async def check_model_deployment_health(
             if upstream == "aws_bedrock":
                 assert region is not None
                 # Bedrock's control plane answers whether the key reaches the model.
-                url = _bedrock_model_url(region, model)
+                url = bedrock_model_url(region, model)
                 headers = {"Authorization": f"Bearer {credential}"}
             else:
                 headers = (
@@ -642,7 +642,7 @@ async def check_model_deployment_health(
     return row
 
 
-def _bedrock_model_url(region: str, model: str) -> str:
+def bedrock_model_url(region: str, model: str) -> str:
     """The control-plane read of a model, or of an inference profile.
 
     A system profile id has at least two dots before any colon

@@ -359,6 +359,16 @@
   "service_recommender": "200",
   "team_admin": "200"
  },
+ "GET /api/v1/management/aws/identity": {
+  "admin": "404",
+  "auditor": "403 Organization admin required",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
+  "service_auditor": "403 Organization admin required",
+  "service_recommender": "403 Organization admin required",
+  "team_admin": "403 Organization admin required"
+ },
  "GET /api/v1/management/billing/breakdown": {
   "admin": "200",
   "auditor": "200",
@@ -1139,6 +1149,16 @@
   "service_recommender": "403 Permission required: requests.approve",
   "team_admin": "403 Permission required: requests.approve"
  },
+ "POST /api/v1/management/aws/identity": {
+  "admin": "200",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "201",
+  "service_admin": "200",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization admin required",
+  "team_admin": "403 Organization admin required"
+ },
  "POST /api/v1/management/config/apply": {
   "admin": "422",
   "auditor": "403 Auditor access is read-only",
@@ -1275,6 +1295,16 @@
   "member": "403 Organization admin required",
   "owner": "422",
   "service_admin": "422",
+  "service_auditor": "403 Auditor access is read-only",
+  "service_recommender": "403 Organization admin required",
+  "team_admin": "403 Organization admin required"
+ },
+ "POST /api/v1/management/providers/{secret_id}/aws-check": {
+  "admin": "404",
+  "auditor": "403 Auditor access is read-only",
+  "member": "403 Organization admin required",
+  "owner": "404",
+  "service_admin": "404",
   "service_auditor": "403 Auditor access is read-only",
   "service_recommender": "403 Organization admin required",
   "team_admin": "403 Organization admin required"

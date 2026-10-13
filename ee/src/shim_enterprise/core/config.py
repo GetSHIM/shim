@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal, Self
 from uuid import UUID
@@ -35,6 +36,16 @@ class Settings(CommunitySettings):
     )
     AWS_BEDROCK_CONTROL_URL_TEMPLATE: str = "https://bedrock.{region}.amazonaws.com"
     AWS_STS_URL_TEMPLATE: str = "https://sts.{region}.amazonaws.com"
+    # The gateway's own AWS identity, the one that assumes tenants' roles. Chosen by
+    # the operator; no metadata address is probed unless chosen here.
+    AWS_GATEWAY_IDENTITY: Literal[
+        "none", "env", "web_identity_file", "container", "imds", "gcp_metadata"
+    ] = "none"
+    AWS_GATEWAY_PRINCIPAL_ARN: str | None = None
+    AWS_GCP_SERVICE_ACCOUNT_ID: str | None = Field(default=None, pattern=r"^\d{1,32}$")
+    AWS_GCP_METADATA_URL: str = "http://metadata.google.internal"
+    AWS_IMDS_URL: str = "http://169.254.169.254"
+    AWS_ROLE_SESSION_SECONDS: int = Field(default=3_600, ge=900, le=3_600)
     ALERT_ALLOWED_ORIGINS: list[str] = []
     # The model-deployment name shipped in 0.1.4; existing installs still set it.
     OUTBOUND_CA_BUNDLE: str | None = Field(
@@ -199,6 +210,32 @@ class Settings(CommunitySettings):
                 "or credentials and at most one {region}"
             )
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def aws_identity_has_its_variables(self) -> Self:
+        needed = {
+            "env": [("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")],
+            "web_identity_file": [("AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN")],
+            "container": [
+                ("AWS_CONTAINER_CREDENTIALS_FULL_URI",),
+                ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",),
+            ],
+        }.get(self.AWS_GATEWAY_IDENTITY)
+        if needed is not None and not any(
+            all(os.environ.get(name) for name in group) for group in needed
+        ):
+            names = " or ".join(" and ".join(group) for group in needed)
+            raise ValueError(
+                f"AWS_GATEWAY_IDENTITY={self.AWS_GATEWAY_IDENTITY} needs {names}"
+            )
+        if (
+            self.AWS_GATEWAY_IDENTITY == "gcp_metadata"
+            and self.AWS_GCP_SERVICE_ACCOUNT_ID is None
+        ):
+            raise ValueError(
+                "AWS_GATEWAY_IDENTITY=gcp_metadata needs AWS_GCP_SERVICE_ACCOUNT_ID"
+            )
+        return self
 
     @field_validator("MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES")
     @classmethod

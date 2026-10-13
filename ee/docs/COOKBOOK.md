@@ -33,6 +33,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Register a private model deployment](#register-a-private-model-deployment)
 - [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
 - [Use Amazon Bedrock](#use-amazon-bedrock)
+- [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
 - [Automate management with a service account](#automate-management-with-a-service-account)
 - [Give an agent a recommender key](#give-an-agent-a-recommender-key)
 - [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
@@ -1021,6 +1022,49 @@ jq -n --arg secret "$SECRET_ID" '{
 Notes: token counting is not available on Bedrock (400
 `MODEL_CAPABILITY_UNSUPPORTED`). An access key must be long-term (`AKIA`).
 Details: [model deployments](MODEL_DEPLOYMENTS.md).
+
+## Connect Bedrock with an AWS role
+
+Let shim reach Bedrock through a role in your own AWS account: no key is stored
+with shim, and you take access back whenever you want.
+
+1. As the platform operator, give the gateway its own AWS identity
+   (`AWS_GATEWAY_IDENTITY`, see [the gateway's AWS
+   identity](ON_PREM_IDENTITY.md#the-gateways-aws-identity)).
+2. `POST /api/v1/management/aws/identity` creates your external id once (201, then
+   200); `GET` shows it with the trust and permissions policies to paste into IAM.
+3. Create the role with that trust policy and attach the permissions policy;
+   narrow its `Resource` to the models and profiles you use.
+4. Store it: `POST /api/v1/management/providers` with `provider` `anthropic` (or
+   `openai`), `credential_kind: "aws_role"` and `aws_role_arn`. Nothing secret is
+   stored (`stores_secret: false`).
+5. `POST /providers/{id}/aws-check` (body `{"region"}` optional) walks every step:
+   `gateway_identity`, `assume_role` (a fresh session), `token`, and
+   `bedrock_access` (a deployment of this secret in the region, else `skipped`).
+   All ok sets `verified_at`; a refusal by AWS clears it and names the step and
+   AWS's error code. `POST /providers/{id}/verify` runs the same check.
+6. Register the `aws_bedrock` deployment with this secret, as in [use Amazon
+   Bedrock](#use-amazon-bedrock).
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/aws/identity \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"provider": "anthropic", "credential_kind": "aws_role",
+       "aws_role_arn": "arn:aws:iam::123456789012:role/shim-bedrock"}'
+
+curl -X POST http://localhost:8000/api/v1/management/providers/$SECRET_ID/aws-check \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"region": "eu-central-1"}'
+```
+
+Notes: a refused role answers requests 401 `INVALID_PROVIDER_CREDENTIAL`; a
+gateway without an AWS identity answers 503 `PROVIDER_NOT_CONFIGURED`. To revoke,
+remove the trust policy or the role: new sessions stop at once, and open ones end
+within `AWS_ROLE_SESSION_SECONDS` (at most an hour), or at once with IAM's "revoke
+active sessions". The external id never changes, and shim has no route to rotate it.
 
 ## Automate management with a service account
 

@@ -548,8 +548,17 @@ class ProviderSecret(Base, TimestampMixin):
             name="ck_provider_secret_monthly_limit",
         ),
         CheckConstraint(
-            "credential_kind IN ('api_key', 'aws_access_key', 'aws_bedrock_api_key')",
+            "credential_kind IN "
+            "('api_key', 'aws_access_key', 'aws_bedrock_api_key', 'aws_role')",
             name="ck_provider_secrets_credential_kind",
+        ),
+        # A role stores nothing secret: its ARN instead of a secret-store reference.
+        CheckConstraint(
+            "((credential_kind = 'aws_role') = (aws_role_arn IS NOT NULL)) AND "
+            "((credential_kind = 'aws_role') = (secret_ref IS NULL)) AND "
+            "((secret_ref IS NULL) = (secret_backend IS NULL)) AND "
+            "((secret_ref IS NULL) = (secret_version IS NULL))",
+            name="ck_provider_secrets_role_shape",
         ),
         Index(
             "ix_provider_secrets_tenant_provider",
@@ -568,9 +577,9 @@ class ProviderSecret(Base, TimestampMixin):
     # OpenAI on Azure for its deployments only, which a build without it never selects.
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str | None] = mapped_column(String(100))
-    secret_ref: Mapped[str] = mapped_column(Text, nullable=False)
-    secret_backend: Mapped[str] = mapped_column(String(32), nullable=False)
-    secret_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    secret_ref: Mapped[str | None] = mapped_column(Text)
+    secret_backend: Mapped[str | None] = mapped_column(String(32))
+    secret_version: Mapped[str | None] = mapped_column(String(128))
     masked_key: Mapped[str] = mapped_column(String(64), nullable=False)
     monthly_limit_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -579,8 +588,33 @@ class ProviderSecret(Base, TimestampMixin):
     credential_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="api_key", server_default="api_key"
     )
+    aws_role_arn: Mapped[str | None] = mapped_column(String(2048))
 
     organization: Mapped[Organization] = relationship(back_populates="provider_secrets")
+
+
+class OrganizationAwsIdentity(Base):
+    """The tenant's external id: what its AWS role's trust policy asks shim for."""
+
+    __tablename__ = "organization_aws_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "external_id", name="uq_organization_aws_identities_external_id"
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "organizations.id",
+            name="fk_organization_aws_identities_organization_id",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class ModelDeployment(Base, TimestampMixin):

@@ -129,7 +129,11 @@ Converse or InvokeModel translation and no `bedrock-mantle`. Rules, each its own
   deployments: `aws_access_key` (a long-term `AKIA` key pair; shim mints a
   short-term Bedrock API key from it locally, for the deployment's region, valid one
   hour and replaced 300 seconds early, so no AWS call happens on the request path) or
-  `aws_bedrock_api_key` (a long-term Bedrock API key, used as it is).
+  `aws_bedrock_api_key` (a long-term Bedrock API key, used as it is), or
+  `aws_role` (a role in the tenant's AWS account: shim stores its ARN and nothing
+  secret, assumes it with the tenant's external id for at most an hour, and mints
+  the Bedrock key from that session; see [connect Bedrock with an AWS
+  role](COOKBOOK.md#connect-bedrock-with-an-aws-role)).
 
 Token counting is not available for Bedrock deployments: `count_tokens` answers 400
 `MODEL_CAPABILITY_UNSUPPORTED` before any call. The health check reads the model

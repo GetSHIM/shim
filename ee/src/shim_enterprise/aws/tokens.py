@@ -1,4 +1,4 @@
-"""Short-term Bedrock API keys, minted locally and reused until close to expiry."""
+"""Short-lived AWS material, minted on a miss and reused until close to expiry."""
 
 from __future__ import annotations
 
@@ -10,60 +10,45 @@ from datetime import datetime, timedelta, timezone
 from shim_enterprise.aws.sigv4 import AwsCredentials, bedrock_bearer_token
 
 TOKEN_SECONDS = 3_600
-# A token is replaced while this much of its life remains, so no request carries one
-# that expires on the way.
+# Replaced while this much life remains, so nothing expires on the way.
 RENEW_BEFORE = timedelta(seconds=300)
 # A token never outlives the credential that signed it.
 CREDENTIAL_MARGIN = timedelta(seconds=60)
 MAX_ENTRIES = 4_096
 
 
-class BedrockTokenCache:
-    """Per (tenant, secret, secret version, region, session tag), one live token.
-
-    Minting is local: no AWS call happens on the request path. Concurrent misses for
-    one key share one mint, and the secret store is read only on a miss.
-    """
+class ExpiringCache[T]:
+    """One live value per key; concurrent misses for a key share one mint, and the
+    least recently used entry goes above `max_entries`."""
 
     def __init__(self, max_entries: int = MAX_ENTRIES) -> None:
         self.max_entries = max_entries
-        self._tokens: OrderedDict[Hashable, tuple[str, datetime]] = OrderedDict()
-        self._minting: dict[Hashable, asyncio.Future[str]] = {}
+        self._values: OrderedDict[Hashable, tuple[T, datetime]] = OrderedDict()
+        self._minting: dict[Hashable, asyncio.Future[T]] = {}
 
-    async def token(
+    async def get(
         self,
         key: Hashable,
-        region: str,
-        load: Callable[[], Awaitable[AwsCredentials]],
+        mint: Callable[[], Awaitable[tuple[T, datetime]]],
         *,
-        now: datetime | None = None,
-    ) -> str:
-        now = now or datetime.now(timezone.utc)
-        cached = self._tokens.get(key)
+        now: datetime,
+    ) -> T:
+        cached = self._values.get(key)
         if cached is not None and cached[1] - now > RENEW_BEFORE:
-            self._tokens.move_to_end(key)
+            self._values.move_to_end(key)
             return cached[0]
         if (pending := self._minting.get(key)) is not None:
             return await asyncio.shield(pending)
-        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[T] = asyncio.get_running_loop().create_future()
         self._minting[key] = future
         try:
-            credentials = await load()
-            seconds = TOKEN_SECONDS
-            if credentials.expires_at is not None:
-                left = credentials.expires_at - CREDENTIAL_MARGIN - now
-                seconds = min(seconds, int(left.total_seconds()))
-            if seconds < 1:
-                raise ValueError("the credential expires too soon to sign a token")
-            token = bedrock_bearer_token(
-                credentials, region=region, now=now, expires_seconds=seconds
-            )
-            self._tokens[key] = (token, now + timedelta(seconds=seconds))
-            self._tokens.move_to_end(key)
-            while len(self._tokens) > self.max_entries:
-                self._tokens.popitem(last=False)
-            future.set_result(token)
-            return token
+            value, expires_at = await mint()
+            self._values[key] = (value, expires_at)
+            self._values.move_to_end(key)
+            while len(self._values) > self.max_entries:
+                self._values.popitem(last=False)
+            future.set_result(value)
+            return value
         except Exception as error:
             future.set_exception(error)
             # Waiters see the error; nobody else needs to retrieve it.
@@ -74,3 +59,39 @@ class BedrockTokenCache:
             raise
         finally:
             del self._minting[key]
+
+
+class BedrockTokenCache:
+    """Per (tenant, secret, secret version, region, session tag), one live Bedrock key.
+
+    Minting is local: no AWS call happens on the request path, and the credentials
+    are loaded only on a miss.
+    """
+
+    def __init__(self, max_entries: int = MAX_ENTRIES) -> None:
+        self._cache: ExpiringCache[str] = ExpiringCache(max_entries)
+
+    async def token(
+        self,
+        key: Hashable,
+        region: str,
+        load: Callable[[], Awaitable[AwsCredentials]],
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        at = now or datetime.now(timezone.utc)
+
+        async def mint() -> tuple[str, datetime]:
+            credentials = await load()
+            seconds = TOKEN_SECONDS
+            if credentials.expires_at is not None:
+                left = credentials.expires_at - CREDENTIAL_MARGIN - at
+                seconds = min(seconds, int(left.total_seconds()))
+            if seconds < 1:
+                raise ValueError("the credential expires too soon to sign a token")
+            token = bedrock_bearer_token(
+                credentials, region=region, now=at, expires_seconds=seconds
+            )
+            return token, at + timedelta(seconds=seconds)
+
+        return await self._cache.get(key, mint, now=at)
