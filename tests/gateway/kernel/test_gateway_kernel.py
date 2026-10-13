@@ -1,6 +1,7 @@
 from array import array
 import asyncio
 from dataclasses import replace
+from decimal import Decimal
 import io
 import json
 from types import SimpleNamespace
@@ -3835,6 +3836,8 @@ class _StubSender:
                 credential_reference=self.reference,
                 timeout_seconds=30,
                 declared_version="1",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("2"),
             ),
             deployment_kind=self.kind,
         )
@@ -3862,6 +3865,8 @@ async def _shadow_call(
     max_in_flight=4,
     requests=1,
     hold_copy=False,
+    settings=None,
+    headers=None,
 ):
     calls: list[httpx.Request] = []
 
@@ -3915,6 +3920,7 @@ async def _shadow_call(
                 _env_file=None,
                 SHIM_API_KEY=_GATEWAY_KEY,
                 PII_ENTITY_ACTIONS=json.dumps({"EMAIL_ADDRESS": "mask"}),
+                **(settings or {}),
             ),
             http_client=outbound,
             event_stream=events,
@@ -3935,6 +3941,7 @@ async def _shadow_call(
                         headers={
                             "authorization": f"Bearer {_GATEWAY_KEY}",
                             "x-provider-key": "sk-caller",
+                            **(headers or {}),
                         },
                         json=body
                         or {
@@ -4103,6 +4110,70 @@ async def test_a_raising_sender_is_logged_and_counted(
     assert response.status_code == 200
     assert failed._value.get() == before + 1
     assert "Shadow copy failed type=RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_copys_cost_never_reaches_the_callers_task_counter(monkeypatch) -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    added: list[int] = []
+    original = InMemoryTaskCounter.add_cost
+
+    async def add_cost(self, tenant_id, task_key, *, micro_usd, window_seconds):
+        added.append(micro_usd)
+        await original(
+            self,
+            tenant_id,
+            task_key,
+            micro_usd=micro_usd,
+            window_seconds=window_seconds,
+        )
+
+    monkeypatch.setattr(InMemoryTaskCounter, "add_cost", add_cost)
+    sender = _StubSender()
+
+    _, calls, _ = await _shadow_call(
+        monkeypatch,
+        sender,
+        settings={"SHIM_TASK_MAX_COST_USD": "10"},
+        headers={"x-shim-task-id": "task-1"},
+    )
+
+    assert len(calls) == 2 and len(sender.compared) == 1
+    assert len(added) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_copy_leaves_the_in_flight_gauge_where_it_was(
+    monkeypatch, stream
+) -> None:
+    from shim.observability.metrics import REQUESTS_IN_FLIGHT
+
+    gauge = REQUESTS_IN_FLIGHT.labels(provider="openai")
+    before = gauge._value.get()
+
+    _, calls, _ = await _shadow_call(monkeypatch, _StubSender(), stream=stream)
+
+    assert len(calls) == 2 and gauge._value.get() == before
+
+
+@pytest.mark.asyncio
+async def test_a_copy_that_never_ends_is_timed_out_and_frees_its_slot(
+    monkeypatch,
+) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    monkeypatch.setattr(kernel_module, "SHADOW_RUN_SECONDS", 0.01)
+    failed = SHADOW_COPIES_TOTAL.labels(outcome="failed")
+    before = failed._value.get()
+    # The candidate never answers; only the per-run timeout ends the copy.
+    sender = _StubSender(hold=asyncio.Event())
+
+    [response], _, _ = await _shadow_call(monkeypatch, sender)
+
+    assert response.status_code == 200
+    assert failed._value.get() == before + 1
 
 
 @pytest.mark.asyncio

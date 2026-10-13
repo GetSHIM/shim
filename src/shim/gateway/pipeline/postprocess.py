@@ -170,6 +170,8 @@ class ResponsePostprocessor:
         amount = micro_usd(cost)
         if (
             self.task_counter is None
+            # A shadow copy is the tenant's, never the caller's task.
+            or prepared.shadow is not None
             or caps.max_cost_usd is None
             or admission is None
             or admission.task_id is None

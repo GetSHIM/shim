@@ -197,3 +197,37 @@ async def test_a_replay_must_name_the_same_request_count(
         )
 
     assert same.replayed
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_copy_counts_against_the_organization_only(
+    db, test_api_key
+) -> None:
+
+    repository = DurableAccountingRepository()
+    closed_key = QuotaPolicySnapshot("closed-key", 0, 0, 0)
+    request_id = f"req_{uuid4().hex}"
+
+    await repository.reserve_quota(
+        db,
+        _command(
+            test_api_key,
+            request_id,
+            closed_key,
+            request_delta=0,
+            shadow_of="req_primary",
+            shadow_rule_id="change_test",
+        ),
+    )
+
+    rows = (
+        await db.scalars(
+            select(QuotaPeriodUsage)
+            .where(QuotaPeriodUsage.organization_id == test_api_key.organization_id)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert [
+        (row.api_key_id, row.team_id, row.period_type, row.reserved_tokens)
+        for row in rows
+    ] == [(None, None, "monthly", 10)]

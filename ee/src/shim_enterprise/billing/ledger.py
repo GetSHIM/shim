@@ -982,7 +982,8 @@ class DurableAccountingRepository:
             month_start, _ = self._month_bounds(
                 command.started_at.astimezone(timezone.utc).date()
             )
-            if await session.scalar(
+            # A shadow copy is the tenant's: it always lands on the organization row.
+            if command.shadow_of is not None or await session.scalar(
                 select(QuotaPeriodUsage.id).where(
                     QuotaPeriodUsage.organization_id == command.tenant_id,
                     QuotaPeriodUsage.api_key_id.is_(None),
@@ -1003,6 +1004,9 @@ class DurableAccountingRepository:
                     scope="organization",
                 )
             )
+        if command.shadow_of is not None:
+            # Never the caller's key or team budget.
+            return allocations
         allocations.extend(
             await self._reserve_scoped_quota_periods(
                 session, command, command.policy, scope="api_key"

@@ -229,16 +229,23 @@ class BudgetEvaluator:
     ) -> tuple[Any, ...]:
         if budget.scope_type == "org":
             return ()
+        # A shadow copy is the organization's spend, never a team's or a tag's.
+        own = ~lifecycle.lifecycle_metadata.has_key("shadow_of")
         if budget.scope_type == "tag":
             return (
+                own,
                 lifecycle.lifecycle_metadata["tags"].contains([budget.scope_value]),
             )
         if budget.scope_type == "team_id":
             return (
+                own,
                 lifecycle.lifecycle_metadata["team_id"].as_string()
                 == budget.scope_value,
             )
-        return (lifecycle.lifecycle_metadata["team"].as_string() == budget.scope_value,)
+        return (
+            own,
+            lifecycle.lifecycle_metadata["team"].as_string() == budget.scope_value,
+        )
 
     @staticmethod
     async def _fired_thresholds(

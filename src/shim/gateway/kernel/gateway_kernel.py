@@ -98,6 +98,9 @@ from .result import PreparedInference
 
 logger = logging.getLogger(__name__)
 _PROVIDERS = frozenset({"openai", "anthropic", "google"})
+# One shadow copy from asking for its candidate to the comparison: the provider read
+# timeout, so a hung candidate or comparison never holds a slot for good.
+SHADOW_RUN_SECONDS = 600
 
 
 # OpenTelemetry GenAI names at schema 1.44.0 (tracing.SCHEMA_URL); a token count is no operation.
@@ -613,51 +616,54 @@ class GatewayKernel:
             self._shadow_in_flight += 1
             lease = None
             try:
-                candidate = await self.shadow_sender.candidate(primary, selection)
-                if candidate is None:
-                    SHADOW_COPIES_TOTAL.labels(outcome="no_candidate").inc()
-                    return
-                shadow = shadow_of(primary, selection, candidate)
-                if (
-                    (
-                        candidate.deployment_kind != "internal"
-                        and candidate.deployment_kind != primary.deployment_kind
-                    )
-                    or not candidate.provider_target.credential_reference
-                    or protects_less(primary, shadow)
-                ):
-                    SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
-                    return
-                if self.concurrency_limiter is not None and primary.admission:
-                    try:
-                        lease = await self.concurrency_limiter.acquire(
-                            concurrency_target(shadow),
-                            work_tokens(primary.admission),
-                            "low",
-                            0,
-                        )
-                    except ConcurrencyRefused:
-                        SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated").inc()
+                async with asyncio.timeout(SHADOW_RUN_SECONDS):
+                    candidate = await self.shadow_sender.candidate(primary, selection)
+                    if candidate is None:
+                        SHADOW_COPIES_TOTAL.labels(outcome="no_candidate").inc()
                         return
-                shadow, blocked = await self._bands(
-                    replace(shadow, concurrency_lease=lease)
-                )
-                if blocked is not None:
-                    SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
-                    return
-                observed = await self._run_shadow(
-                    replace(invocation, provider_credential=None),
-                    execution,
-                    shadow,
-                    keep_answer=selection.keep_answer,
-                )
-                SHADOW_COPIES_TOTAL.labels(outcome="sent").inc()
-                await self.shadow_sender.compare(
-                    primary,
-                    selection,
-                    observation(primary, terminal, text, tool_calls, truncated),
-                    observed,
-                )
+                    shadow = shadow_of(primary, selection, candidate)
+                    if (
+                        (
+                            candidate.deployment_kind != "internal"
+                            and candidate.deployment_kind != primary.deployment_kind
+                        )
+                        or not candidate.provider_target.credential_reference
+                        or protects_less(primary, shadow)
+                    ):
+                        SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
+                        return
+                    if self.concurrency_limiter is not None and primary.admission:
+                        try:
+                            lease = await self.concurrency_limiter.acquire(
+                                concurrency_target(shadow),
+                                work_tokens(primary.admission),
+                                "low",
+                                0,
+                            )
+                        except ConcurrencyRefused:
+                            SHADOW_COPIES_TOTAL.labels(
+                                outcome="dropped_saturated"
+                            ).inc()
+                            return
+                    shadow, blocked = await self._bands(
+                        replace(shadow, concurrency_lease=lease)
+                    )
+                    if blocked is not None:
+                        SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard").inc()
+                        return
+                    observed = await self._run_shadow(
+                        replace(invocation, provider_credential=None),
+                        execution,
+                        shadow,
+                        keep_answer=selection.keep_answer,
+                    )
+                    SHADOW_COPIES_TOTAL.labels(outcome="sent").inc()
+                    await self.shadow_sender.compare(
+                        primary,
+                        selection,
+                        observation(primary, terminal, text, tool_calls, truncated),
+                        observed,
+                    )
             except Exception as exc:
                 logger.warning("Shadow copy failed type=%s", type(exc).__name__)
                 SHADOW_COPIES_TOTAL.labels(outcome="failed").inc()
@@ -736,6 +742,10 @@ class GatewayKernel:
         session = self.postprocessor.create_stream_session(
             shadow, on_settled=observe, keep_answer=keep_answer
         )
+        # The session's terminal takes the copy out again.
+        REQUESTS_IN_FLIGHT.labels(
+            provider=bounded_label("provider", invocation.provider)
+        ).inc()
         await self.postprocessor.finalize(shadow, output, stream_session=session)
         async for _ in session:
             pass

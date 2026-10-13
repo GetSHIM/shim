@@ -4223,7 +4223,8 @@ async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
     copy.policy = SimpleNamespace(team=None)
     copy.context.started_at = started_at
     copy.admission.cost_center = "untagged"
-    copy.admission.tags = ()
+    # The caller's tag: its budget never sees the copy.
+    copy.admission.tags = ("checkout",)
     copy.admission.repeat_chain_length = None
     copy.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
     copy.shadow = ShadowInfo(of="req_primary", rule_id="change_test")
@@ -4305,6 +4306,17 @@ async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
     )
     assert page.items[0].shadow_of == "req_primary"
     assert row["shadow_of"] == "req_primary"
+    budgets = [
+        await BudgetEvaluator().aggregate(
+            db,
+            SimpleNamespace(
+                organization_id=copy.tenant_id, scope_type=scope, scope_value=value
+            ),
+            started_at - timedelta(minutes=1),
+        )
+        for scope, value in (("org", None), ("tag", "checkout"))
+    ]
+    assert [budget.cost_usd for budget in budgets] == [Decimal("0.00002"), 0]
 
 
 @pytest.mark.asyncio
