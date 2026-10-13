@@ -83,11 +83,7 @@ def _apply_pins(
     revision = value.rules.revision
     value = replace(value, rules_evaluated=True)
     payload = value.payload
-    thinking = payload.get("thinking") if value.protocol == "messages" else None
-    thinking_on = isinstance(thinking, Mapping) and thinking.get("type") in {
-        "enabled",
-        "adaptive",
-    }
+    thinking_on = value.protocol == "messages" and _thinking_on(payload)
     winners: dict[str, str] = {}
     for rule in pins:
         if rule.state == "enforced":
@@ -100,7 +96,11 @@ def _apply_pins(
         # JSON equality: 0 equals 0.0, true is not 1.
         if not isinstance(current, bool) and current == pinned:
             continue
-        if thinking_on and parameter in {"temperature", "top_k"}:
+        # Anthropic refuses these with thinking on: top_p takes 0.95 to 1 only.
+        if thinking_on and (
+            parameter in {"temperature", "top_k"}
+            or (parameter == "top_p" and pinned < 0.95)
+        ):
             skipped[rule.id] = "RULE_PIN_INCOMPATIBLE"
         elif rule.state == "enforced" and winners[parameter] != rule.id:
             skipped[rule.id] = "RULE_PIN_SHADOWED"
@@ -131,27 +131,11 @@ def _provider_target(prepared: PreparedInference) -> bool:
     )
 
 
-def _client_breakpoint(payload: Mapping[str, Any]) -> bool:
-    if has_cache_control(payload):
-        return True
-    return any(
-        isinstance(block, Mapping)
-        and block.get("type") == "tool_result"
-        and any(
-            isinstance(nested, Mapping) and "cache_control" in nested
-            for nested in _list(block.get("content"))
-        )
-        for message in _list(payload.get("messages"))
-        if isinstance(message, Mapping)
-        for block in _list(message.get("content"))
-    )
-
-
 def _anthropic_auto_cache(
     prepared: PreparedInference, payload: dict[str, Any]
 ) -> dict[str, Any] | None:
     ttl = prepared.band.anthropic_auto_cache
-    if ttl == "off" or not _provider_target(prepared) or _client_breakpoint(payload):
+    if ttl == "off" or not _provider_target(prepared) or has_cache_control(payload):
         return None
     # A random placeholder changes the prompt on every request: a write, never a read.
     if (
@@ -347,6 +331,9 @@ def _tool_search(
     # The provider refuses a request whose every tool is deferred.
     if len(deferred) == len(eligible):
         deferred.discard(eligible[0])
+    # Nothing left to search: the search tool would only cost tokens.
+    if not deferred:
+        return None
     search = (
         _SEARCH_TOOLS[band.tool_search]
         if prepared.protocol == "messages"

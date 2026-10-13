@@ -676,20 +676,28 @@ def warn_after_answer(
 
 
 def has_cache_control(payload: Mapping[str, object]) -> bool:
-    """Top-level, system, tool and message-content breakpoints; not a tool schema's keys."""
+    """Top-level, system, tool, message-content and tool-result breakpoints; not a tool
+    schema's keys."""
 
     def blocks(value: object) -> list[object]:
         return value if isinstance(value, list) else []
 
+    content = [
+        block
+        for message in blocks(payload.get("messages"))
+        if isinstance(message, Mapping)
+        for block in blocks(message.get("content"))
+    ]
     candidates = [
         payload,
         *blocks(payload.get("system")),
         *blocks(payload.get("tools")),
+        *content,
         *(
-            block
-            for message in blocks(payload.get("messages"))
-            if isinstance(message, Mapping)
-            for block in blocks(message.get("content"))
+            nested
+            for block in content
+            if isinstance(block, Mapping) and block.get("type") == "tool_result"
+            for nested in blocks(block.get("content"))
         ),
     ]
     return any(

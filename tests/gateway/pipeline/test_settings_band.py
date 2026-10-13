@@ -317,6 +317,18 @@ async def test_thinking_requests_skip_temperature_and_top_k_pins(kind) -> None:
 
 
 @pytest.mark.asyncio
+async def test_thinking_requests_skip_a_top_p_below_what_thinking_allows() -> None:
+    rules = _rules({"id": "topp", "match": {"parameter": "top_p", "value": 0.9}})
+    prepared = _prepared("messages", rules, thinking={"type": "adaptive"})
+
+    banded, blocked, verdicts = await _run(prepared)
+
+    assert blocked is None and "top_p" not in banded.payload
+    assert verdicts["rule.topp"] == ("settings", "skip", "RULE_PIN_INCOMPATIBLE")
+    assert banded.settings_applied == ()
+
+
+@pytest.mark.asyncio
 async def test_disabled_thinking_takes_the_pin() -> None:
     prepared = _prepared("messages", _rules(), thinking={"type": "disabled"})
 
@@ -754,6 +766,21 @@ async def test_named_forced_and_allowed_tools_stay_loaded(
     banded = await _band(prepared)
 
     assert {tool["name"] for tool in tools} - set(_deferred(banded.payload)) == loaded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["messages", "responses"])
+async def test_no_search_tool_when_every_tool_stays_loaded(protocol) -> None:
+    names = ("lookup", "create", "delete")
+    prepared = _searching(
+        protocol,
+        band={"tool_search_keep_loaded": names},
+        tools=_tools(protocol, *names),
+    )
+
+    banded = await _band(prepared)
+
+    assert banded.payload is prepared.payload and banded.settings_applied == ()
 
 
 @pytest.mark.asyncio

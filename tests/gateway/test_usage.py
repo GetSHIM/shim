@@ -60,6 +60,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         rules_evaluated=False,
         rule_matches=[],
         settings_applied=None,
+        shadow=None,
         transforms_applied=None,
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
@@ -916,6 +917,33 @@ async def test_an_estimated_input_never_claims_the_large_context_price():
                                 "type": "text",
                                 "text": "x",
                                 "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            ["CACHE_NOT_APPLIED"],
+        ),
+        # A breakpoint inside a tool result counts too (night 3 L9).
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "x",
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
                             }
                         ],
                     }
