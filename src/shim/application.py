@@ -33,7 +33,13 @@ from shim.gateway.pipeline.anthropic_execution import AnthropicExecution
 from shim.gateway.pipeline.google_execution import GoogleExecution
 from shim.gateway.pipeline.openai_execution import OpenAIExecution
 from shim.gateway.pipeline.privacy import ScanPrivacyStage
-from shim.gateway.request_policy import AgentLoop, LocalRequestPolicyResolver, TaskCaps
+from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+from shim.gateway.request_policy import (
+    AgentLoop,
+    BandSettings,
+    LocalRequestPolicyResolver,
+    TaskCaps,
+)
 from shim.gateway.usage import LocalUsageLifecycle
 from shim.observability.logging import configure_error_reporting, configure_logging
 from shim.observability.tracing import configure_tracing, shutdown_tracing
@@ -192,7 +198,25 @@ def create_community_app(
                     embeddings_monitor_types=frozenset(
                         configured.PII_EMBEDDINGS_MONITOR
                     ),
+                    band=BandSettings(
+                        anthropic_auto_cache=configured.SHIM_ANTHROPIC_AUTO_CACHE,
+                        openai_prompt_cache_key=configured.SHIM_OPENAI_PROMPT_CACHE_KEY,
+                        tool_search=configured.SHIM_TOOL_SEARCH,
+                        tool_search_min_tools=configured.SHIM_TOOL_SEARCH_MIN_TOOLS,
+                        tool_search_keep_loaded=tuple(
+                            configured.SHIM_TOOL_SEARCH_KEEP_LOADED
+                        ),
+                        anthropic_keep_thinking_turns=configured.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
+                        openai_reasoning_context=configured.SHIM_OPENAI_REASONING_CONTEXT,
+                        json_compaction=configured.SHIM_JSON_COMPACTION == "on",
+                    ),
                 ),
+                concurrency_limiter=None
+                if configured.SHIM_CONCURRENCY_TOKEN_LIMIT is None
+                else InMemoryConcurrencyLimiter(
+                    lambda _target: configured.SHIM_CONCURRENCY_TOKEN_LIMIT
+                ),
+                concurrency_wait_ms=configured.SHIM_CONCURRENCY_MAX_WAIT_MS,
                 rate_limiter=rate_limiter,
                 loop_detector=loop_detector,
                 loop_repeat_limit=configured.LOOP_REPEAT_LIMIT,

@@ -212,6 +212,18 @@ class QuotaReservationCommand:
     repeat_digest: str | None = None
     audit_policy_mode: Literal["off", "best_effort", "strict"] = "off"
     policy_verdicts: tuple[dict[str, Any], ...] = ()
+    # An extra attempt a tenant rule asked for uses tokens but no request unit.
+    request_delta: Literal[0, 1] = 1
+    attempt_group_id: str | None = None
+    attempt_number: int | None = None
+    attempt_reason: str | None = None
+    attempt_rule_id: str | None = None
+    # A copy of a finished request sent to a candidate target.
+    shadow_of: str | None = None
+    shadow_rule_id: str | None = None
+    queue_wait_ms: int | None = None
+    # Where a route rule sent, or would have sent, the conversation's start.
+    route_decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -379,6 +391,34 @@ class DurableAccountingRepository:
                     "repeat_digest": command.repeat_digest,
                     "audit_policy_mode": command.audit_policy_mode,
                     "policy_verdicts": list(command.policy_verdicts),
+                    **(
+                        {}
+                        if command.attempt_group_id is None
+                        else {
+                            "attempt_group_id": command.attempt_group_id,
+                            "attempt_number": command.attempt_number,
+                            "attempt_reason": command.attempt_reason,
+                            "attempt_rule_id": command.attempt_rule_id,
+                        }
+                    ),
+                    **(
+                        {}
+                        if command.queue_wait_ms is None
+                        else {"queue_wait_ms": command.queue_wait_ms}
+                    ),
+                    **(
+                        {}
+                        if command.shadow_of is None
+                        else {
+                            "shadow_of": command.shadow_of,
+                            "shadow_rule_id": command.shadow_rule_id,
+                        }
+                    ),
+                    **(
+                        {}
+                        if command.route_decision is None
+                        else {"route_decision": command.route_decision}
+                    ),
                 },
             },
         )
@@ -393,7 +433,7 @@ class DurableAccountingRepository:
                 "provider_model": None,
                 "event_type": "quota_reservation",
                 "idempotency_key": (f"request:{command.request_id}:quota:reservation"),
-                "request_count": 1,
+                "request_count": command.request_delta,
                 "prompt_tokens": command.estimated_input_tokens,
                 "completion_tokens": command.maximum_output_tokens,
                 "total_tokens": (
@@ -942,7 +982,8 @@ class DurableAccountingRepository:
             month_start, _ = self._month_bounds(
                 command.started_at.astimezone(timezone.utc).date()
             )
-            if await session.scalar(
+            # A shadow copy is the tenant's: it always lands on the organization row.
+            if command.shadow_of is not None or await session.scalar(
                 select(QuotaPeriodUsage.id).where(
                     QuotaPeriodUsage.organization_id == command.tenant_id,
                     QuotaPeriodUsage.api_key_id.is_(None),
@@ -963,6 +1004,9 @@ class DurableAccountingRepository:
                     scope="organization",
                 )
             )
+        if command.shadow_of is not None:
+            # Never the caller's key or team budget.
+            return allocations
         allocations.extend(
             await self._reserve_scoped_quota_periods(
                 session, command, command.policy, scope="api_key"
@@ -1026,7 +1070,7 @@ class DurableAccountingRepository:
             periods,
             key=lambda item: (item[0], item[1]),
         ):
-            if request_limit is not None and 1 > request_limit:
+            if request_limit is not None and command.request_delta > request_limit:
                 raise QuotaLimitExceeded(f"{period_type} request quota exceeded")
             if token_limit is not None and tokens > token_limit:
                 raise QuotaLimitExceeded(f"{period_type} token quota exceeded")
@@ -1036,7 +1080,7 @@ class DurableAccountingRepository:
                 period_type=period_type,
                 period_start=start,
                 period_end=end,
-                request_delta=1,
+                request_delta=command.request_delta,
                 token_delta=tokens,
                 request_limit=request_limit,
                 token_limit=token_limit,
@@ -1054,7 +1098,7 @@ class DurableAccountingRepository:
                     "period_type": period_type,
                     "period_start": start.isoformat(),
                     "period_end": end.isoformat(),
-                    "reserved_requests": 1,
+                    "reserved_requests": command.request_delta,
                     "reserved_tokens": tokens,
                 }
             )
@@ -1939,7 +1983,7 @@ class DurableAccountingRepository:
             None,
             None,
             "quota_reservation",
-            1,
+            command.request_delta,
             command.estimated_input_tokens,
             command.maximum_output_tokens,
         )

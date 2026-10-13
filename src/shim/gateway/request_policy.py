@@ -6,9 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import Field, SecretBytes
+from pydantic import Field, SecretBytes, StringConstraints
 
 from shim.gateway.contracts import FrozenContractModel
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
@@ -43,6 +43,37 @@ class AgentLoop(FrozenContractModel):
     repeats: int = Field(default=5, ge=3, le=100)
 
 
+class BandSettings(FrozenContractModel):
+    """The tenant's settings band switches, each off by default."""
+
+    anthropic_auto_cache: Literal["off", "5m", "1h"] = "off"
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] = "off"
+    # Enterprise: registry aliases the band's provider steps may touch.
+    provider_cache_deployments: tuple[str, ...] = Field(default=(), max_length=100)
+    tool_search: Literal["off", "regex", "bm25"] = "off"
+    tool_search_min_tools: int = Field(default=10, ge=2, le=10_000)
+    tool_search_keep_loaded: tuple[
+        Annotated[str, StringConstraints(min_length=1, max_length=128)], ...
+    ] = Field(default=(), max_length=64)
+    # Enterprise: the keys tool search applies to; empty is every key.
+    tool_search_api_key_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    anthropic_keep_thinking_turns: int = Field(default=0, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] = "off"
+    # The transform band's switch; it never starts the settings band.
+    json_compaction: bool = False
+
+    @property
+    def on(self) -> bool:
+        """A switch is on; the lists and the minimum alone start nothing."""
+        return (
+            self.anthropic_auto_cache != "off"
+            or self.openai_prompt_cache_key != "off"
+            or self.tool_search != "off"
+            or self.anthropic_keep_thinking_turns > 0
+            or self.openai_reasoning_context != "off"
+        )
+
+
 class ResolvedRequestPolicy(FrozenContractModel):
     tenant_id: TenantId
     tenant_policy: TenantPolicy
@@ -67,6 +98,7 @@ class ResolvedRequestPolicy(FrozenContractModel):
     agent_loop: AgentLoop = AgentLoop()
     # The request's key may share an identical in-flight answer (S48).
     inflight_sharing: bool = False
+    band: BandSettings = BandSettings()
     rules: RuleSet | None = None
     # Enterprise: the loaded record sets the rules reference, by set id.
     record_sets: Mapping[str, Any] | None = None
@@ -86,6 +118,7 @@ class LocalRequestPolicyResolver:
 
     __slots__ = (
         "_agent_loop",
+        "_band",
         "_bulk_threshold",
         "_embeddings_monitor_types",
         "_entity_actions",
@@ -118,6 +151,7 @@ class LocalRequestPolicyResolver:
         inflight_sharing: bool = False,
         model_retiring_warning: Literal["record", "header"] = "record",
         embeddings_monitor_types: frozenset[str] = frozenset(),
+        band: BandSettings = BandSettings(),
     ) -> None:
         self._rate_limit_rpm = rate_limit_rpm
         self._rate_limit_tpm = rate_limit_tpm
@@ -135,6 +169,7 @@ class LocalRequestPolicyResolver:
             model_retiring_warning
         )
         self._embeddings_monitor_types = embeddings_monitor_types
+        self._band = band
 
     async def resolve(
         self,
@@ -173,4 +208,5 @@ class LocalRequestPolicyResolver:
             inflight_sharing=self._inflight_sharing,
             model_retiring_warning=self._model_retiring_warning,
             embeddings_monitor_types=self._embeddings_monitor_types,
+            band=self._band,
         )

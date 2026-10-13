@@ -5928,6 +5928,14 @@
             "title": "Price Tier Warning",
             "type": "boolean"
           },
+          "provider_cache": {
+            "$ref": "#/components/schemas/ProviderCacheSettings",
+            "default": {
+              "anthropic_auto_cache": "off",
+              "deployments": [],
+              "openai_prompt_cache_key": "off"
+            }
+          },
           "request_archive": {
             "$ref": "#/components/schemas/RequestArchiveSettings",
             "default": {
@@ -5955,6 +5963,28 @@
             "$ref": "#/components/schemas/TaskCaps-Output",
             "default": {
               "window_seconds": 3600
+            }
+          },
+          "thinking_history": {
+            "$ref": "#/components/schemas/ThinkingHistorySettings",
+            "default": {
+              "anthropic_keep_turns": 0,
+              "openai_reasoning_context": "off"
+            }
+          },
+          "tool_search": {
+            "$ref": "#/components/schemas/ToolSearchSettings",
+            "default": {
+              "api_key_ids": [],
+              "keep_loaded": [],
+              "min_tools": 10,
+              "mode": "off"
+            }
+          },
+          "transforms": {
+            "$ref": "#/components/schemas/TransformSettings",
+            "default": {
+              "json_compaction": "off"
             }
           }
         },
@@ -6066,6 +6096,16 @@
             ],
             "title": "Price Tier Warning"
           },
+          "provider_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderCachePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "request_archive": {
             "anyOf": [
               {
@@ -6115,6 +6155,36 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thinking_history": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingHistoryPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolSearchPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transforms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransformPatch"
               },
               {
                 "type": "null"
@@ -11432,6 +11502,103 @@
         "title": "PromptVersionView",
         "type": "object"
       },
+      "ProviderCachePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_auto_cache": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "5m",
+                  "1h"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Auto Cache"
+          },
+          "deployments": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployments"
+          },
+          "openai_prompt_cache_key": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "key",
+                  "tenant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Prompt Cache Key"
+          }
+        },
+        "title": "ProviderCachePatch",
+        "type": "object"
+      },
+      "ProviderCacheSettings": {
+        "additionalProperties": false,
+        "description": "The providers' own prompt-cache discount: two settings band steps (S54).",
+        "properties": {
+          "anthropic_auto_cache": {
+            "default": "off",
+            "enum": [
+              "off",
+              "5m",
+              "1h"
+            ],
+            "title": "Anthropic Auto Cache",
+            "type": "string"
+          },
+          "deployments": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Deployments",
+            "type": "array"
+          },
+          "openai_prompt_cache_key": {
+            "default": "off",
+            "enum": [
+              "off",
+              "key",
+              "tenant"
+            ],
+            "title": "Openai Prompt Cache Key",
+            "type": "string"
+          }
+        },
+        "title": "ProviderCacheSettings",
+        "type": "object"
+      },
       "ProviderKeySettings": {
         "properties": {
           "allow_customer_provider_keys": {
@@ -12596,6 +12763,52 @@
             "description": "The request approval this request created, was refused under or consumed; null when no approval gate decided it.",
             "title": "Approval Id"
           },
+          "attempt_group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an extra attempt a tenant rule asked for: the request id of the client request's first attempt; null on a first attempt.",
+            "title": "Attempt Group Id"
+          },
+          "attempt_number": {
+            "anyOf": [
+              {
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Number"
+          },
+          "attempt_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Reason"
+          },
+          "attempt_rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Rule Id"
+          },
           "blocked_entities": {
             "anyOf": [
               {
@@ -12896,6 +13109,19 @@
             "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
             "title": "Restore Withheld"
           },
+          "route_decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where a route rule sent, or would have sent, the request: rule_id, state, from, to, reason, conversation_id and outcome (routed, would_route, not_allowed_for_key, target_unavailable), with the earlier decision under previous when a rule moved it again after privacy; null when no rule decided.",
+            "title": "Route Decision"
+          },
           "rule_matches": {
             "anyOf": [
               {
@@ -12922,6 +13148,34 @@
               }
             ],
             "title": "Rule Matches Truncated"
+          },
+          "settings_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settings band steps that set a provider parameter, by id and version; [] when the band ran and set nothing, null when it did not run.",
+            "title": "Settings Applied"
+          },
+          "shadow_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a copy of a finished request sent to a candidate model: the primary request's id; null otherwise.",
+            "title": "Shadow Of"
           },
           "shim_latency_ms": {
             "anyOf": [
@@ -12979,6 +13233,22 @@
               }
             ],
             "title": "Team"
+          },
+          "transforms_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transform band steps that changed the request, by id and version, with characters before and after and the strings changed; [] when the band ran and changed nothing, null when it did not run.",
+            "title": "Transforms Applied"
           },
           "ttft_ms": {
             "anyOf": [
@@ -15432,6 +15702,65 @@
         "title": "ThinkingConfig",
         "type": "object"
       },
+      "ThinkingHistoryPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_keep_turns": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Keep Turns"
+          },
+          "openai_reasoning_context": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "current_turn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Reasoning Context"
+          }
+        },
+        "title": "ThinkingHistoryPatch",
+        "type": "object"
+      },
+      "ThinkingHistorySettings": {
+        "additionalProperties": false,
+        "description": "Earlier thinking stops being billed again (S55).",
+        "properties": {
+          "anthropic_keep_turns": {
+            "default": 0,
+            "maximum": 8.0,
+            "minimum": 0.0,
+            "title": "Anthropic Keep Turns",
+            "type": "integer"
+          },
+          "openai_reasoning_context": {
+            "default": "off",
+            "enum": [
+              "off",
+              "current_turn"
+            ],
+            "title": "Openai Reasoning Context",
+            "type": "string"
+          }
+        },
+        "title": "ThinkingHistorySettings",
+        "type": "object"
+      },
       "ThinkingLevel": {
         "description": "The number of thoughts tokens that the model should generate.",
         "enum": [
@@ -15856,6 +16185,121 @@
         "title": "ToolResponse",
         "type": "object"
       },
+      "ToolSearchPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Ids"
+          },
+          "keep_loaded": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Loaded"
+          },
+          "min_tools": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Tools"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "regex",
+                  "bm25"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          }
+        },
+        "title": "ToolSearchPatch",
+        "type": "object"
+      },
+      "ToolSearchSettings": {
+        "additionalProperties": false,
+        "description": "Tools load on demand through the provider's tool search (S55).",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "keep_loaded": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Keep Loaded",
+            "type": "array"
+          },
+          "min_tools": {
+            "default": 10,
+            "maximum": 10000.0,
+            "minimum": 2.0,
+            "title": "Min Tools",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "regex",
+              "bm25"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "ToolSearchSettings",
+        "type": "object"
+      },
       "ToolType": {
         "description": "The type of tool in the function call.",
         "enum": [
@@ -15956,6 +16400,45 @@
           }
         },
         "title": "Transcription",
+        "type": "object"
+      },
+      "TransformPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "json_compaction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Compaction"
+          }
+        },
+        "title": "TransformPatch",
+        "type": "object"
+      },
+      "TransformSettings": {
+        "additionalProperties": false,
+        "description": "Transform band steps: lossless content changes, each off by default (S56).",
+        "properties": {
+          "json_compaction": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Json Compaction",
+            "type": "string"
+          }
+        },
+        "title": "TransformSettings",
         "type": "object"
       },
       "TranslationConfig": {
@@ -23820,6 +24303,26 @@
             }
           },
           {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -23843,6 +24346,30 @@
               ],
               "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
               "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
             }
           },
           {
@@ -24182,6 +24709,26 @@
             }
           },
           {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -24205,6 +24752,30 @@
               ],
               "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
               "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
             }
           },
           {

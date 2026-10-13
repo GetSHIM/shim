@@ -50,7 +50,8 @@ the list existed is treated as `external` for each request, recorded with the ve
 For OpenAI-compatible deployments, use the API base including `/v1`; for
 Anthropic use the server root. shim uses its existing native transports, masks
 configured sensitive content before forwarding, and makes one provider attempt.
-There is no retry or failover. A five-second model-list health probe records
+There is no retry or failover unless a tenant rule asks for one; each extra attempt
+is its own request with its own cost. A five-second model-list health probe records
 only HTTP success/failure and never reads an unbounded response body; it uses the
 credential the gateway would use, so an Entra credential sends a fresh token. For an
 `azure_openai` deployment a 200 or a 404 from `/openai/v1/models` is healthy (the
@@ -114,6 +115,21 @@ names. Other custom models are explicitly unpriced: ledger arithmetic uses a zer
 placeholder with `pricing_resolution=unknown`, and usage reports carry
 completeness counters. A monetary provider limit rejects unpriced inference
 instead of treating it as free. Token and request quotas still apply.
+
+## Routing rules
+
+A tenant [route rule](POLICY_DECISIONS.md#route-rules) can serve a conversation from
+another registered alias of the same provider than the one the client names, chosen
+from the conversation's first turn: its length, tools, media, structured output or
+keywords. The resolver applies it after the client's alias passed its own checks
+(key allowlist, enabled, provider, health, origin) and checks the target the same way;
+a target the key may not use or that cannot serve leaves the request on the client's
+alias. The client's model name stays the requested model in records; the answer's
+`model` is the target's upstream model. What is never routed: token counting,
+embeddings, and Responses requests the provider stores (`store` not `false`, or a
+`previous_response_id` or `conversation`), since that conversation's state lives where
+it started. New route rules start in `monitor`, which only records where a request
+would have gone. Recipe: [Send simple requests to a cheaper model](COOKBOOK.md#send-simple-requests-to-a-cheaper-model).
 
 ## The inventory
 

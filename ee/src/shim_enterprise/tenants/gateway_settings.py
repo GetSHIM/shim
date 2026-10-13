@@ -5,10 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 import logging
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from shim.gateway.analyzers import ANALYZER_NAMES, ANALYZERS
 from shim.gateway.request_policy import AgentLoop, TaskCaps
@@ -90,6 +97,87 @@ class RequestArchivePatch(BaseModel):
     retention_days: int | None = Field(default=None, ge=1, le=90)
 
 
+_Alias = Annotated[
+    str,
+    StringConstraints(
+        min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+    ),
+]
+
+
+class ProviderCacheSettings(BaseModel):
+    """The providers' own prompt-cache discount: two settings band steps (S54)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    anthropic_auto_cache: Literal["off", "5m", "1h"] = "off"
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] = "off"
+    # Registry aliases the steps may touch; catalog routes always may.
+    deployments: list[_Alias] = Field(default=[], max_length=100)
+
+
+class ProviderCachePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    anthropic_auto_cache: Literal["off", "5m", "1h"] | None = None
+    openai_prompt_cache_key: Literal["off", "key", "tenant"] | None = None
+    deployments: list[_Alias] | None = Field(default=None, max_length=100)
+
+
+_ToolName = Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class ToolSearchSettings(BaseModel):
+    """Tools load on demand through the provider's tool search (S55)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: Literal["off", "regex", "bm25"] = "off"
+    min_tools: int = Field(default=10, ge=2, le=10_000)
+    keep_loaded: list[_ToolName] = Field(default=[], max_length=64)
+    # Empty is every key.
+    api_key_ids: list[UUID] = Field(default=[], max_length=100)
+
+
+class ToolSearchPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["off", "regex", "bm25"] | None = None
+    min_tools: int | None = Field(default=None, ge=2, le=10_000)
+    keep_loaded: list[_ToolName] | None = Field(default=None, max_length=64)
+    api_key_ids: list[UUID] | None = Field(default=None, max_length=100)
+
+
+class ThinkingHistorySettings(BaseModel):
+    """Earlier thinking stops being billed again (S55)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    anthropic_keep_turns: int = Field(default=0, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] = "off"
+
+
+class ThinkingHistoryPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    anthropic_keep_turns: int | None = Field(default=None, ge=0, le=8)
+    openai_reasoning_context: Literal["off", "current_turn"] | None = None
+
+
+class TransformSettings(BaseModel):
+    """Transform band steps: lossless content changes, each off by default (S56)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    json_compaction: Literal["off", "on"] = "off"
+
+
+class TransformPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    json_compaction: Literal["off", "on"] | None = None
+
+
 class GatewaySettings(BaseModel):
     """The effective settings; a later PRD adds a field here, never a column."""
 
@@ -108,6 +196,10 @@ class GatewaySettings(BaseModel):
     # Per finding rule, how far shim may go; a rule left out observes.
     finding_modes: dict[str, FindingMode] = {}
     request_archive: RequestArchiveSettings = RequestArchiveSettings()
+    provider_cache: ProviderCacheSettings = ProviderCacheSettings()
+    tool_search: ToolSearchSettings = ToolSearchSettings()
+    thinking_history: ThinkingHistorySettings = ThinkingHistorySettings()
+    transforms: TransformSettings = TransformSettings()
 
     @field_validator("response_analysis")
     @classmethod
@@ -133,6 +225,10 @@ class GatewaySettingsPatch(BaseModel):
     four_eyes: FourEyes | None = None
     finding_modes: dict[str, FindingMode] | None = None
     request_archive: RequestArchivePatch | None = None
+    provider_cache: ProviderCachePatch | None = None
+    tool_search: ToolSearchPatch | None = None
+    thinking_history: ThinkingHistoryPatch | None = None
+    transforms: TransformPatch | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -306,6 +402,13 @@ SETTING_DIRECTIONS: dict[str, Callable[[Any, Any], Direction]] = {
     # A key's identical in-flight requests share one answer after each passes its own
     # limits and privacy; an answer never crosses keys.
     "inflight_sharing_api_key_ids": neutral,
+    # A provider's own cache: what the request costs, not what it may carry.
+    "provider_cache": neutral,
+    # Cost settings: the same tools and history reach the model.
+    "tool_search": neutral,
+    "thinking_history": neutral,
+    # Lossless: the model reads the same values in fewer characters.
+    "transforms": neutral,
 }
 
 # Per field, "off, needs X" when an optional part is missing; None when available.

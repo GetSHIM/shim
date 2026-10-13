@@ -46,3 +46,8 @@ LICENSE_DAYS_REMAINING = Gauge(
     "license_days_remaining",
     "Days until the enterprise licence expires; negative inside the grace period.",
 )
+ROUTE_DECISIONS_TOTAL = Counter(
+    "shim_route_decisions_total",
+    "Route rule decisions at the conversation start, by rule state and outcome.",
+    ("state", "outcome"),
+)

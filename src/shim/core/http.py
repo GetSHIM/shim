@@ -67,6 +67,7 @@ def install_http_middleware(
                 "X-Shim-Warnings",
                 "X-Shim-Rule-Id",
                 "X-Shim-Approval-Id",
+                "X-Shim-Attempts",
                 "request-id",
                 "retry-after",
                 "x-goog-request-id",

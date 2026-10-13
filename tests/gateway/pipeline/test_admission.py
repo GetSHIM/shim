@@ -322,10 +322,12 @@ def test_native_candidate_count_rejects_out_of_bounds(count):
 TWELVE_KB = "x" * 12_000
 
 
-def _stage(rate_limiter, *, loop_status: str = "SAFE") -> AdmissionStage:
+def _stage(
+    rate_limiter, *, loop_status: str = "SAFE", usage=None, **values
+) -> AdmissionStage:
     return AdmissionStage(
         SimpleNamespace(headers={}),
-        SimpleNamespace(admit=AsyncMock()),
+        usage or SimpleNamespace(admit=AsyncMock()),
         rate_limiter=rate_limiter,
         loop_detector=SimpleNamespace(
             check_exact_repeat=AsyncMock(
@@ -335,6 +337,7 @@ def _stage(rate_limiter, *, loop_status: str = "SAFE") -> AdmissionStage:
         loop_repeat_limit=8,
         loop_window_seconds=300,
         cost_tag_max_length=64,
+        **values,
     )
 
 
@@ -1761,3 +1764,100 @@ def test_the_embeddings_routes_name_their_source_endpoint() -> None:
         single.source_endpoint,
         batch.source_endpoint,
     ] == ["embeddings", "embedContent", "batchEmbedContents"]
+
+
+@pytest.mark.asyncio
+async def test_without_a_limiter_admission_records_nothing_new() -> None:
+    result = await _stage(InMemoryRateLimiter()).run(_prepared("hello"))
+
+    assert result.admission is not None and result.admission.queue_wait_ms is None
+    assert result.concurrency_lease is None
+    assert "admission.concurrency" not in {v.rule_id for v in result.policy_verdicts}
+
+
+@pytest.mark.asyncio
+async def test_a_limiter_admits_with_a_lease_and_the_wait() -> None:
+    from shim.gateway.concurrency import InMemoryConcurrencyLimiter, work_tokens
+
+    seen: list = []
+    limiter = InMemoryConcurrencyLimiter(lambda target: seen.append(target) or 100_000)
+
+    result = await _stage(InMemoryRateLimiter(), concurrency_limiter=limiter).run(
+        _prepared("hello")
+    )
+
+    assert result.admission.queue_wait_ms == 0
+    assert result.concurrency_lease is not None
+    assert limiter._used[seen[0]] == (work_tokens(result.admission), 1)
+    verdict = next(
+        v for v in result.policy_verdicts if v.rule_id == "admission.concurrency"
+    )
+    assert (verdict.outcome, verdict.reason_code) == ("allow", "CONCURRENCY_ADMITTED")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("never_fits", "headers"),
+    [(False, {"Retry-After": "7"}), (True, {"x-should-retry": "false"})],
+)
+async def test_a_full_target_is_a_429_that_says_when_to_retry(
+    never_fits, headers
+) -> None:
+    from shim.gateway.concurrency import ConcurrencyRefused
+
+    async def refuse(*_args):
+        raise ConcurrencyRefused(7, never_fits=never_fits)
+
+    usage = SimpleNamespace(admit=AsyncMock())
+    prepared = _prepared("hello")
+    stage = _stage(
+        InMemoryRateLimiter(),
+        usage=usage,
+        concurrency_limiter=SimpleNamespace(acquire=refuse),
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await stage.run(prepared)
+
+    assert refused.value.status_code == 429
+    assert refused.value.detail["code"] == "CONCURRENCY_LIMITED"
+    assert refused.value.headers == headers
+    usage.admit.assert_not_awaited()
+    verdict = next(
+        v for v in prepared.policy_verdicts if v.rule_id == "admission.concurrency"
+    )
+    assert (verdict.outcome, verdict.reason_code) == ("deny", "CONCURRENCY_LIMITED")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reservation_gives_the_room_back() -> None:
+    from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+
+    limiter = InMemoryConcurrencyLimiter(lambda _target: 100_000)
+    usage = SimpleNamespace(admit=AsyncMock(side_effect=RuntimeError("quota")))
+
+    with pytest.raises(RuntimeError):
+        await _stage(
+            InMemoryRateLimiter(), usage=usage, concurrency_limiter=limiter
+        ).run(_prepared("hello"))
+
+    assert limiter._used == {}
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_takes_room() -> None:
+    async def never(*_args):
+        raise AssertionError("count_tokens reached the limiter")
+
+    result = await _stage(
+        InMemoryRateLimiter(), concurrency_limiter=SimpleNamespace(acquire=never)
+    ).run(
+        _prepared(
+            "hello",
+            model="claude-haiku-4-5",
+            provider="anthropic",
+            protocol="count_tokens",
+        )
+    )
+
+    assert result.concurrency_lease is None

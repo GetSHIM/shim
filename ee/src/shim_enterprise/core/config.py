@@ -24,6 +24,8 @@ class Settings(CommunitySettings):
     # The fallback for a tier without rate_limit_tpm keeps its enterprise value.
     DEFAULT_TPM_LIMIT: int = Field(default=10_000, ge=1)
     MODEL_DEPLOYMENT_REQUIRED: bool = False
+    # Shadow copies of finished requests running at once per process; more are dropped.
+    SHADOW_MAX_IN_FLIGHT: int = Field(default=4, ge=1, le=64)
     MODEL_DEPLOYMENT_ALLOWED_ORIGINS: list[str] = []
     # Host suffixes such as .openai.azure.com, approved for https on port 443 only.
     MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES: list[str] = []

@@ -7,6 +7,7 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -26,6 +27,7 @@ from shim.core.community_config import CommunitySettings
 from shim.gateway.contracts.context import AuditPolicy, TenantPolicy, TierPolicy
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.gateway.request_policy import RequestPolicyContext, ResolvedRequestPolicy
+from shim.rules import validate_rule_set
 from shim_enterprise.api.enterprise_deps import DatabaseGatewayAuthenticator
 from shim_enterprise.api.v1.management.deployments import (
     ModelDeploymentInput,
@@ -164,7 +166,7 @@ async def _deployments(db, key):
 
 
 @asynccontextmanager
-async def _gateway(db, key, handler):
+async def _gateway(db, key, handler, rules=None):
     await db.commit()
     factory = async_sessionmaker(db.bind, expire_on_commit=False)
     resolver = DeploymentResolver(factory)
@@ -194,6 +196,7 @@ async def _gateway(db, key, handler):
                         request_policy=RequestPolicyContext(
                             rate_limit_key_hash=key.key_hash, tier="free"
                         ),
+                        rules=rules,
                         pii_config={"email": True},
                     )
                 )
@@ -1850,3 +1853,317 @@ async def test_an_entra_backed_health_check_sends_the_entra_token(
     assert store.get_secret.await_args.kwargs == {
         "expected_purpose": "provider:openai:azure-entra-client"
     }
+
+
+def _route(rule_id="cheap_start", state="monitor", scope=None, **match) -> dict:
+    return {
+        "id": rule_id,
+        "name": "Short starts",
+        "kind": "route",
+        "action": "route",
+        "state": state,
+        "scope": scope or {},
+        "match": {"from": ["internal-a"], "to": "internal-b", **match},
+    }
+
+
+def _rules(*rules: dict):
+    return validate_rule_set({"revision": 3, "rules": list(rules)})
+
+
+_FOREIGN = [
+    {
+        "id": f"foreign_{on}",
+        "name": "Owned by another feature",
+        "kind": "route",
+        "action": "route",
+        "state": "enforced",
+        "match": {"on": on, "to": "internal-b"},
+    }
+    for on in ("shadow", "degrade", "unavailable", "capacity", "split", "size")
+]
+
+
+async def _routed(db, key, rules, *texts, headers=None):
+    """Each text as a chat's first message; the hosts reached and lifecycle rows."""
+
+    hosts = []
+
+    def upstream(request):
+        hosts.append(request.url.host)
+        return _success(request, False, "chat")
+
+    ids = []
+    async with _gateway(db, key, upstream, rules) as (client, _, _):
+        for text in texts:
+            response = await client.post(
+                "/v1/chat/completions",
+                headers=headers or {},
+                json={
+                    "model": "internal-a",
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+            assert response.status_code == 200, response.text
+            ids.append(response.headers["x-shim-request-id"])
+    rows = [
+        (
+            await db.execute(
+                select(RequestLifecycle).where(RequestLifecycle.request_id == id_)
+            )
+        ).scalar_one()
+        for id_ in ids
+    ]
+    return hosts, [row.lifecycle_metadata.get("route_decision") for row in rows], rows
+
+
+@pytest.mark.asyncio
+async def test_without_route_rules_the_resolver_decides_nothing(
+    db, test_api_key, origins
+):
+    await _deployments(db, test_api_key)
+    term = {
+        "id": "falcon",
+        "name": "Project names",
+        "kind": "term",
+        "action": "monitor",
+        "state": "monitor",
+        "match": {"terms": ["Project Falcon"]},
+    }
+
+    for rules in (None, _rules(term), _rules(*_FOREIGN)):
+        hosts, decisions, rows = await _routed(db, test_api_key, rules, "hi")
+        assert hosts == ["a.internal"]
+        assert decisions == [None]
+        assert "route_decision" not in rows[0].lifecycle_metadata
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_rule_records_where_it_would_route_and_changes_nothing(
+    db, test_api_key, origins
+):
+    await _deployments(db, test_api_key)
+
+    hosts, decisions, rows = await _routed(
+        db,
+        test_api_key,
+        _rules(_route(when={"max_start_chars": 400})),
+        "short",
+        "x" * 401,
+        headers={"x-shim-conversation-id": "conv-1"},
+    )
+
+    assert hosts == ["a.internal", "a.internal"]
+    conversation = decisions[0].pop("conversation_id")
+    assert decisions == [
+        {
+            "rule_id": "cheap_start",
+            "state": "monitor",
+            "from": "internal-a",
+            "to": "internal-b",
+            "reason": "max_start_chars",
+            "outcome": "would_route",
+        },
+        None,
+    ]
+    # The header is kept only as its keyed digest, the same one for every turn.
+    assert re.fullmatch(r"[0-9a-f]{16}", conversation)
+    _, [again], _ = await _routed(
+        db,
+        test_api_key,
+        _rules(_route(when={"max_start_chars": 400})),
+        "another short start",
+        headers={"x-shim-conversation-id": "conv-1"},
+    )
+    assert again["conversation_id"] == conversation
+    assert rows[0].lifecycle_metadata["rule_matches"] == [
+        {
+            "rule_id": "cheap_start",
+            "kind": "route",
+            "action": "route",
+            "state": "monitor",
+            "count": 1,
+        }
+    ]
+    verdicts = {
+        verdict["rule_id"]: verdict["reason_code"]
+        for verdict in rows[0].lifecycle_metadata["policy_verdicts"]
+    }
+    assert verdicts["rule.cheap_start"] == "RULE_WOULD_ROUTE"
+
+
+@pytest.mark.asyncio
+async def test_an_enforced_rule_sends_the_conversation_to_its_target(
+    db, test_api_key, origins
+):
+    await _deployments(db, test_api_key)
+    rules = _rules(_route(state="enforced", when={"keywords_any": ["fatura"]}))
+    models = []
+
+    def upstream(request):
+        models.append((request.url.host, json.loads(request.content)["model"]))
+        return _success(request, False, "chat")
+
+    history = [
+        {"role": "user", "content": "Faturalarımı özetle"},
+        {"role": "assistant", "content": "Tamam."},
+    ]
+    async with _gateway(db, test_api_key, upstream, rules) as (client, _, _):
+        for messages in (
+            history[:1],
+            [*history, {"role": "user", "content": "Uzun bir ikinci soru " * 50}],
+            [{"role": "user", "content": "Raporu özetle"}],
+        ):
+            response = await client.post(
+                "/v1/chat/completions",
+                json={"model": "internal-a", "messages": messages},
+            )
+            assert response.status_code == 200, response.text
+        routed = response.headers["x-shim-request-id"]
+
+    assert models == [
+        ("b.internal", "gpt-5.6-luna"),
+        ("b.internal", "gpt-5.6-luna"),
+        ("a.internal", "custom-model-v1"),
+    ]
+    row = (
+        await db.execute(
+            select(RequestLifecycle).where(RequestLifecycle.request_id == routed)
+        )
+    ).scalar_one()
+    assert row.requested_model == "internal-a"
+    assert "route_decision" not in row.lifecycle_metadata
+
+
+@pytest.mark.asyncio
+async def test_a_routed_request_keeps_the_client_model_and_records_the_decision(
+    db, test_api_key, origins
+):
+    rows = await _deployments(db, test_api_key)
+
+    hosts, [decision], [row] = await _routed(
+        db, test_api_key, _rules(_route(state="enforced")), "short"
+    )
+
+    assert hosts == ["b.internal"]
+    assert decision["outcome"] == "routed"
+    assert decision["reason"] == "always"
+    assert len(decision["conversation_id"]) == 16
+    assert row.requested_model == "internal-a"
+    assert row.lifecycle_metadata["deployment_id"] == str(rows[1].id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("problem", ["allowlist", "disabled", "unhealthy", "provider"])
+async def test_a_target_the_key_or_registry_refuses_leaves_the_request_alone(
+    db, test_api_key, origins, problem
+):
+    rows = await _deployments(db, test_api_key)
+    if problem == "allowlist":
+        test_api_key.allowed_models = ["internal-a"]
+    elif problem == "disabled":
+        rows[1].enabled = False
+    elif problem == "unhealthy":
+        rows[1].health = "unhealthy"
+        rows[1].health_checked_at = datetime.now(timezone.utc)
+    else:
+        rows[1].provider = "anthropic"
+    await db.flush()
+
+    hosts, [decision], _ = await _routed(
+        db, test_api_key, _rules(_route(state="enforced")), "short"
+    )
+
+    assert hosts == ["a.internal"]
+    assert decision["outcome"] == (
+        "not_allowed_for_key" if problem == "allowlist" else "target_unavailable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enforced_rules_decide_before_monitor_ones_and_the_first_match_wins(
+    db, test_api_key, origins
+):
+    await _deployments(db, test_api_key)
+    cases = [
+        ([_route("watch"), _route("send", state="enforced")], "send"),
+        (
+            [
+                _route("long_only", when={"min_start_chars": 400}),
+                _route("first"),
+                _route("second"),
+            ],
+            "first",
+        ),
+        ([_route("tagged", scope={"tags": ["app-x"]}), _route("any")], "tagged"),
+        ([_route("other_tag", scope={"tags": ["app-y"]}), _route("any")], "any"),
+        ([_route("other_model", **{"from": ["internal-b"], "to": "internal-a"})], None),
+    ]
+
+    for rules, decided in cases:
+        _, [decision], _ = await _routed(
+            db, test_api_key, _rules(*rules), "short", headers={"x-shim-tag": "app-x"}
+        )
+        assert (decision or {}).get("rule_id") == decided, rules
+
+
+@pytest.mark.asyncio
+async def test_foreign_on_values_route_exactly_like_the_set_without_them(
+    db, test_api_key, origins
+):
+    await _deployments(db, test_api_key)
+    own = [_route("watch"), _route("send", state="enforced", when={"tools": False})]
+
+    without = await _routed(db, test_api_key, _rules(*own), "short")
+    with_foreign = await _routed(db, test_api_key, _rules(*_FOREIGN, *own), "short")
+
+    assert without[0] == with_foreign[0] == ["b.internal"]
+    for decision in (without[1][0], with_foreign[1][0]):
+        decision.pop("conversation_id")
+    assert without[1] == with_foreign[1]
+
+
+@pytest.mark.asyncio
+async def test_a_destination_rule_still_refuses_a_routed_request(
+    db, test_api_key, origins
+):
+    rows = await _deployments(db, test_api_key)
+    rows[1].deployment_kind = "external"
+    await db.flush()
+    destination = {
+        "id": "mail_stays_inside",
+        "name": "Mail stays inside",
+        "kind": "destination",
+        "action": "block",
+        "state": "enforced",
+        "scope": {"deployment_kinds": ["external"]},
+        "match": {"entity_types": ["EMAIL_ADDRESS"]},
+    }
+    hosts = []
+    async with _gateway(
+        db,
+        test_api_key,
+        lambda request: (
+            hosts.append(request.url.host) or _success(request, False, "chat")
+        ),
+        _rules(destination, _route(state="enforced")),
+    ) as (client, _, _):
+        refused = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "internal-a",
+                "messages": [{"role": "user", "content": "alice@example.com"}],
+            },
+        )
+        served = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "internal-a",
+                "messages": [{"role": "user", "content": "no address here"}],
+            },
+        )
+
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["error"]["code"] == "RULE_BLOCKED"
+    assert served.status_code == 200, served.text
+    assert hosts == ["b.internal"]

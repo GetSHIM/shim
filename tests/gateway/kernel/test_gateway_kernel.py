@@ -1,6 +1,7 @@
 from array import array
 import asyncio
 from dataclasses import replace
+from decimal import Decimal
 import io
 import json
 from types import SimpleNamespace
@@ -13,10 +14,12 @@ from starlette.responses import Response
 from shim.application import create_community_app
 from shim.core.community_config import CommunitySettings
 import shim.gateway.kernel.gateway_kernel as kernel_module
-from shim.gateway.contracts.ids import CURRENT_REQUEST_ID
+from shim.gateway.contracts.ids import CURRENT_REQUEST_ID, ProviderId
 from shim.gateway.kernel.gateway_kernel import GatewayKernel
 from shim.gateway.pipeline.authenticate import GatewayRequestMetadata
 from shim.gateway.pipeline.provider_execution import ERROR_HINTS, ProviderCallError
+from shim.gateway.request_policy import BandSettings
+from shim.gateway.usage import LocalUsageLifecycle
 from shim.privacy.policies import (
     PrivacyAction,
     PrivacyOutcome,
@@ -47,8 +50,11 @@ def _kernel(usage) -> GatewayKernel:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("with_pin", "with_transform"), [(False, False), (True, False), (True, True)]
+)
 async def test_kernel_runs_the_authoritative_stage_order(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, with_pin: bool, with_transform: bool
 ) -> None:
     order: list[str] = []
     prepared = SimpleNamespace(
@@ -63,6 +69,8 @@ async def test_kernel_runs_the_authoritative_stage_order(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(json_compaction=with_transform),
+        concurrency_lease=None,
     )
     provider_output = object()
     response = Response("ok")
@@ -76,6 +84,8 @@ async def test_kernel_runs_the_authoritative_stage_order(
         ("AuthenticateStage", "resolve_principal"),
         ("AdmissionStage", "admission"),
         ("PrivacyStage", "privacy"),
+        ("SettingsBandStage", "settings_band"),
+        ("TransformBandStage", "transform_band"),
         ("ProviderSpendStage", "provider_spend"),
         ("ProviderExecutionStage", "provider_execution"),
         ("PostprocessStage", "postprocess"),
@@ -88,10 +98,15 @@ async def test_kernel_runs_the_authoritative_stage_order(
             return provider_output
         if stage.name == "postprocess":
             return response
+        if stage.name == "settings_band":
+            return prepared, None
         return prepared
 
     async def record_privacy(*_args):
         order.append("record_privacy")
+
+    if with_pin:
+        monkeypatch.setattr(kernel_module, "pins_in_scope", lambda _prepared: ["pin"])
 
     monkeypatch.setattr(kernel_module, "run_stage", run_stage)
     provider_execution = SimpleNamespace(pii_scrubber=object())
@@ -121,6 +136,8 @@ async def test_kernel_runs_the_authoritative_stage_order(
         "resolve_principal",
         "admission",
         "privacy",
+        *(["settings_band"] if with_pin else []),
+        *(["transform_band"] if with_transform else []),
         "record_privacy",
         "provider_spend",
         "provider_execution",
@@ -242,6 +259,8 @@ async def test_kernel_maps_provider_failures_to_usage_reason(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = ProviderCallError(
         status_code=status_code,
@@ -303,6 +322,8 @@ async def test_kernel_maps_post_reservation_admission_abort(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = RuntimeError("admission interrupted")
 
@@ -338,6 +359,8 @@ async def test_recovery_session_failure_does_not_mask_original_error(
         privacy=_NO_PII,
         payload={},
         rules=None,
+        band=BandSettings(),
+        concurrency_lease=None,
     )
     failure = RuntimeError("admission interrupted")
 
@@ -844,11 +867,12 @@ class _RulesResolver:
 def _rule_set(*rules: tuple[str, str, str]):
     from shim.rules import Rule, RuleSet
 
-    # A kind with no matcher yet, so only the stub below records its matches.
+    # A kind the community kernel never evaluates, so only the stub below records
+    # its matches.
     return RuleSet(
         revision=4,
         rules=tuple(
-            Rule(id=rule_id, name="n", kind="parameter_pin", action=action, state=state)
+            Rule(id=rule_id, name="n", kind="route", action=action, state=state)
             for rule_id, action, state in rules
         ),
     )
@@ -864,7 +888,7 @@ def _matching_privacy(monkeypatch) -> None:
         stubbed = [
             rule
             for rule in (prepared.rules.rules if prepared.rules else ())
-            if rule.kind == "parameter_pin"
+            if rule.kind == "route"
         ]
         for rule in stubbed:
             broken = rule.id.startswith("broken")
@@ -884,6 +908,7 @@ async def _call_with_rules(
     headers=None,
     settings=None,
     record_sets=None,
+    extra=None,
 ):
     _matching_privacy(monkeypatch)
     calls: list[httpx.Request] = []
@@ -931,7 +956,7 @@ async def _call_with_rules(
                         "x-provider-key": "provider-secret",
                         **(headers or {}),
                     },
-                    json=build(text),
+                    json={**build(text), **(extra or {})},
                 )
     return (
         response,
@@ -968,7 +993,7 @@ async def test_an_enforced_block_refuses_before_any_provider_call(
     assert [match["rule_id"] for match in line["rule_matches"]] == ["alpha", "zeta"]
     assert line["rule_matches"][0] == {
         "rule_id": "alpha",
-        "kind": "parameter_pin",
+        "kind": "route",
         "action": "block",
         "state": "enforced",
         "count": 2,
@@ -1036,6 +1061,301 @@ async def test_without_rules_no_rule_key_or_verdict_is_written(monkeypatch) -> N
     [line] = lines
     assert "rule_matches" not in line
     assert not any(v["stage"] == "rules" for v in line["policy_verdicts"])
+
+
+def _pin_rules(action="set", state="enforced"):
+    from shim.rules import validate_rule_set
+
+    return validate_rule_set(
+        {
+            "revision": 3,
+            "rules": [
+                {
+                    "id": "temp_zero",
+                    "name": "n",
+                    "kind": "parameter_pin",
+                    "action": action,
+                    "state": state,
+                    "match": {"parameter": "temperature", "value": 0},
+                }
+            ],
+        }
+    )
+
+
+@pytest.fixture
+def band_spans(monkeypatch):
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    import shim.observability.tracing as tracing_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(tracing_module.trace, "get_tracer", provider.get_tracer)
+    yield lambda name="gateway.settings_band": [
+        span.attributes for span in exporter.get_finished_spans() if span.name == name
+    ]
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "sent"),
+    [
+        ("chat", lambda body: body["temperature"]),
+        ("responses", lambda body: body["temperature"]),
+        ("messages", lambda body: body["temperature"]),
+        ("gemini", lambda body: body["generationConfig"]["temperature"]),
+        ("chat_stream", lambda body: body["temperature"]),
+    ],
+)
+async def test_an_enforced_pin_reaches_the_provider_and_the_record(
+    monkeypatch, band_spans, route, sent
+) -> None:
+    extra = {} if route in {"responses", "gemini"} else {"temperature": 0.7}
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, _pin_rules(), route, extra=extra
+    )
+
+    assert response.status_code == 200
+    [call] = calls
+    assert sent(json.loads(call.content)) == 0
+    [line] = lines
+    assert line["settings_applied"] == [{"id": "parameter_pin.temp_zero", "version": 3}]
+    assert line["rule_matches"][0]["rule_id"] == "temp_zero"
+    verdict = next(
+        v for v in line["policy_verdicts"] if v["rule_id"] == "rule.temp_zero"
+    )
+    assert (verdict["stage"], verdict["reason_code"]) == ("settings", "RULE_SET")
+    assert band_spans() == [{"settings_applied": 1, "status": "success"}]
+
+
+@pytest.mark.asyncio
+async def test_a_monitor_pin_records_and_sends_what_the_client_sent(
+    monkeypatch,
+) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        _pin_rules(state="monitor"),
+        "chat",
+        extra={"temperature": 0.7},
+    )
+
+    assert response.status_code == 200
+    assert json.loads(calls[0].content)["temperature"] == 0.7
+    [line] = lines
+    assert "settings_applied" not in line
+    assert line["rule_matches"][0]["state"] == "monitor"
+
+
+@pytest.mark.asyncio
+async def test_a_pin_block_records_privacy_and_refuses_before_the_provider(
+    monkeypatch,
+) -> None:
+    usage_calls: list[str] = []
+    original = LocalUsageLifecycle.record_privacy
+
+    async def record_privacy(self, prepared):
+        usage_calls.append("record_privacy")
+        return await original(self, prepared)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "record_privacy", record_privacy)
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, _pin_rules("block"), "chat", extra={"temperature": 0.7}
+    )
+
+    assert (response.status_code, response.headers["x-shim-rule-id"]) == (
+        400,
+        "temp_zero",
+    )
+    assert response.headers["x-shim-error-code"] == "RULE_BLOCKED" and calls == []
+    assert usage_calls == ["record_privacy"]
+    [line] = lines
+    assert "settings_applied" not in line
+    verdict = next(
+        v for v in line["policy_verdicts"] if v["rule_id"] == "rule.temp_zero"
+    )
+    assert (verdict["outcome"], verdict["reason_code"]) == ("deny", "RULE_BLOCKED")
+
+    passed, calls, _ = await _call_with_rules(
+        monkeypatch, _pin_rules("block"), "chat", extra={"temperature": 0}
+    )
+    assert passed.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_reaches_the_band(monkeypatch, band_spans) -> None:
+    response, calls, _ = await _call_with_rules(
+        monkeypatch, _pin_rules(), "count_tokens"
+    )
+
+    assert response.status_code == 200
+    assert "temperature" not in json.loads(calls[0].content)
+    assert band_spans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rules", [None, _rule_set(("careful", "warn", "enforced"))])
+async def test_without_a_pin_the_band_is_skipped(
+    monkeypatch, band_spans, rules
+) -> None:
+    response, calls, lines = await _call_with_rules(
+        monkeypatch, rules, "chat", extra={"temperature": 0.7}
+    )
+
+    assert response.status_code == 200
+    assert json.loads(calls[0].content)["temperature"] == 0.7
+    [line] = lines
+    assert "settings_applied" not in line
+    assert band_spans() == []
+
+
+_PRETTY = json.dumps(
+    {"rows": [{"id": n, "name": f"row {n}"} for n in range(4)]}, indent=2
+)
+_COMPACT = json.dumps(json.loads(_PRETTY), separators=(",", ":"))
+_TOOL_RESULTS = {
+    "chat": (
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": _PRETTY},
+            ]
+        },
+        lambda body: body["messages"][2]["content"],
+    ),
+    "responses": (
+        {
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "f",
+                    "arguments": "{}",
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": _PRETTY},
+            ]
+        },
+        lambda body: body["input"][1]["output"],
+    ),
+    "messages": (
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "f", "input": {}}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": _PRETTY}
+                    ],
+                },
+            ]
+        },
+        lambda body: body["messages"][2]["content"][0]["content"],
+    ),
+    "gemini": (
+        {
+            "contents": [
+                {"role": "user", "parts": [{"text": "hello"}]},
+                {
+                    "role": "model",
+                    "parts": [{"functionCall": {"name": "f", "args": {}}}],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "functionResponse": {
+                                "name": "f",
+                                "response": {"output": _PRETTY},
+                            }
+                        }
+                    ],
+                },
+            ]
+        },
+        lambda body: body["contents"][2]["parts"][0]["functionResponse"]["response"][
+            "output"
+        ],
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", list(_TOOL_RESULTS))
+@pytest.mark.parametrize("setting", ["on", "off"])
+async def test_json_compaction_reaches_the_provider_through_each_sdk(
+    monkeypatch, band_spans, route, setting
+) -> None:
+    body, sent = _TOOL_RESULTS[route]
+
+    response, calls, lines = await _call_with_rules(
+        monkeypatch,
+        None,
+        route,
+        settings={"SHIM_JSON_COMPACTION": setting},
+        extra=body,
+    )
+
+    assert response.status_code == 200
+    [call] = calls
+    [line] = lines
+    transform_spans = band_spans(name="gateway.transform_band")
+    if setting == "off":
+        assert sent(json.loads(call.content)) == _PRETTY
+        assert "transforms_applied" not in line and transform_spans == []
+        return
+    assert sent(json.loads(call.content)) == _COMPACT
+    assert line["transforms_applied"] == [
+        {
+            "id": "json_compaction",
+            "version": 1,
+            "before_chars": len(_PRETTY),
+            "after_chars": len(_COMPACT),
+            "items": 1,
+        }
+    ]
+    assert transform_spans == [
+        {"items": 1, "chars_saved": len(_PRETTY) - len(_COMPACT), "status": "success"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_token_counting_counts_the_uncompacted_request(monkeypatch) -> None:
+    body, sent = _TOOL_RESULTS["messages"]
+
+    response, [call], _ = await _call_with_rules(
+        monkeypatch,
+        None,
+        "count_tokens",
+        settings={"SHIM_JSON_COMPACTION": "on"},
+        extra=body,
+    )
+
+    assert response.status_code == 200
+    assert sent(json.loads(call.content)) == _PRETTY
 
 
 @pytest.mark.asyncio
@@ -1607,7 +1927,7 @@ async def test_a_failing_scan_is_recorded_and_the_request_goes_on(monkeypatch) -
 _TCKN = "10000000146"
 
 
-def _destination(action="mask", state="enforced", kinds=("external",)):
+def _destination(action="mask", state="enforced", kinds=("external",), scope=None):
     from shim.rules import validate_rule_set
 
     return validate_rule_set(
@@ -1620,7 +1940,9 @@ def _destination(action="mask", state="enforced", kinds=("external",)):
                     "kind": "destination",
                     "action": action,
                     "state": state,
-                    "scope": {"deployment_kinds": list(kinds)},
+                    "scope": {"deployment_kinds": list(kinds)}
+                    if scope is None
+                    else scope,
                     "match": {"entity_types": ["TR_NATIONAL_ID"]},
                 }
             ],
@@ -1629,15 +1951,25 @@ def _destination(action="mask", state="enforced", kinds=("external",)):
 
 
 async def _call_with_destination(
-    rules, route="chat", *, kind="unknown", actions=None, payload=None
+    rules,
+    route="chat",
+    *,
+    kind="unknown",
+    actions=None,
+    payload=None,
+    policy=None,
+    sender=None,
+    statuses=(),
 ):
     calls: list[httpx.Request] = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if len(calls) <= len(statuses):
+            return httpx.Response(statuses[len(calls) - 1], json={"error": {}})
         return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
 
-    async def classify(prepared):
+    async def classify(prepared, _headers):
         return replace(prepared, deployment_kind=kind)
 
     events = io.StringIO()
@@ -1656,6 +1988,9 @@ async def _call_with_destination(
             kernel = app.state.gateway_service.kernel
             kernel.policy_resolver = _RulesResolver(kernel.policy_resolver, rules)
             kernel.prepare_inference = classify
+            kernel.attempt_policy = policy
+            kernel.shadow_sender = sender
+            kernel.executions["openai"].credential_resolver = _StoredKeys()
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app), base_url="http://shim.test"
             ) as inbound:
@@ -1664,6 +1999,7 @@ async def _call_with_destination(
                     headers={**auth, "x-provider-key": "provider-secret"},
                     json=payload or build(f"TCKN {_TCKN} için başvuru"),
                 )
+            await kernel.postprocessor.drain(5)
     lines = [json.loads(line) for line in events.getvalue().splitlines()]
     return response, calls, lines
 
@@ -2797,3 +3133,1382 @@ async def test_decoys_that_fill_the_candidate_cap_never_let_a_record_through(
     assert line["rule_matches"][0]["truncated"] is True
     if status == 400:
         assert calls == [] and response.headers["x-shim-rule-id"] == "customers"
+
+
+# Extra attempts a tenant rule asks for (S57): a stub policy stands in for a strategy.
+
+
+class _StubPolicy:
+    def __init__(self, *, after_privacy=None, after_error=(), after_answer=()) -> None:
+        self.after_privacy = after_privacy
+        self.after_error = list(after_error)
+        self.after_answer = list(after_answer)
+        self.outcomes: list = []
+
+    async def choose_target_after_privacy(self, prepared):
+        return self.after_privacy
+
+    async def next_attempt(self, outcome):
+        self.outcomes.append(outcome)
+        queue = self.after_error if outcome.error is not None else self.after_answer
+        return queue.pop(0) if queue else None
+
+
+def _target(reason="fallback", **values):
+    from shim.gateway.kernel.attempts import Target
+
+    return Target(
+        provider_target=values.pop("provider_target", None),
+        deployment_kind=values.pop("deployment_kind", "unknown"),
+        reason=reason,
+        rule_id=values.pop("rule_id", "fallback_rule"),
+    )
+
+
+async def _attempt_call(
+    monkeypatch,
+    policy,
+    statuses,
+    *,
+    stream=False,
+    route="chat",
+    headers=None,
+    admit=None,
+    body=None,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-environment")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-environment")
+    calls: list[httpx.Request] = []
+    admitted: list = []
+    original_admit = LocalUsageLifecycle.admit
+
+    async def spy_admit(self, prepared, admission):
+        admitted.append(prepared)
+        if admit is not None:
+            await admit(prepared)
+        return await original_admit(self, prepared, admission)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "admit", spy_admit)
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(
+                status, json={"error": {"message": "down", "type": "server_error"}}
+            )
+        if request.url.path.endswith("/count_tokens"):
+            return httpx.Response(200, json={"input_tokens": 3})
+        reply = {
+            **_CHAT_REPLY,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": f"answer {len(calls)}"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                **reply,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"answer {len(calls)}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=reply)
+
+    events = io.StringIO()
+    path, auth, build = _ROUTES[route]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            app.state.gateway_service.kernel.attempt_policy = policy
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    path,
+                    headers={**auth, **(headers or {})},
+                    json=body
+                    or {**build("hello"), **({"stream": True} if stream else {})},
+                )
+                await response.aread()
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, calls, admitted, lines
+
+
+@pytest.mark.asyncio
+async def test_a_target_after_a_provider_error_is_a_second_attempt(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, admitted, lines = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 2"
+    first, second = admitted
+    assert first.attempt is None and second.attempt is not None
+    assert second.request_id != first.request_id
+    assert (second.attempt.group_id, second.attempt.number) == (
+        str(first.request_id),
+        2,
+    )
+    # The failed first attempt gave its request unit back: the second one takes it.
+    assert second.attempt.counted is False
+    assert response.headers["x-shim-request-id"] == str(second.request_id)
+    assert response.headers["x-shim-attempts"] == "2"
+    failed, answered = policy.outcomes
+    assert failed.error.status_code == 503 and failed.provider_started
+    assert failed.prepared.request_id == first.request_id and failed.attempts == 1
+    assert answered.error is None and answered.attempts == 2
+    assert [line["outcome"] for line in lines] == ["request_aborted", "completed"]
+    assert [line["request_id"] for line in lines] == [
+        str(first.request_id),
+        str(second.request_id),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_without_a_target_the_error_is_todays(monkeypatch) -> None:
+    policy = _StubPolicy()
+
+    response, calls, admitted, _ = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 503 and len(calls) == 1 and len(admitted) == 1
+    assert "x-shim-attempts" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_at_most_three_attempts_then_the_last_error(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target(), _target(), _target()])
+
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [503, 503, 503]
+    )
+
+    assert response.status_code == 503 and len(calls) == 3 and len(admitted) == 3
+    assert response.headers["x-shim-request-id"] == str(admitted[2].request_id)
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[-1]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_LIMIT_REACHED"
+
+
+@pytest.mark.asyncio
+async def test_a_byok_request_needs_a_stored_credential_for_another_attempt(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, lines = await _attempt_call(
+        monkeypatch, policy, [503], headers={"x-provider-key": "sk-caller"}
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NEEDS_STORED_CREDENTIAL"
+
+
+@pytest.mark.asyncio
+async def test_a_byok_request_may_take_a_catalog_target_chosen_after_privacy(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_privacy=_target())
+
+    response, calls, _, [line] = await _attempt_call(
+        monkeypatch, policy, [], headers={"x-provider-key": "sk-caller"}
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert calls[0].headers["authorization"] == "Bearer sk-caller"
+    assert "gateway.attempt" not in {v["rule_id"] for v in line["policy_verdicts"]}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_band_on_the_next_attempt_keeps_the_provider_error(
+    monkeypatch,
+) -> None:
+    original = GatewayKernel._bands
+
+    async def bands(self, prepared):
+        if prepared.attempt is not None:
+            raise RuntimeError("band failed")
+        return await original(self, prepared)
+
+    monkeypatch.setattr(GatewayKernel, "_bands", bands)
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, admitted, [line] = await _attempt_call(monkeypatch, policy, [503])
+
+    assert response.status_code == 503 and len(calls) == 1 and len(admitted) == 1
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NOT_ADMITTED"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_answer_is_settled_and_never_returned(monkeypatch) -> None:
+    policy = _StubPolicy(after_answer=[_target("format_retry")])
+
+    response, calls, admitted, lines = await _attempt_call(monkeypatch, policy, [])
+
+    assert len(calls) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 2"
+    assert [line["outcome"] for line in lines] == ["completed", "completed"]
+    # The answered first attempt settled the request unit.
+    assert admitted[1].attempt.counted is True
+    assert policy.outcomes[0].answer["choices"][0]["message"]["content"] == "answer 1"
+    assert response.headers["x-shim-attempts"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_the_kept_answer_serves_when_the_next_attempt_is_not_admitted(
+    monkeypatch,
+) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(prepared):
+        if prepared.attempt is not None:
+            raise UsageLimitExceeded("no budget")
+
+    policy = _StubPolicy(after_answer=[_target("format_retry")])
+
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [], admit=refuse
+    )
+
+    assert response.status_code == 200 and len(calls) == 1 and len(admitted) == 2
+    assert response.json()["choices"][0]["message"]["content"] == "answer 1"
+    assert response.headers["x-shim-request-id"] == str(admitted[0].request_id)
+    assert "x-shim-attempts" not in response.headers
+    rejected = next(
+        line for line in lines if line["request_id"] == str(admitted[1].request_id)
+    )
+    verdicts = {v["rule_id"]: v["reason_code"] for v in rejected["policy_verdicts"]}
+    assert rejected["outcome"] == "rejected"
+    assert verdicts["gateway.attempt"] == "ATTEMPT_NOT_ADMITTED"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_refused_before_its_first_byte_may_take_a_second_attempt(
+    monkeypatch,
+) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, _ = await _attempt_call(monkeypatch, policy, [503], stream=True)
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert "answer 2" in response.text
+    assert response.headers["x-shim-attempts"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_a_bound_stream_is_never_offered_to_the_policy(monkeypatch) -> None:
+    policy = _StubPolicy(after_answer=[_target()])
+
+    response, calls, _, _ = await _attempt_call(monkeypatch, policy, [], stream=True)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert policy.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_token_counting_never_asks_the_policy(monkeypatch) -> None:
+    class Never(_StubPolicy):
+        async def choose_target_after_privacy(self, prepared):
+            raise AssertionError("count_tokens reached the policy")
+
+    response, calls, _, _ = await _attempt_call(
+        monkeypatch, Never(after_error=[_target()]), [], route="count_tokens"
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_only_provider_errors_are_offered(monkeypatch) -> None:
+    import shim.gateway.pipeline.postprocess as postprocess
+
+    async def broken(self, *args, **kwargs):
+        raise RuntimeError("postprocess failed")
+
+    monkeypatch.setattr(postprocess.ResponsePostprocessor, "finalize", broken)
+    policy = _StubPolicy(after_error=[_target()])
+
+    with pytest.raises(RuntimeError):
+        await _attempt_call(monkeypatch, policy, [])
+
+    assert [outcome.error for outcome in policy.outcomes] == [None]
+
+
+def _registry(deployment_id: str):
+    from shim.gateway.kernel.result import ProviderTarget
+
+    return ProviderTarget(
+        deployment_id=deployment_id,
+        base_url="https://models.internal.test/v1",
+        upstream_model=f"model-{deployment_id}",
+        credential_reference="secret",
+        timeout_seconds=30,
+        declared_version="1",
+    )
+
+
+def _attempt_base():
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from shim.gateway.contracts.context import (
+        AuditPolicy,
+        GatewayContext,
+        PrivacyPolicy,
+        TierPolicy,
+    )
+    from shim.gateway.contracts.ids import ApiKeyId, ProviderId, RequestId, TenantId
+    from shim.gateway.kernel.result import AdmissionState, PreparedInference
+    from shim.gateway.request_policy import RequestPolicyContext
+    from shim.privacy.policies import PrivacyAction, PrivacyOutcome
+
+    return PreparedInference(
+        context=GatewayContext(
+            request_id=RequestId("req_first"),
+            tenant_id=TenantId(UUID("11111111-1111-1111-1111-111111111111")),
+            actor_type="api_key",
+            api_key_id=ApiKeyId(UUID("22222222-2222-2222-2222-222222222222")),
+            user_id=None,
+            endpoint="/v1/responses",
+            started_at=datetime(2026, 10, 13, tzinfo=UTC),
+            tier_policy=TierPolicy(rate_limit_rpm=60),
+            privacy_policy=PrivacyPolicy(pii_mode="scrub"),
+            audit_policy=AuditPolicy(mode="best_effort"),
+        ),
+        payload={"model": "model-a", "input": "<EMAIL_ADDRESS_1> hi"},
+        provider=ProviderId("openai"),
+        protocol="responses",
+        model="alias-a",
+        stream=False,
+        policy=RequestPolicyContext(rate_limit_key_hash="h", tier="t"),
+        pii_config=None,
+        admission=AdmissionState(
+            estimated_input_tokens=1,
+            maximum_output_tokens=16,
+            cost_center="untagged",
+            tags=(),
+        ),
+        privacy=PrivacyOutcome(
+            action=PrivacyAction.SCRUBBED,
+            pii_detected=True,
+            verification_map={"<EMAIL_ADDRESS_1>": "a@example.com"},
+        ),
+        target=_registry("a"),
+        deployment_kind="internal",
+    )
+
+
+_ATTEMPT_BASE = _attempt_base()
+
+
+def _matched(kind: str, action: str, state: str) -> dict:
+    from shim.privacy.policies import PrivacyAction, PrivacyOutcome
+    from shim.rules import RuleMatch
+
+    return {
+        "privacy": PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False),
+        "rule_matches": [
+            RuleMatch(rule_id="r", kind=kind, action=action, state=state, count=1)
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("changes", "target", "attempts", "byok", "code"),
+    [
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            3,
+            False,
+            "ATTEMPT_LIMIT_REACHED",
+        ),
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        (
+            {},
+            _target(deployment_kind="unknown"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        (
+            _matched("term", "mask", "enforced"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            "ATTEMPT_WOULD_LEAVE_INTERNAL",
+        ),
+        # A monitor route match or a pin says nothing about the content (night 3 L13).
+        (
+            _matched("route", "route", "monitor"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            None,
+        ),
+        (
+            _matched("parameter_pin", "set", "enforced"),
+            _target(provider_target=_registry("b"), deployment_kind="external"),
+            1,
+            False,
+            None,
+        ),
+        (
+            {
+                "payload": {
+                    "model": "model-a",
+                    "input": "hi",
+                    "previous_response_id": "resp_1",
+                }
+            },
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            1,
+            False,
+            "ATTEMPT_CONTINUATION_PINNED",
+        ),
+        (
+            {"payload": {"model": "model-a", "input": "hi", "conversation": "conv_1"}},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            1,
+            False,
+            "ATTEMPT_CONTINUATION_PINNED",
+        ),
+        (
+            {"deployment_kind": "external"},
+            _target(deployment_kind="unknown"),
+            1,
+            True,
+            "ATTEMPT_NEEDS_STORED_CREDENTIAL",
+        ),
+        (
+            {},
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            2,
+            True,
+            None,
+        ),
+        (
+            {
+                "payload": {
+                    "model": "model-a",
+                    "input": "hi",
+                    "previous_response_id": "resp_1",
+                }
+            },
+            _target(provider_target=_registry("a"), deployment_kind="internal"),
+            1,
+            False,
+            None,
+        ),
+    ],
+)
+def test_each_core_guard_skips_with_its_code(
+    changes, target, attempts, byok, code
+) -> None:
+    from shim.gateway.kernel.attempts import guarded
+
+    prepared = replace(_ATTEMPT_BASE, policy_verdicts=[], **changes)
+
+    allowed = guarded(prepared, target, attempts=attempts, byok=byok)
+
+    assert (allowed is None) is (code is not None)
+    assert [
+        (v.rule_id, v.stage, v.outcome, v.reason_code) for v in prepared.policy_verdicts
+    ] == ([("gateway.attempt", "attempt", "skip", code)] if code else [])
+
+
+def test_a_target_after_privacy_rewrites_the_model_and_keeps_the_masking() -> None:
+    from shim.gateway.kernel.attempts import retargeted
+
+    earlier = {"rule_id": "cheap", "state": "monitor", "previous": {"rule_id": "x"}}
+    prepared = replace(_ATTEMPT_BASE, route_decision=earlier)
+
+    moved = retargeted(
+        prepared, _target(provider_target=_registry("b"), deployment_kind="internal")
+    )
+
+    assert moved.payload == {"model": "model-b", "input": "<EMAIL_ADDRESS_1> hi"}
+    assert moved.pre_band_payload is moved.payload
+    assert prepared.payload["model"] == "model-a"
+    assert moved.privacy is prepared.privacy and moved.request_id == prepared.request_id
+    assert moved.route_decision == {
+        "rule_id": "fallback_rule",
+        "state": "enforced",
+        "from": "a",
+        "to": "b",
+        "reason": "fallback",
+        "conversation_id": None,
+        "outcome": "routed",
+        "previous": {"rule_id": "cheap", "state": "monitor"},
+    }
+    assert retargeted(_ATTEMPT_BASE, _target()).route_decision["to"] == "catalog"
+
+
+def test_an_extra_attempt_and_a_copy_start_their_own_matches_and_warnings() -> None:
+    from shim.gateway.kernel.attempts import next_attempt
+    from shim.gateway.kernel.shadow import ShadowCandidate, ShadowSelection, shadow_of
+    from shim.rules import RuleMatch
+
+    def match(kind: str) -> RuleMatch:
+        return RuleMatch(
+            rule_id=kind, kind=kind, action="mask", state="enforced", count=1
+        )
+
+    first = replace(
+        _ATTEMPT_BASE,
+        pre_band_payload=_ATTEMPT_BASE.payload,
+        rule_matches=[match("term"), match("parameter_pin")],
+        warnings=["CONTEXT_MAY_EXCEED", "LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED"],
+    )
+
+    second = next_attempt(first, _target(), number=2, answered=False)
+    copy = shadow_of(
+        first,
+        ShadowSelection("shadow_rule", "candidate", False),
+        ShadowCandidate(_registry("c"), "internal"),
+    )
+
+    for moved in (second, copy):
+        assert [m.rule_id for m in moved.rule_matches] == ["term"]
+        assert moved.warnings == ["CONTEXT_MAY_EXCEED"]
+        moved.warn("RULE_WARN")
+    assert len(first.rule_matches) == 2 and "RULE_WARN" not in first.warnings
+
+
+@pytest.mark.asyncio
+async def test_a_pin_counts_once_on_each_attempt_row() -> None:
+    from shim.rules import validate_rule_set
+
+    rules = validate_rule_set(
+        {
+            "revision": 1,
+            "rules": [
+                {
+                    "id": "cool",
+                    "name": "n",
+                    "kind": "parameter_pin",
+                    "action": "set",
+                    "state": "enforced",
+                    "match": {"parameter": "temperature", "value": 0},
+                }
+            ],
+        }
+    )
+    policy = _StubPolicy(
+        after_answer=[
+            _target(
+                "format_retry",
+                provider_target=_registry("b"),
+                deployment_kind="external",
+            )
+        ]
+    )
+
+    response, calls, lines = await _call_with_destination(rules, policy=policy)
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert all(json.loads(call.content)["temperature"] == 0 for call in calls)
+    assert [[m["count"] for m in line["rule_matches"]] for line in lines] == [[1], [1]]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_attempt_runs_the_bands_again_for_its_own_target() -> None:
+    from shim.gateway.kernel.attempts import next_attempt
+    from shim.gateway.request_policy import BandSettings
+
+    kernel = GatewayKernel(
+        {"anthropic": SimpleNamespace(pii_scrubber=object())},
+        chain_store=object(),
+        policy_resolver=object(),
+        rate_limiter=object(),
+        loop_detector=object(),
+        loop_repeat_limit=3,
+        loop_window_seconds=60,
+        cost_tag_max_length=64,
+        usage=SimpleNamespace(),
+    )
+    payload = {
+        "model": "claude-haiku-4-5",
+        "max_tokens": 16,
+        "thinking": {"type": "adaptive"},
+        "tools": [{"name": n, "input_schema": {}} for n in ("a", "b", "c")],
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    first = replace(
+        _ATTEMPT_BASE,
+        payload=payload,
+        pre_band_payload=payload,
+        provider=ProviderId("anthropic"),
+        protocol="messages",
+        model="claude-haiku-4-5",
+        target=None,
+        deployment_kind="unknown",
+        band=BandSettings(
+            anthropic_auto_cache="5m",
+            anthropic_keep_thinking_turns=1,
+            tool_search="regex",
+            tool_search_min_tools=2,
+        ),
+        placeholder_key=None,
+        privacy=None,
+    )
+    banded, _ = await kernel._bands(first)
+    assert "context_management" in banded.payload and banded.provider_betas
+
+    second, _ = await kernel._bands(
+        next_attempt(
+            banded,
+            _target(provider_target=_registry("b"), deployment_kind="internal"),
+            number=2,
+            answered=False,
+        )
+    )
+
+    assert second.payload == {**payload, "model": "model-b"}
+    assert second.provider_betas == () and second.settings_applied == ()
+    plain, _ = await kernel._bands(replace(first, band=BandSettings()))
+    assert plain.payload is payload
+
+
+# Shadow copies (S58): a stub sender stands in for E70's.
+
+
+class _StubSender:
+    def __init__(
+        self,
+        *,
+        kind="internal",
+        reference="stored-secret",
+        keep_answer=True,
+        hold: asyncio.Event | None = None,
+        fail: str | None = None,
+    ) -> None:
+        self.kind, self.reference, self.keep_answer = kind, reference, keep_answer
+        self.hold, self.fail = hold, fail
+        self.selected: list = []
+        self.compared: list = []
+        self.candidate_started = asyncio.Event()
+
+    def select(self, prepared):
+        from shim.gateway.kernel.shadow import ShadowSelection
+
+        self.selected.append(prepared)
+        return ShadowSelection("shadow_rule", "candidate-llm", self.keep_answer)
+
+    async def candidate(self, prepared, selection):
+        from shim.gateway.kernel.result import ProviderTarget
+        from shim.gateway.kernel.shadow import ShadowCandidate
+
+        self.candidate_started.set()
+        if self.hold is not None:
+            await self.hold.wait()
+        if self.fail == "candidate":
+            raise RuntimeError("candidate failed")
+        return ShadowCandidate(
+            provider_target=ProviderTarget(
+                deployment_id="d-candidate",
+                base_url="https://candidate.test/v1",
+                upstream_model="candidate-model",
+                credential_reference=self.reference,
+                timeout_seconds=30,
+                declared_version="1",
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("2"),
+            ),
+            deployment_kind=self.kind,
+        )
+
+    async def compare(self, prepared, selection, primary, shadow):
+        if self.fail == "compare":
+            raise RuntimeError("compare failed")
+        self.compared.append((prepared, primary, shadow))
+
+
+class _StoredKeys:
+    async def resolve(self, tenant_id, credential, *, reference=None):
+        if reference is None:
+            return credential.consume() if credential else "sk-environment"
+        return "sk-stored-" + reference
+
+
+async def _shadow_call(
+    monkeypatch,
+    sender,
+    *,
+    stream=False,
+    statuses=(),
+    body=None,
+    max_in_flight=4,
+    requests=1,
+    hold_copy=False,
+    settings=None,
+    headers=None,
+):
+    calls: list[httpx.Request] = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if hold_copy and request.url.host == "candidate.test":
+            await asyncio.Event().wait()
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "down"}})
+        sent = json.loads(request.content)
+        if request.url.path.endswith("/responses"):
+            return httpx.Response(200, json=_RULE_REPLIES["/v1/responses"])
+        reply = {
+            **_CHAT_REPLY,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"from {sent['model']}",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        if sent.get("stream"):
+            chunk = {
+                **reply,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": f"from {sent['model']}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=reply)
+
+    events = io.StringIO()
+    responses = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                SHIM_API_KEY=_GATEWAY_KEY,
+                PII_ENTITY_ACTIONS=json.dumps({"EMAIL_ADDRESS": "mask"}),
+                **(settings or {}),
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.shadow_sender = sender
+            kernel.shadow_max_in_flight = max_in_flight
+            kernel.executions["openai"].credential_resolver = _StoredKeys()
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                for _ in range(requests):
+                    response = await inbound.post(
+                        "/v1/chat/completions"
+                        if body is None or "messages" in body
+                        else "/v1/responses",
+                        headers={
+                            "authorization": f"Bearer {_GATEWAY_KEY}",
+                            "x-provider-key": "sk-caller",
+                            **(headers or {}),
+                        },
+                        json=body
+                        or {
+                            "model": "gpt-5-nano",
+                            "stream": stream,
+                            "messages": [
+                                {"role": "user", "content": "Mail jane.doe@example.com"}
+                            ],
+                        },
+                    )
+                    await response.aread()
+                    responses.append(response)
+            if sender is not None and (sender.hold is not None or hold_copy):
+                await asyncio.wait_for(sender.candidate_started.wait(), 5)
+                while hold_copy and len(calls) < 2:
+                    await asyncio.sleep(0.01)
+                await kernel.postprocessor.drain(0.05)
+            else:
+                await kernel.postprocessor.drain(5)
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return responses, calls, lines
+
+
+def _stable(response: httpx.Response) -> tuple:
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key not in {"x-shim-request-id", "x-shim-latency-ms", "content-length"}
+    }
+    return response.status_code, headers, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_shadow_copy_never_changes_the_callers_answer(
+    monkeypatch, stream
+) -> None:
+    sender = _StubSender()
+
+    [plain], _, _ = await _shadow_call(monkeypatch, None, stream=stream)
+    [shadowed], calls, lines = await _shadow_call(monkeypatch, sender, stream=stream)
+
+    assert _stable(plain) == _stable(shadowed)
+    primary_call, copy_call = calls
+    copy = json.loads(copy_call.content)
+    assert copy["model"] == "candidate-model" and copy.get("stream", False) is stream
+    assert "jane.doe@example.com" not in copy_call.content.decode()
+    assert "<EMAIL_ADDRESS" in copy_call.content.decode()
+    assert copy_call.url.host == "candidate.test"
+    assert copy_call.headers["authorization"] == "Bearer sk-stored-stored-secret"
+    assert primary_call.headers["authorization"] == "Bearer sk-caller"
+    [(prepared, primary, shadow)] = sender.compared
+    assert prepared.request_id == primary.request_id
+    assert primary.answer_text == "from gpt-5-nano"
+    assert shadow.answer_text == "from candidate-model"
+    assert (primary.status, shadow.status) == ("completed", "completed")
+    primary_line, shadow_line = lines
+    assert shadow_line["request_id"] == shadow.request_id
+    assert primary_line["request_id"] == primary.request_id
+
+
+@pytest.mark.asyncio
+async def test_the_callers_answer_is_complete_before_the_candidate_is_asked(
+    monkeypatch,
+) -> None:
+    hold = asyncio.Event()
+    sender = _StubSender(hold=hold)
+
+    [response], calls, _ = await _shadow_call(monkeypatch, sender)
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert sender.candidate_started.is_set() and sender.compared == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender", "copies"),
+    [
+        (_StubSender(kind="external"), 0),
+        (_StubSender(reference=""), 0),
+        (_StubSender(kind="internal"), 1),
+    ],
+)
+async def test_the_candidate_guards(monkeypatch, sender, copies) -> None:
+    _, calls, _ = await _shadow_call(monkeypatch, sender)
+
+    assert len(calls) == 1 + copies and len(sender.compared) == copies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"model": "gpt-5-nano", "input": "hi", "store": True},
+        {"model": "gpt-5-nano", "input": "hi"},
+        {
+            "model": "gpt-5-nano",
+            "input": "hi",
+            "store": False,
+            "previous_response_id": "resp_1",
+        },
+    ],
+)
+async def test_stored_responses_and_continuations_are_never_selected(
+    monkeypatch, body
+) -> None:
+    sender = _StubSender()
+
+    _, calls, _ = await _shadow_call(monkeypatch, sender, body=body)
+
+    # An unknown continuation fails closed before any call; the others make one.
+    assert sender.selected == []
+    assert all(call.url.host != "candidate.test" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_an_unstored_response_is_copied(monkeypatch) -> None:
+    sender = _StubSender(keep_answer=False)
+
+    _, calls, _ = await _shadow_call(
+        monkeypatch, sender, body={"model": "gpt-5-nano", "input": "hi", "store": False}
+    )
+
+    assert len(calls) == 2 and len(sender.compared) == 1
+    assert sender.compared[0][1].answer_text is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_primary_is_never_copied(monkeypatch) -> None:
+    sender = _StubSender()
+
+    [response], calls, _ = await _shadow_call(monkeypatch, sender, statuses=[503])
+
+    assert response.status_code == 503 and len(calls) == 1 and sender.compared == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_process_drops_the_copy_and_counts_it(monkeypatch) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    dropped = SHADOW_COPIES_TOTAL.labels(outcome="dropped_saturated")
+    before = dropped._value.get()
+    hold = asyncio.Event()
+    sender = _StubSender(hold=hold)
+
+    responses, calls, _ = await _shadow_call(
+        monkeypatch, sender, max_in_flight=1, requests=2
+    )
+
+    assert [r.status_code for r in responses] == [200, 200] and len(calls) == 2
+    assert dropped._value.get() == before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", ["candidate", "compare"])
+async def test_a_raising_sender_is_logged_and_counted(
+    monkeypatch, caplog, fail
+) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    failed = SHADOW_COPIES_TOTAL.labels(outcome="failed")
+    before = failed._value.get()
+
+    [response], _, _ = await _shadow_call(monkeypatch, _StubSender(fail=fail))
+
+    assert response.status_code == 200
+    assert failed._value.get() == before + 1
+    assert "Shadow copy failed type=RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_copys_cost_never_reaches_the_callers_task_counter(monkeypatch) -> None:
+    from shim.gateway.admission import InMemoryTaskCounter
+
+    added: list[int] = []
+    original = InMemoryTaskCounter.add_cost
+
+    async def add_cost(self, tenant_id, task_key, *, micro_usd, window_seconds):
+        added.append(micro_usd)
+        await original(
+            self,
+            tenant_id,
+            task_key,
+            micro_usd=micro_usd,
+            window_seconds=window_seconds,
+        )
+
+    monkeypatch.setattr(InMemoryTaskCounter, "add_cost", add_cost)
+    sender = _StubSender()
+
+    _, calls, _ = await _shadow_call(
+        monkeypatch,
+        sender,
+        settings={"SHIM_TASK_MAX_COST_USD": "10"},
+        headers={"x-shim-task-id": "task-1"},
+    )
+
+    assert len(calls) == 2 and len(sender.compared) == 1
+    assert len(added) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_copy_leaves_the_in_flight_gauge_where_it_was(
+    monkeypatch, stream
+) -> None:
+    from shim.observability.metrics import REQUESTS_IN_FLIGHT
+
+    gauge = REQUESTS_IN_FLIGHT.labels(provider="openai")
+    before = gauge._value.get()
+
+    _, calls, _ = await _shadow_call(monkeypatch, _StubSender(), stream=stream)
+
+    assert len(calls) == 2 and gauge._value.get() == before
+
+
+@pytest.mark.asyncio
+async def test_a_copy_that_never_ends_is_timed_out_and_frees_its_slot(
+    monkeypatch,
+) -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    monkeypatch.setattr(kernel_module, "SHADOW_RUN_SECONDS", 0.01)
+    failed = SHADOW_COPIES_TOTAL.labels(outcome="failed")
+    before = failed._value.get()
+    # The candidate never answers; only the per-run timeout ends the copy.
+    sender = _StubSender(hold=asyncio.Event())
+
+    [response], _, _ = await _shadow_call(monkeypatch, sender)
+
+    assert response.status_code == 200
+    assert failed._value.get() == before + 1
+
+
+@pytest.mark.asyncio
+async def test_drain_cancels_a_held_copy_and_fails_it(monkeypatch) -> None:
+    sender = _StubSender()
+
+    [response], calls, lines = await _shadow_call(monkeypatch, sender, hold_copy=True)
+
+    assert response.status_code == 200 and len(calls) == 2 and sender.compared == []
+    primary, copy = lines
+    assert (primary["outcome"], copy["outcome"]) == ("completed", "request_aborted")
+
+
+# Concurrency leases (S59): released exactly once on every terminal.
+
+
+class _CountingLimiter:
+    def __init__(self, refuse_after: int | None = None) -> None:
+        from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+
+        self.inner = InMemoryConcurrencyLimiter(lambda _target: 1_000_000)
+        self.acquired = 0
+        self.refuse_after = refuse_after
+
+    async def acquire(self, target, tokens, priority, wait_ms):
+        from shim.gateway.concurrency import ConcurrencyRefused
+
+        self.acquired += 1
+        if self.refuse_after is not None and self.acquired > self.refuse_after:
+            raise ConcurrencyRefused(5)
+        return await self.inner.acquire(target, tokens, priority, wait_ms)
+
+
+async def _leased_call(
+    monkeypatch, *, stream=False, statuses=(), policy=None, limiter=None
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-environment")
+    limiter = limiter or _CountingLimiter()
+    calls: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        status = statuses[len(calls) - 1] if len(calls) <= len(statuses) else 200
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": "down"}})
+        if json.loads(request.content).get("stream"):
+            chunk = {
+                **_CHAT_REPLY,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}
+                ],
+            }
+            return httpx.Response(
+                200,
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx.Response(200, json=_CHAT_REPLY)
+
+    events = io.StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(_env_file=None, SHIM_API_KEY=_GATEWAY_KEY),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with app.router.lifespan_context(app):
+            kernel = app.state.gateway_service.kernel
+            kernel.concurrency_limiter = limiter
+            kernel.attempt_policy = policy
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app), base_url="http://shim.test"
+            ) as inbound:
+                response = await inbound.post(
+                    "/v1/chat/completions",
+                    headers={"authorization": f"Bearer {_GATEWAY_KEY}"},
+                    json={
+                        "model": "gpt-5-nano",
+                        "stream": stream,
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+                await response.aread()
+    lines = [json.loads(line) for line in events.getvalue().splitlines()]
+    return response, calls, limiter, lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream", "statuses", "code"),
+    [(False, (), 200), (True, (), 200), (False, (503,), 503), (True, (503,), 503)],
+)
+async def test_the_lease_is_released_on_every_terminal(
+    monkeypatch, stream, statuses, code
+) -> None:
+    response, _, limiter, lines = await _leased_call(
+        monkeypatch, stream=stream, statuses=statuses
+    )
+
+    assert response.status_code == code
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+    assert lines[-1]["queue_wait_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spend_reservation_releases_the_lease(monkeypatch) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(self, prepared, *, ephemeral_byok):
+        raise UsageLimitExceeded("no budget")
+
+    monkeypatch.setattr(LocalUsageLifecycle, "reserve_provider_spend", refuse)
+
+    with pytest.raises(UsageLimitExceeded):
+        await _leased_call(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spend_reservation_leaves_no_room_held(monkeypatch) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    async def refuse(self, prepared, *, ephemeral_byok):
+        raise UsageLimitExceeded("no budget")
+
+    limiter = _CountingLimiter()
+    monkeypatch.setattr(LocalUsageLifecycle, "reserve_provider_spend", refuse)
+
+    with pytest.raises(UsageLimitExceeded):
+        await _leased_call(monkeypatch, limiter=limiter)
+
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+
+
+@pytest.mark.asyncio
+async def test_an_extra_attempt_moves_its_room_to_the_new_target(monkeypatch) -> None:
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, limiter, _ = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy
+    )
+
+    assert response.status_code == 200 and len(calls) == 2
+    # A catalog target again: the room the request holds there moves with it.
+    assert limiter.acquired == 1 and limiter.inner._used == {}
+
+
+@pytest.mark.asyncio
+async def test_a_request_alone_on_its_target_may_try_that_target_again(
+    monkeypatch,
+) -> None:
+    from shim.gateway.concurrency import InMemoryConcurrencyLimiter
+
+    # Every request is larger than the limit, so it runs only on an idle target.
+    limiter = _CountingLimiter()
+    limiter.inner = InMemoryConcurrencyLimiter(lambda _target: 1)
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, _, lines = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy, limiter=limiter
+    )
+
+    assert response.status_code == 200 and len(calls) == 2
+    assert limiter.inner._used == {}
+    assert "gateway.attempt" not in {v["rule_id"] for v in lines[0]["policy_verdicts"]}
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_attempt_start_gives_back_its_row_and_room(
+    monkeypatch,
+) -> None:
+    rejected: list = []
+    original_admit = LocalUsageLifecycle.admit
+    original_reject = LocalUsageLifecycle.reject
+
+    async def admit(self, prepared, admission):
+        if prepared.attempt is not None:
+            raise asyncio.CancelledError
+        return await original_admit(self, prepared, admission)
+
+    async def reject(self, prepared):
+        rejected.append(prepared.request_id)
+        return await original_reject(self, prepared)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "admit", admit)
+    monkeypatch.setattr(LocalUsageLifecycle, "reject", reject)
+    policy = _StubPolicy(
+        after_error=[
+            _target(provider_target=_registry("b"), deployment_kind="external")
+        ]
+    )
+    limiter = _CountingLimiter()
+
+    with pytest.raises(asyncio.CancelledError):
+        await _leased_call(monkeypatch, statuses=(503,), policy=policy, limiter=limiter)
+
+    assert limiter.acquired == 2 and limiter.inner._used == {}
+    assert len(rejected) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_full_target_ends_the_move(monkeypatch) -> None:
+    policy = _StubPolicy(
+        after_error=[
+            _target(provider_target=_registry("b"), deployment_kind="external")
+        ]
+    )
+    limiter = _CountingLimiter(refuse_after=1)
+
+    response, calls, _, lines = await _leased_call(
+        monkeypatch, statuses=(503,), policy=policy, limiter=limiter
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    assert limiter.inner._used == {}
+    verdicts = {v["rule_id"]: v["reason_code"] for v in lines[0]["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_TARGET_SATURATED"
+
+
+# Privacy ran for one target: a move or a copy never takes the content to a target
+# whose destination rules privacy did not apply (night 3 H1).
+
+
+def _moved_to(kind="external"):
+    return _target(provider_target=_registry("b"), deployment_kind=kind)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scope", "kinds", "actions", "moved"),
+    [
+        # The reviewer's repro: a mask scoped to the target the rule picks.
+        ({"models": ["model-b"]}, ("external", "external"), None, False),
+        # Internal to external with the base action off: nothing was detected.
+        (
+            {"deployment_kinds": ["external"]},
+            ("internal", "external"),
+            {"TR_NATIONAL_ID": "off"},
+            False,
+        ),
+        # A rule in scope on both targets already masked the content: the move runs.
+        ({"deployment_kinds": ["external"]}, ("external", "external"), None, True),
+    ],
+)
+async def test_a_target_chosen_after_privacy_never_skips_its_destination_rules(
+    scope, kinds, actions, moved
+) -> None:
+    before, after = kinds
+    policy = _StubPolicy(after_privacy=_moved_to(after))
+
+    response, calls, [line] = await _call_with_destination(
+        _destination(scope=scope), kind=before, actions=actions, policy=policy
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    [call] = calls
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    if moved:
+        assert call.url.host == "models.internal.test"
+        assert _TCKN not in call.content.decode()
+        assert "gateway.attempt" not in verdicts
+    else:
+        assert call.url.host == "api.openai.com"
+        assert verdicts["gateway.attempt"] == "ATTEMPT_DESTINATION_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_a_next_attempt_never_skips_its_destination_rules() -> None:
+    policy = _StubPolicy(after_error=[_moved_to()])
+
+    response, calls, [line] = await _call_with_destination(
+        _destination(scope={"models": ["model-b"]}),
+        kind="external",
+        policy=policy,
+        statuses=(503,),
+    )
+
+    assert response.status_code == 503 and len(calls) == 1
+    assert calls[0].url.host == "api.openai.com"
+    verdicts = {v["rule_id"]: v["reason_code"] for v in line["policy_verdicts"]}
+    assert verdicts["gateway.attempt"] == "ATTEMPT_DESTINATION_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_copy_never_skips_its_destination_rules() -> None:
+    from shim.observability.metrics import SHADOW_COPIES_TOTAL
+
+    skipped = SHADOW_COPIES_TOTAL.labels(outcome="skipped_guard")
+    before = skipped._value.get()
+    sender = _StubSender(kind="external")
+
+    response, calls, _ = await _call_with_destination(
+        _destination(scope={"models": ["candidate-model"]}),
+        kind="external",
+        sender=sender,
+    )
+
+    assert response.status_code == 200 and len(calls) == 1
+    assert calls[0].url.host == "api.openai.com" and sender.compared == []
+    assert skipped._value.get() == before + 1
+
+
+@pytest.mark.asyncio
+async def test_a_stream_renews_on_heartbeat_and_releases_when_disconnected() -> None:
+    from shim.gateway.pipeline.postprocess import ResponsePostprocessor
+
+    lease = SimpleNamespace(renew=AsyncMock(), release=AsyncMock(), waited_ms=0)
+    usage = SimpleNamespace(
+        heartbeat_stream=AsyncMock(),
+        finalize=AsyncMock(),
+        mark_stream_started=AsyncMock(),
+    )
+    prepared = replace(
+        _ATTEMPT_BASE,
+        stream=True,
+        protocol="chat",
+        target=None,
+        concurrency_lease=lease,
+    )
+    session = ResponsePostprocessor(
+        usage, heartbeat_interval_seconds=0, output_hash_salt=None
+    ).create_stream_session(prepared)
+
+    async def events():
+        yield b'data: {"choices": []}\n\n'
+        await asyncio.Event().wait()
+
+    session.bind(events(), close=AsyncMock())
+    await anext(aiter(session))
+    await session.record_stream_heartbeat()
+    assert lease.renew.await_count >= 1
+    await session.aclose()
+    for _ in range(100):
+        if lease.release.await_count:
+            break
+        await asyncio.sleep(0.01)
+
+    lease.release.assert_awaited_once()

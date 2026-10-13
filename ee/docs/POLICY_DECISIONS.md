@@ -34,6 +34,9 @@ also remains outside tenant decision evidence.
 | `privacy.bulk` | The request carried at least the tenant's `bulk_threshold` of distinct detected values (`allow`, `BULK_DISCLOSURE`); recorded beside `privacy.input`, also when that one denies. Its policy carries the threshold. Absent below the threshold or with the alarm off. |
 | `spend.provider_monthly` | Provider spending reservation passed, was unlimited, was rejected, or could not be evaluated. Invocation-scoped BYOK remains outside the stored-provider cap; a tenant that turned customer provider keys off rejects it with `PROVIDER_KEY_NOT_ALLOWED`. |
 | `gateway.admission` | Other admission validation failed or admission infrastructure was unavailable. |
+| `settings.<step>` | A settings band step that was on for the request (setting on, target allowed, key in scope) left it unchanged: `skip`, stage `settings`, with `SETTING_MODEL_UNSUPPORTED` (a `tool_search` model older than the provider's tool search), `SETTING_CLIENT_OWNED` (the client sent the same control: a search tool or `defer_loading`, `context_management`, `reasoning.context`) or `SETTING_THINKING_BOUND` (an Anthropic request with thinking on or thinking blocks in its history; changing its tools would invalidate them). Absent when the step applied (see `settings_applied`) or had nothing to do. |
+| `transforms.<step>` | A transform band step left a request unchanged because it is bound to reasoning: an Anthropic request with thinking on (`thinking.type` `enabled` or `adaptive`) or a thinking block in its history, or a Responses request with a `reasoning` input item: `skip`, stage `transforms`, `TRANSFORM_THINKING_BOUND`. Changing an earlier turn would invalidate every later thinking block; OpenAI's encrypted reasoning is skipped the same way until it is checked live. |
+| `gateway.attempt` | A target a tenant rule asked for was not used: `skip`, stage `attempt`, with `ATTEMPT_LIMIT_REACHED` (three attempts already), `ATTEMPT_WOULD_LEAVE_INTERNAL` (an internal deployment's request carrying personal data or a term, pattern, record-set or destination rule match would leave for another kind of target; a catalog route counts as not internal), `ATTEMPT_DESTINATION_CHANGED` (an enforced mask, block or approval rule of a privacy kind is in scope for the new target and was not for the target privacy ran for, so its content was never checked for it), `ATTEMPT_CONTINUATION_PINNED` (a Responses continuation stays on its deployment), `ATTEMPT_NEEDS_STORED_CREDENTIAL` (the caller's own provider key was consumed by the first attempt), `ATTEMPT_TARGET_NOT_ALLOWED` (the key's model allowlist), `ATTEMPT_TARGET_UNAVAILABLE` (disabled, another provider, marked unhealthy, origin not approved, or the target that just failed), or `ATTEMPT_NOT_ADMITTED` (the extra attempt's usage or spend reservation refused; the client gets the previous attempt's result). |
 | `rule.<id>` | A tenant rule matched (see [Tenant rules](#tenant-rules)); at most 32 per request, blocks first. Its `policy_version` is a digest of the rule and the set's revision. |
 | `rules.evaluated` | A rule matcher ran for the request (`allow`, `RULES_EVALUATED`); its `policy_version` is a digest of the revision. Absent when none ran: no rules, none in scope, or only rules this release cannot run. |
 | `deployment.registry`, `deployment.destination` | A registered deployment alias was allowed or refused: `MODEL_NOT_REGISTERED`, `MODEL_NOT_ALLOWED`, `DEPLOYMENT_UNHEALTHY` (marked unhealthy, 503) or `DEPLOYMENT_NOT_APPROVED`. |
@@ -160,6 +163,58 @@ rule's action applies; when only its approximate size (bytes / 4) exceeds it, th
 crossing is possible and the rule records a `warn` match whatever its action, so it
 never refuses a request that may be under the tier.
 
+### Parameter pins
+
+A `parameter_pin` rule names one provider parameter and its value
+(`match: {"parameter", "value"}`): `temperature` (0 to 2; above 1 only with an
+`endpoints` scope that leaves out `messages`, else 422 `RULE_PIN_OUT_OF_RANGE`),
+`top_p` (0 to 1), `top_k` (1 to 500, Anthropic and Gemini), `seed` (0 to
+2,147,483,647, chat and Gemini) or `reasoning_effort` (`none` to `xhigh`, chat and
+Responses). Output-token limits cannot be pinned: admission reserves output from
+the client's value before the pin would run. Pins are evaluated in the settings
+band, after the decision point and the token-count branch, on the masked payload,
+so token counting is never pinned. A pin matches when the request omits the
+parameter or sends another value (`0` equals `0.0`); a protocol without the
+parameter is not touched and records nothing. An enforced `set` writes the value
+(creating `generationConfig` or `reasoning` when absent) and records `RULE_SET`
+and a `settings_applied` entry; an enforced `block` refuses with `RULE_BLOCKED`
+after the privacy facts are recorded, with no spend reservation or provider call.
+Their verdicts carry stage `settings`. Two enforced pins of one parameter in scope:
+the lowest rule id applies and the other records `skip`, `RULE_PIN_SHADOWED`. On an
+Anthropic request with `thinking.type` `enabled` or `adaptive`, a `temperature` or
+`top_k` pin records `skip`, `RULE_PIN_INCOMPATIBLE` and changes nothing, since
+Anthropic refuses those parameters with thinking.
+
+### Route rules
+
+A `route` rule moves a conversation from the model the client names to a cheaper or
+stronger registered alias of the same provider (`match: {"from", "to", "when"}`, action
+`route`). It is evaluated by the deployment resolver, before admission and privacy, and
+only for tenants whose rule set holds one: enforced rules first, then monitor rules,
+each in rule-set order; the first whose scope and `from` match and whose `when` holds
+decides. Its conditions read the conversation's first turn only (system and developer
+instructions plus the first user message), so every turn of one conversation gets the
+same decision. Token counting, embeddings and Responses requests the provider stores
+(`store` not `false`, `previous_response_id`, `conversation`) get none.
+
+| State | Outcome in `route_decision` | Effect |
+| --- | --- | --- |
+| `monitor` | `would_route` | none |
+| `enforced` | `routed` | the request takes `to`'s deployment; the client's model name stays the requested model |
+| `enforced` | `not_allowed_for_key` | none: the key's model allowlist lacks `to` |
+| `enforced` | `target_unavailable` | none: `to` is disabled, unhealthy, of another provider or at an unapproved origin |
+
+Neither refusal of the target is an error for the caller. Every decision enters
+`rule_matches` with count 1 and its `rule.<id>` verdict, and counts in
+`shim_route_decisions_total{state, outcome}`. Admission, destination rules, privacy
+and everything after run against the chosen target. A `PUT` refuses with 422
+`RULE_MATCH_INVALID` a `to` that is not a registered alias, or one of another provider
+than a registered `from` alias. A `route` rule with a `match.on` value belongs to
+another feature and is skipped here with no verdict; `on` is one of `unavailable`,
+`capacity`, `format_invalid`, `split`, `degrade`, `size` or `shadow`, and any other
+value is refused with 422. Enforcing a route rule, or changing an enforced one, is a relaxing change for
+[four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
+
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
 
@@ -170,6 +225,8 @@ wins when both refuse. The verdict of each matched rule:
 | enforced `block` | `deny` | `RULE_BLOCKED`: 400, `X-Shim-Rule-Id`, no provider call |
 | enforced `mask` | `mask` | `RULE_MASKED` |
 | enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
+| enforced `set` (parameter pin) | `allow` | `RULE_SET`; `skip` with `RULE_PIN_SHADOWED` or `RULE_PIN_INCOMPATIBLE` when it does not apply |
+| enforced `route` | `allow` | `RULE_ROUTE`; the outcome is in `route_decision` |
 | enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
 | evaluation timed out, enforced `mask`, `block` or `require_approval` | `deny` | `RULE_BLOCKED` |
 | evaluation timed out, any other rule | `error` | `RULE_EVALUATION_TIMEOUT` |

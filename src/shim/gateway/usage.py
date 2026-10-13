@@ -371,6 +371,11 @@ class LocalUsageLifecycle:
             "inflight_duplicate_of": admission.inflight_duplicate_of
             if admission is not None
             else None,
+            **(
+                {"queue_wait_ms": admission.queue_wait_ms}
+                if admission is not None and admission.queue_wait_ms is not None
+                else {}
+            ),
             **({"inflight_share": dict(inflight_share)} if inflight_share else {}),
             "system_prompt_hash": self._prompt_hashes.pop(
                 str(prepared.request_id), None
@@ -386,6 +391,16 @@ class LocalUsageLifecycle:
                 {"injection_markers": dict(privacy.injection_markers)}
                 if privacy and privacy.injection_markers is not None
                 else {}
+            ),
+            **(
+                {"settings_applied": list(prepared.settings_applied)}
+                if prepared.settings_applied
+                else {}
+            ),
+            **(
+                {}
+                if prepared.transforms_applied is None
+                else {"transforms_applied": list(prepared.transforms_applied)}
             ),
             "warnings": list(prepared.warnings),
             "policy_verdicts": [

@@ -135,7 +135,7 @@ class AnthropicExecution:
             await circuit.release_probe()
             raise
         try:
-            beta = _beta_enabled(invocation)
+            beta = _beta_enabled(invocation) or bool(prepared.provider_betas)
             messages = client.beta.messages if beta else client.messages
             create = (
                 messages.count_tokens
@@ -155,12 +155,17 @@ class AnthropicExecution:
             )
             if headers:
                 kwargs["extra_headers"] = headers
-            if beta and "anthropic-beta" in headers:
-                kwargs["betas"] = [
+            if beta and ("anthropic-beta" in headers or prepared.provider_betas):
+                betas = [
                     item.strip()
-                    for item in headers["anthropic-beta"].split(",")
+                    for item in headers.get("anthropic-beta", "").split(",")
                     if item.strip()
                 ]
+                added = [item for item in prepared.provider_betas if item not in betas]
+                kwargs["betas"] = betas + added
+                # The forwarded header and the SDK argument must agree.
+                if added and "anthropic-beta" in headers:
+                    headers["anthropic-beta"] = ",".join(kwargs["betas"])
             with prepared.timing.exclude():
                 try:
                     result: Any = await create(**kwargs)

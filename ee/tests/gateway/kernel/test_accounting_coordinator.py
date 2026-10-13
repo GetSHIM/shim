@@ -52,7 +52,7 @@ from shim.gateway.contracts.context import (
 )
 from shim.gateway.contracts.ids import ProviderId
 from shim.gateway.pipeline.admission import AdmissionStage
-from shim.gateway.request_policy import TaskCaps
+from shim.gateway.request_policy import BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext
 from shim_enterprise.gateway.pipeline.audit_intent import AuditIntentPersistenceError
 from shim.gateway.pipeline.provider_execution import (
@@ -112,6 +112,13 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
         rules=None,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
+        transforms_applied=None,
+        route_decision=None,
+        attempt=None,
+        shadow=None,
+        concurrency_lease=None,
+        band=BandSettings(),
         approval_id=None,
         unpriced=False,
         deployment_price=None,
@@ -128,6 +135,7 @@ def _prepared(audit_mode: str = "best_effort") -> SimpleNamespace:
             task_calls=None,
             request_digest="digest",
             inflight_duplicate_of=None,
+            queue_wait_ms=None,
         ),
         task_caps=TaskCaps(),
         payload={"messages": []},
@@ -439,6 +447,12 @@ async def test_the_repeat_digest_is_cleared_when_pii_is_detected(
         privacy=privacy,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
+        transforms_applied=None,
+        route_decision=None,
+        attempt=None,
+        shadow=None,
+        concurrency_lease=None,
         approval_id=None,
     )
     await DurableAccountingCoordinator().record_privacy(prepared, db)
@@ -981,6 +995,12 @@ async def test_privacy_facts_commit_before_openai_execution() -> None:
         rules=None,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
+        transforms_applied=None,
+        route_decision=None,
+        attempt=None,
+        shadow=None,
+        concurrency_lease=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",
@@ -3258,6 +3278,203 @@ async def test_injection_markers_reach_the_lifecycle_the_request_list_and_csv(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "applied", [({"id": "parameter_pin.temp_zero", "version": 3},), (), None]
+)
+async def test_settings_applied_reaches_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, applied
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
+    prepared.settings_applied = applied
+    expected = None if applied is None else list(applied)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("settings_applied") == expected
+    assert ("settings_applied" in lifecycle.lifecycle_metadata) == (applied is not None)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].settings_applied == expected
+    assert (
+        json.loads(row["settings_applied"]) if row["settings_applied"] else None
+    ) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "applied",
+    [
+        (
+            {
+                "id": "json_compaction",
+                "version": 1,
+                "before_chars": 200,
+                "after_chars": 120,
+                "items": 2,
+            },
+        ),
+        (),
+        None,
+    ],
+)
+async def test_transforms_applied_reaches_the_lifecycle_the_request_list_and_csv(
+    db, test_api_key, monkeypatch, applied
+) -> None:
+    prepared = _prepared()
+    prepared.tenant_id = test_api_key.organization_id
+    prepared.api_key_id = test_api_key.id
+    started_at = datetime.now(timezone.utc)
+    prepared.context.started_at = started_at
+    await DurableAccountingRepository().reserve_quota(
+        db,
+        QuotaReservationCommand(
+            tenant_id=prepared.tenant_id,
+            api_key_id=prepared.api_key_id,
+            request_id=prepared.request_id,
+            requested_model=prepared.model,
+            source_endpoint="chat.completions",
+            started_at=started_at,
+            reconciliation_due_at=started_at + timedelta(minutes=2),
+            estimated_input_tokens=20,
+            maximum_output_tokens=30,
+            policy=QuotaPolicySnapshot("test", None, None, None),
+        ),
+    )
+    prepared.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
+    prepared.transforms_applied = applied
+    expected = None if applied is None else list(applied)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    usage = DurableUsageLifecycle(DurableAccountingCoordinator(), session_scope)
+    await usage.record_privacy(prepared)
+    await usage.fail(prepared, reason="request_aborted")
+
+    lifecycle = (
+        await db.execute(
+            select(RequestLifecycle).where(
+                RequestLifecycle.request_id == prepared.request_id
+            )
+        )
+    ).scalar_one()
+    assert lifecycle.lifecycle_metadata.get("transforms_applied") == expected
+    assert ("transforms_applied" in lifecycle.lifecycle_metadata) == (
+        applied is not None
+    )
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == prepared.request_id,
+                OutboxEvent.event_type == "analytics.request_failed",
+            )
+        )
+    ).scalar_one()
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=prepared.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=prepared.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].transforms_applied == expected
+    assert (
+        json.loads(row["transforms_applied"]) if row["transforms_applied"] else None
+    ) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("withheld", "markers"),
     [
         (frozenset({"TR_NATIONAL_ID"}), {"TR_NATIONAL_ID": 1}),
@@ -3748,3 +3965,496 @@ async def test_an_embeddings_request_reserves_its_quota(protocol) -> None:
 
     command = repository.reserve_quota.await_args.args[1]
     assert (command.maximum_output_tokens, command.system_prompt_hash) == (0, None)
+
+
+@pytest.mark.asyncio
+async def test_two_attempts_are_two_rows_each_with_its_own_cost(
+    db, test_api_key, monkeypatch
+) -> None:
+    from shim.gateway.kernel.result import AttemptInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+
+    def attempt(number: int, group: str | None) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = started_at
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=False
+        )
+        if group is not None:
+            prepared.attempt = AttemptInfo(
+                group_id=group, number=number, reason="fallback", rule_id="spare"
+            )
+        return prepared
+
+    first = attempt(1, None)
+    second = attempt(2, first.request_id)
+    for prepared in (first, second):
+        await usage.admit(prepared, prepared.admission)
+        await usage.record_privacy(prepared)
+        await coordinator.reserve_spend(prepared, False, db)
+    await usage.fail(first, reason="request_aborted")
+    await coordinator.finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=second.tenant_id,
+            request_id=second.request_id,
+            quota_action=TerminalAction.SETTLE,
+            spend_action=TerminalAction.SETTLE,
+            prompt_tokens=20,
+            completion_tokens=2,
+            actual_cost_usd=Decimal("0.00002"),
+            provider_model=second.pricing_model,
+            lifecycle_status="completed",
+        ),
+    )
+
+    rows = {
+        row.request_id: row
+        for row in (
+            await db.scalars(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id.in_(
+                        [first.request_id, second.request_id]
+                    )
+                )
+            )
+        ).all()
+    }
+    assert {key: row.status for key, row in rows.items()} == {
+        first.request_id: "failed",
+        second.request_id: "completed",
+    }
+    assert {
+        key: value
+        for key, value in rows[second.request_id].lifecycle_metadata.items()
+        if key.startswith("attempt_")
+    } == {
+        "attempt_group_id": first.request_id,
+        "attempt_number": 2,
+        "attempt_reason": "fallback",
+        "attempt_rule_id": "spare",
+    }
+    assert not any(
+        key.startswith("attempt_") for key in rows[first.request_id].lifecycle_metadata
+    )
+    events = {
+        (event.request_id, event.event_type)
+        for event in (
+            await db.scalars(
+                select(UsageLedger).where(
+                    UsageLedger.request_id.in_([first.request_id, second.request_id])
+                )
+            )
+        ).all()
+    }
+    assert {
+        (second.request_id, "spend_reservation"),
+        (second.request_id, "spend_settlement"),
+        (first.request_id, "spend_reservation"),
+    } <= events
+    assert (first.request_id, "spend_settlement") not in events
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    for event in (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id.in_([first.request_id, second.request_id]),
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).all():
+        await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        attempt_group_id=first.request_id,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=first.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=10, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    csv_rows = list(
+        csv.DictReader(
+            io.StringIO(
+                b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                    "utf-8-sig"
+                )
+            )
+        )
+    )
+    listed = {item.request_id: item for item in page.items}
+    assert set(listed) == {first.request_id, second.request_id}
+    assert (
+        listed[second.request_id].attempt_group_id,
+        listed[second.request_id].attempt_number,
+        listed[second.request_id].attempt_reason,
+        listed[second.request_id].attempt_rule_id,
+    ) == (first.request_id, 2, "fallback", "spare")
+    assert listed[first.request_id].attempt_group_id is None
+    by_id = {row["request_id"]: row for row in csv_rows}
+    assert by_id[second.request_id]["attempt_group_id"] == first.request_id
+    assert by_id[second.request_id]["attempt_number"] == "2"
+    assert by_id[first.request_id]["attempt_number"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_answered", [False, True])
+async def test_a_client_request_settles_one_request_unit_across_its_attempts(
+    db, test_api_key, first_answered
+) -> None:
+    from shim.gateway.kernel.result import AttemptInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+
+    def attempt(group: str | None) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = datetime.now(timezone.utc)
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=False
+        )
+        if group is not None:
+            # As the kernel's next_attempt sets it.
+            prepared.attempt = AttemptInfo(
+                group_id=group,
+                number=2,
+                reason="format_retry" if first_answered else "fallback",
+                rule_id="spare",
+                counted=first_answered,
+            )
+        return prepared
+
+    async def settle(prepared) -> None:
+        await coordinator.finalize(
+            db,
+            FinalizationCommand(
+                tenant_id=prepared.tenant_id,
+                request_id=prepared.request_id,
+                quota_action=TerminalAction.SETTLE,
+                spend_action=TerminalAction.SETTLE,
+                prompt_tokens=20,
+                completion_tokens=2,
+                actual_cost_usd=Decimal("0.00002"),
+                provider_model=prepared.pricing_model,
+                lifecycle_status="completed",
+            ),
+        )
+
+    first = attempt(None)
+    second = attempt(first.request_id)
+    for prepared in (first, second):
+        await usage.admit(prepared, prepared.admission)
+        await usage.record_privacy(prepared)
+        await coordinator.reserve_spend(prepared, False, db)
+    if first_answered:
+        await settle(first)
+    else:
+        await usage.fail(first, reason="request_aborted")
+    await settle(second)
+
+    monthly = (
+        await db.scalars(
+            select(QuotaPeriodUsage)
+            .where(
+                QuotaPeriodUsage.organization_id == test_api_key.organization_id,
+                QuotaPeriodUsage.api_key_id == test_api_key.id,
+                QuotaPeriodUsage.period_type == "monthly",
+            )
+            .execution_options(populate_existing=True)
+        )
+    ).one()
+    assert (monthly.settled_requests, monthly.reserved_requests) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
+    db, test_api_key, monkeypatch
+) -> None:
+    from shim.gateway.kernel.result import ShadowInfo
+
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+    copy = _prepared()
+    copy.tenant_id = test_api_key.organization_id
+    copy.api_key_id = test_api_key.id
+    copy.source_endpoint = "chat.completions"
+    copy.policy = SimpleNamespace(team=None)
+    copy.context.started_at = started_at
+    copy.admission.cost_center = "untagged"
+    # The caller's tag: its budget never sees the copy.
+    copy.admission.tags = ("checkout",)
+    copy.admission.repeat_chain_length = None
+    copy.privacy = PrivacyOutcome(action=PrivacyAction.DETECTED, pii_detected=False)
+    copy.shadow = ShadowInfo(of="req_primary", rule_id="change_test")
+
+    await usage.admit(copy, copy.admission)
+    await usage.record_privacy(copy)
+    await coordinator.reserve_spend(copy, False, db)
+    await coordinator.finalize(
+        db,
+        FinalizationCommand(
+            tenant_id=copy.tenant_id,
+            request_id=copy.request_id,
+            quota_action=TerminalAction.SETTLE,
+            spend_action=TerminalAction.SETTLE,
+            prompt_tokens=20,
+            completion_tokens=2,
+            actual_cost_usd=Decimal("0.00002"),
+            provider_model=copy.pricing_model,
+            lifecycle_status="completed",
+        ),
+    )
+
+    metadata = await db.scalar(
+        select(RequestLifecycle.lifecycle_metadata).where(
+            RequestLifecycle.request_id == copy.request_id
+        )
+    )
+    assert (metadata["shadow_of"], metadata["shadow_rule_id"]) == (
+        "req_primary",
+        "change_test",
+    )
+    events = {
+        event.event_type: event
+        for event in (
+            await db.scalars(
+                select(UsageLedger).where(UsageLedger.request_id == copy.request_id)
+            )
+        ).all()
+    }
+    assert events["quota_reservation"].request_count == 0
+    assert {"spend_reservation", "spend_settlement"} <= set(events)
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    event = (
+        await db.execute(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == copy.request_id,
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).scalar_one()
+    await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=copy.request_id,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=copy.tenant_id,
+        ),
+        session=db,
+    )
+    page = await management.activity.list_requests(**filters, limit=1, offset=0)
+    exported = await management.activity.export_requests(**filters)
+    [row] = csv.DictReader(
+        io.StringIO(
+            b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                "utf-8-sig"
+            )
+        )
+    )
+    assert page.items[0].shadow_of == "req_primary"
+    assert row["shadow_of"] == "req_primary"
+    budgets = [
+        await BudgetEvaluator().aggregate(
+            db,
+            SimpleNamespace(
+                organization_id=copy.tenant_id, scope_type=scope, scope_value=value
+            ),
+            started_at - timedelta(minutes=1),
+        )
+        for scope, value in (("org", None), ("tag", "checkout"))
+    ]
+    assert [budget.cost_usd for budget in budgets] == [Decimal("0.00002"), 0]
+
+
+@pytest.mark.asyncio
+async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
+    db, test_api_key, monkeypatch
+) -> None:
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+    decision = {
+        "rule_id": "cheap_start",
+        "state": "monitor",
+        "from": "strong",
+        "to": "cheap",
+        "reason": "max_start_chars",
+        "conversation_id": "0123456789abcdef",
+        "outcome": "would_route",
+    }
+
+    def request(route_decision: dict | None, pii: bool = False) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = started_at
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=pii
+        )
+        prepared.route_decision = route_decision
+        return prepared
+
+    # Refused before privacy: the reservation alone carries the decision.
+    refused, plain, moved = request(decision), request(None), request(decision)
+    personal = request(decision, pii=True)
+    for prepared in (refused, plain, moved, personal):
+        await usage.admit(prepared, prepared.admission)
+    # A rule moved it again after privacy; the start decision stays under previous.
+    moved.route_decision = {
+        **decision,
+        "state": "enforced",
+        "reason": "fallback",
+        "outcome": "routed",
+        "previous": decision,
+    }
+    personal.route_decision = {**moved.route_decision}
+    for prepared in (plain, moved, personal):
+        await usage.record_privacy(prepared)
+    for prepared in (refused, plain, moved, personal):
+        await usage.fail(prepared, reason="request_aborted")
+    rows = {
+        row.request_id: row.lifecycle_metadata
+        for row in (
+            await db.scalars(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id.in_(
+                        [
+                            refused.request_id,
+                            plain.request_id,
+                            moved.request_id,
+                            personal.request_id,
+                        ]
+                    )
+                )
+            )
+        ).all()
+    }
+    # Refused before privacy: the first-turn digest is never written (night 3 M6).
+    assert rows[refused.request_id]["route_decision"] == {
+        **decision,
+        "conversation_id": None,
+    }
+    assert "route_decision" not in rows[plain.request_id]
+    assert rows[moved.request_id]["route_decision"]["previous"] == decision
+    # A personal-data request keeps the decision without the first-turn digest.
+    assert rows[personal.request_id]["route_decision"] == {
+        **moved.route_decision,
+        "conversation_id": None,
+        "previous": {**decision, "conversation_id": None},
+    }
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    for event in (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id.in_(list(rows)),
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).all():
+        await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=refused.tenant_id,
+        ),
+        session=db,
+    )
+    listed = {}
+    for outcome in ("would_route", "routed", "target_unavailable"):
+        page = await management.activity.list_requests(
+            **filters, route_outcome=outcome, limit=10, offset=0
+        )
+        listed[outcome] = {item.request_id for item in page.items}
+    exported = await management.activity.export_requests(
+        **filters, route_outcome="would_route"
+    )
+    csv_rows = list(
+        csv.DictReader(
+            io.StringIO(
+                b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                    "utf-8-sig"
+                )
+            )
+        )
+    )
+    assert listed == {
+        "would_route": {refused.request_id},
+        "routed": {moved.request_id, personal.request_id},
+        "target_unavailable": set(),
+    }
+    [row] = csv_rows
+    assert json.loads(row["route_decision"]) == {**decision, "conversation_id": None}

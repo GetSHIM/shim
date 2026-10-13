@@ -120,6 +120,7 @@ class AuthenticateStage:
             task_caps=policy.task_caps,
             agent_loop=policy.agent_loop,
             inflight_sharing=policy.inflight_sharing,
+            band=policy.band,
             rules=policy.rules,
             record_sets=policy.record_sets,
             tenant_gateway_settings=policy.tenant_gateway_settings,

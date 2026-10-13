@@ -22,6 +22,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
+- [Pin a parameter](#pin-a-parameter)
 - [Preview a rule before you enforce it](#preview-a-rule-before-you-enforce-it)
 - [Import AIUC rules](#import-aiuc-rules)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
@@ -288,6 +289,10 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
+| `provider_cache` | off, off, `[]` | `anthropic_auto_cache` (`off`, `5m`, `1h`) and `openai_prompt_cache_key` (`off`, `key`, `tenant`), the [community recipe](../../docs/COOKBOOK.md#use-the-providers-cache-discount)'s two switches, for catalog routes and the registry aliases in `deployments` (at most 100 of this organization; a Bedrock deployment is 422). A PATCH changes only the fields it names. |
+| `tool_search` | `off`, 10, `[]`, `[]` | `mode` (`off`, `regex`, `bm25`), `min_tools` (2 to 10,000), `keep_loaded` (at most 64 tool names) and `api_key_ids` (at most 100 keys of this organization; empty is every key): [load tools on demand](../../docs/COOKBOOK.md#load-tools-on-demand), for catalog routes and the `provider_cache.deployments` aliases. Start with one app's key. |
+| `thinking_history` | 0, `off` | `anthropic_keep_turns` (0 to 8) and `openai_reasoning_context` (`off`, `current_turn`): [stop paying for old thinking](../../docs/COOKBOOK.md#stop-paying-for-old-thinking). |
+| `transforms` | `off` | `json_compaction` (`off`, `on`): [shrink JSON tool results](../../docs/COOKBOOK.md#shrink-json-tool-results), lossless, for every target. |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -310,13 +315,21 @@ a task cap, shortening its window, raising `agent_loop.repeats` or moving
 `agent_loop.action` down from `block` are relaxing; listing a key in
 `inflight_sharing_api_key_ids` is neutral, because each request still passes its
 own limits and privacy and an answer never crosses keys, and an id this
-organization lacks is 422; turning `four_eyes` off is relaxing, and a field
+organization lacks is 422; `provider_cache`, `tool_search`, `thinking_history` and
+`transforms` change what a request costs, not what it may carry, so every change to
+them is neutral, and a `tool_search` key this organization lacks is 422; turning `four_eyes` off is relaxing, and a field
 without a direction counts as relaxing. Every change records a
 [policy version](#plan-apply-and-undo-a-change). Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
-`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
-and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`,
+`SHIM_INFLIGHT_SHARING`, `SHIM_ANTHROPIC_AUTO_CACHE`, `SHIM_OPENAI_PROMPT_CACHE_KEY`,
+`SHIM_TOOL_SEARCH*`, `SHIM_ANTHROPIC_KEEP_THINKING_TURNS`,
+`SHIM_OPENAI_REASONING_CONTEXT`, `SHIM_JSON_COMPACTION` and `SHIM_CONCURRENCY_*`
+variables. `SHADOW_MAX_IN_FLIGHT` (1 to 64, default 4) caps the shadow copies of
+finished requests one process runs at once; more are dropped and counted. A copy
+counts against the organization's quota only, never the caller's key, team, task
+or team and tag cost budgets. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
 the task id}`); when Redis fails, task caps are not applied: calls go on with a
 `TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
 `shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are
@@ -403,7 +416,8 @@ Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
 revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
-`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_PIN_OUT_OF_RANGE` (a pinned
+temperature above 1 that could reach Anthropic), `RULE_SCOPE_UNKNOWN` (a key or team id this organization
 does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope, or a `block`
 scoped only by tags and endpoints) or
 `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
@@ -559,6 +573,91 @@ Some models price the whole request at a higher rate above a length (gpt-5.4 abo
 Notes: only catalog models with a tier are checked; registry deployments never
 match. The settled tokens decide the price, and `LARGE_CONTEXT_PRICE` still marks a
 request that was billed at the higher rate.
+
+## Pin a parameter
+
+Send every request in scope with the same temperature, seed or reasoning effort, so
+results stay comparable.
+
+1. Add a `parameter_pin` rule to the [rule set](#write-a-tenant-rule), scoped by
+   model and in `monitor` state first:
+
+```json
+{"id": "temp_zero", "name": "Deterministic answers", "kind": "parameter_pin",
+ "action": "set", "state": "monitor", "scope": {"models": ["gpt-5-nano"]},
+ "match": {"parameter": "temperature", "value": 0}}
+```
+
+| `parameter` | `value` | Chat | Responses | Messages | Gemini |
+| --- | --- | --- | --- | --- | --- |
+| `temperature` | 0 to 2 (above 1 needs an `endpoints` scope without `messages`) | `temperature` | `temperature` | `temperature` | `generationConfig.temperature` |
+| `top_p` | 0 to 1 | `top_p` | `top_p` | `top_p` | `generationConfig.topP` |
+| `top_k` | integer 1 to 500 | | | `top_k` | `generationConfig.topK` |
+| `seed` | integer 0 to 2,147,483,647 | `seed` | | | `generationConfig.seed` |
+| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` | `reasoning_effort` | `reasoning.effort` | | |
+
+2. Watch the request list: a request that omits the parameter or sends another
+   value shows in `rule_matches` with `RULE_WOULD_SET` (or `RULE_WOULD_BLOCK`).
+3. Send the set again with `"state": "enforced"`. `set` writes the value into
+   the request the provider receives and lists `parameter_pin.temp_zero` in
+   `settings_applied`; `block` refuses requests that do not send the value, with
+   400 `RULE_BLOCKED` and `X-Shim-Rule-Id`; `warn` adds `RULE_WARN`.
+
+Notes: shim writes a parameter only when a pin says so. Scope pins by model and
+watch the monitor results first: a model may refuse a parameter. Anthropic's
+documentation says Claude Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5, Fable
+and Mythos answer 400 to any non-default `temperature`, `top_p` or `top_k`, and
+OpenAI reasoning models accept only the default `temperature`. On an Anthropic request with
+thinking turned on, `temperature` and `top_k` pins are skipped
+(`RULE_PIN_INCOMPATIBLE`). Output-token limits cannot be pinned, and token
+counting is never pinned. Two enforced pins of one parameter: the lowest rule id
+applies, the other records `RULE_PIN_SHADOWED`. Request parameters are not stored,
+so a pin has no [preview](#preview-a-rule-before-you-enforce-it) from older
+traffic; its monitor history is the preview.
+
+## Send simple requests to a cheaper model
+
+Serve conversations that start short, or with given words, from a cheaper model of the
+same provider, and see which ones would move before any does.
+
+1. Register both models as [deployments](#register-a-private-model-deployment), for
+   example `strong` and `cheap`, and add a `route` rule to the
+   [rule set](#write-a-tenant-rule) in `monitor` state:
+
+```json
+{"id": "cheap_start", "name": "Short starts", "kind": "route", "action": "route",
+ "state": "monitor", "match": {"from": ["strong"], "to": "cheap",
+ "when": {"max_start_chars": 400, "tools": false}}}
+```
+
+`from` lists the model names clients send (1 to 20); `to` is a registered alias of
+the same provider. `when` is optional, and every condition in it must hold:
+`max_start_chars` and `min_start_chars` (the first turn's characters), `tools`,
+`media`, `structured_output` and `keywords_any` / `keywords_none` (up to 50 words each,
+matched at a word start with Turkish-aware casing, so `fatura` finds
+"Faturalarımı özetle"). Without `when`, the rule always applies; scope it by
+`api_key_ids` or `tags` for "this app always uses that model".
+
+2. Read the request list with `route_outcome=would_route`: each request the rule would
+   have moved has a `route_decision` with the rule, the condition that matched and a
+   `conversation_id`.
+3. Send the set again with `"state": "enforced"`. Matching conversations are served by
+   `cheap` from their first turn on (`route_outcome=routed`); the client still names
+   `strong`, and the answer's `model` is `cheap`'s upstream model. A key whose
+   allowlist lacks `cheap` stays on `strong` (`not_allowed_for_key`), and so does a
+   request when `cheap` is disabled or unhealthy (`target_unavailable`).
+4. To undo, restore the previous [policy version](#plan-apply-and-undo-a-change), or
+   send the rule back in `monitor`.
+
+Notes: the conditions read only the conversation's first turn (system instructions
+and the first user message), so a conversation keeps its model on every turn and its
+provider prompt-cache discount; send `X-Shim-Conversation-Id` to name conversations
+yourself (only a keyed digest of it is stored). Responses requests that the provider stores (`store` not `false`, or a
+`previous_response_id` / `conversation`) are never routed. With
+[four eyes](#require-a-second-admin-for-loosening-changes) on, enforcing a route rule
+needs a second admin. Prompts are not kept, so a route rule has no
+[preview](#preview-a-rule-before-you-enforce-it) from older traffic; its monitor
+history is the preview.
 
 ## Preview a rule before you enforce it
 

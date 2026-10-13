@@ -41,6 +41,7 @@ settings = CommunitySettings(_env_file=None)
 def _prepared(payload: dict, mapping: dict[str, str] | None = None):
     return SimpleNamespace(
         payload=payload,
+        provider_betas=(),
         timing=InferenceTiming(),
         protocol="messages",
         target=None,
@@ -1076,3 +1077,264 @@ async def test_a_withheld_type_stays_a_placeholder_and_others_are_restored(
             if line.startswith("data: ") and '"text_delta"' in line
         ]
         assert tckn in "".join(deltas)
+
+
+_STREAM = (
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_s",'
+    '"type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6",'
+    '"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn",'
+    '"stop_sequence":null},"usage":{"output_tokens":1}}\n\n'
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream", "headers", "query"),
+    [
+        (False, {}, ""),
+        (True, {}, ""),
+        (False, {"anthropic-beta": "context-1m-2025-08-07"}, ""),
+        (True, {}, "?beta=true"),
+    ],
+)
+async def test_the_band_breakpoint_reaches_anthropic_through_the_sdk(
+    stream, headers, query
+) -> None:
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[dict] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if stream:
+            return httpx.Response(
+                200, text=_STREAM, headers={"content-type": "text/event-stream"}
+            )
+        return httpx.Response(200, json=_message("ok"))
+
+    events = StringIO()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                BACKEND_CORS_ORIGINS=[],
+                SHIM_ANTHROPIC_AUTO_CACHE="1h",
+            ),
+            http_client=outbound,
+            event_stream=events,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as client,
+        ):
+            response = await client.post(
+                f"/v1/messages{query}",
+                headers={"x-provider-key": "sk-ant-tenant", **headers},
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 16,
+                    "stream": stream,
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+
+    assert response.status_code == 200
+    [sent] = seen
+    assert sent["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert sent["messages"] == [{"role": "user", "content": "hello"}]
+    [line] = [json.loads(item) for item in events.getvalue().splitlines()]
+    assert line["settings_applied"] == [{"id": "anthropic_auto_cache", "version": 1}]
+
+
+_SEARCHED = {
+    "id": "msg_search",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-haiku-4-5",
+    "content": [
+        {
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "tool_search_tool_regex",
+            "input": {"pattern": "weather"},
+        },
+        {
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": [
+                    {"type": "tool_reference", "tool_name": "get_weather"}
+                ],
+            },
+        },
+        {"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": {}},
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": None,
+    "usage": {"input_tokens": 1, "output_tokens": 2},
+    "context_management": {
+        "applied_edits": [
+            {
+                "type": "clear_thinking_20251015",
+                "cleared_thinking_turns": 1,
+                "cleared_input_tokens": 120,
+            }
+        ]
+    },
+}
+
+
+def _sse(message: dict) -> str:
+    start = {**message, "content": [], "stop_reason": None, "context_management": None}
+    events = [("message_start", {"type": "message_start", "message": start})]
+    for index, block in enumerate(message["content"]):
+        events.append(
+            (
+                "content_block_start",
+                {"type": "content_block_start", "index": index, "content_block": block},
+            )
+        )
+        events.append(
+            ("content_block_stop", {"type": "content_block_stop", "index": index})
+        )
+    events.append(
+        (
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                "usage": {"output_tokens": 2},
+                "context_management": message["context_management"],
+            },
+        )
+    )
+    events.append(("message_stop", {"type": "message_stop"}))
+    return "".join(
+        f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events
+    )
+
+
+async def _band_call(
+    body: dict, headers: dict[str, str], settings: dict[str, object]
+) -> tuple[httpx.Response, list[httpx.Request]]:
+    from io import StringIO
+
+    from shim.application import create_community_app
+
+    seen: list[httpx.Request] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if json.loads(request.content).get("stream"):
+            return httpx.Response(
+                200, text=_sse(_SEARCHED), headers={"content-type": "text/event-stream"}
+            )
+        return httpx.Response(200, json=_SEARCHED)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as outbound:
+        app = create_community_app(
+            CommunitySettings(
+                _env_file=None,
+                ANTHROPIC_BASE_URL="https://upstream.test",
+                BACKEND_CORS_ORIGINS=[],
+                **settings,
+            ),
+            http_client=outbound,
+            event_stream=StringIO(),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+            ) as client,
+        ):
+            response = await client.post(
+                "/v1/messages",
+                headers={"x-provider-key": "sk-ant-tenant", **headers},
+                json=body,
+            )
+    return response, seen
+
+
+_THINKING = {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 2048,
+    "thinking": {"type": "enabled", "budget_tokens": 1024},
+    "messages": [{"role": "user", "content": "hello"}],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client", "wire"),
+    [
+        (None, "context-management-2025-06-27"),
+        (
+            "interleaved-thinking-2025-05-14",
+            "interleaved-thinking-2025-05-14,context-management-2025-06-27",
+        ),
+        ("context-management-2025-06-27", "context-management-2025-06-27"),
+    ],
+)
+async def test_a_step_beta_takes_the_beta_path_after_the_clients_flags(
+    client, wire
+) -> None:
+    response, [sent] = await _band_call(
+        _THINKING,
+        {"anthropic-beta": client} if client else {},
+        {"SHIM_ANTHROPIC_KEEP_THINKING_TURNS": 1},
+    )
+
+    assert response.status_code == 200
+    assert sent.url.params.get("beta") == "true"
+    assert sent.headers["anthropic-beta"] == wire
+    assert json.loads(sent.content)["context_management"]["edits"][0]["keep"] == {
+        "type": "thinking_turns",
+        "value": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_without_step_betas_the_request_is_the_same_bytes() -> None:
+    _, [on] = await _band_call(_THINKING, {}, {"SHIM_TOOL_SEARCH": "regex"})
+    _, [off] = await _band_call(_THINKING, {}, {})
+
+    assert on.content == off.content and on.url == off.url
+    assert "anthropic-beta" not in on.headers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_tool_search_and_cleared_thinking_answers_pass_through(stream) -> None:
+    response, _ = await _band_call(
+        {**_THINKING, "stream": stream},
+        {},
+        {"SHIM_ANTHROPIC_KEEP_THINKING_TURNS": 1},
+    )
+
+    if not stream:
+        body = response.json()
+        assert body["content"] == _SEARCHED["content"]
+        assert body["context_management"] == _SEARCHED["context_management"]
+        return
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    blocks = [
+        event["content_block"]
+        for event in events
+        if event["type"] == "content_block_start"
+    ]
+    [delta] = [event for event in events if event["type"] == "message_delta"]
+    assert blocks == _SEARCHED["content"]
+    assert delta["context_management"] == _SEARCHED["context_management"]

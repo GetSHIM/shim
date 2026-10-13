@@ -49,6 +49,7 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
             tool_call_repeats=None,
             task_calls=None,
             inflight_duplicate_of=None,
+            queue_wait_ms=None,
         ),
         task_caps=TaskCaps(),
         model_retiring_warning="record",
@@ -58,6 +59,9 @@ def _prepared(*, model: str = "gpt-5.6-luna") -> SimpleNamespace:
         rules=None,
         rules_evaluated=False,
         rule_matches=[],
+        settings_applied=None,
+        shadow=None,
+        transforms_applied=None,
         payload={"messages": [{"content": "secret-body"}]},
         privacy=PrivacyOutcome(
             action=PrivacyAction.SCRUBBED,
@@ -920,6 +924,33 @@ async def test_an_estimated_input_never_claims_the_large_context_price():
             },
             ["CACHE_NOT_APPLIED"],
         ),
+        # A breakpoint inside a tool result counts too (night 3 L9).
+        (
+            "claude-haiku-4-5",
+            900,
+            (0, 0, 0),
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "t1",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": "x",
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+            ["CACHE_NOT_APPLIED"],
+        ),
         # A tool's schema may name a property cache_control; that is not caching.
         (
             "claude-haiku-4-5",
@@ -949,6 +980,27 @@ def test_warnings_known_only_after_the_answer(
     prepared.payload = payload
 
     warn_after_answer(prepared, prompt_tokens, split)
+
+    assert prepared.warnings == warnings
+
+
+@pytest.mark.parametrize(
+    ("applied", "warnings"),
+    [
+        (({"id": "anthropic_auto_cache", "version": 1},), []),
+        (({"id": "parameter_pin.temp", "version": 2},), ["CACHE_NOT_APPLIED"]),
+        (None, ["CACHE_NOT_APPLIED"]),
+    ],
+)
+def test_cache_not_applied_is_only_for_breakpoints_the_client_placed(applied, warnings):
+    from shim.gateway.pipeline.postprocess import warn_after_answer
+
+    prepared = _prepared(model="claude-haiku-4-5")
+    prepared.provider = "anthropic"
+    prepared.payload = {"cache_control": {"type": "ephemeral"}}
+    prepared.settings_applied = applied
+
+    warn_after_answer(prepared, 900, (0, 0, 0))
 
     assert prepared.warnings == warnings
 
@@ -1792,6 +1844,78 @@ async def test_the_jsonl_event_carries_injection_markers_only_when_scanned(
     event = json.loads(stream.getvalue())
     assert event.get("injection_markers", None) == line
     assert ("injection_markers" in event) == (markers is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "applied",
+    [None, (), ({"id": "parameter_pin.temp_zero", "version": 3},)],
+)
+async def test_the_jsonl_event_carries_settings_applied_only_when_applied(
+    applied,
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.settings_applied = applied
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert event.get("settings_applied") == (list(applied) if applied else None)
+    assert ("settings_applied" in event) == bool(applied)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "applied",
+    [
+        None,
+        (),
+        (
+            {
+                "id": "json_compaction",
+                "version": 1,
+                "before_chars": 200,
+                "after_chars": 120,
+                "items": 2,
+            },
+        ),
+    ],
+)
+async def test_the_jsonl_event_carries_transforms_applied_when_the_band_ran(
+    applied,
+) -> None:
+    stream = StringIO()
+    usage = LocalUsageLifecycle(stream)
+    prepared = _prepared()
+    prepared.transforms_applied = applied
+
+    await usage.finalize(prepared, _terminal())
+    await usage.aclose()
+
+    event = json.loads(stream.getvalue())
+    assert ("transforms_applied" in event) == (applied is not None)
+    assert event.get("transforms_applied") == (
+        None if applied is None else list(applied)
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_jsonl_event_carries_queue_wait_only_with_a_limiter() -> None:
+    lines = []
+    for wait in (None, 0, 120):
+        stream = StringIO()
+        usage = LocalUsageLifecycle(stream)
+        prepared = _prepared()
+        prepared.admission.queue_wait_ms = wait
+        await usage.finalize(prepared, _terminal())
+        await usage.aclose()
+        lines.append(json.loads(stream.getvalue()))
+
+    assert ["queue_wait_ms" in line for line in lines] == [False, True, True]
+    assert [line.get("queue_wait_ms") for line in lines[1:]] == [0, 120]
 
 
 @pytest.mark.asyncio

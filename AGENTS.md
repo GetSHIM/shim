@@ -21,7 +21,8 @@ exact public `shim` symbols in the ownership manifest.
 ## Preserve
 
 - provider-native payload, error, and streaming contracts;
-- one provider attempt per admitted request;
+- one provider attempt per admitted request, unless a tenant-written rule adds
+  attempts, each its own request id and ledger row;
 - invocation-scoped credential lifetime and redaction;
 - privacy fail-closed behavior;
 - enterprise transaction order, accounting truth, tenant isolation, and outbox

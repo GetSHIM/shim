@@ -9,8 +9,10 @@ from pydantic import BaseModel, ValidationError
 
 from shim.rules.content import PatternMatch, TermMatch
 from shim.rules.destination import DestinationMatch
+from shim.rules.parameter_pin import ParameterPinMatch
 from shim.rules.record_set import RecordSetMatch
 from shim.rules.request_limit import RequestLimitMatch
+from shim.rules.route import RouteMatch
 from shim.rules.model import (
     LIMITS,
     Rule,
@@ -51,8 +53,10 @@ KINDS: dict[RuleKind, KindSpec] = {
     "request_limit": KindSpec(
         "admission", ("monitor", "warn", "block"), RequestLimitMatch
     ),
-    "parameter_pin": KindSpec("settings", ("monitor", "warn", "set", "block")),
-    "route": KindSpec("resolver", ("route",)),
+    "parameter_pin": KindSpec(
+        "settings", ("monitor", "warn", "set", "block"), ParameterPinMatch
+    ),
+    "route": KindSpec("resolver", ("route",), RouteMatch),
 }
 
 
@@ -131,6 +135,18 @@ def validate_rule_set(
                 "RULE_MATCH_INVALID", f"rules[{index}].match", error
             ) from None
         dumped = match.model_dump(mode="json")
+        # Anthropic takes a temperature from 0 to 1 only.
+        if (
+            rule.kind == "parameter_pin"
+            and dumped["parameter"] == "temperature"
+            and dumped["value"] > 1
+            and (not scope.endpoints or "messages" in scope.endpoints)
+        ):
+            raise RuleSetError(
+                "RULE_PIN_OUT_OF_RANGE",
+                f"rules[{index}].match.value",
+                "a temperature above 1 needs an endpoints scope without messages",
+            )
         for name, kind, key in _SET_LIMITS:
             if rule.kind == kind:
                 totals[name] += len(dumped[key])

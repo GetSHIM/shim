@@ -345,6 +345,69 @@ its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
 
+`settings_applied` lists the settings band steps that set a provider parameter on
+the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
+is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
+are `anthropic_auto_cache` and `openai_prompt_cache_key`, and the tool and thinking
+steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, all
+version 1. It is written with the
+privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
+`warn` pin, a provider-cache step with nothing to do, a refused request), and absent
+when the band did not run: no pin in scope for the request's protocol and every
+band setting off, and token counting. Ids and versions only, never
+a parameter value. The request list and its CSV (compact JSON) show it; the
+community JSONL event carries it only when a step was applied.
+
+`transforms_applied` lists the transform band steps that changed the request, as
+`{"id", "version", "before_chars", "after_chars"}` plus the step's own counts:
+`json_compaction` adds `items`, the tool result strings it compacted, and its
+character sums cover those strings only. Written with the privacy facts, `[]` when the
+band ran and changed nothing (no JSON tool result qualified, or the request was
+skipped as bound to Anthropic thinking), absent when no transform is on and for token
+counting. Sizes and counts only. The request list and its CSV show it, and the
+community JSONL event carries it whenever the band ran.
+
+`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` are on
+the row of an extra attempt a tenant rule asked for (number 2 or 3, reason
+`fallback`, `overflow`, `format_retry`, `canary_fallback` or `degrade`, and the rule's
+id), written at reservation. The first attempt's row carries none of them and is never
+rewritten: a group is the row whose `request_id` is the `attempt_group_id` plus every
+row carrying it, and the attempt that served the client is the highest
+`attempt_number` that completed. Each row has its own tokens and cost; a client
+request settles one daily and monthly request unit across its attempts: an extra
+attempt reserves the unit only when every earlier attempt failed (and so gave its
+unit back), and none after an answered one. The request list, its CSV and
+`GET /api/v1/management/requests?attempt_group_id=<request id>` (both the first row
+and the later ones) carry them. `route_decision` is set when a
+[route rule](POLICY_DECISIONS.md#route-rules) decided at the conversation start,
+written at reservation: `rule_id`, `state`, `from` (the model the client named), `to`
+(the rule's alias), `reason` (the first `when` condition that matched, or `always`),
+`conversation_id` (16 hex characters of a keyed digest of the `X-Shim-Conversation-Id`
+header, or of the first turn without one; the header itself is never stored) and
+`outcome` (`routed`, `would_route`,
+`not_allowed_for_key` or `target_unavailable`). When a tenant rule moves the request
+again after privacy, that decision replaces it, with `from` and `to` as deployment ids
+(or `catalog`), `conversation_id` null, and the earlier decision under `previous` (one
+level); `deployment_kind` and `deployment_id` are then rewritten in the same update.
+Absent otherwise. The reservation writes `conversation_id` as null; the privacy
+update fills it in only when privacy found no personal data (null otherwise, also
+under `previous`, as it clears `repeat_digest`), so a request refused before privacy
+finished never keeps it. The
+request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
+never recorded.
+
+`shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
+to a candidate model: the primary request's id and the rule that chose it. The copy
+has its own tokens and cost, which the tenant pays, and reserves no daily or monthly
+request unit (`request_count` 0). Its tokens count against the organization's quota
+only, never the caller's key or team quota, task cost cap, or a team or tag cost
+budget. The request list and its CSV carry `shadow_of`;
+both keys are absent on every other row.
+
+`queue_wait_ms` is the milliseconds a request waited for room on its target under a
+concurrency limiter (0 when admitted at once), written at reservation; absent when no
+limiter is configured.
+
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
 (`APPROVAL_REQUIRED`), refused under (`APPROVAL_REJECTED`) or consumed. It is

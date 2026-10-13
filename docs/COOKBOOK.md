@@ -19,6 +19,10 @@ are in the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 - [Count instructions hidden in tool results](#count-instructions-hidden-in-tool-results)
 - [Analyse answers after delivery](#analyse-answers-after-delivery)
 - [Check structured output](#check-structured-output)
+- [Use the provider's cache discount](#use-the-providers-cache-discount)
+- [Load tools on demand](#load-tools-on-demand)
+- [Stop paying for old thinking](#stop-paying-for-old-thinking)
+- [Shrink JSON tool results](#shrink-json-tool-results)
 - [Stream long generations and read usage](#stream-long-generations-and-read-usage)
 - [Observe the gateway](#observe-the-gateway)
 - [Put shim behind LiteLLM](#put-shim-behind-litellm)
@@ -440,6 +444,9 @@ see the [enterprise cookbook](../ee/docs/COOKBOOK.md).
 ## Read errors and retry
 
 Tell a refusal shim made from one the provider made, and retry only when a retry can succeed.
+shim never retries on its own; only an enterprise tenant's rule can add a second
+attempt, and then the answer carries `X-Shim-Attempts` and the request id of the
+attempt that served it.
 
 1. Read the `X-Shim-Error-Code` response header. Every provider-route error whose
    code shim knows carries it, in the OpenAI, Anthropic and Gemini shapes alike.
@@ -476,6 +483,7 @@ except openai.APIStatusError as error:
 | One client IP over `GLOBAL_RATE_LIMIT_PER_MINUTE` (default 1,000) | 429 `RATE_LIMIT_EXCEEDED` on provider routes; elsewhere 429 `{"detail": "Too Many Requests"}` without a code | `Retry-After: 60` |
 | An agent task reached `SHIM_TASK_MAX_CALLS` calls, or its recorded cost reached `SHIM_TASK_MAX_COST_USD`, within `SHIM_TASK_WINDOW_SECONDS` | 429 `TASK_LIMIT_EXCEEDED`; the message names the cap | `x-should-retry: false`: start a new task or raise the cap |
 | With `SHIM_AGENT_LOOP=block`, the same tool call repeated more than `SHIM_AGENT_LOOP_REPEATS` times in one task within `LOOP_WINDOW_SECONDS` | 429 `AGENT_LOOP_DETECTED` | `x-should-retry: false`: change the agent's step |
+| With `SHIM_CONCURRENCY_TOKEN_LIMIT` set, the provider target already runs that many tokens of requests and none ended within `SHIM_CONCURRENCY_MAX_WAIT_MS` | 429 `CONCURRENCY_LIMITED` | `Retry-After: 5` |
 | Provider answered 429 | 429 `PROVIDER_RATE_LIMITED` | the provider's `retry-after`, when it sent seconds or an HTTP date |
 | Provider refused the request (400, 403, 404, 413, 422) | the provider's status, `PROVIDER_REJECTED_REQUEST`; for 400, 404, 413 and 422 the message is the provider's own | none: correct the request |
 | Provider refused the provider key (401), or Entra ID refused the configured client credential | 401 `INVALID_PROVIDER_CREDENTIAL` | none: correct the provider key |
@@ -561,6 +569,15 @@ Notes:
   proxy's IP addresses (not ranges) in `TRUSTED_PROXIES`, comma-separated or as a
   JSON list. shim then takes the client from `cf-connecting-ip`, `x-real-ip`, or
   the right-most untrusted `x-forwarded-for` entry.
+- Work in flight. `SHIM_CONCURRENCY_TOKEN_LIMIT` (1 to 100,000,000, unset by default)
+  caps the tokens of requests one provider target runs at once in this process, a
+  request counting its approximate input tokens plus its output limit. A request that
+  does not fit waits up to `SHIM_CONCURRENCY_MAX_WAIT_MS` (0 to 60,000, default 0), in
+  arrival order, then answers 429 `CONCURRENCY_LIMITED` with `Retry-After: 5`. A
+  request larger than the whole limit runs when nothing else is in flight. The usage
+  event's `queue_wait_ms` says how long a request waited (0 when admitted at once);
+  `shim_concurrency_admissions_total{outcome}` counts `immediate`, `after_wait` and
+  `refused`. Replicas do not share the count.
 
 ## Read warnings
 
@@ -754,6 +771,133 @@ never changed, retried or refused; the check runs after it was delivered.
 `error_path` names schema properties and array indices only, never a value or
 an unexpected key (that path ends in `/*`).
 
+## Use the provider's cache discount
+
+Let a repeated prompt prefix be billed at the provider's cache-read rate, without
+changing your application.
+
+1. For Anthropic, set `SHIM_ANTHROPIC_AUTO_CACHE=5m` (or `1h`). A messages request
+   that carries no `cache_control` anywhere (top level, `system`, `tools`, message
+   content, content inside a `tool_result`) gets one top-level
+   `"cache_control": {"type": "ephemeral"}` (`"ttl": "1h"` with `1h`); Anthropic
+   places the breakpoint on the last cacheable block and moves it as the
+   conversation grows. A request with your own breakpoints is sent as it is.
+2. For OpenAI, set `SHIM_OPENAI_PROMPT_CACHE_KEY=key` (one routing key per shim key)
+   or `tenant` (shared by every key). A chat or Responses request without a
+   `prompt_cache_key` gets `shim-` and 32 hex characters, derived from the scope,
+   the model and the request's leading `system` and `developer` messages (and
+   Responses `instructions`) and `tools`, so requests with the same prefix share
+   a key and different prefixes do not. The value says nothing the prompt does
+   not; `prompt_cache_retention` is never set.
+3. Read `cache_read_tokens` and `cache_write_tokens` on the usage event; its
+   `settings_applied` lists `anthropic_auto_cache` or `openai_prompt_cache_key` when
+   the step changed the request.
+
+Notes: Anthropic bills a cache write at 1.25 times the input price (2 times for
+`1h`) and a read at 0.1 times, so a prompt sent once above the model's minimum
+cacheable length (512 to 4,096 tokens) costs more, and a repeated one less; a
+shorter prompt is not cached and costs no write. With random placeholders
+(`PII_PLACEHOLDER_MODE=random`, the default) a request that masked a value
+changes on every send, so the Anthropic step leaves it alone; set
+`PII_PLACEHOLDER_MODE=stable` to cache such prompts. OpenAI caches automatically
+above 1,024 tokens and the key only steers routing; it guarantees no hit.
+`CACHE_NOT_APPLIED` is raised only for breakpoints you placed. Gemini requests and
+token counting are never changed. Leave these settings, and those of the next two
+recipes, off when
+`ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` points at something other than the
+provider: another server may refuse a parameter it does not know.
+
+## Load tools on demand
+
+Let the model open only the tool definitions it needs, through the provider's own
+tool search, for apps that send answers back unchanged.
+
+1. Set `SHIM_TOOL_SEARCH=regex` (or `bm25`), and `SHIM_TOOL_SEARCH_MIN_TOOLS` (2 to
+   10,000, default 10) for the fewest tools a request must offer.
+2. Name tools that stay loaded in `SHIM_TOOL_SEARCH_KEEP_LOADED` (comma-separated or
+   a JSON list, at most 64 names).
+
+A messages request to Claude Opus, Sonnet or Haiku 4.5 or later, a 5.x model, Fable
+or Mythos, or a Responses request to GPT-5.4 or later, offering at least the minimum
+of its own function tools, gets `"defer_loading": true` on every such tool except the
+kept ones, the tool `tool_choice` forces, the tools an `allowed_tools` choice names,
+Anthropic tools carrying `cache_control`, and, when nothing else would stay loaded,
+the first tool. One search tool is appended: `tool_search_tool_regex_20251119` or
+`tool_search_tool_bm25_20251119` for Anthropic, `{"type": "tool_search"}` for
+OpenAI. Every definition is still sent, in its order; the same tools give the same
+bytes on every turn, so the prompt cache holds.
+
+Notes: the model may answer with a search step first (`server_tool_use` and
+`tool_search_tool_result` blocks, or `tool_search_call` and `tool_search_output`
+items); shim returns them as the provider sent them, and your app must keep them in
+its history, as the provider SDKs' agent loops do. An app that drops unknown blocks
+can fail on its next request: try one app first (enterprise scopes the setting by
+key). A request is left alone, with a `settings.tool_search` verdict saying why, when
+the model is older (`SETTING_MODEL_UNSUPPORTED`), the client already sends a search
+tool or a `defer_loading` (`SETTING_CLIENT_OWNED`), or an Anthropic request has
+thinking on or thinking blocks in its history (`SETTING_THINKING_BOUND`: changing
+tools mid-conversation invalidates earlier thinking). Server tools, MCP toolsets and
+namespaces are never deferred. Turning the setting on or off changes the tool
+prefix once per conversation, one cache write.
+
+## Stop paying for old thinking
+
+Stop earlier turns' thinking from being billed as input again on every turn.
+
+1. For Anthropic, set `SHIM_ANTHROPIC_KEEP_THINKING_TURNS` to the thinking turns to
+   keep (1 to 8; 0 is off). A messages request with `thinking.type` `enabled` or
+   `adaptive` and no `context_management` of its own gets
+   `"context_management": {"edits": [{"type": "clear_thinking_20251015", "keep":
+   {"type": "thinking_turns", "value": N}}]}`, sent on Anthropic's beta API with
+   `anthropic-beta: context-management-2025-06-27` after any flags your client sends.
+   The answer's `context_management.applied_edits` says what was cleared.
+2. For OpenAI, set `SHIM_OPENAI_REASONING_CONTEXT=current_turn`. A Responses request
+   to the GPT-5.6 family or later without `reasoning.context` gets
+   `"reasoning": {"context": "current_turn"}`; earlier models already default to it.
+
+Notes: when thinking blocks are cleared, Anthropic rewrites the prompt cache from the
+cleared block onward on each turn that clears one, so the saving is the old thinking
+minus that write. Not rendering earlier reasoning can change OpenAI answer quality.
+Tool results are never cleared (`clear_tool_uses` is not offered), and neither
+setting touches chat completions, Gemini (its thought blocks and signatures pass as
+sent) or token counting. A client's own `context_management` or `reasoning.context`
+wins, with a `SETTING_CLIENT_OWNED` verdict. With both settings off, Anthropic models
+that keep earlier thinking keep billing it as input, as `prompt_tokens` show.
+
+## Shrink JSON tool results
+
+Send pretty-printed JSON your tools return without its indentation, so every later
+turn that resends the history pays for fewer input tokens.
+
+1. Set `SHIM_JSON_COMPACTION=on`.
+2. Read `transforms_applied` on the usage event: `{"id": "json_compaction",
+   "version": 1, "before_chars", "after_chars", "items"}` when a tool result changed,
+   `[]` when the band ran and nothing qualified.
+
+Only tool results are read: chat `role: "tool"` content (a string, or `text` parts),
+Responses `function_call_output` output (a string, or `input_text` parts), Anthropic
+`tool_result` content (a string, or `text` blocks), and every string inside a Gemini
+`functionResponse.response`. A string changes only when it is a whole JSON object or
+array of 64 to 1,000,000 characters with space, tab, CR or LF between tokens: those
+characters are dropped and everything else, string contents, number literals such as
+`1.10` and duplicate keys included, is copied byte for byte, and the result is kept
+only when it parses to the same value and is shorter. System, user and assistant
+text, tool call arguments, tool definitions and documents are never changed, nor is
+token counting, which counts the request as you sent it.
+
+Notes: the same input always gives the same output, so from the first request with
+the setting on the provider's prompt cache holds; on the request where the setting
+flips, a conversation in progress sends its earlier tool results in the other form
+once, writing the cache again from the first one. An Anthropic request with thinking
+on, or with thinking blocks in its history, is left alone (a
+`transforms.json_compaction` `skip` verdict, `TRANSFORM_THINKING_BOUND`): changing an
+earlier turn invalidates every later thinking block. A Responses request that carries
+a `reasoning` input item (encrypted reasoning replayed by the client) is left alone
+the same way. Claude Code users get the same
+compaction at the source from shim-cli. Tool results over 65,536 characters in total
+are compacted off the event loop. `shim_transforms_total{transform, result}` counts
+the step per request.
+
 ## Stream long generations and read usage
 
 Stream long answers without losing exact token accounting.
@@ -854,6 +998,9 @@ curl -s http://localhost:8000/metrics | grep -E '^(requests|provider_|shim_)'
 | `shim_requests_in_flight` (gauge, provider calls in progress) | `provider` |
 | `shim_response_analysis_total` | `analyzer`, `result` |
 | `shim_injection_markers_total` | `marker` |
+| `shim_transforms_total` | `transform`, `result` (`applied`, `unchanged`, `skipped`) |
+| `shim_extra_attempts_total` (enterprise tenant rules only) | `reason`, `outcome` (`started`, `skipped`, `not_admitted`) |
+| `shim_shadow_copies_total` (enterprise only) | `outcome` (`sent`, `no_candidate`, `skipped_guard`, `dropped_saturated`, `failed`) |
 
 Notes: every label takes its value from a fixed set. Values taken from requests
 go through the vocabulary in `src/shim/observability/metrics.py`, and anything

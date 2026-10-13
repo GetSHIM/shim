@@ -16,6 +16,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from shim_enterprise.gateway.attempts import TenantAttemptPolicy
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
@@ -238,6 +239,8 @@ def _create_gateway_kernel(
         chain_store=chain_store,
         policy_resolver=policy_resolver,
         prepare_inference=DeploymentResolver(AsyncSessionLocal).resolve,
+        attempt_policy=TenantAttemptPolicy(AsyncSessionLocal, strategies=()),
+        shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
         loop_repeat_limit=settings.LOOP_REPEAT_LIMIT,

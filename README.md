@@ -108,7 +108,16 @@ request it:
   correct the request (400, 404, 413 and 422), still masked and at most 500
   characters. Every error carries a code and, where one helps, a `hint`.
 - **Makes at most one billable provider attempt per admitted request**, because
-  outbound SDK retries are disabled.
+  outbound SDK retries are disabled, unless an enterprise tenant's rule asks for a
+  second target; each extra attempt is then its own request with its own cost.
+- **Changes a request in three bands, each opt-in.** The settings band sets the
+  provider's own parameters and never touches content; a transform band changes
+  content only under published, switchable rules; a report band only shows. shim
+  writes a parameter such as `temperature` only when an enterprise tenant pins it,
+  and asks for the providers' own prompt-cache discount (an Anthropic breakpoint,
+  an OpenAI `prompt_cache_key`), tool search and the clearing of old thinking only
+  when the operator turns them on. The one transform today, also off by default,
+  removes the whitespace from JSON tool results without changing their value.
 
 It does not translate payloads. When a provider ships a new field, a new model,
 or changes streaming behaviour, you are not waiting on shim to catch up.

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import ipaddress
 import logging
 import math
@@ -15,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from shim.billing.attribution import CostAttribution
 from shim.billing.pricing import DEFAULT_PRICE_BOOK
 from shim.gateway.kernel.result import (
     PreparedInference,
@@ -23,8 +27,11 @@ from shim.gateway.kernel.result import (
 )
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim.api.v1.chat import model_record
+from shim.rules import Rule, in_scope
+from shim.rules.route import conversation_id, owned, route_reason, start_view
 from shim_enterprise.core.config import settings
 from shim_enterprise.gateway.api.enterprise_errors import raise_persistence_error
+from shim_enterprise.observability.enterprise_metrics import ROUTE_DECISIONS_TOTAL
 from shim_enterprise.tenants.models import ModelDeployment, ApiKey, User
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.teams import require_team
@@ -34,7 +41,7 @@ logger = logging.getLogger(__name__)
 UNHEALTHY_MARK_SECONDS = 300
 
 
-def _unhealthy_seconds_left(deployment: ModelDeployment) -> int:
+def unhealthy_seconds_left(deployment: ModelDeployment) -> int:
     checked_at = deployment.health_checked_at
     if deployment.health != "unhealthy" or checked_at is None:
         return 0
@@ -140,11 +147,149 @@ async def require_model_aliases(
         )
 
 
+def deployment_target(deployment: ModelDeployment, base_url: str) -> ProviderTarget:
+    """The invocation destination of an approved deployment row."""
+    return ProviderTarget(
+        deployment_id=str(deployment.id),
+        base_url=base_url,
+        upstream_model=deployment.upstream_model,
+        credential_reference=str(deployment.provider_secret_id),
+        timeout_seconds=deployment.timeout_seconds,
+        declared_version=deployment.declared_version,
+        input_per_million=deployment.input_price_per_million,
+        output_per_million=deployment.output_price_per_million,
+        context_window=deployment.context_window,
+        price_model=deployment.price_model,
+        cache_read_per_million=deployment.cache_read_price_per_million,
+        cache_write_per_million=deployment.cache_write_price_per_million,
+    )
+
+
+async def alias_target(
+    session: AsyncSession, prepared: PreparedInference, alias: str
+) -> (
+    tuple[ProviderTarget, Literal["internal", "external"]]
+    | Literal["not_allowed", "unavailable"]
+):
+    """The registry deployment `alias` names, checked as the resolver checks one:
+    the key's allowlist, then disabled, another provider, unhealthy, origin."""
+
+    allowed = await session.scalar(
+        select(ApiKey.allowed_models).where(ApiKey.id == prepared.api_key_id)
+    )
+    if allowed is not None and alias not in allowed:
+        return "not_allowed"
+    deployment = await session.scalar(
+        select(ModelDeployment).where(
+            ModelDeployment.organization_id == prepared.tenant_id,
+            ModelDeployment.alias == alias,
+        )
+    )
+    base_url = None
+    if (
+        deployment is not None
+        and deployment.enabled
+        and deployment.provider == str(prepared.provider)
+        and not unhealthy_seconds_left(deployment)
+    ):
+        try:
+            base_url = validate_deployment_url(deployment.base_url)
+        except ValueError:
+            pass
+    if deployment is None or base_url is None:
+        return "unavailable"
+    kind: Literal["internal", "external"] = (
+        "internal"
+        if deployment.deployment_kind == "internal"
+        and internal_origin_approved(base_url)
+        else "external"
+    )
+    return deployment_target(deployment, base_url), kind
+
+
+def _conversation_key() -> bytes:
+    base = (settings.COMPLIANCE_HASH_SALT or settings.SECRET_KEY).encode("utf-8")
+    return hmac.new(base, b"shim-route-conversation-v1", hashlib.sha256).digest()
+
+
 class DeploymentResolver:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self.session_factory = session_factory
 
-    async def resolve(self, prepared: PreparedInference) -> PreparedInference:
+    async def resolve(
+        self, prepared: PreparedInference, headers: Mapping[str, str]
+    ) -> PreparedInference:
+        resolved = await self._registered(prepared)
+        routes = [
+            rule
+            for rule in (prepared.rules.rules if prepared.rules is not None else ())
+            if rule.kind == "route" and owned(rule.match)
+        ]
+        # A tenant without route rules runs nothing below.
+        return await self._route(resolved, routes, headers) if routes else resolved
+
+    async def _route(
+        self,
+        prepared: PreparedInference,
+        routes: list[Rule],
+        headers: Mapping[str, str],
+    ) -> PreparedInference:
+        """The first route rule that holds decides: enforced ones, then monitor ones."""
+
+        view = start_view(prepared.payload, prepared.protocol)
+        if view is None:
+            return prepared
+        tags = CostAttribution.resolve(
+            headers.get("x-shim-tag"),
+            api_key_cost_center=prepared.policy.cost_center,
+            maximum_length=settings.COST_TAG_MAX_LENGTH,
+        ).tags
+        for rule in sorted(routes, key=lambda rule: rule.state != "enforced"):
+            if prepared.model not in rule.match["from"] or not in_scope(
+                rule, prepared, tags
+            ):
+                continue
+            reason = route_reason(rule.match.get("when"), prepared.payload, view)
+            if reason is not None:
+                break
+        else:
+            return prepared
+        decision = {
+            "rule_id": rule.id,
+            "state": rule.state,
+            "from": prepared.model,
+            "to": rule.match["to"],
+            "reason": reason,
+            "conversation_id": conversation_id(
+                headers.get("x-shim-conversation-id"), _conversation_key(), view[0]
+            ),
+        }
+        routed = prepared
+        if rule.state == "monitor":
+            decision["outcome"] = "would_route"
+        else:
+            async with self.session_factory() as session:
+                found = await alias_target(session, prepared, rule.match["to"])
+            if found == "not_allowed":
+                decision["outcome"] = "not_allowed_for_key"
+            elif found == "unavailable":
+                decision["outcome"] = "target_unavailable"
+            else:
+                target, kind = found
+                decision["outcome"] = "routed"
+                routed = replace(
+                    prepared,
+                    payload={**prepared.payload, "model": target.upstream_model},
+                    deployment_kind=kind,
+                    target=target,
+                )
+        prepared.record_rule_match(rule, 1)
+        ROUTE_DECISIONS_TOTAL.labels(
+            state=rule.state, outcome=decision["outcome"]
+        ).inc()
+        return replace(routed, route_decision=decision)
+
+    async def _registered(self, prepared: PreparedInference) -> PreparedInference:
         async with self.session_factory() as session:
             try:
                 key = await self._active_key(session, prepared.api_key_id)
@@ -239,7 +384,7 @@ class DeploymentResolver:
                     "message": "The model is disabled or does not support this provider protocol.",
                 },
             )
-        retry_after = _unhealthy_seconds_left(deployment)
+        retry_after = unhealthy_seconds_left(deployment)
         if retry_after:
             prepared.record_verdict(
                 "deployment.registry",
@@ -305,20 +450,7 @@ class DeploymentResolver:
             prepared,
             payload={**prepared.payload, "model": deployment.upstream_model},
             deployment_kind=kind,
-            target=ProviderTarget(
-                deployment_id=str(deployment.id),
-                base_url=base_url,
-                upstream_model=deployment.upstream_model,
-                credential_reference=str(deployment.provider_secret_id),
-                timeout_seconds=deployment.timeout_seconds,
-                declared_version=deployment.declared_version,
-                input_per_million=deployment.input_price_per_million,
-                output_per_million=deployment.output_price_per_million,
-                context_window=deployment.context_window,
-                price_model=deployment.price_model,
-                cache_read_per_million=deployment.cache_read_price_per_million,
-                cache_write_per_million=deployment.cache_write_price_per_million,
-            ),
+            target=deployment_target(deployment, base_url),
         )
 
     async def catalog(
@@ -355,7 +487,7 @@ class DeploymentResolver:
             records.pop(row.alias, None)
             if (
                 not row.enabled
-                or _unhealthy_seconds_left(row)
+                or unhealthy_seconds_left(row)
                 or row.provider != provider
             ):
                 continue

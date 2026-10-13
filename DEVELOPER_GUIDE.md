@@ -29,8 +29,9 @@ infrastructure.
 ## Runtime invariants
 
 - Provider request and response bodies stay provider-native.
-- Each admitted request makes at most one provider attempt; SDK retries remain
-  disabled.
+- Each admitted request makes at most one provider attempt unless a
+  tenant-written rule adds attempts, each its own request id and ledger row; SDK
+  retries remain disabled.
 - Provider credentials are invocation-scoped, consumed once, and absent from
   logs, events, responses, and persistence.
 - Missing privacy-continuation state fails closed in community mode.
