@@ -475,6 +475,77 @@ async def test_restore_permission_and_inflight_sharing_follow_the_key(
 
 
 @pytest.mark.asyncio
+async def test_the_provider_cache_setting_reaches_the_band(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from shim.gateway.request_policy import BandSettings
+    from shim_enterprise.tenants.gateway_settings import GatewaySettings
+
+    api_key = SimpleNamespace(
+        id=UUID(int=7),
+        key_hash="key-hash",
+        tier="managed",
+        cost_center=None,
+        team=None,
+        team_id=None,
+    )
+    monkeypatch.setattr(
+        policy_module, "load_api_key_for_principal", AsyncMock(return_value=api_key)
+    )
+
+    async def band(gateway: GatewaySettings) -> BandSettings:
+        service = SimpleNamespace(
+            resolve=AsyncMock(
+                return_value=ResolvedTenantSettings(
+                    tenant_id=UUID(int=1),
+                    pii_config=None,
+                    tier_definition=None,
+                    gateway_settings=gateway,
+                )
+            )
+        )
+        resolver = TenantRequestPolicyResolver(
+            service, Mock(return_value=SessionContext(object()))
+        )
+        return (await resolver.resolve(SimpleNamespace())).band
+
+    assert await band(GatewaySettings()) == BandSettings()
+    assert await band(
+        GatewaySettings.model_validate(
+            {
+                "provider_cache": {
+                    "anthropic_auto_cache": "1h",
+                    "openai_prompt_cache_key": "tenant",
+                    "deployments": ["support-llm"],
+                },
+                "tool_search": {
+                    "mode": "bm25",
+                    "min_tools": 4,
+                    "keep_loaded": ["lookup"],
+                    "api_key_ids": [str(UUID(int=7))],
+                },
+                "thinking_history": {
+                    "anthropic_keep_turns": 2,
+                    "openai_reasoning_context": "current_turn",
+                },
+                "transforms": {"json_compaction": "on"},
+            }
+        )
+    ) == BandSettings(
+        anthropic_auto_cache="1h",
+        openai_prompt_cache_key="tenant",
+        provider_cache_deployments=("support-llm",),
+        tool_search="bm25",
+        tool_search_min_tools=4,
+        tool_search_keep_loaded=("lookup",),
+        tool_search_api_key_ids=(str(UUID(int=7)),),
+        anthropic_keep_thinking_turns=2,
+        openai_reasoning_context="current_turn",
+        json_compaction=True,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cached", "monitored"),
     [({}, frozenset()), ({"embeddings_monitor_types": ["IBAN_CODE"]}, {"IBAN_CODE"})],

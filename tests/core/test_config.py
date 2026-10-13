@@ -314,6 +314,93 @@ def test_inflight_sharing_is_off_unless_turned_on(value, valid) -> None:
             CommunitySettings(_env_file=None, SHIM_INFLIGHT_SHARING=value)
 
 
+@pytest.mark.parametrize(
+    ("name", "values"),
+    [
+        ("SHIM_ANTHROPIC_AUTO_CACHE", ("off", "5m", "1h")),
+        ("SHIM_OPENAI_PROMPT_CACHE_KEY", ("off", "key", "tenant")),
+    ],
+)
+def test_provider_cache_settings_are_off_unless_set(name, values) -> None:
+    assert getattr(CommunitySettings(_env_file=None), name) == "off"
+    for value in values:
+        assert (
+            getattr(CommunitySettings(_env_file=None, **{name: value}), name) == value
+        )
+    for value in ("on", "1d", ""):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
+def test_tool_search_and_thinking_settings_are_off_and_bounded() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (
+        settings.SHIM_TOOL_SEARCH,
+        settings.SHIM_TOOL_SEARCH_MIN_TOOLS,
+        settings.SHIM_TOOL_SEARCH_KEEP_LOADED,
+        settings.SHIM_ANTHROPIC_KEEP_THINKING_TURNS,
+        settings.SHIM_OPENAI_REASONING_CONTEXT,
+    ) == ("off", 10, [], 0, "off")
+    for raw in ("lookup, create", '["lookup", "create"]'):
+        assert CommunitySettings(
+            _env_file=None, SHIM_TOOL_SEARCH_KEEP_LOADED=raw
+        ).SHIM_TOOL_SEARCH_KEEP_LOADED == ["lookup", "create"]
+    for name, value in (
+        ("SHIM_TOOL_SEARCH", "on"),
+        ("SHIM_TOOL_SEARCH_MIN_TOOLS", 1),
+        ("SHIM_TOOL_SEARCH_MIN_TOOLS", 10_001),
+        ("SHIM_TOOL_SEARCH_KEEP_LOADED", ",".join(f"t{n}" for n in range(65))),
+        ("SHIM_TOOL_SEARCH_KEEP_LOADED", "x" * 129),
+        ("SHIM_ANTHROPIC_KEEP_THINKING_TURNS", 9),
+        ("SHIM_ANTHROPIC_KEEP_THINKING_TURNS", -1),
+        ("SHIM_OPENAI_REASONING_CONTEXT", "all_turns"),
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
+@pytest.mark.parametrize(
+    ("value", "valid"), [("off", True), ("on", True), ("yes", False)]
+)
+def test_json_compaction_is_off_unless_turned_on(value, valid) -> None:
+    assert CommunitySettings(_env_file=None).SHIM_JSON_COMPACTION == "off"
+    if not valid:
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, SHIM_JSON_COMPACTION=value)
+        return
+    assert (
+        CommunitySettings(
+            _env_file=None, SHIM_JSON_COMPACTION=value
+        ).SHIM_JSON_COMPACTION
+        == value
+    )
+
+
+def test_the_concurrency_limit_is_off_unless_set() -> None:
+    settings = CommunitySettings(_env_file=None)
+    assert (
+        settings.SHIM_CONCURRENCY_TOKEN_LIMIT,
+        settings.SHIM_CONCURRENCY_MAX_WAIT_MS,
+    ) == (
+        None,
+        0,
+    )
+    configured = CommunitySettings(
+        _env_file=None,
+        SHIM_CONCURRENCY_TOKEN_LIMIT=2_000,
+        SHIM_CONCURRENCY_MAX_WAIT_MS=60_000,
+    )
+    assert configured.SHIM_CONCURRENCY_TOKEN_LIMIT == 2_000
+    for name, value in (
+        ("SHIM_CONCURRENCY_TOKEN_LIMIT", 0),
+        ("SHIM_CONCURRENCY_TOKEN_LIMIT", 100_000_001),
+        ("SHIM_CONCURRENCY_MAX_WAIT_MS", -1),
+        ("SHIM_CONCURRENCY_MAX_WAIT_MS", 60_001),
+    ):
+        with pytest.raises(ValidationError):
+            CommunitySettings(_env_file=None, **{name: value})
+
+
 def test_retirement_dates_are_recorded_and_the_header_is_opt_in(tmp_path) -> None:
     settings = CommunitySettings(_env_file=None)
 

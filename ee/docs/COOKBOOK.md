@@ -22,6 +22,7 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Show masked values only to some teams](#show-masked-values-only-to-some-teams)
 - [Cap tools, documents and history](#cap-tools-documents-and-history)
 - [Stay under the price tier](#stay-under-the-price-tier)
+- [Pin a parameter](#pin-a-parameter)
 - [Preview a rule before you enforce it](#preview-a-rule-before-you-enforce-it)
 - [Import AIUC rules](#import-aiuc-rules)
 - [Read the daily privacy card](#read-the-daily-privacy-card)
@@ -31,19 +32,35 @@ Gateway keys are the `sk-shim-` plaintext that
 - [Archive audit evidence to a write-once bucket](#archive-audit-evidence-to-a-write-once-bucket)
 - [Produce a KVKK exposure report](#produce-a-kvkk-exposure-report)
 - [Register a private model deployment](#register-a-private-model-deployment)
+- [Register an Azure OpenAI deployment](#register-an-azure-openai-deployment)
+- [Use Amazon Bedrock](#use-amazon-bedrock)
+- [Connect Bedrock with an AWS role](#connect-bedrock-with-an-aws-role)
+- [Lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)
+- [See team costs on the AWS bill](#see-team-costs-on-the-aws-bill)
+- [How busy is our GPU?](#how-busy-is-our-gpu)
+- [Allocate hardware cost to teams](#allocate-hardware-cost-to-teams)
+- [Read the capacity forecast](#read-the-capacity-forecast)
 - [Automate management with a service account](#automate-management-with-a-service-account)
+- [Give an agent a recommender key](#give-an-agent-a-recommender-key)
+- [Let Claude Code read findings and draft plans](#let-claude-code-read-findings-and-draft-plans)
+- [Write rules from a sentence with your agent](#write-rules-from-a-sentence-with-your-agent)
+- [Run Claude Code on shim and let it manage shim](#run-claude-code-on-shim-and-let-it-manage-shim)
 - [Give someone exactly the access they need](#give-someone-exactly-the-access-they-need)
 - [Plan, apply and undo a change](#plan-apply-and-undo-a-change)
 - [Require a second admin for loosening changes](#require-a-second-admin-for-loosening-changes)
+- [Keep the policy in Git](#keep-the-policy-in-git)
 - [Hold a request for approval](#hold-a-request-for-approval)
 - [Keep matched requests and open one](#keep-matched-requests-and-open-one)
 - [See what changed after a prompt change](#see-what-changed-after-a-prompt-change)
 - [Read and export findings](#read-and-export-findings)
+- [Let shim switch off unused deployments, and see what it did](#let-shim-switch-off-unused-deployments-and-see-what-it-did)
 - [Import LiteLLM spend logs](#import-litellm-spend-logs)
 - [Let shim suggest a fix](#let-shim-suggest-a-fix)
 - [Turn on answer checks and read the findings](#turn-on-answer-checks-and-read-the-findings)
 - [Why is my request expensive](#why-is-my-request-expensive)
 - [Read latency per team and app](#read-latency-per-team-and-app)
+- [See what an agent task cost](#see-what-an-agent-task-cost)
+- [Preview a task cap before you set it](#preview-a-task-cap-before-you-set-it)
 - [How much more do Turkish answers cost on each model](#how-much-more-do-turkish-answers-cost-on-each-model)
 - [Find truncated and refused answers](#find-truncated-and-refused-answers)
 - [Is our model list complete?](#is-our-model-list-complete)
@@ -279,7 +296,7 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | Field | Default | What it does |
 | --- | --- | --- |
 | `response_analysis` | `[]` | Analyzers that read each completed answer after it was delivered, from `available_analyzers`; the request list shows their results as `response_analysis`. |
-| `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. |
+| `task_caps` | no cap, 3600 s | `max_calls`, `max_cost_usd` and `window_seconds` for one agent task (requests carrying `X-Shim-Task-Id` or a `traceparent`); see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). A PATCH changes only the fields it names; `null` removes a cap. Preview first: [what a task cap would have refused](#preview-a-task-cap-before-you-set-it). |
 | `agent_loop` | `count`, 5 | `action` (`off`, `count`, `block`) and `repeats` for the repeated-tool-call signal. |
 | `inflight_sharing_api_key_ids` | `[]` | API keys (at most 1,000 of this organization) whose identical JSON requests in flight on one replica share the first one's answer; see the [community recipe](../../docs/COOKBOOK.md#read-errors-and-retry). |
 | `restore_withheld` | `{}` | Per entity type or rule label, the teams and keys that get the value back in the answer; every other caller keeps the placeholder. See [show masked values only to some teams](#show-masked-values-only-to-some-teams). |
@@ -288,6 +305,14 @@ default; privacy switches stay under [privacy settings](#change-the-privacy-sett
 | `injection_markers` | `"off"` | `count`: count instructions hidden in tool results and documents, shown as `injection_markers` in the request list; `warn`: also add `INJECTION_MARKERS` to `X-Shim-Warnings`. Nothing is blocked or changed; see the [community recipe](../../docs/COOKBOOK.md#count-instructions-hidden-in-tool-results). |
 | `four_eyes` | `"off"` | `"relaxing"`: a change that loosens protection needs a second administrator ([four eyes](#require-a-second-admin-for-loosening-changes)). |
 | `finding_modes` | `{}` | Per finding rule, `observe`, `suggest` or `auto`, up to the rule's highest mode ([let shim suggest a fix](#let-shim-suggest-a-fix)); a PATCH merges per rule. |
+| `provider_cache` | off, off, `[]` | `anthropic_auto_cache` (`off`, `5m`, `1h`) and `openai_prompt_cache_key` (`off`, `key`, `tenant`), the [community recipe](../../docs/COOKBOOK.md#use-the-providers-cache-discount)'s two switches, for catalog routes and the registry aliases in `deployments` (at most 100 of this organization; a Bedrock deployment is 422). A PATCH changes only the fields it names. |
+| `tool_search` | `off`, 10, `[]`, `[]` | `mode` (`off`, `regex`, `bm25`), `min_tools` (2 to 10,000), `keep_loaded` (at most 64 tool names) and `api_key_ids` (at most 100 keys of this organization; empty is every key): [load tools on demand](../../docs/COOKBOOK.md#load-tools-on-demand), for catalog routes and the `provider_cache.deployments` aliases. Start with one app's key. |
+| `thinking_history` | 0, `off` | `anthropic_keep_turns` (0 to 8) and `openai_reasoning_context` (`off`, `current_turn`): [stop paying for old thinking](../../docs/COOKBOOK.md#stop-paying-for-old-thinking). |
+| `transforms` | `off` | `json_compaction` (`off`, `on`): [shrink JSON tool results](../../docs/COOKBOOK.md#shrink-json-tool-results), lossless, for every target. |
+| `auto_remediation_paused` | `false` | `true` stops new automatic and agent applies; windows keep closing and automatic undo keeps running ([let shim switch off unused deployments](#let-shim-switch-off-unused-deployments-and-see-what-it-did)). |
+| `bedrock_region_lock` | `off` | `mode`, `scopes`, `regions`: which Bedrock inference profiles requests may use ([lock Bedrock to EU regions](#lock-bedrock-to-eu-regions)). |
+| `bedrock_attribution` | `off` | `mode` `session_tags`, `tag_key`, `unassigned_value`: each team's tag on its Bedrock role sessions ([see team costs on the AWS bill](#see-team-costs-on-the-aws-bill)); needs `AWS_GATEWAY_IDENTITY`. |
+| `inference_metrics` | `[]` | Internal deployments whose model server shim reads the load of (`deployment_id`, `server`, `send_credential`); a PATCH replaces the list ([how busy is our GPU?](#how-busy-is-our-gpu)). |
 
 ```console
 curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
@@ -310,13 +335,21 @@ a task cap, shortening its window, raising `agent_loop.repeats` or moving
 `agent_loop.action` down from `block` are relaxing; listing a key in
 `inflight_sharing_api_key_ids` is neutral, because each request still passes its
 own limits and privacy and an answer never crosses keys, and an id this
-organization lacks is 422; turning `four_eyes` off is relaxing, and a field
+organization lacks is 422; `provider_cache`, `tool_search`, `thinking_history` and
+`transforms` change what a request costs, not what it may carry, so every change to
+them is neutral, and a `tool_search` key this organization lacks is 422; turning `four_eyes` off is relaxing, and a field
 without a direction counts as relaxing. Every change records a
 [policy version](#plan-apply-and-undo-a-change). Gateways read the settings
 from a cache that lives at most 300 seconds; a change clears it at once.
 Enterprise ignores the community `SHIM_RESPONSE_ANALYSIS`,
-`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`
-and `SHIM_INFLIGHT_SHARING` variables. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
+`SHIM_INJECTION_MARKERS`, `SHIM_PRICE_TIER_WARNING`, `SHIM_TASK_*`, `SHIM_AGENT_LOOP*`,
+`SHIM_INFLIGHT_SHARING`, `SHIM_ANTHROPIC_AUTO_CACHE`, `SHIM_OPENAI_PROMPT_CACHE_KEY`,
+`SHIM_TOOL_SEARCH*`, `SHIM_ANTHROPIC_KEEP_THINKING_TURNS`,
+`SHIM_OPENAI_REASONING_CONTEXT`, `SHIM_JSON_COMPACTION` and `SHIM_CONCURRENCY_*`
+variables. `SHADOW_MAX_IN_FLIGHT` (1 to 64, default 4) caps the shadow copies of
+finished requests one process runs at once; more are dropped and counted. A copy
+counts against the organization's quota only, never the caller's key, team, task
+or team and tag cost budgets. Enterprise task counters live in Redis (`task:{organization}:{sha256 of
 the task id}`); when Redis fails, task caps are not applied: calls go on with a
 `TASK_COUNTER_UNAVAILABLE` verdict, an error log line and
 `shim_task_counter_unavailable_total`, so an outage is never silent. Task caps are
@@ -403,7 +436,8 @@ Notes: a stale `revision` is 409 `RULE_SET_REVISION_CONFLICT` with the current
 revision; read again and resend. A refused set is 422 with `code` and the
 `path` of the first problem (`rules[0].kind`): `RULE_SET_INVALID`,
 `RULE_ID_DUPLICATE`, `RULE_KIND_UNAVAILABLE`, `RULE_ACTION_UNAVAILABLE`,
-`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_SCOPE_UNKNOWN` (a key or team id this organization
+`RULE_MATCH_INVALID`, `RULE_PATTERN_UNSAFE`, `RULE_PIN_OUT_OF_RANGE` (a pinned
+temperature above 1 that could reach Anthropic), `RULE_SCOPE_UNKNOWN` (a key or team id this organization
 does not have), `RULE_SCOPE_REQUIRED` (a `destination` rule without a scope, or a `block`
 scoped only by tags and endpoints) or
 `RULE_MUST_START_IN_MONITOR`. A body over 1,000,000 bytes is
@@ -560,6 +594,91 @@ Notes: only catalog models with a tier are checked; registry deployments never
 match. The settled tokens decide the price, and `LARGE_CONTEXT_PRICE` still marks a
 request that was billed at the higher rate.
 
+## Pin a parameter
+
+Send every request in scope with the same temperature, seed or reasoning effort, so
+results stay comparable.
+
+1. Add a `parameter_pin` rule to the [rule set](#write-a-tenant-rule), scoped by
+   model and in `monitor` state first:
+
+```json
+{"id": "temp_zero", "name": "Deterministic answers", "kind": "parameter_pin",
+ "action": "set", "state": "monitor", "scope": {"models": ["gpt-5-nano"]},
+ "match": {"parameter": "temperature", "value": 0}}
+```
+
+| `parameter` | `value` | Chat | Responses | Messages | Gemini |
+| --- | --- | --- | --- | --- | --- |
+| `temperature` | 0 to 2 (above 1 needs an `endpoints` scope without `messages`) | `temperature` | `temperature` | `temperature` | `generationConfig.temperature` |
+| `top_p` | 0 to 1 | `top_p` | `top_p` | `top_p` | `generationConfig.topP` |
+| `top_k` | integer 1 to 500 | | | `top_k` | `generationConfig.topK` |
+| `seed` | integer 0 to 2,147,483,647 | `seed` | | | `generationConfig.seed` |
+| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` | `reasoning_effort` | `reasoning.effort` | | |
+
+2. Watch the request list: a request that omits the parameter or sends another
+   value shows in `rule_matches` with `RULE_WOULD_SET` (or `RULE_WOULD_BLOCK`).
+3. Send the set again with `"state": "enforced"`. `set` writes the value into
+   the request the provider receives and lists `parameter_pin.temp_zero` in
+   `settings_applied`; `block` refuses requests that do not send the value, with
+   400 `RULE_BLOCKED` and `X-Shim-Rule-Id`; `warn` adds `RULE_WARN`.
+
+Notes: shim writes a parameter only when a pin says so. Scope pins by model and
+watch the monitor results first: a model may refuse a parameter. Anthropic's
+documentation says Claude Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5, Fable
+and Mythos answer 400 to any non-default `temperature`, `top_p` or `top_k`, and
+OpenAI reasoning models accept only the default `temperature`. On an Anthropic request with
+thinking turned on, `temperature` and `top_k` pins are skipped
+(`RULE_PIN_INCOMPATIBLE`). Output-token limits cannot be pinned, and token
+counting is never pinned. Two enforced pins of one parameter: the lowest rule id
+applies, the other records `RULE_PIN_SHADOWED`. Request parameters are not stored,
+so a pin has no [preview](#preview-a-rule-before-you-enforce-it) from older
+traffic; its monitor history is the preview.
+
+## Send simple requests to a cheaper model
+
+Serve conversations that start short, or with given words, from a cheaper model of the
+same provider, and see which ones would move before any does.
+
+1. Register both models as [deployments](#register-a-private-model-deployment), for
+   example `strong` and `cheap`, and add a `route` rule to the
+   [rule set](#write-a-tenant-rule) in `monitor` state:
+
+```json
+{"id": "cheap_start", "name": "Short starts", "kind": "route", "action": "route",
+ "state": "monitor", "match": {"from": ["strong"], "to": "cheap",
+ "when": {"max_start_chars": 400, "tools": false}}}
+```
+
+`from` lists the model names clients send (1 to 20); `to` is a registered alias of
+the same provider. `when` is optional, and every condition in it must hold:
+`max_start_chars` and `min_start_chars` (the first turn's characters), `tools`,
+`media`, `structured_output` and `keywords_any` / `keywords_none` (up to 50 words each,
+matched at a word start with Turkish-aware casing, so `fatura` finds
+"Faturalarımı özetle"). Without `when`, the rule always applies; scope it by
+`api_key_ids` or `tags` for "this app always uses that model".
+
+2. Read the request list with `route_outcome=would_route`: each request the rule would
+   have moved has a `route_decision` with the rule, the condition that matched and a
+   `conversation_id`.
+3. Send the set again with `"state": "enforced"`. Matching conversations are served by
+   `cheap` from their first turn on (`route_outcome=routed`); the client still names
+   `strong`, and the answer's `model` is `cheap`'s upstream model. A key whose
+   allowlist lacks `cheap` stays on `strong` (`not_allowed_for_key`), and so does a
+   request when `cheap` is disabled or unhealthy (`target_unavailable`).
+4. To undo, restore the previous [policy version](#plan-apply-and-undo-a-change), or
+   send the rule back in `monitor`.
+
+Notes: the conditions read only the conversation's first turn (system instructions
+and the first user message), so a conversation keeps its model on every turn and its
+provider prompt-cache discount; send `X-Shim-Conversation-Id` to name conversations
+yourself (only a keyed digest of it is stored). Responses requests that the provider stores (`store` not `false`, or a
+`previous_response_id` / `conversation`) are never routed. With
+[four eyes](#require-a-second-admin-for-loosening-changes) on, enforcing a route rule
+needs a second admin. Prompts are not kept, so a route rule has no
+[preview](#preview-a-rule-before-you-enforce-it) from older traffic; its monitor
+history is the preview.
+
 ## Preview a rule before you enforce it
 
 See how many requests a rule would have hit before it blocks anything.
@@ -574,6 +693,15 @@ See how many requests a rule would have hit before it blocks anything.
      (`window.covered_days` says how much of the window that covers). A rename,
      a new action or a new state keeps the history.
    - `metadata`: the rule's kind can be counted from stored request metadata.
+     A `destination` rule counts requests where a named type was detected
+     (masked or monitored) on a target in its scope; a type whose base action
+     is `off` was never detected, so the `note` names it. A `request_limit`
+     rule counts each request that crossed any of its caps once. The byte cap
+     leaves out requests with media parts and says how many. The price tier
+     counts settled input above the tier, more than an enforced block refuses
+     before the call. Tool, document and history caps need the `shape`
+     analyzer in `response_analysis`: without it the answer is `none`, and with
+     it the `note` says how many requests carried its counts.
    - `none`: no history, and its kind cannot be counted without the prompts,
      which shim does not keep (`term` and `pattern` rules). Start it in monitor.
 
@@ -961,6 +1089,200 @@ Notes:
   `SHIM_AZURE_AUTHORITY_HOST` and `SHIM_AZURE_TOKEN_SCOPE`, and logs each other one
   that is set at startup.
 
+## Use Amazon Bedrock
+
+Reach Claude and open models on Amazon Bedrock through the same shim endpoints,
+with Bedrock's cache reads and writes priced separately.
+
+1. As the platform operator, approve Bedrock's runtime and control origins:
+   `MODEL_DEPLOYMENT_ALLOWED_ORIGIN_SUFFIXES=[".amazonaws.com"]`, or the exact
+   `https://bedrock-runtime.<region>.amazonaws.com` and
+   `https://bedrock.<region>.amazonaws.com` in `MODEL_DEPLOYMENT_ALLOWED_ORIGINS`.
+   Behind a VPC interface endpoint, set `AWS_BEDROCK_RUNTIME_URL_TEMPLATE`,
+   `AWS_BEDROCK_CONTROL_URL_TEMPLATE` and `AWS_STS_URL_TEMPLATE` to it.
+2. Give an IAM user this policy and create a long-term access key for it:
+   `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`,
+   `bedrock:CallWithBearerToken`, `bedrock:GetFoundationModel` and
+   `bedrock:GetInferenceProfile`.
+3. Store it: `POST /api/v1/management/providers` with `provider: "aws_access_key"`
+   and `aws_access_key: {access_key_id, secret_access_key}`. One AWS credential
+   serves Bedrock deployments of both formats (`anthropic` and `openai`), and only
+   the deployments that name it. The view shows `aws:` and the key id's first and
+   last four characters. `POST /providers/{id}/verify` asks STS who the key is: 200
+   sets `verified_at`, a refusal answers 400. A long-term Bedrock API key instead
+   goes in `key` with `provider: "aws_bedrock_api_key"`; a deployment health check
+   is its check.
+4. Register the deployment with `upstream: "aws_bedrock"`, `aws_region`, the model
+   or inference profile id as `upstream_model`, `deployment_kind: "external"`, and
+   no `base_url`. Enter the region's prices, including the cache prices.
+5. Check health, then call the alias as the model name.
+
+```console
+SECRET_ID=$(curl -s -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"provider\": \"aws_access_key\",
+       \"aws_access_key\": {\"access_key_id\": \"$AWS_ACCESS_KEY_ID\",
+                          \"secret_access_key\": \"$AWS_SECRET_ACCESS_KEY\"}}" | jq -r .id)
+
+jq -n --arg secret "$SECRET_ID" '{
+    alias: "claude-bedrock", provider: "anthropic", upstream: "aws_bedrock",
+    aws_region: "eu-central-1",
+    upstream_model: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    input_price_per_million: 3, output_price_per_million: 15,
+    cache_read_price_per_million: 0.30, cache_write_price_per_million: 3.75,
+    provider_secret_id: $secret, deployment_kind: "external",
+    declared_version: "2026-10-13", owner: "platform-team"}' |
+  curl -s -X POST http://localhost:8000/api/v1/management/model-deployments \
+    -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+Notes: token counting is not available on Bedrock (400
+`MODEL_CAPABILITY_UNSUPPORTED`). An access key must be long-term (`AKIA`).
+Details: [model deployments](MODEL_DEPLOYMENTS.md).
+
+## Connect Bedrock with an AWS role
+
+Let shim reach Bedrock through a role in your own AWS account: no key is stored
+with shim, and you take access back whenever you want.
+
+1. As the platform operator, give the gateway its own AWS identity
+   (`AWS_GATEWAY_IDENTITY`, see [the gateway's AWS
+   identity](ON_PREM_IDENTITY.md#the-gateways-aws-identity)).
+2. `POST /api/v1/management/aws/identity` creates your external id once (201, then
+   200); `GET` shows it with the trust and permissions policies to paste into IAM.
+3. Create the role with that trust policy and attach the permissions policy;
+   narrow its `Resource` to the models and profiles you use.
+4. Store it: `POST /api/v1/management/providers` with `provider: "aws_role"` and
+   `aws_role_arn`. Nothing secret is stored (`stores_secret: false`).
+5. `POST /providers/{id}/aws-check` (body `{"region"}` optional) walks every step:
+   `gateway_identity`, `assume_role` (a fresh session), `token`, and
+   `bedrock_access` (a deployment of this secret in the region, else `skipped`).
+   All ok sets `verified_at`; a refusal by AWS clears it and names the step and
+   AWS's error code. `POST /providers/{id}/verify` runs the same check.
+6. Register the `aws_bedrock` deployment with this secret, as in [use Amazon
+   Bedrock](#use-amazon-bedrock).
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/aws/identity \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/providers \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"provider": "aws_role",
+       "aws_role_arn": "arn:aws:iam::123456789012:role/shim-bedrock"}'
+
+curl -X POST http://localhost:8000/api/v1/management/providers/$SECRET_ID/aws-check \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"region": "eu-central-1"}'
+```
+
+Notes: a refused role answers requests 401 `INVALID_PROVIDER_CREDENTIAL`; a
+gateway without an AWS identity answers 503 `PROVIDER_NOT_CONFIGURED`. To revoke,
+remove the trust policy or the role: new sessions stop at once, and open ones end
+within `AWS_ROLE_SESSION_SECONDS` (at most an hour), or at once with IAM's "revoke
+active sessions". The external id never changes, and shim has no route to rotate it.
+
+## Lock Bedrock to EU regions
+
+Keep every Bedrock request inside the regions you allow, by where its inference
+profile can route, not by its name.
+
+1. See what a lock would refuse first:
+   `GET /api/v1/management/aws/region-lock/preview?mode=enforce&scopes=eu&regions=eu`.
+2. Turn it on in `monitor`: requests outside it still run, and the request list
+   shows `aws_bedrock.lock: "outside"` on them.
+3. Switch to `enforce`: those requests answer 403 `BEDROCK_REGION_NOT_ALLOWED`
+   before any AWS call, and registering such a deployment answers 422.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"bedrock_region_lock": {"mode": "enforce", "scopes": ["eu"], "regions": ["eu"]}}'
+```
+
+Notes: loosening or turning the lock off is relaxing (four eyes applies when on);
+one PATCH or a version restore takes it back. Destinations refresh on each health
+check.
+
+## Allocate hardware cost to teams
+
+Share the monthly cost of your own model servers among the teams that use them.
+
+1. Enter the month's cost of each internal deployment, in its currency.
+2. Read the allocation: per deployment, per team and per key, by tokens.
+
+```console
+curl -X PUT http://localhost:8000/api/v1/management/model-deployments/$DEPLOYMENT_ID/hardware-costs/2026-10 \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"amount": "120000.00", "currency": "TRY", "note": "4 x GPU, colocation"}'
+
+curl "http://localhost:8000/api/v1/management/cost/hardware?period=2026-10" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: amounts in different currencies are never added together. Tokens are the
+measure; a team that sends long prompts carries more of the cost. Details:
+[hardware cost and capacity](MODEL_DEPLOYMENTS.md#hardware-cost-and-capacity).
+
+## Read the capacity forecast
+
+See when the current hardware stops being enough at the current growth.
+
+1. State each internal deployment's capacity: `capacity_concurrent_requests` in its
+   `PUT /model-deployments/{id}`.
+2. `GET /api/v1/management/capacity/forecast`.
+
+Notes: the measure is the busiest hour's average number of requests in flight,
+from gateway records. Short bursts inside an hour go higher than that, so
+`projected_date` is when the busy hour on average reaches the capacity, not when
+the first request waits. Fewer than 14 days with traffic answers `not_enough_data`.
+
+## How busy is our GPU?
+
+Read the load of your own model servers from their metrics, not from the gateway's
+guess.
+
+1. List the internal deployments and their server type.
+2. After a few minutes, read the load; give it a day for shares that mean something.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"inference_metrics": [{"deployment_id": "'$VLLM_ID'", "server": "vllm"},
+                             {"deployment_id": "'$OLLAMA_ID'", "server": "ollama"}]}'
+
+curl "http://localhost:8000/api/v1/management/inference-metrics?hours=24" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Notes: `busy_share` is the share of readings with a request running; with a
+capacity entered, `utilisation` is the average running count over it. A server
+behind a token needs `send_credential: true`. Findings tell you when a server is
+mostly idle or its queue stays full. Details: [server
+metrics](MODEL_DEPLOYMENTS.md#server-metrics).
+
+## See team costs on the AWS bill
+
+Tag each team's Bedrock requests so AWS's own bill shows what each team spent. It
+needs a [role connection](#connect-bedrock-with-an-aws-role): session tags exist
+only on assumed roles.
+
+1. Give teams a tag value: `PUT /api/v1/management/teams/{id}` with `aws_cost_tag`.
+2. Turn it on: `PATCH /gateway-settings` with `{"bedrock_attribution": {"mode":
+   "session_tags"}}` (`tag_key` `shim-team` and `unassigned_value` `unassigned` by
+   default). Every role session then carries `shim-team=<the key's team tag>`.
+3. Add `sts:TagSession` to the role's trust policy (`GET /aws/identity` shows it);
+   `aws-check` reports a `tag_session` step.
+4. In AWS Billing, activate `iamPrincipal/shim-team` as a cost allocation tag.
+   AWS shows it per usage type and day, from up to 24 hours after activation, and
+   never for earlier days.
+5. Read shim's side: `GET /api/v1/management/aws/attribution?from=...&to=...`
+   (`format=csv` for a spreadsheet), and paste AWS's daily numbers into `POST
+   /aws/attribution/compare` to see the difference per day and tag.
+
+Notes: shim calls no AWS billing API and stores no AWS figure; per-request detail
+stays in shim's request list.
+
 ## Automate management with a service account
 
 Give a CI pipeline or an agent its own management key instead of a person's token.
@@ -997,6 +1319,148 @@ Notes:
   model routes refuse it, and gateway keys do not open management routes.
 - The audit log marks its actions `actor_type: service`. Details are in
   [team access](team-access.md#service-accounts).
+
+## Give an agent a recommender key
+
+An agent (Claude Code, Codex or Cursor) that reads findings and proposes fixes gets
+its own service account with the role `recommender`:
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "role": "recommender", "expires_in_days": 30}'
+```
+
+The answer holds its `sk-shim-svc-` key once. With it the agent reads settings,
+rules, deployments, findings, usage, plans and policy versions, and creates plans
+(`POST /api/v1/management/policy/plans`). It applies a plan only when every change
+tightens or cheapens; anything else answers 403 `PLAN_NOT_ALLOWLISTED`, with the
+reason per change, and waits for a person to apply it. It never reads stored
+content, writes settings or rules directly, approves anything or owns gateway
+keys. Every action it takes is in the audit log with `actor_type: service` and
+`actor_role: recommender`. Details: [team access](team-access.md#service-accounts)
+and [the apply limit](POLICY_DECISIONS.md#the-recommender-and-its-apply-limit).
+
+## Let Claude Code read findings and draft plans
+
+With a [recommender key](#give-an-agent-a-recommender-key) in
+`SHIM_MANAGEMENT_KEY`:
+
+```console
+claude mcp add --transport http shim https://shim.example/api/v1/mcp \
+  --header "Authorization: Bearer ${SHIM_MANAGEMENT_KEY}"
+claude -p "List the open shim findings, explain the newest one and quote its \
+  evidence ids. Then create a plan that fixes it and tell me whether you could apply it." \
+  --allowedTools 'mcp__shim__*'
+```
+
+Claude Code lists the findings, reads one with `explain_finding` (the finding, its
+rule's facts and documentation; shim calls no model), drafts a plan with
+`plan_from_finding` or `create_plan`, and reads its impact back with `get_plan`.
+`apply_plan` succeeds only for changes that tighten or cheapen; otherwise it reports
+`PLAN_NOT_ALLOWLISTED` with the reasons and the plan waits for a person. Plans it
+created show `source: "mcp"` in `GET /api/v1/management/policy/plans`. The tools,
+the error mapping and Codex and Cursor settings are in [MCP](MCP.md).
+
+## Write rules from a sentence with your agent
+
+Say what must not leave in your own words, and let the agent turn it into rules.
+The agent reads the `write_rules` prompt (Turkish or English) through the
+[MCP server](MCP.md), asks you for the exact names, codes and formats you mean,
+and for each one a sentence that must be caught and one that must not, then calls
+`propose_rules`:
+
+```json
+{"sentence": "Atlas projesi gizli; proje kodlarımız PRJ-1234 biçiminde.", "language": "tr",
+ "rules": [
+   {"id": "project_atlas", "name": "Atlas", "kind": "term", "action": "mask", "scope": {},
+    "match": {"terms": ["Atlas"], "label": "PROJECT"},
+    "examples": {"match": ["Atlas'ın teslim tarihi"], "no_match": ["Atlantik rotası"]}},
+   {"id": "project_code", "name": "Proje kodu", "kind": "pattern", "action": "mask",
+    "match": {"templates": ["PRJ-####"], "label": "PROJECT_CODE"},
+    "examples": {"match": ["PRJ-4821 için rapor"], "no_match": ["PRJ-48211"]}}]}
+```
+
+shim checks every rule on your examples and on ordinary office text. A vague
+sentence ("Stratejik bilgilerimiz çıkmasın") gives no rule: the answer is 422
+`RULE_PROPOSAL_NEEDS_EXAMPLES` with questions (`no_rules`, `too_generic`,
+`too_broad`, `missing_examples`, `example_not_matched`,
+`no_match_example_matched`) the agent brings back to you. A concrete proposal
+becomes a draft plan with source `proposal`, every rule in `monitor`. An
+administrator applies it from the plan page (an agent's key cannot); the rules then
+count matches in the request list until a person enforces them. Your sentence and
+examples are never stored. The same route works without MCP: `POST
+/api/v1/management/rules/proposals` (`plans.create`). Details: [rule
+proposals](POLICY_DECISIONS.md#rule-proposals).
+
+## Run Claude Code on shim and let it manage shim
+
+The agent that manages shim is itself an app on shim. Its model calls go through
+the gateway under their own key: the tenant's privacy policy masks them, the key's
+models and its team's limits bound them, and the request list records them. Its
+management calls go through the MCP server with a recommender key: it reads and
+proposes, and applies only allowlisted changes.
+
+1. Create a recommender service account; keep its `sk-shim-svc-` key (the
+   management key).
+2. Issue the agent its gateway key. Only an owner can, and only for a recommender
+   account; the agent cannot mint one itself. `allowed_models` is required. With
+   `team_id`, the account joins the team, so the team's request and token limits
+   apply, and a [budget](#alert-on-a-budget) on that team alerts on its cost. An
+   account holds at most two active gateway keys, so it can rotate.
+3. Point Claude Code at shim for its model calls and at the MCP server for
+   management. Put the management key in a variable of your own, such as
+   `SHIM_MANAGEMENT_KEY`. Claude Code blanks `ANTHROPIC_*` variables in MCP
+   headers.
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "role": "recommender", "expires_in_days": 90}'
+
+curl -X POST http://localhost:8000/api/v1/management/service-accounts/$ACCOUNT_ID/gateway-keys \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name": "claude-code", "allowed_models": ["claude-haiku-4-5"], "team_id": "'$TEAM_ID'", "expires_in_days": 90}'
+
+cat > shim-mcp.json <<'JSON'
+{"mcpServers": {"shim": {"type": "http", "url": "http://localhost:8000/api/v1/mcp",
+  "headers": {"Authorization": "Bearer ${SHIM_MANAGEMENT_KEY}"}}}}
+JSON
+
+ANTHROPIC_BASE_URL=http://localhost:8000 \
+ANTHROPIC_AUTH_TOKEN=$AGENT_GATEWAY_KEY \
+ANTHROPIC_MODEL=claude-haiku-4-5 ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5 \
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+SHIM_MANAGEMENT_KEY=$MANAGEMENT_KEY \
+claude --mcp-config shim-mcp.json --strict-mcp-config --allowedTools 'mcp__shim__*'
+```
+
+What shim records for the agent:
+- Model calls are ordinary gateway requests under its key and its account: the
+  request list, cost, privacy counts and verdicts, and findings raised on the key.
+- Management actions carry `actor_type: service` and `actor_role: recommender`.
+  Plans and versions carry its id and source `mcp`, and its unattended applies
+  appear in [automatic changes](FINDINGS.md#automatic-fixes) with its id.
+
+`GET /service-accounts/{id}/activity?hours=24` (`audit.read`) puts it in one place:
+- the account and its gateway keys;
+- model requests, failures, cost and requests per model;
+- plans by status, versions and automatic changes;
+- refused applies;
+- open findings on its keys.
+
+To stop it at once, freeze the account:
+
+```console
+curl -X POST http://localhost:8000/api/v1/management/service-accounts/$ACCOUNT_ID/freeze \
+  -H "Authorization: Bearer $OWNER_TOKEN"
+```
+
+Its next management, MCP and model call answers 401. Its keys are kept, and
+`/unfreeze` turns them back on. Freezing undoes nothing the agent applied: undo an
+automatic change from `/remediations/{id}/undo` and a plan with a version restore.
+Revoke a gateway key with `DELETE /api-keys/{id}`. Deleting the account revokes
+everything.
 
 ## Give someone exactly the access they need
 
@@ -1141,6 +1605,108 @@ Notes:
   one of the last two approvers answers 409 `FOUR_EYES_UNAVAILABLE`.
 - What counts as loosening per resource is in
   [decision evidence](POLICY_DECISIONS.md#policy-versions-and-plans).
+
+## Keep the policy in Git
+
+The panel and the API stay the default. A tenant that reviews its policy in pull
+requests can instead keep privacy, gateway settings and rules, or any of the
+three, in a signed YAML file: then the file is the source of truth, the panel
+shows it, and every other write to those resources answers 409
+`CONFIG_FILE_MANAGED`. Everything below uses `ee/scripts/shim_config.py`; the
+management token comes from `SHIM_MANAGEMENT_TOKEN` only.
+
+1. **A key for each person who signs.** On the signer's machine:
+
+   ```console
+   python ee/scripts/shim_config.py keygen --out-dir ~/.shim
+   ```
+
+   It writes `shim-config-signing.key` (mode 0600, never overwritten) and
+   `shim-config-signing.pub`, and prints the key id. The private key never leaves
+   the machine. The owner registers the public key for that person, who must be an
+   active human user who may create plans:
+
+   ```console
+   curl -X POST http://localhost:8000/api/v1/management/config/signing-keys \
+     -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+     -d "{\"public_key_pem\": $(jq -Rs . < ~/.shim/shim-config-signing.pub), \"user_id\": \"$SIGNER_ID\", \"name\": \"release\"}"
+   ```
+
+   At most ten keys are active; every new one raises the `config_signing_key_added`
+   tenant alert. `GET /config/signing-keys` (`audit.read`) lists them.
+2. **Start from today's state.** `export` writes the current file, with
+   `serial` one above the last applied one. In api mode it holds all three
+   resources:
+
+   ```console
+   SHIM_MANAGEMENT_TOKEN=$TOKEN python ee/scripts/shim_config.py export \
+     --url http://localhost:8000 --out shim-config.yaml
+   ```
+
+   ```yaml
+   format: shim.config
+   version: 1
+   organization_id: 6f1c2a3e-1111-4222-8333-444455556666
+   serial: 1
+   exported_from: {policy_version: 41, rules_revision: 12, gateway_settings_revision: 3}
+   resources:
+     privacy: {block_email: true, block_phone: true, block_credit_card: true,
+               block_secrets: true, block_pii_tr: true,
+               entity_actions: {EMAIL_ADDRESS: monitor}, bulk_threshold: null,
+               response_scan: 'off', placeholder_mode: random,
+               embeddings_monitor_types: []}
+     rules:
+       - {id: project_atlas, name: Atlas, kind: term, action: mask, state: monitor,
+          scope: {}, match: {terms: [Atlas], label: TERM, suffixes: tr}}
+   ```
+
+   Each section is the whole truth: `privacy` lists every field, `gateway_settings`
+   fields you leave out take their defaults, and a rule missing from `rules` is
+   deleted. `exported_from` is ignored on apply. Only `true` and `false` are
+   booleans, so `off`, `on`, `yes` and `no` are strings; the export quotes `'off'`
+   anyway, so other YAML tools read it the same. Anchors, aliases, duplicate keys
+   and a second document are refused, and a file is at most 1,000,000 bytes.
+3. **Turn file mode on** (owner): `PUT /api/v1/management/config/mode` with
+   `{"mode": "file", "resources": ["privacy", "rules"]}`. Nothing changes until the
+   first push; `GET /config/mode` shows the mode, `last_serial` and when a file was
+   last applied.
+4. **Check every pull request.** In CI, a plan only: it validates the file, says
+   whether its signature is valid, and returns the changes with their risk and
+   effect, storing nothing.
+
+   ```console
+   SHIM_MANAGEMENT_TOKEN=$CI_TOKEN python ee/scripts/shim_config.py push \
+     --url "$SHIM_URL" --file shim-config.yaml --signature-file shim-config.sig --plan-only
+   ```
+
+5. **Sign and push on merge.** The signer signs the merged file; CI pushes it with
+   an admin service account (`plans.apply`):
+
+   ```console
+   python ee/scripts/shim_config.py sign --private-key ~/.shim/shim-config-signing.key \
+     --file shim-config.yaml --out shim-config.sig
+   SHIM_MANAGEMENT_TOKEN=$CI_TOKEN python ee/scripts/shim_config.py push \
+     --url "$SHIM_URL" --file shim-config.yaml --signature-file shim-config.sig
+   ```
+
+   Exit codes: 0 applied, unchanged or planned; 3 waiting for a second administrator;
+   1 refused; 2 usage. Raise `serial` for every push: a serial at or below the last
+   applied one is 409 `CONFIG_SERIAL_STALE`. A file that changed after signing, or
+   one signed for another tenant, is 403 `CONFIG_SIGNATURE_INVALID`; an invalid file
+   is 422 `CONFIG_FILE_INVALID` with the `path` that is wrong. Under
+   [four eyes](#require-a-second-admin-for-loosening-changes) a loosening file waits
+   for a second administrator, who may be neither its signer nor whoever
+   registered the signing key. A 409 `POLICY_VERSION_CHANGED` means a policy write
+   landed while the file was checked: push it again.
+6. **Undo** by exporting an earlier policy version and pushing it:
+   `export --version 41 --out shim-config.yaml`, raise nothing (the export already
+   carries the next serial), sign, push. A rule the export brings back counts as
+   new: it starts in `monitor` unless it has a preview, so an `enforced` rule that
+   was deleted comes back in monitor; enforce it again after its preview.
+7. **Rotate** a key by adding the new one, pushing with it, then revoking the old one
+   (`DELETE /config/signing-keys/{key_id}`); the last key cannot be revoked while the
+   mode is `file`.
+8. **Leave file mode** with `PUT /config/mode` `{"mode": "api", "resources": []}`.
 
 ## Hold a request for approval
 
@@ -1296,6 +1862,44 @@ curl http://localhost:8000/api/v1/management/findings/export \
 Notes: the reconciliation worker evaluates the rules every
 `FINDINGS_EVALUATION_INTERVAL_SECONDS` (default 900). The rules, their
 thresholds and the OCSF mapping are in [findings](FINDINGS.md).
+
+## Let shim switch off unused deployments, and see what it did
+
+A deployment that served nothing in 30 days raises `gateway.unused_deployment`.
+Set that rule to `auto` and shim disables such deployments itself, watches
+refusals for a day, and turns a deployment back on when refusals for disabled
+deployments rise above the day before.
+
+1. Allow it. Moving a rule to `auto` loosens oversight, so under
+   [four eyes](POLICY_DECISIONS.md#four-eyes) a second administrator approves it.
+2. Read what shim did: each change is a row with its window and result, newest
+   first.
+3. Undo one yourself while it is `watching` or `kept`.
+4. Pause every automatic change at once; windows keep closing and automatic
+   undo keeps running.
+
+```console
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"finding_modes": {"gateway.unused_deployment": "auto"}}'
+
+curl 'http://localhost:8000/api/v1/management/remediations?status=watching' \
+  -H "Authorization: Bearer $USER_TOKEN"
+
+curl -X POST http://localhost:8000/api/v1/management/remediations/$ID/undo \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"reason": "the nightly batch uses it"}'
+
+curl -X PATCH http://localhost:8000/api/v1/management/gateway-settings \
+  -H "Authorization: Bearer $USER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"auto_remediation_paused": true}'
+```
+
+Notes: the window closes on the first worker pass after its end plus
+`REMEDIATION_WINDOW_GRACE_SECONDS` (default 900). A finding gets one automatic
+fix, ever; after an undo it only suggests. Measuring needs refusal rows, so with
+audit mode `off` the fix waits (`proof_unavailable`) and runs once audit is on. What may be automatic
+and what never is: [automatic fixes](FINDINGS.md#automatic-fixes).
 
 ## Import LiteLLM spend logs
 
@@ -1453,6 +2057,62 @@ tag or deployment are one group with `id: null`. Each statement of the read may
 take 10 seconds; past that the answer is 503 `QUERY_TIMEOUT`: ask for a shorter
 window. How speed and concurrency are derived is in
 [diagnostic metadata](DIAGNOSTIC_METADATA.md#latency-per-group).
+
+## See what an agent task cost
+
+An agent answers one question with many model calls. When it sends
+`X-Shim-Task-Id` (or a `traceparent`, whose trace id becomes the task id), shim
+groups those calls:
+
+```console
+curl -s "http://localhost:8000/api/v1/management/tasks?sort=cost" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Any signed-in user may call it; a member sees the tasks of the keys they own or
+administer, as on the request list. The window defaults to the last seven days
+(`start` and `end` with an offset, at most 31 days); `api_key_id` narrows it and
+`sort` is `cost` (the default), `calls` or `last_seen`. Each item has the task id,
+its `trace_id`, `first_seen`, `last_seen` and `duration_seconds`, `calls` (client
+requests) and `attempts` (every request, extra attempts included), settled
+`prompt_tokens` and `completion_tokens` (estimated usage counts 0, as in the request
+summary), settled `cost_usd` with `cost_complete` (false when one of its requests
+was unpriced), up to five `models` and `api_keys`, `outcomes` per answer ending,
+`failed` (provider errors, timeouts, internal errors and failures), `loop_signals`
+(requests carrying the `task.agent_loop` verdict), `against_caps` and a
+`requests_url` that lists its requests. `against_caps` is `null` until a
+[task cap](#change-the-gateway-settings) is set; then `calls_share` and
+`cost_share` are the calls and settled cost of the task's busiest window over each
+cap (above 1 when the task would have been refused). At most 200 tasks are listed
+(`truncated: true` beyond); the totals give `tasks`, `requests_with_task`,
+`requests_without_task` and the settled `cost_usd` of task requests.
+
+A call a task cap refused has no request row, so it is not in this read; count
+refusals with `shim_task_limit_refusals_total`.
+
+## Preview a task cap before you set it
+
+Before you set `task_caps`, see what it would have refused over the last seven
+days:
+
+```console
+curl -s "http://localhost:8000/api/v1/management/tasks/cap-preview?max_calls=40&window_seconds=3600" \
+  -H "Authorization: Bearer $USER_TOKEN"
+```
+
+Readers only (`usage.read`). The parameters are the setting's own (`max_calls` 1 to
+100,000, `max_cost_usd` above 0 up to 100,000, `window_seconds` 60 to 86,400,
+default 3600); at least one cap is required. The preview replays each task's
+requests in time order as the gateway counts them: a window opens at a task's call
+and lasts `window_seconds`, every call after the first `max_calls` of a window is refused, a
+call is refused once the settled cost of the window's earlier calls reached
+`max_cost_usd`, a refused call adds no cost, and extra attempts never count as
+calls. It answers `tasks_considered`, `tasks_affected`, `requests_considered`,
+`requests_refused`, their settled `refused_cost_usd`, `refused_share`, up to 20
+`affected` task ids with their refused counts, and two `caveats`: calls of one task
+that run at the same time can pass a cost cap together, and requests without a task
+id are never capped. Nothing is stored. More than 200,000 task requests in the
+seven days is 422; narrow with `api_key_id`.
 
 ## How much more do Turkish answers cost on each model
 

@@ -23,6 +23,7 @@ from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.core.database import get_db
 from shim_enterprise.tenants.audit import record_management_action as _audit
 from shim_enterprise.tenants.gateway_settings import (
+    COST_TAG,
     Directions,
     classify_fields,
     neutral,
@@ -56,6 +57,12 @@ class TeamInput(BaseModel):
     daily_request_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
     monthly_request_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
     monthly_token_limit: int | None = Field(default=None, ge=0, le=2_000_000_000)
+    aws_cost_tag: str | None = Field(
+        default=None,
+        pattern=COST_TAG,
+        description="The STS session tag value this team's Bedrock requests carry "
+        "onto the AWS bill (bedrock_attribution).",
+    )
 
     @field_validator("name")
     @classmethod
@@ -114,7 +121,11 @@ async def update_team(
     tenant_id, item = _tenant_id(user), str(team_id)
     await require_team(session, user, team_id, administer=True)
     before = (await TEAMS.snapshot(session, tenant_id, [item]))[item]
-    await _managed_write(session, user, TEAMS, item, before, payload.model_dump())
+    # A client that predates the cost tag never erases it.
+    kept = set() if "aws_cost_tag" in payload.model_fields_set else {"aws_cost_tag"}
+    await _managed_write(
+        session, user, TEAMS, item, before, payload.model_dump(exclude=kept)
+    )
     await session.commit()
     return await _refreshed(session, Team, team_id)
 
@@ -241,6 +252,8 @@ async def remove_membership(
 
 _TEAM_DIRECTIONS: Directions = {
     "name": neutral,
+    # A label on the AWS bill, not a control.
+    "aws_cost_tag": neutral,
     "daily_request_limit": _limit,
     "monthly_request_limit": _limit,
     "monthly_token_limit": _limit,

@@ -240,6 +240,26 @@ TASK_ID_REJECTED_TOTAL = Counter(
     "shim_task_id_rejected_total",
     "X-Shim-Task-Id values that were not task ids and were ignored.",
 )
+CONCURRENCY_ADMISSIONS_TOTAL = Counter(
+    "shim_concurrency_admissions_total",
+    "Requests the concurrency limiter admitted at once, after waiting, or refused.",
+    ("outcome",),
+)
+SHADOW_COPIES_TOTAL = Counter(
+    "shim_shadow_copies_total",
+    "Copies of finished requests sent to a candidate target, by outcome.",
+    ("outcome",),
+)
+EXTRA_ATTEMPTS_TOTAL = Counter(
+    "shim_extra_attempts_total",
+    "Extra provider attempts tenant rules asked for, by reason and outcome.",
+    ("reason", "outcome"),
+)
+TRANSFORMS_TOTAL = Counter(
+    "shim_transforms_total",
+    "Transform band steps per request, by step and result.",
+    ("transform", "result"),
+)
 INJECTION_MARKERS_TOTAL = Counter(
     "shim_injection_markers_total",
     "Tool results and documents carrying a hidden-instruction marker, by marker.",

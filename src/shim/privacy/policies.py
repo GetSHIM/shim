@@ -9,6 +9,23 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Literal, cast, get_args
 
+# Parts the privacy stage treats as opaque media: by type, with the fields that
+# hold the media, and fields that hold media whatever the type.
+OPAQUE_MEDIA_TYPE_FIELDS = {
+    "computer_screenshot": ("file_id", "image_url"),
+    "container_upload": ("file_id",),
+    "file": ("file",),
+    "image": (),
+    "image_generation_call": ("result",),
+    "image_url": ("image_url",),
+    "input_audio": ("input_audio",),
+    "input_file": ("file_data", "file_id", "file_url"),
+    "input_image": ("file_id", "image_url"),
+}
+OPAQUE_MEDIA_FIELDS = frozenset(
+    {"fileData", "file_data", "inlineData", "inline_data", "input_image_mask"}
+)
+
 
 PII_CONFIG_DEFAULTS: Mapping[str, bool] = MappingProxyType(
     {

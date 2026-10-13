@@ -30,6 +30,8 @@ from shim.privacy.pii_scrubber import (
     placeholder_period_key,
 )
 from shim.privacy.policies import (
+    OPAQUE_MEDIA_FIELDS,
+    OPAQUE_MEDIA_TYPE_FIELDS,
     EntityAction,
     PrivacyAction,
     PrivacyOutcome,
@@ -129,20 +131,6 @@ _PROTOCOL_FIELDS = frozenset(
         "url",
         "uri",
     }
-)
-_OPAQUE_MEDIA_TYPE_FIELDS = {
-    "computer_screenshot": ("file_id", "image_url"),
-    "container_upload": ("file_id",),
-    "file": ("file",),
-    "image": (),
-    "image_generation_call": ("result",),
-    "image_url": ("image_url",),
-    "input_audio": ("input_audio",),
-    "input_file": ("file_data", "file_id", "file_url"),
-    "input_image": ("file_id", "image_url"),
-}
-_OPAQUE_MEDIA_FIELDS = frozenset(
-    {"fileData", "file_data", "inlineData", "inline_data", "input_image_mask"}
 )
 _OPAQUE_PROTOCOL_FIELDS_BY_TYPE = {
     "encrypted_code_execution_result": frozenset({"encrypted_stdout"}),
@@ -552,7 +540,7 @@ def scrub_payload(
     def contains_opaque_media(value: Mapping[str, Any], *, deep: bool) -> bool:
         media_type = value.get("type")
         media_fields = (
-            _OPAQUE_MEDIA_TYPE_FIELDS.get(media_type)
+            OPAQUE_MEDIA_TYPE_FIELDS.get(media_type)
             if isinstance(media_type, str)
             else None
         )
@@ -567,7 +555,7 @@ def scrub_payload(
             source_type = source.get("type") if isinstance(source, Mapping) else None
             if isinstance(source_type, str) and source_type in {"base64", "url"}:
                 return True
-        return any(value.get(field) is not None for field in _OPAQUE_MEDIA_FIELDS)
+        return any(value.get(field) is not None for field in OPAQUE_MEDIA_FIELDS)
 
     def protected(
         found: Mapping[str, str], kept: Mapping[str, str]

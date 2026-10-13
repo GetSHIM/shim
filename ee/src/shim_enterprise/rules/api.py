@@ -14,7 +14,7 @@ from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.api.v1.management._common import bounded_body
 from shim_enterprise.core.database import get_db
 from shim_enterprise.policy.api import PlanView, new_plan, planned_change
-from shim_enterprise.policy.plans import current_version, lock_tenant
+from shim_enterprise.policy.plans import current_version, lock_at_version
 from shim_enterprise.policy.resources import REGISTRY
 from shim_enterprise.rules.aiuc import AiucPolicy, map_policy
 from shim_enterprise.rules.models import OrganizationRuleSet, RulePreview
@@ -158,13 +158,7 @@ async def import_aiuc(
                 session, tenant_id, "privacy", "_", privacy, privacy_after, 7
             )
         )
-    await lock_tenant(session, tenant_id)
-    latest = await current_version(session, tenant_id)
-    if latest != version:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "POLICY_VERSION_CHANGED", "version": latest},
-        )
+    await lock_at_version(session, tenant_id, version)
     plan = None
     if changes:
         plan = await new_plan(

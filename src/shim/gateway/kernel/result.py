@@ -21,8 +21,9 @@ from shim.billing.pricing import (
 )
 from shim.gateway.contracts.context import GatewayContext
 from shim.gateway.contracts import FrozenContractModel
+from shim.gateway.concurrency import Lease
 from shim.gateway.contracts.ids import ProviderId
-from shim.gateway.request_policy import AgentLoop, TaskCaps
+from shim.gateway.request_policy import AgentLoop, BandSettings, TaskCaps
 from shim.gateway.request_policy import RequestPolicyContext as _RequestPolicyContext
 from shim.observability.metrics import WARNINGS_TOTAL
 from shim.privacy.policies import EntityAction, PrivacyOutcome
@@ -91,7 +92,16 @@ class PolicyVerdict(FrozenContractModel):
     rule_id: str = Field(pattern=r"^[a-z][a-z0-9_.]{0,95}$")
     rule_version: Literal[1] = 1
     policy_version: str = Field(min_length=1, max_length=128)
-    stage: Literal["authentication", "admission", "privacy", "provider_spend", "rules"]
+    stage: Literal[
+        "authentication",
+        "admission",
+        "privacy",
+        "provider_spend",
+        "rules",
+        "settings",
+        "transforms",
+        "attempt",
+    ]
     outcome: Literal["allow", "mask", "deny", "error", "skip"]
     reason_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{0,95}$")
     effective_at: AwareDatetime
@@ -150,6 +160,8 @@ class AdmissionState:
     request_digest: str | None = None
     # The identical request already in flight when this one was admitted.
     inflight_duplicate_of: str | None = None
+    # Milliseconds spent waiting for room on the target; None without a limiter.
+    queue_wait_ms: int | None = None
 
 
 # SEMANTIC_WARN is reserved for the enterprise marked-endpoint check; core never sets it.
@@ -168,6 +180,36 @@ ResponseWarning = Literal[
 EMBEDDINGS_PROTOCOLS = frozenset({"embeddings", "embed_content"})
 # Written to the record; in X-Shim-Warnings only when the tenant asks for the header.
 RECORD_ONLY_WARNINGS = frozenset({"MODEL_RETIRING", "MODEL_RETIRED"})
+# Read from the provider's answer: an extra attempt or a copy earns its own.
+ANSWER_WARNINGS = frozenset(
+    {"LARGE_CONTEXT_PRICE", "CACHE_NOT_APPLIED", "SEMANTIC_WARN"}
+)
+
+
+AttemptReason = Literal[
+    "fallback", "overflow", "format_retry", "canary_fallback", "degrade"
+]
+
+
+@dataclass(frozen=True)
+class AttemptInfo:
+    """Attempt 2 or later of one client request, linked to the first by its request id."""
+
+    group_id: str
+    number: int
+    reason: AttemptReason
+    rule_id: str
+    # An earlier attempt was answered and settled the client request's request unit.
+    counted: bool = False
+
+
+@dataclass(frozen=True)
+class ShadowInfo:
+    """A copy of a finished request sent to a candidate target."""
+
+    # The primary request's id.
+    of: str
+    rule_id: str
 
 
 @dataclass(frozen=True)
@@ -204,6 +246,22 @@ class PreparedInference:
     task_caps: TaskCaps = field(default_factory=TaskCaps)
     agent_loop: AgentLoop = field(default_factory=AgentLoop)
     inflight_sharing: bool = False
+    band: BandSettings = field(default_factory=BandSettings)
+    # The settings band's applied steps, by id and version; None when it did not run.
+    settings_applied: tuple[dict[str, object], ...] | None = None
+    # Anthropic beta flags the band's applied steps need, in step order.
+    provider_betas: tuple[str, ...] = ()
+    # The transform band's changes with their sizes; None when it did not run.
+    transforms_applied: tuple[dict[str, Any], ...] | None = None
+    # The masked payload before the bands: what an extra attempt starts again from.
+    pre_band_payload: dict[str, Any] | None = field(
+        default=None, repr=False, compare=False
+    )
+    attempt: AttemptInfo | None = None
+    shadow: ShadowInfo | None = None
+    # The concurrency lease held for this request's target, released on every terminal.
+    concurrency_lease: Lease | None = field(default=None, repr=False, compare=False)
+    route_decision: Mapping[str, Any] | None = None
     tenant_gateway_settings: object | None = field(
         default=None, repr=False, compare=False
     )
@@ -236,7 +294,14 @@ class PreparedInference:
         rule_id: str,
         *,
         stage: Literal[
-            "authentication", "admission", "privacy", "provider_spend", "rules"
+            "authentication",
+            "admission",
+            "privacy",
+            "provider_spend",
+            "rules",
+            "settings",
+            "transforms",
+            "attempt",
         ],
         outcome: Literal["allow", "mask", "deny", "error", "skip"],
         reason_code: str,

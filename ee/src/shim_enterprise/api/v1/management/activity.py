@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 import csv
+from dataclasses import asdict
 from datetime import datetime, timezone
 from decimal import Decimal
 import io
 import json
 from typing import Annotated, Any, Literal
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field, ValidationError
 from sqlalchemy import and_, case, cast as sql_cast, distinct, func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,20 +29,29 @@ from shim_enterprise.api.enterprise_deps import (
 )
 from shim.billing.attribution import normalize_attribution
 from shim.gateway.kernel.result import ResponseWarning
+from shim.gateway.request_policy import TaskCaps
 from shim_enterprise.billing.models import AuditIntent, RequestLifecycle, UsageLedger
 from shim_enterprise.compliance.reporting import safe_csv
 from shim_enterprise.core.config import settings
-from shim_enterprise.core.database import get_db
+from shim_enterprise.core.database import bounded_read, get_db
 from shim_enterprise.gateway.pipeline.outbox import _DIAGNOSTIC_FIELDS
 from shim_enterprise.observability.analytics_projection import RequestLog
 from shim_enterprise.observability.model_inventory import shown_model
 from shim_enterprise.observability.outcomes import OUTCOMES, CompletionOutcome
 from shim_enterprise.observability.overview import _spend_denied
+from shim_enterprise.observability.tasks import (
+    MAX_AFFECTED_TASKS,
+    TaskReadModel,
+    TaskSort,
+    TooManyTaskRequests,
+    preview_task_caps,
+)
+from shim_enterprise.tenants.gateway_settings import stored_settings
 from shim_enterprise.tenants.audit import (
     export_details,
     record_management_action as _audit,
 )
-from shim_enterprise.tenants.models import ApiKey, User
+from shim_enterprise.tenants.models import ApiKey, OrganizationGatewaySettings, User
 from shim_enterprise.tenants.permissions import user_permissions
 from shim_enterprise.api.v1.management._common import (
     _ATTACHMENT,
@@ -72,6 +84,13 @@ _RuleIdFilter = Annotated[
     Query(
         pattern=r"^[a-z][a-z0-9_]{0,47}$",
         description="Only requests a tenant rule with this id matched.",
+    ),
+]
+_TaskIdFilter = Annotated[
+    str | None,
+    Query(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+        description="Only requests of this agent task (exact).",
     ),
 ]
 _TECHNICAL_FAILURES = ("provider_error", "timeout", "internal_error", "failed")
@@ -161,12 +180,26 @@ _SystemPromptHashFilter = Annotated[
 _ApprovalFilter = Annotated[
     UUID | None, Query(description="Only requests this request approval decided.")
 ]
+_AttemptGroupFilter = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=255,
+        description="Only the attempts of one client request: the first attempt's "
+        "request id.",
+    ),
+]
 _OutcomeFilter = Annotated[
     CompletionOutcomeFilter | None,
     Query(
         description="How the answer ended; none is a request without a "
         "recorded outcome (failed, rejected or older rows)."
     ),
+]
+_RouteOutcomeFilter = Annotated[
+    Literal["routed", "would_route", "not_allowed_for_key", "target_unavailable"]
+    | None,
+    Query(description="What a route rule decided at the conversation start."),
 ]
 _SoftRefusalFilter = Annotated[
     bool | None,
@@ -197,6 +230,11 @@ class RequestActivityView(BaseModel):
     )
     pii_detected: bool
     tags: list[str] = Field(default_factory=list)
+    task_id: str | None = Field(
+        default=None,
+        description="The agent task (X-Shim-Task-Id, else the trace id); null "
+        "without one and on older rows.",
+    )
     cost_center: str | None
     provider: str | None
     team: str | None
@@ -275,6 +313,42 @@ class RequestActivityView(BaseModel):
         ),
     )
     rule_matches_truncated: bool | None = None
+    settings_applied: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Settings band steps that set a provider parameter, by id and version; "
+            "[] when the band ran and set nothing, null when it did not run."
+        ),
+    )
+    attempt_group_id: str | None = Field(
+        default=None,
+        description="On an extra attempt a tenant rule asked for: the request id of "
+        "the client request's first attempt; null on a first attempt.",
+    )
+    attempt_number: int | None = Field(default=None, ge=2)
+    attempt_reason: str | None = None
+    attempt_rule_id: str | None = None
+    shadow_of: str | None = Field(
+        default=None,
+        description="On a copy of a finished request sent to a candidate model: "
+        "the primary request's id; null otherwise.",
+    )
+    route_decision: dict[str, Any] | None = Field(
+        default=None,
+        description="Where a route rule sent, or would have sent, the request: "
+        "rule_id, state, from, to, reason, conversation_id and outcome (routed, "
+        "would_route, not_allowed_for_key, target_unavailable), with the earlier "
+        "decision under previous when a rule moved it again after privacy; null "
+        "when no rule decided.",
+    )
+    transforms_applied: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Transform band steps that changed the request, by id and version, with "
+            "characters before and after and the strings changed; [] when the band "
+            "ran and changed nothing, null when it did not run."
+        ),
+    )
     approval_id: UUID | None = Field(
         default=None,
         description="The request approval this request created, was refused under "
@@ -366,8 +440,11 @@ async def list_requests(
     system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
     approval_id: _ApprovalFilter = None,
+    attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
+    route_outcome: _RouteOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
+    task_id: _TaskIdFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(get_current_user),
@@ -391,8 +468,11 @@ async def list_requests(
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
         approval_id=approval_id,
+        attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
+        route_outcome=route_outcome,
         soft_refusal=soft_refusal,
+        task_id=task_id,
     )
     summary_row = (
         await session.execute(_request_summary_statement(tenant_id, filters))
@@ -420,6 +500,7 @@ async def list_requests(
                 cost_complete=cost_usd is not None,
                 pii_detected=row.pii_detected,
                 tags=list(row.tags or []),
+                task_id=(row.details or {}).get("task_id"),
                 cost_center=row.cost_center,
                 provider=_request_provider(row),
                 team=row.team,
@@ -540,6 +621,166 @@ async def list_prompt_versions(
     )
 
 
+class TaskAgainstCapsView(BaseModel):
+    calls_share: float | None = Field(
+        description="Calls of the busiest window over the calls cap; null without one."
+    )
+    cost_share: float | None = Field(
+        description="Settled cost of the busiest window over the cost cap; null "
+        "without one."
+    )
+
+
+class TaskView(BaseModel):
+    task_id: str
+    trace_id: str | None
+    first_seen: datetime
+    last_seen: datetime
+    duration_seconds: float = Field(ge=0)
+    calls: int = Field(ge=0, description="Client requests: extra attempts excluded.")
+    attempts: int = Field(ge=0, description="Every request, extra attempts included.")
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    cost_usd: Decimal = Field(ge=0)
+    cost_complete: bool
+    models: list[str] = Field(max_length=5)
+    api_keys: list[UUID] = Field(max_length=5)
+    outcomes: PromptVersionOutcomes
+    failed: int = Field(ge=0)
+    loop_signals: int = Field(ge=0)
+    against_caps: TaskAgainstCapsView | None = Field(
+        description="Null while the tenant has no task cap set."
+    )
+    requests_url: str
+
+
+class TaskPage(BaseModel):
+    period: BillingPeriodView
+    items: list[TaskView]
+    truncated: bool
+    tasks: int = Field(ge=0)
+    requests_with_task: int = Field(ge=0)
+    requests_without_task: int = Field(ge=0)
+    cost_usd: Decimal = Field(ge=0, description="Settled cost of the task requests.")
+
+
+class AffectedTaskView(BaseModel):
+    task_id: str
+    requests_refused: int = Field(ge=1)
+
+
+class TaskCapPreviewView(BaseModel):
+    period: BillingPeriodView
+    caps: TaskCaps
+    tasks_considered: int = Field(ge=0)
+    tasks_affected: int = Field(ge=0)
+    requests_considered: int = Field(
+        ge=0, description="Calls with a task id: extra attempts excluded."
+    )
+    requests_refused: int = Field(ge=0)
+    refused_cost_usd: Decimal = Field(ge=0)
+    refused_share: float | None = Field(ge=0, le=1)
+    affected: list[AffectedTaskView] = Field(max_length=MAX_AFFECTED_TASKS)
+    caveats: list[str]
+
+
+@router.get("/tasks", response_model=TaskPage)
+async def list_tasks(
+    start: AwareDatetime | None = Query(
+        default=None, description="Inclusive; defaults to seven days before end."
+    ),
+    end: AwareDatetime | None = Query(
+        default=None, description="Exclusive; defaults to now."
+    ),
+    api_key_id: UUID | None = Query(default=None),
+    sort: TaskSort = Query(default="cost"),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> TaskPage:
+    start_at, end_at = _sync_window(start, end, days=7)
+    tenant_id = _tenant_id(user)
+    scope = [] if api_key_id is None else [RequestLifecycle.api_key_id == api_key_id]
+    # Members see the tasks of the keys they own or administer, as on /requests.
+    if "usage.read" not in await user_permissions(session, user):
+        scope.append(
+            RequestLifecycle.api_key_id.in_(
+                select(ApiKey.id).where(
+                    ApiKey.organization_id == tenant_id, _own_or_administered_key(user)
+                )
+            )
+        )
+    stored = await session.get(OrganizationGatewaySettings, tenant_id)
+    async with bounded_read(session):
+        report = await TaskReadModel().read(
+            session,
+            tenant_id=tenant_id,
+            start_at=start_at,
+            end_at=end_at,
+            caps=stored_settings(stored.settings).task_caps if stored else TaskCaps(),
+            sort=sort,
+            scope=and_(*scope) if scope else None,
+        )
+    return TaskPage.model_validate(
+        {
+            **asdict(report),
+            "period": BillingPeriodView(start=start_at, end=end_at),
+            "items": [
+                {
+                    **asdict(item),
+                    "requests_url": "/api/v1/management/requests?"
+                    + urlencode({"task_id": item.task_id}),
+                }
+                for item in report.items
+            ],
+        }
+    )
+
+
+@router.get("/tasks/cap-preview", response_model=TaskCapPreviewView)
+async def preview_task_cap(
+    max_calls: int | None = Query(default=None),
+    max_cost_usd: Decimal | None = Query(default=None),
+    window_seconds: int = Query(default=3600),
+    api_key_id: UUID | None = Query(default=None),
+    user: User = Depends(require("usage.read", legacy_detail=READER_REQUIRED)),
+    session: AsyncSession = Depends(get_db),
+) -> TaskCapPreviewView:
+    # S47's own model, so the preview takes exactly the caps the setting accepts.
+    try:
+        caps = TaskCaps(
+            max_calls=max_calls,
+            max_cost_usd=max_cost_usd,
+            window_seconds=window_seconds,
+        )
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from None
+    if caps.max_calls is None and caps.max_cost_usd is None:
+        raise HTTPException(
+            status_code=422, detail="set max_calls, max_cost_usd or both"
+        )
+    try:
+        async with bounded_read(session):
+            preview = await preview_task_caps(
+                session,
+                tenant_id=_tenant_id(user),
+                end_at=datetime.now(timezone.utc),
+                caps=caps,
+                api_key_id=api_key_id,
+            )
+    except TooManyTaskRequests:
+        raise HTTPException(
+            status_code=422,
+            detail="too many task requests to preview; narrow with api_key_id",
+        ) from None
+    return TaskCapPreviewView.model_validate(
+        {
+            **asdict(preview),
+            "period": BillingPeriodView(start=preview.start, end=preview.end),
+            "caps": caps,
+        }
+    )
+
+
 @router.get(
     "/requests/export",
     response_class=StreamingResponse,
@@ -559,8 +800,11 @@ async def export_requests(
     system_prompt_hash: _SystemPromptHashFilter = None,
     rule_id: _RuleIdFilter = None,
     approval_id: _ApprovalFilter = None,
+    attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
+    route_outcome: _RouteOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
+    task_id: _TaskIdFilter = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
@@ -582,8 +826,11 @@ async def export_requests(
         system_prompt_hash=system_prompt_hash,
         rule_id=rule_id,
         approval_id=approval_id,
+        attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
+        route_outcome=route_outcome,
         soft_refusal=soft_refusal,
+        task_id=task_id,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
     bounded_count = int(
@@ -638,6 +885,7 @@ async def export_requests(
                 "shim_latency_ms",
                 "pii_detected",
                 "tags",
+                "task_id",
                 "cost_center",
                 "team",
                 "provider_finish_reasons",
@@ -657,6 +905,14 @@ async def export_requests(
                 "response_entities",
                 "response_analysis",
                 "rule_matches",
+                "settings_applied",
+                "transforms_applied",
+                "attempt_group_id",
+                "attempt_number",
+                "attempt_reason",
+                "attempt_rule_id",
+                "route_decision",
+                "shadow_of",
                 "injection_markers",
                 "restore_withheld",
                 "approval_id",
@@ -683,6 +939,7 @@ async def export_requests(
                     details.get("shim_latency_ms"),
                     row.pii_detected,
                     ",".join(row.tags or []),
+                    details.get("task_id"),
                     row.cost_center,
                     row.team,
                     _json(details.get("provider_finish_reasons")),
@@ -709,6 +966,14 @@ async def export_requests(
                     if response_analysis is not None
                     else None,
                     _json(details.get("rule_matches")),
+                    _json(details.get("settings_applied")),
+                    _json(details.get("transforms_applied")),
+                    details.get("attempt_group_id"),
+                    details.get("attempt_number"),
+                    details.get("attempt_reason"),
+                    details.get("attempt_rule_id"),
+                    _json(details.get("route_decision")),
+                    details.get("shadow_of"),
                     _json(details.get("injection_markers")),
                     _json(details.get("restore_withheld")),
                     details.get("approval_id"),
@@ -741,8 +1006,11 @@ async def _request_filters(
     api_key_id: UUID | None = None,
     rule_id: str | None = None,
     approval_id: UUID | None = None,
+    attempt_group_id: str | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
+    route_outcome: str | None = None,
     soft_refusal: bool | None = None,
+    task_id: str | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
     end_at = _aware(end) if end is not None else None
@@ -826,6 +1094,13 @@ async def _request_filters(
         )
     if approval_id is not None:
         filters.append(RequestLog.details.contains({"approval_id": str(approval_id)}))
+    if attempt_group_id is not None:
+        filters.append(
+            or_(
+                RequestLog.request_id == attempt_group_id,
+                RequestLog.details.contains({"attempt_group_id": attempt_group_id}),
+            )
+        )
     if completion_outcome is not None:
         outcome = RequestLog.details["completion_outcome"].as_string()
         filters.append(
@@ -833,6 +1108,12 @@ async def _request_filters(
             if completion_outcome == "none"
             else outcome == completion_outcome
         )
+    if route_outcome is not None:
+        filters.append(
+            RequestLog.details.contains({"route_decision": {"outcome": route_outcome}})
+        )
+    if task_id is not None:
+        filters.append(RequestLog.details["task_id"].as_string() == task_id)
     if soft_refusal is not None:
         lifecycle = aliased(RequestLifecycle)
         filters.append(

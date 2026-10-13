@@ -20,6 +20,7 @@ from shim_enterprise.api.v1.management.deployments import DEPLOYMENTS
 from shim_enterprise.api.v1.management.record_sets import RECORD_SETS
 from shim_enterprise.api.v1.management.teams import TEAMS
 from shim_enterprise.compliance.api import FORWARD_TARGETS
+from shim_enterprise.config_file.models import CONFIG_MODE
 from shim_enterprise.policy.plans import Impact, Risk, State
 from shim_enterprise.rules.resource import RULES
 from shim_enterprise.tenants.models import User
@@ -94,5 +95,6 @@ REGISTRY: Mapping[str, ManagedResource] = {
         PROVIDER_KEYS,
         FORWARD_TARGETS,
         RECORD_SETS,
+        CONFIG_MODE,
     )
 }

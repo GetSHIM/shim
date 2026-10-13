@@ -311,7 +311,9 @@ async def _archive_workspace(
         (reference, provider_secret_purpose(provider))
         for reference, provider in await session.execute(
             select(ProviderSecret.secret_ref, ProviderSecret.provider).where(
-                ProviderSecret.organization_id == tenant_id
+                ProviderSecret.organization_id == tenant_id,
+                # A role stores nothing in the secret store.
+                ProviderSecret.secret_ref.is_not(None),
             )
         )
     ]

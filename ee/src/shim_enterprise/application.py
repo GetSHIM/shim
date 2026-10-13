@@ -16,6 +16,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from shim_enterprise.gateway.attempts import TenantAttemptPolicy
 from shim_enterprise.api.v1.router import gateway_router, management_router
 from shim.api.v1.gemini import router as gemini_router
 from shim.billing.lifecycle import load_lifecycle
@@ -47,6 +48,7 @@ from shim.observability.logging import configure_error_reporting, configure_logg
 from shim.observability.tracing import configure_tracing, shutdown_tracing
 from shim_enterprise.privacy.chain_store import RedisPrivacyContinuationStore
 from shim.privacy.pii_scrubber import PIIScrubberService
+from shim_enterprise.aws.roles import AwsRoles
 from shim_enterprise.secrets.store import (
     ManagedProviderCredentialResolver,
     get_secret_store,
@@ -196,6 +198,8 @@ def _create_gateway_kernel(
         AsyncSessionLocal,
     )
     secret_store = get_secret_store()
+    # One gateway AWS identity and one role session cache for both Bedrock formats.
+    aws_roles = AwsRoles(http_client, AsyncSessionLocal)
     chain_store = RedisPrivacyContinuationStore(cache)
     usage = DurableUsageLifecycle(DurableAccountingCoordinator(), AsyncSessionLocal)
     return GatewayKernel(
@@ -208,6 +212,7 @@ def _create_gateway_kernel(
                     entra=EntraTokenCache(
                         http_client, authority_host=settings.SHIM_AZURE_AUTHORITY_HOST
                     ),
+                    aws_roles=aws_roles,
                 ),
                 circuit_for=tenant_target_circuit("openai", cache),
                 settings=settings,
@@ -217,7 +222,7 @@ def _create_gateway_kernel(
             ),
             "anthropic": AnthropicExecution(
                 credential_resolver=ManagedProviderCredentialResolver(
-                    "anthropic", secret_store, AsyncSessionLocal
+                    "anthropic", secret_store, AsyncSessionLocal, aws_roles=aws_roles
                 ),
                 circuit_for=tenant_target_circuit("anthropic", cache),
                 settings=settings,
@@ -237,7 +242,11 @@ def _create_gateway_kernel(
         },
         chain_store=chain_store,
         policy_resolver=policy_resolver,
-        prepare_inference=DeploymentResolver(AsyncSessionLocal).resolve,
+        prepare_inference=DeploymentResolver(
+            AsyncSessionLocal, policy_resolver.policy_service
+        ).resolve,
+        attempt_policy=TenantAttemptPolicy(AsyncSessionLocal, strategies=()),
+        shadow_max_in_flight=settings.SHADOW_MAX_IN_FLIGHT,
         rate_limiter=BurstRateLimiter(cache),
         loop_detector=LoopDetectionService(cache),
         loop_repeat_limit=settings.LOOP_REPEAT_LIMIT,

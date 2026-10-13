@@ -16,6 +16,268 @@
         "title": "AcceptTeamInvite",
         "type": "object"
       },
+      "AccountActivity": {
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/ActivityAccount"
+          },
+          "findings_open": {
+            "items": {
+              "$ref": "#/components/schemas/OpenFinding"
+            },
+            "title": "Findings Open",
+            "type": "array"
+          },
+          "gateway_keys": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityKey"
+            },
+            "title": "Gateway Keys",
+            "type": "array"
+          },
+          "management": {
+            "$ref": "#/components/schemas/ManagementActivity"
+          },
+          "model_usage": {
+            "$ref": "#/components/schemas/ModelUsage"
+          },
+          "window": {
+            "$ref": "#/components/schemas/ActivityWindow"
+          }
+        },
+        "required": [
+          "account",
+          "gateway_keys",
+          "model_usage",
+          "management",
+          "findings_open",
+          "window"
+        ],
+        "title": "AccountActivity",
+        "type": "object"
+      },
+      "ActivityAccount": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "active",
+          "expires_at",
+          "last_used_at"
+        ],
+        "title": "ActivityAccount",
+        "type": "object"
+      },
+      "ActivityKey": {
+        "properties": {
+          "allowed_models": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Models"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          }
+        },
+        "required": [
+          "id",
+          "prefix",
+          "name",
+          "team_id",
+          "allowed_models",
+          "is_active",
+          "expires_at"
+        ],
+        "title": "ActivityKey",
+        "type": "object"
+      },
+      "ActivityWindow": {
+        "properties": {
+          "end": {
+            "format": "date-time",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "format": "date-time",
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "ActivityWindow",
+        "type": "object"
+      },
+      "AffectedTaskView": {
+        "properties": {
+          "requests_refused": {
+            "minimum": 1.0,
+            "title": "Requests Refused",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "requests_refused"
+        ],
+        "title": "AffectedTaskView",
+        "type": "object"
+      },
+      "AgentKeyInput": {
+        "properties": {
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Allowed Models",
+            "type": "array"
+          },
+          "expires_in_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Expires In Days",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          }
+        },
+        "required": [
+          "name",
+          "allowed_models",
+          "expires_in_days"
+        ],
+        "title": "AgentKeyInput",
+        "type": "object"
+      },
       "AgentLoop": {
         "additionalProperties": false,
         "description": "What a tool call repeated in one task's history does: counted by default.",
@@ -1288,6 +1550,120 @@
         "title": "AspectRatio",
         "type": "string"
       },
+      "Attribution": {
+        "properties": {
+          "aws_column": {
+            "description": "The Cost Explorer and CUR 2.0 column.",
+            "title": "Aws Column",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AttributionRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "tag_key": {
+            "title": "Tag Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag_key",
+          "aws_column",
+          "rows"
+        ],
+        "title": "Attribution",
+        "type": "object"
+      },
+      "AttributionRow": {
+        "properties": {
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when any request is unpriced.",
+            "title": "Cost Usd"
+          },
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt_tokens": {
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "session_tag": {
+            "title": "Session Tag",
+            "type": "string"
+          },
+          "unpriced_requests": {
+            "title": "Unpriced Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "session_tag",
+          "region",
+          "model",
+          "requests",
+          "prompt_tokens",
+          "completion_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_usd",
+          "unpriced_requests"
+        ],
+        "title": "AttributionRow",
+        "type": "object"
+      },
       "AudioResponseFormat": {
         "additionalProperties": false,
         "description": "Configuration for audio-specific output formatting.",
@@ -1489,6 +1865,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "actor_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The service account's role (admin, auditor or recommender); null for people.",
+            "title": "Actor Role"
           },
           "actor_type": {
             "anyOf": [
@@ -2025,6 +2413,196 @@
         "title": "AuthType",
         "type": "string"
       },
+      "AwsAccessKeyInput": {
+        "additionalProperties": false,
+        "description": "A long-term AWS access key pair; temporary (ASIA) keys expire and are refused.",
+        "properties": {
+          "access_key_id": {
+            "pattern": "^AKIA[A-Z0-9]{16}$",
+            "title": "Access Key Id",
+            "type": "string"
+          },
+          "secret_access_key": {
+            "format": "password",
+            "title": "Secret Access Key",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "access_key_id",
+          "secret_access_key"
+        ],
+        "title": "AwsAccessKeyInput",
+        "type": "object"
+      },
+      "AwsCheckInput": {
+        "additionalProperties": false,
+        "properties": {
+          "region": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the region of a Bedrock deployment using this secret, else us-east-1.",
+            "title": "Region"
+          }
+        },
+        "title": "AwsCheckInput",
+        "type": "object"
+      },
+      "AwsCheckStep": {
+        "properties": {
+          "aws_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Error"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "step": {
+            "enum": [
+              "gateway_identity",
+              "assume_role",
+              "tag_session",
+              "caller_identity",
+              "token",
+              "bedrock_access"
+            ],
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "status"
+        ],
+        "title": "AwsCheckStep",
+        "type": "object"
+      },
+      "AwsCheckView": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "region": {
+            "title": "Region",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AwsCheckStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "region",
+          "steps"
+        ],
+        "title": "AwsCheckView",
+        "type": "object"
+      },
+      "AwsCost": {
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "tag": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Tag",
+            "type": "string"
+          },
+          "usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Usd"
+          }
+        },
+        "required": [
+          "day",
+          "tag",
+          "usd"
+        ],
+        "title": "AwsCost",
+        "type": "object"
+      },
+      "AwsIdentityView": {
+        "properties": {
+          "external_id": {
+            "title": "External Id",
+            "type": "string"
+          },
+          "gateway_identity": {
+            "title": "Gateway Identity",
+            "type": "string"
+          },
+          "permissions_policy": {
+            "additionalProperties": true,
+            "title": "Permissions Policy",
+            "type": "object"
+          },
+          "trust_policy": {
+            "additionalProperties": true,
+            "title": "Trust Policy",
+            "type": "object"
+          },
+          "web_identity_audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Google ID token audience on the hosted cloud, else null.",
+            "title": "Web Identity Audience"
+          }
+        },
+        "required": [
+          "external_id",
+          "gateway_identity",
+          "web_identity_audience",
+          "trust_policy",
+          "permissions_policy"
+        ],
+        "title": "AwsIdentityView",
+        "type": "object"
+      },
       "AzureEntraInput": {
         "additionalProperties": false,
         "description": "A Microsoft Entra ID app registration's client secret.",
@@ -2068,6 +2646,174 @@
           "client_secret"
         ],
         "title": "AzureEntraInput",
+        "type": "object"
+      },
+      "BedrockAttribution": {
+        "additionalProperties": false,
+        "description": "Session tags that carry each team onto the AWS bill (role credentials only).",
+        "properties": {
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "session_tags"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "tag_key": {
+            "default": "shim-team",
+            "pattern": "^[A-Za-z0-9_.:/+@-]{1,128}$",
+            "title": "Tag Key",
+            "type": "string"
+          },
+          "unassigned_value": {
+            "default": "unassigned",
+            "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+            "title": "Unassigned Value",
+            "type": "string"
+          }
+        },
+        "title": "BedrockAttribution",
+        "type": "object"
+      },
+      "BedrockAttributionPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "session_tags"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "tag_key": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_.:/+@-]{1,128}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tag Key"
+          },
+          "unassigned_value": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unassigned Value"
+          }
+        },
+        "title": "BedrockAttributionPatch",
+        "type": "object"
+      },
+      "BedrockRegionLock": {
+        "additionalProperties": false,
+        "description": "Which Bedrock inference profiles a tenant's requests may use.",
+        "properties": {
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "monitor",
+              "enforce"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "regions": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z]{2}(-[a-z]+)*(-[0-9])?$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Regions",
+            "type": "array"
+          },
+          "scopes": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z][a-z0-9_-]{1,15}$",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "title": "BedrockRegionLock",
+        "type": "object"
+      },
+      "BedrockRegionLockPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "monitor",
+                  "enforce"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "regions": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z]{2}(-[a-z]+)*(-[0-9])?$",
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Regions"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "pattern": "^[a-z][a-z0-9_-]{1,15}$",
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "BedrockRegionLockPatch",
         "type": "object"
       },
       "Behavior": {
@@ -2787,7 +3533,7 @@
           },
           "models": {
             "items": {
-              "$ref": "#/components/schemas/ModelCount"
+              "$ref": "#/components/schemas/shim_enterprise__rules__api__ModelCount"
             },
             "title": "Models",
             "type": "array"
@@ -2811,6 +3557,32 @@
           "truncated_rows"
         ],
         "title": "ByScopeView",
+        "type": "object"
+      },
+      "CapacityForecast": {
+        "properties": {
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentForecast"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "measure": {
+            "default": "busy-hour average concurrency from gateway records; instantaneous peaks are higher",
+            "title": "Measure",
+            "type": "string"
+          },
+          "window_days": {
+            "default": 56,
+            "title": "Window Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deployments"
+        ],
+        "title": "CapacityForecast",
         "type": "object"
       },
       "ChainBreak": {
@@ -2975,6 +3747,119 @@
         "title": "CodexModelListView",
         "type": "object"
       },
+      "CompareInput": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/AwsCost"
+            },
+            "maxItems": 5000,
+            "title": "Rows",
+            "type": "array"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "rows"
+        ],
+        "title": "CompareInput",
+        "type": "object"
+      },
+      "ComparedRow": {
+        "properties": {
+          "aws_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Aws Usd",
+            "type": "string"
+          },
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "difference_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Difference Usd",
+            "type": "string"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_usd / shim_usd; null when shim is 0.",
+            "title": "Ratio"
+          },
+          "shim_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Shim Usd",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "tag",
+          "shim_usd",
+          "aws_usd",
+          "difference_usd",
+          "ratio"
+        ],
+        "title": "ComparedRow",
+        "type": "object"
+      },
+      "Comparison": {
+        "properties": {
+          "only_in_aws": {
+            "items": {
+              "$ref": "#/components/schemas/DayTag"
+            },
+            "title": "Only In Aws",
+            "type": "array"
+          },
+          "only_in_shim": {
+            "items": {
+              "$ref": "#/components/schemas/DayTag"
+            },
+            "title": "Only In Shim",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ComparedRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "only_in_shim",
+          "only_in_aws"
+        ],
+        "title": "Comparison",
+        "type": "object"
+      },
       "ComputerUse": {
         "additionalProperties": false,
         "description": "Tool to support computer use.",
@@ -3034,6 +3919,38 @@
           }
         },
         "title": "ComputerUse",
+        "type": "object"
+      },
+      "ConfigMode": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "api",
+              "file"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "enum": [
+                "privacy",
+                "gateway_settings",
+                "rules"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Resources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "resources"
+        ],
+        "title": "ConfigMode",
         "type": "object"
       },
       "ConnectorCreate": {
@@ -3568,6 +4485,11 @@
       },
       "CreatedServiceAccount": {
         "properties": {
+          "active": {
+            "description": "False while the account is frozen.",
+            "title": "Active",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -3622,7 +4544,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -3637,6 +4560,7 @@
           "last_used_at",
           "created_by",
           "created_at",
+          "active",
           "plaintext"
         ],
         "title": "CreatedServiceAccount",
@@ -3715,6 +4639,25 @@
         "title": "CreatedTeamInvite",
         "type": "object"
       },
+      "CurrencyTotal": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "amount"
+        ],
+        "title": "CurrencyTotal",
+        "type": "object"
+      },
       "CustomRoleInput": {
         "properties": {
           "name": {
@@ -3727,7 +4670,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 27,
+            "maxItems": 29,
             "title": "Permissions",
             "type": "array"
           },
@@ -3785,6 +4728,7 @@
                 "budgets.manage",
                 "teams.manage",
                 "keys.own",
+                "keys.hold",
                 "keys.manage",
                 "members.read",
                 "members.manage",
@@ -3798,6 +4742,7 @@
                 "incidents.manage",
                 "plans.create",
                 "plans.apply",
+                "plans.apply_allowlisted",
                 "plans.approve",
                 "requests.approve",
                 "content.read",
@@ -3886,6 +4831,25 @@
         "title": "DailyUsageView",
         "type": "object"
       },
+      "DayTag": {
+        "properties": {
+          "day": {
+            "format": "date",
+            "title": "Day",
+            "type": "string"
+          },
+          "tag": {
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "tag"
+        ],
+        "title": "DayTag",
+        "type": "object"
+      },
       "DecisionInput": {
         "properties": {
           "note": {
@@ -3913,6 +4877,211 @@
         ],
         "title": "Delivery",
         "type": "string"
+      },
+      "DeploymentAllocation": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "by_key": {
+            "items": {
+              "$ref": "#/components/schemas/KeyShare"
+            },
+            "title": "By Key",
+            "type": "array"
+          },
+          "by_team": {
+            "items": {
+              "$ref": "#/components/schemas/TeamShare"
+            },
+            "title": "By Team",
+            "type": "array"
+          },
+          "carried_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earlier month whose entry applies, when this one has none.",
+            "title": "Carried From"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "estimated_share": {
+            "title": "Estimated Share",
+            "type": "number"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "unattributed": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The whole amount, when the deployment served no tokens.",
+            "title": "Unattributed"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "amount",
+          "currency",
+          "carried_from",
+          "tokens",
+          "estimated_share",
+          "by_key",
+          "by_team",
+          "unattributed"
+        ],
+        "title": "DeploymentAllocation",
+        "type": "object"
+      },
+      "DeploymentForecast": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "capacity_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "entered",
+                  "measured"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity Source"
+          },
+          "current_peak": {
+            "description": "The busiest hour of the last 7 days.",
+            "title": "Current Peak",
+            "type": "number"
+          },
+          "days_with_traffic": {
+            "title": "Days With Traffic",
+            "type": "integer"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "measured_capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The highest running count in an hour the server queued requests: where it started to queue.",
+            "title": "Measured Capacity"
+          },
+          "measured_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The server's highest hourly running count of the last 7 days (inference_metrics).",
+            "title": "Measured Peak"
+          },
+          "projected_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projected Date"
+          },
+          "slope_per_day": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slope Per Day"
+          },
+          "status": {
+            "enum": [
+              "not_enough_data",
+              "no_capacity",
+              "at_capacity",
+              "not_growing",
+              "projected",
+              "beyond_horizon"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "days_with_traffic",
+          "current_peak",
+          "slope_per_day",
+          "capacity",
+          "capacity_source",
+          "measured_peak",
+          "measured_capacity",
+          "projected_date",
+          "status"
+        ],
+        "title": "DeploymentForecast",
+        "type": "object"
       },
       "DetectiveOverview": {
         "properties": {
@@ -4272,6 +5441,50 @@
         "title": "FeatureSelectionPreference",
         "type": "string"
       },
+      "FileApplyView": {
+        "properties": {
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied",
+              "pending_approval",
+              "unchanged"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "serial"
+        ],
+        "title": "FileApplyView",
+        "type": "object"
+      },
       "FileData": {
         "additionalProperties": false,
         "description": "URI-based data.\n\nA FileData message contains a URI pointing to data of a specific media type.\nIt is used to represent images, audio, and video stored in Google Cloud\nStorage.",
@@ -4314,6 +5527,80 @@
           }
         },
         "title": "FileData",
+        "type": "object"
+      },
+      "FileInput": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "FileInput",
+        "type": "object"
+      },
+      "FilePlanView": {
+        "properties": {
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "risk": {
+            "enum": [
+              "tightening",
+              "relaxing",
+              "neutral"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "integer"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SignatureCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stored": {
+            "default": false,
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "serial",
+          "risk",
+          "changes",
+          "signature"
+        ],
+        "title": "FilePlanView",
         "type": "object"
       },
       "FileSearch": {
@@ -4571,6 +5858,30 @@
           "id"
         ],
         "title": "FindingEvidence",
+        "type": "object"
+      },
+      "FindingExplanation": {
+        "properties": {
+          "finding": {
+            "$ref": "#/components/schemas/Finding"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingRuleFacts"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for a rule this build no longer knows."
+          }
+        },
+        "required": [
+          "finding",
+          "rule"
+        ],
+        "title": "FindingExplanation",
         "type": "object"
       },
       "FindingImpact": {
@@ -4889,6 +6200,74 @@
         "title": "FindingRemediation",
         "type": "object"
       },
+      "FindingRuleFacts": {
+        "properties": {
+          "action_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Kind"
+          },
+          "blast_radius": {
+            "title": "Blast Radius",
+            "type": "string"
+          },
+          "doc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The rule's section of FINDINGS.md (markdown, at most 16 KB); null when the rule has none.",
+            "title": "Doc"
+          },
+          "max_mode": {
+            "enum": [
+              "observe",
+              "suggest",
+              "auto"
+            ],
+            "title": "Max Mode",
+            "type": "string"
+          },
+          "playbook": {
+            "title": "Playbook",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rule_version": {
+            "title": "Rule Version",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "rule_version",
+          "title",
+          "max_mode",
+          "action_kind",
+          "blast_radius",
+          "playbook",
+          "doc"
+        ],
+        "title": "FindingRuleFacts",
+        "type": "object"
+      },
       "FindingRuleView": {
         "properties": {
           "action_kind": {
@@ -4944,7 +6323,12 @@
           "unavailable_reason": {
             "anyOf": [
               {
-                "const": "auto_executor_not_installed",
+                "enum": [
+                  "auto_paused",
+                  "proof_unavailable",
+                  "no_allowlist_entry",
+                  "remediation_restored"
+                ],
                 "type": "string"
               },
               {
@@ -5279,6 +6663,25 @@
           }
         },
         "title": "ForwardTargetUpdate",
+        "type": "object"
+      },
+      "FrozenView": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "active"
+        ],
+        "title": "FrozenView",
         "type": "object"
       },
       "FunctionCall": {
@@ -5720,6 +7123,27 @@
               "repeats": 5
             }
           },
+          "auto_remediation_paused": {
+            "default": false,
+            "title": "Auto Remediation Paused",
+            "type": "boolean"
+          },
+          "bedrock_attribution": {
+            "$ref": "#/components/schemas/BedrockAttribution",
+            "default": {
+              "mode": "off",
+              "tag_key": "shim-team",
+              "unassigned_value": "unassigned"
+            }
+          },
+          "bedrock_region_lock": {
+            "$ref": "#/components/schemas/BedrockRegionLock",
+            "default": {
+              "mode": "off",
+              "regions": [],
+              "scopes": []
+            }
+          },
           "finding_modes": {
             "additionalProperties": {
               "enum": [
@@ -5741,6 +7165,15 @@
             ],
             "title": "Four Eyes",
             "type": "string"
+          },
+          "inference_metrics": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/InferenceMetricsSource"
+            },
+            "maxItems": 64,
+            "title": "Inference Metrics",
+            "type": "array"
           },
           "inflight_sharing_api_key_ids": {
             "default": [],
@@ -5776,6 +7209,14 @@
             "title": "Price Tier Warning",
             "type": "boolean"
           },
+          "provider_cache": {
+            "$ref": "#/components/schemas/ProviderCacheSettings",
+            "default": {
+              "anthropic_auto_cache": "off",
+              "deployments": [],
+              "openai_prompt_cache_key": "off"
+            }
+          },
           "request_archive": {
             "$ref": "#/components/schemas/RequestArchiveSettings",
             "default": {
@@ -5804,6 +7245,28 @@
             "default": {
               "window_seconds": 3600
             }
+          },
+          "thinking_history": {
+            "$ref": "#/components/schemas/ThinkingHistorySettings",
+            "default": {
+              "anthropic_keep_turns": 0,
+              "openai_reasoning_context": "off"
+            }
+          },
+          "tool_search": {
+            "$ref": "#/components/schemas/ToolSearchSettings",
+            "default": {
+              "api_key_ids": [],
+              "keep_loaded": [],
+              "min_tools": 10,
+              "mode": "off"
+            }
+          },
+          "transforms": {
+            "$ref": "#/components/schemas/TransformSettings",
+            "default": {
+              "json_compaction": "off"
+            }
           }
         },
         "title": "GatewaySettings",
@@ -5816,6 +7279,37 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AgentLoop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_remediation_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Remediation Paused"
+          },
+          "bedrock_attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BedrockAttributionPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bedrock_region_lock": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BedrockRegionLockPatch"
               },
               {
                 "type": "null"
@@ -5855,6 +7349,21 @@
               }
             ],
             "title": "Four Eyes"
+          },
+          "inference_metrics": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InferenceMetricsSource"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inference Metrics"
           },
           "inflight_sharing_api_key_ids": {
             "anyOf": [
@@ -5914,6 +7423,16 @@
             ],
             "title": "Price Tier Warning"
           },
+          "provider_cache": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderCachePatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "request_archive": {
             "anyOf": [
               {
@@ -5963,6 +7482,36 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/TaskCaps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thinking_history": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThinkingHistoryPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tool_search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ToolSearchPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transforms": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransformPatch"
               },
               {
                 "type": "null"
@@ -6723,6 +8272,151 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HardwareAllocation": {
+        "properties": {
+          "allocation": {
+            "const": "tokens",
+            "default": "tokens",
+            "title": "Allocation",
+            "type": "string"
+          },
+          "attributed_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The earliest request of the month that names its deployment.",
+            "title": "Attributed Since"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentAllocation"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "totals": {
+            "description": "One per currency; never summed.",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyTotal"
+            },
+            "title": "Totals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "period",
+          "attributed_since",
+          "deployments",
+          "totals"
+        ],
+        "title": "HardwareAllocation",
+        "type": "object"
+      },
+      "HardwareCostInput": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,16}|(?=[\\d.]{1,19}0*$)\\d{0,16}\\.\\d{0,2}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
+          },
+          "currency": {
+            "pattern": "^[A-Z]{3}$",
+            "title": "Currency",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "amount",
+          "currency"
+        ],
+        "title": "HardwareCostInput",
+        "type": "object"
+      },
+      "HardwareCostView": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "entered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entered By"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "period": {
+            "title": "Period",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "period",
+          "amount",
+          "currency",
+          "note",
+          "entered_by",
+          "updated_at"
+        ],
+        "title": "HardwareCostView",
+        "type": "object"
+      },
       "HarmBlockMethod": {
         "description": "The method for blocking content.\n\nIf not specified, the default behavior is to use the probability score. This\nenum is not supported in Gemini API.",
         "enum": [
@@ -7318,6 +9012,37 @@
         "title": "IncidentView",
         "type": "object"
       },
+      "InferenceMetricsSource": {
+        "additionalProperties": false,
+        "description": "An internal deployment whose model server shim reads the load of.",
+        "properties": {
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "send_credential": {
+            "default": false,
+            "title": "Send Credential",
+            "type": "boolean"
+          },
+          "server": {
+            "enum": [
+              "vllm",
+              "tgi",
+              "ollama"
+            ],
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "server"
+        ],
+        "title": "InferenceMetricsSource",
+        "type": "object"
+      },
       "Interval": {
         "additionalProperties": false,
         "description": "Represents a time interval, encoded as a Timestamp start (inclusive) and a Timestamp end (exclusive).\n\nThe start must be less than or equal to the end. When the start equals the\nend, the interval is empty (matches no time). When both start and end are\nunspecified, the interval matches any time.",
@@ -7353,6 +9078,68 @@
         "type": "object"
       },
       "JsonValue": {},
+      "KeyShare": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "api_key_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "share": {
+            "title": "Share",
+            "type": "number"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "api_key_id",
+          "name",
+          "team_id",
+          "tokens",
+          "share",
+          "amount"
+        ],
+        "title": "KeyShare",
+        "type": "object"
+      },
       "Language": {
         "description": "Programming language of the `code`.",
         "enum": [
@@ -7868,6 +9655,150 @@
         "title": "Links",
         "type": "object"
       },
+      "LockPreview": {
+        "properties": {
+          "ceiling": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ceiling",
+            "type": "array"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/LockPreviewItem"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "lock": {
+            "$ref": "#/components/schemas/BedrockRegionLock"
+          }
+        },
+        "required": [
+          "lock",
+          "ceiling",
+          "deployments"
+        ],
+        "title": "LockPreview",
+        "type": "object"
+      },
+      "LockPreviewItem": {
+        "properties": {
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "aws_region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Region"
+          },
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "destinations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destinations"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "scope",
+                "region",
+                "unknown_destinations",
+                "ceiling"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "requests_7d": {
+            "title": "Requests 7D",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "upstream_model": {
+            "title": "Upstream Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "aws_region",
+          "upstream_model",
+          "scope",
+          "destinations",
+          "allowed",
+          "reasons",
+          "requests_7d"
+        ],
+        "title": "LockPreviewItem",
+        "type": "object"
+      },
+      "ManagementActivity": {
+        "properties": {
+          "plans_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Plans By Status",
+            "type": "object"
+          },
+          "refused_applies": {
+            "title": "Refused Applies",
+            "type": "integer"
+          },
+          "remediations_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Remediations By Status",
+            "type": "object"
+          },
+          "versions": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plans_by_status",
+          "versions",
+          "remediations_by_status",
+          "refused_applies"
+        ],
+        "title": "ManagementActivity",
+        "type": "object"
+      },
       "McpServer": {
         "additionalProperties": false,
         "description": "A MCPServer is a server that can be called by the model to perform actions.\n\nIt is a server that implements the MCP protocol. Next ID: 6. This data type is\nnot supported in Vertex AI.",
@@ -7982,22 +9913,54 @@
         "title": "Modality",
         "type": "string"
       },
-      "ModelCount": {
+      "ModeView": {
         "properties": {
-          "model": {
-            "title": "Model",
+          "active_signing_keys": {
+            "minimum": 0.0,
+            "title": "Active Signing Keys",
+            "type": "integer"
+          },
+          "last_applied_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Applied At"
+          },
+          "last_serial": {
+            "minimum": 0.0,
+            "title": "Last Serial",
+            "type": "integer"
+          },
+          "mode": {
+            "enum": [
+              "api",
+              "file"
+            ],
+            "title": "Mode",
             "type": "string"
           },
-          "requests": {
-            "title": "Requests",
-            "type": "integer"
+          "resources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resources",
+            "type": "array"
           }
         },
         "required": [
-          "model",
-          "requests"
+          "mode",
+          "resources",
+          "last_serial",
+          "last_applied_at",
+          "active_signing_keys"
         ],
-        "title": "ModelCount",
+        "title": "ModeView",
         "type": "object"
       },
       "ModelDeploymentInput": {
@@ -8010,11 +9973,33 @@
             "title": "Alias",
             "type": "string"
           },
+          "aws_region": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AWS region of an aws_bedrock deployment, such as eu-central-1.",
+            "title": "Aws Region"
+          },
           "base_url": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required, except for aws_bedrock, where shim derives it from the region.",
+            "title": "Base Url"
           },
           "cache_read_price_per_million": {
             "anyOf": [
@@ -8049,6 +10034,20 @@
             ],
             "description": "USD per million input tokens written to the cache; needs the input price.",
             "title": "Cache Write Price Per Million"
+          },
+          "capacity_concurrent_requests": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Concurrent requests the serving hardware holds; the capacity forecast compares the measured busy hour with it.",
+            "title": "Capacity Concurrent Requests"
           },
           "context_window": {
             "anyOf": [
@@ -8157,10 +10156,11 @@
           },
           "upstream": {
             "default": "generic",
-            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
             "enum": [
               "generic",
-              "azure_openai"
+              "azure_openai",
+              "aws_bedrock"
             ],
             "title": "Upstream",
             "type": "string"
@@ -8176,7 +10176,6 @@
           "alias",
           "provider",
           "upstream_model",
-          "base_url",
           "provider_secret_id",
           "deployment_kind",
           "declared_version",
@@ -8195,11 +10194,73 @@
             "title": "Alias",
             "type": "string"
           },
+          "aws_destination_regions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_bedrock: the regions the profile can route to, from GetInferenceProfile; null when unknown.",
+            "title": "Aws Destination Regions"
+          },
+          "aws_destinations_checked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Destinations Checked At"
+          },
+          "aws_profile_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_bedrock: in_region for a model, else the profile's prefix (eu, us, global).",
+            "readOnly": true,
+            "title": "Aws Profile Scope"
+          },
+          "aws_region": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The AWS region of an aws_bedrock deployment, such as eu-central-1.",
+            "title": "Aws Region"
+          },
           "base_url": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Base Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required, except for aws_bedrock, where shim derives it from the region.",
+            "title": "Base Url"
           },
           "cache_read_price_per_million": {
             "anyOf": [
@@ -8226,6 +10287,20 @@
             ],
             "description": "USD per million input tokens written to the cache; needs the input price.",
             "title": "Cache Write Price Per Million"
+          },
+          "capacity_concurrent_requests": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Concurrent requests the serving hardware holds; the capacity forecast compares the measured busy hour with it.",
+            "title": "Capacity Concurrent Requests"
           },
           "context_window": {
             "anyOf": [
@@ -8362,10 +10437,11 @@
           },
           "upstream": {
             "default": "generic",
-            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1.",
+            "description": "azure_openai: an Azure OpenAI v1 endpoint ending in /openai/v1. aws_bedrock: Amazon Bedrock in aws_region, Anthropic's or OpenAI's format.",
             "enum": [
               "generic",
-              "azure_openai"
+              "azure_openai",
+              "aws_bedrock"
             ],
             "title": "Upstream",
             "type": "string"
@@ -8381,7 +10457,6 @@
           "alias",
           "provider",
           "upstream_model",
-          "base_url",
           "provider_secret_id",
           "deployment_kind",
           "declared_version",
@@ -8390,7 +10465,8 @@
           "health",
           "health_checked_at",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "aws_profile_scope"
         ],
         "title": "ModelDeploymentView",
         "type": "object"
@@ -8767,6 +10843,38 @@
         "title": "ModelSelectionConfig",
         "type": "object"
       },
+      "ModelUsage": {
+        "properties": {
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/shim_enterprise__api__v1__management__agents__ModelCount"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requests",
+          "failed",
+          "cost_usd",
+          "by_model"
+        ],
+        "title": "ModelUsage",
+        "type": "object"
+      },
       "MonthlyEvidenceRead": {
         "properties": {
           "format": {
@@ -9099,6 +11207,25 @@
           "error"
         ],
         "title": "OpenAIErrorResponse",
+        "type": "object"
+      },
+      "OpenFinding": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule_id"
+        ],
+        "title": "OpenFinding",
         "type": "object"
       },
       "Outcome": {
@@ -11239,6 +13366,121 @@
         "title": "PromptVersionView",
         "type": "object"
       },
+      "ProposalView": {
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/PlanView"
+          },
+          "status": {
+            "const": "proposed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "plan"
+        ],
+        "title": "ProposalView",
+        "type": "object"
+      },
+      "ProviderCachePatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_auto_cache": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "5m",
+                  "1h"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Auto Cache"
+          },
+          "deployments": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployments"
+          },
+          "openai_prompt_cache_key": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "key",
+                  "tenant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Prompt Cache Key"
+          }
+        },
+        "title": "ProviderCachePatch",
+        "type": "object"
+      },
+      "ProviderCacheSettings": {
+        "additionalProperties": false,
+        "description": "The providers' own prompt-cache discount: two settings band steps (S54).",
+        "properties": {
+          "anthropic_auto_cache": {
+            "default": "off",
+            "enum": [
+              "off",
+              "5m",
+              "1h"
+            ],
+            "title": "Anthropic Auto Cache",
+            "type": "string"
+          },
+          "deployments": {
+            "default": [],
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Deployments",
+            "type": "array"
+          },
+          "openai_prompt_cache_key": {
+            "default": "off",
+            "enum": [
+              "off",
+              "key",
+              "tenant"
+            ],
+            "title": "Openai Prompt Cache Key",
+            "type": "string"
+          }
+        },
+        "title": "ProviderCacheSettings",
+        "type": "object"
+      },
       "ProviderKeySettings": {
         "properties": {
           "allow_customer_provider_keys": {
@@ -11255,6 +13497,30 @@
       },
       "ProviderSecretInput": {
         "properties": {
+          "aws_access_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AwsAccessKeyInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "pattern": "^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "aws_role: the role in the tenant's AWS account shim assumes; nothing secret is stored.",
+            "title": "Aws Role Arn"
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -11307,12 +13573,15 @@
             "title": "Name"
           },
           "provider": {
-            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments.",
+            "description": "azure_entra: an Entra ID client credential for Azure OpenAI deployments. aws_access_key (aws_access_key), aws_bedrock_api_key (key) or aws_role (aws_role_arn): a credential for Amazon Bedrock deployments only, of either request format.",
             "enum": [
               "openai",
               "anthropic",
               "google",
-              "azure_entra"
+              "azure_entra",
+              "aws_access_key",
+              "aws_bedrock_api_key",
+              "aws_role"
             ],
             "title": "Provider",
             "type": "string"
@@ -11326,6 +13595,29 @@
       },
       "ProviderSecretPatch": {
         "properties": {
+          "aws_access_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AwsAccessKeyInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "pattern": "^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]{1,512}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Arn"
+          },
           "azure_entra": {
             "anyOf": [
               {
@@ -11383,6 +13675,17 @@
       },
       "ProviderSecretView": {
         "properties": {
+          "aws_role_arn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Arn"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -11424,6 +13727,12 @@
             "title": "Provider",
             "type": "string"
           },
+          "stores_secret": {
+            "description": "False for a role: shim keeps its ARN and nothing secret.",
+            "readOnly": true,
+            "title": "Stores Secret",
+            "type": "boolean"
+          },
           "verified_at": {
             "anyOf": [
               {
@@ -11442,9 +13751,11 @@
           "provider",
           "name",
           "masked_key",
+          "aws_role_arn",
           "created_at",
           "monthly_limit_usd",
-          "verified_at"
+          "verified_at",
+          "stores_secret"
         ],
         "title": "ProviderSecretView",
         "type": "object"
@@ -12075,6 +14386,179 @@
         "title": "RecordSetView",
         "type": "object"
       },
+      "RemediationView": {
+        "properties": {
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "actor_type": {
+            "enum": [
+              "system",
+              "service"
+            ],
+            "title": "Actor Type",
+            "type": "string"
+          },
+          "applied_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied Version"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "finding_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finding Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "description": "Per change: resource, item, entry, before, after and proof.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "restore_plan_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restore Plan Id"
+          },
+          "restored_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored Version"
+          },
+          "result": {
+            "additionalProperties": true,
+            "description": "Per measured item its baseline and measured refusals; the reasons of a skipped row; the reason of a restore_skipped one.",
+            "title": "Result",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "watching",
+              "kept",
+              "restored",
+              "restore_skipped",
+              "skipped",
+              "undone"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "window_end": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window End"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "id",
+          "finding_id",
+          "plan_id",
+          "applied_version",
+          "actor_type",
+          "actor_id",
+          "items",
+          "status",
+          "window_start",
+          "window_end",
+          "result",
+          "restore_plan_id",
+          "restored_version",
+          "created_at",
+          "closed_at"
+        ],
+        "title": "RemediationView",
+        "type": "object"
+      },
       "ReplicatedVoiceConfig": {
         "additionalProperties": false,
         "description": "The configuration for the replicated voice to use.",
@@ -12403,6 +14887,52 @@
             "description": "The request approval this request created, was refused under or consumed; null when no approval gate decided it.",
             "title": "Approval Id"
           },
+          "attempt_group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On an extra attempt a tenant rule asked for: the request id of the client request's first attempt; null on a first attempt.",
+            "title": "Attempt Group Id"
+          },
+          "attempt_number": {
+            "anyOf": [
+              {
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Number"
+          },
+          "attempt_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Reason"
+          },
+          "attempt_rule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Rule Id"
+          },
           "blocked_entities": {
             "anyOf": [
               {
@@ -12703,6 +15233,19 @@
             "description": "Placeholders left in the answer, by type, because the caller's key and team may not see the value; null when nothing was withheld for this caller.",
             "title": "Restore Withheld"
           },
+          "route_decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where a route rule sent, or would have sent, the request: rule_id, state, from, to, reason, conversation_id and outcome (routed, would_route, not_allowed_for_key, target_unavailable), with the earlier decision under previous when a rule moved it again after privacy; null when no rule decided.",
+            "title": "Route Decision"
+          },
           "rule_matches": {
             "anyOf": [
               {
@@ -12729,6 +15272,34 @@
               }
             ],
             "title": "Rule Matches Truncated"
+          },
+          "settings_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settings band steps that set a provider parameter, by id and version; [] when the band ran and set nothing, null when it did not run.",
+            "title": "Settings Applied"
+          },
+          "shadow_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a copy of a finished request sent to a candidate model: the primary request's id; null otherwise.",
+            "title": "Shadow Of"
           },
           "shim_latency_ms": {
             "anyOf": [
@@ -12776,6 +15347,18 @@
             "title": "Tags",
             "type": "array"
           },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent task (X-Shim-Task-Id, else the trace id); null without one and on older rows.",
+            "title": "Task Id"
+          },
           "team": {
             "anyOf": [
               {
@@ -12786,6 +15369,22 @@
               }
             ],
             "title": "Team"
+          },
+          "transforms_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Transform band steps that changed the request, by id and version, with characters before and after and the strings changed; [] when the band ran and changed nothing, null when it did not run.",
+            "title": "Transforms Applied"
           },
           "ttft_ms": {
             "anyOf": [
@@ -14232,6 +16831,268 @@
         "title": "SearchTypes",
         "type": "object"
       },
+      "ServerLoad": {
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "busy_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Samples with a request running.",
+            "title": "Busy Share"
+          },
+          "cache_usage_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Usage Avg"
+          },
+          "cache_usage_peak": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Usage Peak"
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_scrape_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Scrape At"
+          },
+          "loaded_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ollama: samples with the model loaded.",
+            "title": "Loaded Share"
+          },
+          "queued_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Samples with a request waiting.",
+            "title": "Queued Share"
+          },
+          "running_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Running Avg"
+          },
+          "running_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Running Peak"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "server": {
+            "enum": [
+              "vllm",
+              "tgi",
+              "ollama"
+            ],
+            "title": "Server",
+            "type": "string"
+          },
+          "utilisation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "running_avg / capacity.",
+            "title": "Utilisation"
+          },
+          "utilisation_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_capacity",
+                  "server_reports_no_running"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utilisation Unavailable Reason"
+          },
+          "vram_bytes_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vram Bytes Peak"
+          },
+          "waiting_avg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Avg"
+          },
+          "waiting_peak": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Peak"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "alias",
+          "server",
+          "last_scrape_at",
+          "last_error",
+          "samples",
+          "errors",
+          "busy_share",
+          "queued_share",
+          "running_avg",
+          "running_peak",
+          "waiting_avg",
+          "waiting_peak",
+          "cache_usage_avg",
+          "cache_usage_peak",
+          "loaded_share",
+          "vram_bytes_peak",
+          "capacity",
+          "utilisation",
+          "utilisation_unavailable_reason"
+        ],
+        "title": "ServerLoad",
+        "type": "object"
+      },
+      "ServerLoads": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ServerLoad"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ServerLoads",
+        "type": "object"
+      },
       "ServiceAccountInput": {
         "properties": {
           "expires_in_days": {
@@ -14249,7 +17110,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -14265,6 +17127,11 @@
       },
       "ServiceAccountView": {
         "properties": {
+          "active": {
+            "description": "False while the account is frozen.",
+            "title": "Active",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -14315,7 +17182,8 @@
           "role": {
             "enum": [
               "admin",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -14329,7 +17197,8 @@
           "expires_at",
           "last_used_at",
           "created_by",
-          "created_at"
+          "created_at",
+          "active"
         ],
         "title": "ServiceAccountView",
         "type": "object"
@@ -14430,6 +17299,126 @@
           "max_views"
         ],
         "title": "SharedResultView",
+        "type": "object"
+      },
+      "SignatureCheck": {
+        "properties": {
+          "key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Id"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "key_id"
+        ],
+        "title": "SignatureCheck",
+        "type": "object"
+      },
+      "SigningKeyInput": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "public_key_pem": {
+            "maxLength": 1000,
+            "title": "Public Key Pem",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "public_key_pem",
+          "user_id",
+          "name"
+        ],
+        "title": "SigningKeyInput",
+        "type": "object"
+      },
+      "SigningKeyView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key_id",
+          "name",
+          "user_id",
+          "created_by",
+          "created_at",
+          "revoked_at",
+          "revoked_by"
+        ],
+        "title": "SigningKeyView",
         "type": "object"
       },
       "SpeakerVoiceConfig": {
@@ -14773,6 +17762,118 @@
         "title": "SubscriptionView",
         "type": "object"
       },
+      "TaskAgainstCapsView": {
+        "properties": {
+          "calls_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Calls of the busiest window over the calls cap; null without one.",
+            "title": "Calls Share"
+          },
+          "cost_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settled cost of the busiest window over the cost cap; null without one.",
+            "title": "Cost Share"
+          }
+        },
+        "required": [
+          "calls_share",
+          "cost_share"
+        ],
+        "title": "TaskAgainstCapsView",
+        "type": "object"
+      },
+      "TaskCapPreviewView": {
+        "properties": {
+          "affected": {
+            "items": {
+              "$ref": "#/components/schemas/AffectedTaskView"
+            },
+            "maxItems": 20,
+            "title": "Affected",
+            "type": "array"
+          },
+          "caps": {
+            "$ref": "#/components/schemas/TaskCaps-Output"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Caveats",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          },
+          "refused_cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Refused Cost Usd",
+            "type": "string"
+          },
+          "refused_share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused Share"
+          },
+          "requests_considered": {
+            "description": "Calls with a task id: extra attempts excluded.",
+            "minimum": 0.0,
+            "title": "Requests Considered",
+            "type": "integer"
+          },
+          "requests_refused": {
+            "minimum": 0.0,
+            "title": "Requests Refused",
+            "type": "integer"
+          },
+          "tasks_affected": {
+            "minimum": 0.0,
+            "title": "Tasks Affected",
+            "type": "integer"
+          },
+          "tasks_considered": {
+            "minimum": 0.0,
+            "title": "Tasks Considered",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "period",
+          "caps",
+          "tasks_considered",
+          "tasks_affected",
+          "requests_considered",
+          "requests_refused",
+          "refused_cost_usd",
+          "refused_share",
+          "affected",
+          "caveats"
+        ],
+        "title": "TaskCapPreviewView",
+        "type": "object"
+      },
       "TaskCaps-Input": {
         "additionalProperties": false,
         "description": "Calls and settled cost one agent task may use; off until a cap is set.",
@@ -14858,8 +17959,203 @@
         "title": "TaskCaps",
         "type": "object"
       },
+      "TaskPage": {
+        "properties": {
+          "cost_usd": {
+            "description": "Settled cost of the task requests.",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/BillingPeriodView"
+          },
+          "requests_with_task": {
+            "minimum": 0.0,
+            "title": "Requests With Task",
+            "type": "integer"
+          },
+          "requests_without_task": {
+            "minimum": 0.0,
+            "title": "Requests Without Task",
+            "type": "integer"
+          },
+          "tasks": {
+            "minimum": 0.0,
+            "title": "Tasks",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "period",
+          "items",
+          "truncated",
+          "tasks",
+          "requests_with_task",
+          "requests_without_task",
+          "cost_usd"
+        ],
+        "title": "TaskPage",
+        "type": "object"
+      },
+      "TaskView": {
+        "properties": {
+          "against_caps": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAgainstCapsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while the tenant has no task cap set."
+          },
+          "api_keys": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Api Keys",
+            "type": "array"
+          },
+          "attempts": {
+            "description": "Every request, extra attempts included.",
+            "minimum": 0.0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "calls": {
+            "description": "Client requests: extra attempts excluded.",
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "minimum": 0.0,
+            "title": "Completion Tokens",
+            "type": "integer"
+          },
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Cost Usd",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "minimum": 0.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "failed": {
+            "minimum": 0.0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "first_seen": {
+            "format": "date-time",
+            "title": "First Seen",
+            "type": "string"
+          },
+          "last_seen": {
+            "format": "date-time",
+            "title": "Last Seen",
+            "type": "string"
+          },
+          "loop_signals": {
+            "minimum": 0.0,
+            "title": "Loop Signals",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Models",
+            "type": "array"
+          },
+          "outcomes": {
+            "$ref": "#/components/schemas/PromptVersionOutcomes"
+          },
+          "prompt_tokens": {
+            "minimum": 0.0,
+            "title": "Prompt Tokens",
+            "type": "integer"
+          },
+          "requests_url": {
+            "title": "Requests Url",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "required": [
+          "task_id",
+          "trace_id",
+          "first_seen",
+          "last_seen",
+          "duration_seconds",
+          "calls",
+          "attempts",
+          "prompt_tokens",
+          "completion_tokens",
+          "cost_usd",
+          "cost_complete",
+          "models",
+          "api_keys",
+          "outcomes",
+          "failed",
+          "loop_signals",
+          "against_caps",
+          "requests_url"
+        ],
+        "title": "TaskView",
+        "type": "object"
+      },
       "TeamInput": {
         "properties": {
+          "aws_cost_tag": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The STS session tag value this team's Bedrock requests carry onto the AWS bill (bedrock_attribution).",
+            "title": "Aws Cost Tag"
+          },
           "daily_request_limit": {
             "anyOf": [
               {
@@ -15058,7 +18354,8 @@
               "owner",
               "admin",
               "member",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -15106,8 +18403,64 @@
         "title": "TeamRolePatch",
         "type": "object"
       },
+      "TeamShare": {
+        "properties": {
+          "amount": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Amount",
+            "type": "string"
+          },
+          "name": {
+            "description": "The team, or \"no team\".",
+            "title": "Name",
+            "type": "string"
+          },
+          "share": {
+            "title": "Share",
+            "type": "number"
+          },
+          "team_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team Id"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "team_id",
+          "name",
+          "tokens",
+          "share",
+          "amount"
+        ],
+        "title": "TeamShare",
+        "type": "object"
+      },
       "TeamView": {
         "properties": {
+          "aws_cost_tag": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9 _.:/=+@-]{1,256}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The STS session tag value this team's Bedrock requests carry onto the AWS bill (bedrock_attribution).",
+            "title": "Aws Cost Tag"
+          },
           "daily_request_limit": {
             "anyOf": [
               {
@@ -15237,6 +18590,65 @@
           }
         },
         "title": "ThinkingConfig",
+        "type": "object"
+      },
+      "ThinkingHistoryPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "anthropic_keep_turns": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anthropic Keep Turns"
+          },
+          "openai_reasoning_context": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "current_turn"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Openai Reasoning Context"
+          }
+        },
+        "title": "ThinkingHistoryPatch",
+        "type": "object"
+      },
+      "ThinkingHistorySettings": {
+        "additionalProperties": false,
+        "description": "Earlier thinking stops being billed again (S55).",
+        "properties": {
+          "anthropic_keep_turns": {
+            "default": 0,
+            "maximum": 8.0,
+            "minimum": 0.0,
+            "title": "Anthropic Keep Turns",
+            "type": "integer"
+          },
+          "openai_reasoning_context": {
+            "default": "off",
+            "enum": [
+              "off",
+              "current_turn"
+            ],
+            "title": "Openai Reasoning Context",
+            "type": "string"
+          }
+        },
+        "title": "ThinkingHistorySettings",
         "type": "object"
       },
       "ThinkingLevel": {
@@ -15663,6 +19075,121 @@
         "title": "ToolResponse",
         "type": "object"
       },
+      "ToolSearchPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Ids"
+          },
+          "keep_loaded": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keep Loaded"
+          },
+          "min_tools": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 2.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Tools"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "regex",
+                  "bm25"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          }
+        },
+        "title": "ToolSearchPatch",
+        "type": "object"
+      },
+      "ToolSearchSettings": {
+        "additionalProperties": false,
+        "description": "Tools load on demand through the provider's tool search (S55).",
+        "properties": {
+          "api_key_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Api Key Ids",
+            "type": "array"
+          },
+          "keep_loaded": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "title": "Keep Loaded",
+            "type": "array"
+          },
+          "min_tools": {
+            "default": 10,
+            "maximum": 10000.0,
+            "minimum": 2.0,
+            "title": "Min Tools",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "off",
+            "enum": [
+              "off",
+              "regex",
+              "bm25"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "ToolSearchSettings",
+        "type": "object"
+      },
       "ToolType": {
         "description": "The type of tool in the function call.",
         "enum": [
@@ -15765,6 +19292,45 @@
         "title": "Transcription",
         "type": "object"
       },
+      "TransformPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "json_compaction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "on"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Compaction"
+          }
+        },
+        "title": "TransformPatch",
+        "type": "object"
+      },
+      "TransformSettings": {
+        "additionalProperties": false,
+        "description": "Transform band steps: lossless content changes, each off by default (S56).",
+        "properties": {
+          "json_compaction": {
+            "default": "off",
+            "enum": [
+              "off",
+              "on"
+            ],
+            "title": "Json Compaction",
+            "type": "string"
+          }
+        },
+        "title": "TransformSettings",
+        "type": "object"
+      },
       "TranslationConfig": {
         "additionalProperties": false,
         "description": "Config for stream translation.",
@@ -15811,6 +19377,25 @@
         ],
         "title": "Type",
         "type": "string"
+      },
+      "UndoInput": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "UndoInput",
+        "type": "object"
       },
       "Unrestored": {
         "properties": {
@@ -16154,6 +19739,7 @@
                 "budgets.manage",
                 "teams.manage",
                 "keys.own",
+                "keys.hold",
                 "keys.manage",
                 "members.read",
                 "members.manage",
@@ -16167,6 +19753,7 @@
                 "incidents.manage",
                 "plans.create",
                 "plans.apply",
+                "plans.apply_allowlisted",
                 "plans.approve",
                 "requests.approve",
                 "content.read",
@@ -16182,7 +19769,8 @@
               "owner",
               "admin",
               "member",
-              "auditor"
+              "auditor",
+              "recommender"
             ],
             "title": "Role",
             "type": "string"
@@ -16968,6 +20556,31 @@
         "title": "FindingPage",
         "type": "object"
       },
+      "shim_enterprise__api__v1__management__agents__ModelCount": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
+        "type": "object"
+      },
       "shim_enterprise__compliance__schemas__FindingPage": {
         "properties": {
           "items": {
@@ -16997,6 +20610,24 @@
           "offset"
         ],
         "title": "FindingPage",
+        "type": "object"
+      },
+      "shim_enterprise__rules__api__ModelCount": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "requests"
+        ],
+        "title": "ModelCount",
         "type": "object"
       }
     },
@@ -20143,6 +23774,284 @@
         ]
       }
     },
+    "/api/v1/management/aws/attribution": {
+      "get": {
+        "operationId": "bedrock_attribution_api_v1_management_aws_attribution_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attribution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bedrock Attribution",
+        "tags": [
+          "aws"
+        ]
+      }
+    },
+    "/api/v1/management/aws/attribution/compare": {
+      "post": {
+        "description": "shim's settled cost per day and tag next to the numbers copied from AWS.",
+        "operationId": "compare_bedrock_attribution_api_v1_management_aws_attribution_compare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Compare Bedrock Attribution",
+        "tags": [
+          "aws"
+        ]
+      }
+    },
+    "/api/v1/management/aws/identity": {
+      "get": {
+        "operationId": "get_aws_identity_api_v1_management_aws_identity_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Aws Identity",
+        "tags": [
+          "management"
+        ]
+      },
+      "post": {
+        "description": "The tenant's external id, created once and never changed.",
+        "operationId": "create_aws_identity_api_v1_management_aws_identity_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsIdentityView"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Aws Identity",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/aws/region-lock/preview": {
+      "get": {
+        "description": "Had this lock been on for the last 7 days: what each Bedrock deployment would\nhave met. With no query, the tenant's current lock.",
+        "operationId": "preview_region_lock_api_v1_management_aws_region_lock_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "off",
+                    "monitor",
+                    "enforce"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mode"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scopes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scopes"
+            }
+          },
+          {
+            "in": "query",
+            "name": "regions",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Regions"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LockPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Region Lock",
+        "tags": [
+          "aws"
+        ]
+      }
+    },
     "/api/v1/management/billing/breakdown": {
       "get": {
         "operationId": "billing_breakdown_api_v1_management_billing_breakdown_get",
@@ -20442,6 +24351,383 @@
         ]
       }
     },
+    "/api/v1/management/capacity/forecast": {
+      "get": {
+        "description": "Per internal deployment: the daily busy hour over 56 days, its trend, and\nwhen the trend reaches the entered capacity.",
+        "operationId": "capacity_forecast_api_v1_management_capacity_forecast_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapacityForecast"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Capacity Forecast",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/config/apply": {
+      "post": {
+        "operationId": "apply_config_api_v1_management_config_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileApplyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileApplyView"
+                }
+              }
+            },
+            "description": "Waiting for approval"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Apply Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/export": {
+      "get": {
+        "operationId": "export_config_api_v1_management_config_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The configuration file."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/mode": {
+      "get": {
+        "operationId": "get_config_mode_api_v1_management_config_mode_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Config Mode",
+        "tags": [
+          "config"
+        ]
+      },
+      "put": {
+        "operationId": "set_config_mode_api_v1_management_config_mode_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigMode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModeView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Config Mode",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/plan": {
+      "post": {
+        "operationId": "plan_config_api_v1_management_config_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilePlanView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Plan Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/signing-keys": {
+      "get": {
+        "operationId": "list_signing_keys_api_v1_management_config_signing_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SigningKeyView"
+                  },
+                  "title": "Response List Signing Keys Api V1 Management Config Signing Keys Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Signing Keys",
+        "tags": [
+          "config"
+        ]
+      },
+      "post": {
+        "operationId": "add_signing_key_api_v1_management_config_signing_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SigningKeyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Add Signing Key",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/v1/management/config/signing-keys/{signing_key_id}": {
+      "delete": {
+        "operationId": "revoke_signing_key_api_v1_management_config_signing_keys__signing_key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "signing_key_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Signing Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Revoke Signing Key",
+        "tags": [
+          "config"
+        ]
+      }
+    },
     "/api/v1/management/cost/budgets": {
       "get": {
         "operationId": "list_budgets_api_v1_management_cost_budgets_get",
@@ -20672,6 +24958,55 @@
           }
         ],
         "summary": "Update Budget",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/cost/hardware": {
+      "get": {
+        "description": "Each internal deployment's hardware cost for the month, shared by tokens.",
+        "operationId": "hardware_allocation_api_v1_management_cost_hardware_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareAllocation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Hardware Allocation",
         "tags": [
           "management"
         ]
@@ -21026,6 +25361,54 @@
         ]
       }
     },
+    "/api/v1/management/findings/{finding_id}/explain": {
+      "get": {
+        "operationId": "explain_finding_api_v1_management_findings__finding_id__explain_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingExplanation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Explain Finding",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/findings/{finding_id}/plan": {
       "post": {
         "operationId": "plan_from_finding_api_v1_management_findings__finding_id__plan_post",
@@ -21139,6 +25522,57 @@
           }
         ],
         "summary": "Update Gateway Settings",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/inference-metrics": {
+      "get": {
+        "description": "Each listed server's load over the window, from the hourly aggregates.",
+        "operationId": "inference_metrics_api_v1_management_inference_metrics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 744,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerLoads"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inference Metrics",
         "tags": [
           "management"
         ]
@@ -21470,6 +25904,175 @@
           }
         ],
         "summary": "Update Model Deployment",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}/hardware-costs": {
+      "get": {
+        "operationId": "list_hardware_costs_api_v1_management_model_deployments__deployment_id__hardware_costs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/HardwareCostView"
+                  },
+                  "title": "Response List Hardware Costs Api V1 Management Model Deployments  Deployment Id  Hardware Costs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Hardware Costs",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/model-deployments/{deployment_id}/hardware-costs/{period}": {
+      "delete": {
+        "operationId": "delete_hardware_cost_api_v1_management_model_deployments__deployment_id__hardware_costs__period__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete Hardware Cost",
+        "tags": [
+          "management"
+        ]
+      },
+      "put": {
+        "operationId": "set_hardware_cost_api_v1_management_model_deployments__deployment_id__hardware_costs__period__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+              "title": "Period",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HardwareCostInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HardwareCostView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Set Hardware Cost",
         "tags": [
           "management"
         ]
@@ -22041,6 +26644,9 @@
             },
             "description": "Waiting for approval"
           },
+          "403": {
+            "description": "PLAN_NOT_ALLOWLISTED: a caller limited to allowlisted plans asked for a change that needs a person; `changes` lists each refusal."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -22373,6 +26979,9 @@
             },
             "description": "Waiting for approval"
           },
+          "403": {
+            "description": "PLAN_NOT_ALLOWLISTED: a caller limited to allowlisted plans asked for a change that needs a person; `changes` lists each refusal."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -22670,6 +27279,71 @@
           }
         ],
         "summary": "Update Provider Secret",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/providers/{secret_id}/aws-check": {
+      "post": {
+        "operationId": "check_aws_secret_api_v1_management_providers__secret_id__aws_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "secret_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Secret Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AwsCheckInput"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AwsCheckView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Check Aws Secret",
         "tags": [
           "management"
         ]
@@ -23073,6 +27747,212 @@
         ]
       }
     },
+    "/api/v1/management/remediations": {
+      "get": {
+        "operationId": "list_remediations_api_v1_management_remediations_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "watching",
+                    "kept",
+                    "restored",
+                    "restore_skipped",
+                    "skipped",
+                    "undone"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Rows created before this time; the next page.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Rows created before this time; the next page.",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RemediationView"
+                  },
+                  "title": "Response List Remediations Api V1 Management Remediations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Remediations",
+        "tags": [
+          "remediations"
+        ]
+      }
+    },
+    "/api/v1/management/remediations/{remediation_id}": {
+      "get": {
+        "operationId": "get_remediation_api_v1_management_remediations__remediation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "remediation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Remediation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemediationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Remediation",
+        "tags": [
+          "remediations"
+        ]
+      }
+    },
+    "/api/v1/management/remediations/{remediation_id}/undo": {
+      "post": {
+        "operationId": "undo_remediation_api_v1_management_remediations__remediation_id__undo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "remediation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Remediation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemediationView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "description": "The undo waits for a second approver."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Undo Remediation",
+        "tags": [
+          "remediations"
+        ]
+      }
+    },
     "/api/v1/management/request-archive": {
       "delete": {
         "operationId": "purge_request_archive_api_v1_management_request_archive_delete",
@@ -23461,6 +28341,26 @@
             }
           },
           {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -23487,6 +28387,30 @@
             }
           },
           {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
+            }
+          },
+          {
             "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
             "in": "query",
             "name": "soft_refusal",
@@ -23502,6 +28426,25 @@
               ],
               "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
               "title": "Soft Refusal"
+            }
+          },
+          {
+            "description": "Only requests of this agent task (exact).",
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests of this agent task (exact).",
+              "title": "Task Id"
             }
           },
           {
@@ -23823,6 +28766,26 @@
             }
           },
           {
+            "description": "Only the attempts of one client request: the first attempt's request id.",
+            "in": "query",
+            "name": "attempt_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the attempts of one client request: the first attempt's request id.",
+              "title": "Attempt Group Id"
+            }
+          },
+          {
             "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
             "in": "query",
             "name": "completion_outcome",
@@ -23849,6 +28812,30 @@
             }
           },
           {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
+            }
+          },
+          {
             "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
             "in": "query",
             "name": "soft_refusal",
@@ -23864,6 +28851,25 @@
               ],
               "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
               "title": "Soft Refusal"
+            }
+          },
+          {
+            "description": "Only requests of this agent task (exact).",
+            "in": "query",
+            "name": "task_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only requests of this agent task (exact).",
+              "title": "Task Id"
             }
           }
         ],
@@ -24300,6 +29306,55 @@
         ]
       }
     },
+    "/api/v1/management/rules/proposals": {
+      "post": {
+        "operationId": "propose_rules_api_v1_management_rules_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "sentence, language and rules, each with examples: see ee/docs/COOKBOOK.md, Write rules from a sentence with your agent.",
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Propose Rules",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
     "/api/v1/management/service-accounts": {
       "get": {
         "operationId": "list_service_accounts_api_v1_management_service_accounts_get",
@@ -24415,6 +29470,172 @@
         ]
       }
     },
+    "/api/v1/management/service-accounts/{account_id}/activity": {
+      "get": {
+        "operationId": "service_account_activity_api_v1_management_service_accounts__account_id__activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "maximum": 720,
+              "minimum": 1,
+              "title": "Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountActivity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Service Account Activity",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/freeze": {
+      "post": {
+        "operationId": "freeze_service_account_api_v1_management_service_accounts__account_id__freeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrozenView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Freeze Service Account",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/gateway-keys": {
+      "post": {
+        "operationId": "issue_agent_gateway_key_api_v1_management_service_accounts__account_id__gateway_keys_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentKeyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedApiKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Issue Agent Gateway Key",
+        "tags": [
+          "management"
+        ]
+      }
+    },
     "/api/v1/management/service-accounts/{account_id}/rotate": {
       "post": {
         "operationId": "rotate_service_account_api_v1_management_service_accounts__account_id__rotate_post",
@@ -24458,6 +29679,54 @@
           }
         ],
         "summary": "Rotate Service Account",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/service-accounts/{account_id}/unfreeze": {
+      "post": {
+        "operationId": "unfreeze_service_account_api_v1_management_service_accounts__account_id__unfreeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrozenView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Unfreeze Service Account",
         "tags": [
           "management"
         ]
@@ -24624,6 +29893,215 @@
           }
         ],
         "summary": "Get Subscription",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/tasks": {
+      "get": {
+        "operationId": "list_tasks_api_v1_management_tasks_get",
+        "parameters": [
+          {
+            "description": "Inclusive; defaults to seven days before end.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive; defaults to seven days before end.",
+              "title": "Start"
+            }
+          },
+          {
+            "description": "Exclusive; defaults to now.",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive; defaults to now.",
+              "title": "End"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "cost",
+              "enum": [
+                "cost",
+                "calls",
+                "last_seen"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Tasks",
+        "tags": [
+          "management"
+        ]
+      }
+    },
+    "/api/v1/management/tasks/cap-preview": {
+      "get": {
+        "operationId": "preview_task_cap_api_v1_management_tasks_cap_preview_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "max_calls",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Calls"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_cost_usd",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Cost Usd"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_seconds",
+            "required": false,
+            "schema": {
+              "default": 3600,
+              "title": "Window Seconds",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "api_key_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Api Key Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskCapPreviewView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Task Cap",
         "tags": [
           "management"
         ]
@@ -25313,6 +30791,35 @@
         "summary": "My Usage",
         "tags": [
           "management"
+        ]
+      }
+    },
+    "/api/v1/mcp": {
+      "post": {
+        "operationId": "mcp_endpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "MCP endpoint for agents with a service account key",
+        "tags": [
+          "mcp"
         ]
       }
     },

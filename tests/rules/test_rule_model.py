@@ -7,8 +7,10 @@ import shim.rules.patterns as patterns
 from shim.rules import RuleSet, RuleSetError, validate_rule_set
 from shim.rules.content import PatternMatch, TermMatch
 from shim.rules.destination import DestinationMatch
+from shim.rules.parameter_pin import ParameterPinMatch
 from shim.rules.record_set import RecordSetMatch
 from shim.rules.request_limit import RequestLimitMatch
+from shim.rules.route import RouteMatch
 
 
 def _rule(**values) -> dict:
@@ -100,12 +102,14 @@ def test_names_scope_lists_and_revisions_are_bounded() -> None:
     assert _refused({"revision": 0, "rules": []}).path == "revision"
 
 
-def test_kinds_actions_and_duplicates_are_checked() -> None:
+def test_kinds_actions_and_duplicates_are_checked(monkeypatch) -> None:
     assert (
         _refused({"revision": 1, "rules": [_rule(kind="weather")]}).path
         == "rules[0].kind"
     )
-    unavailable = _refused({"revision": 1, "rules": [_rule(kind="parameter_pin")]})
+    # A kind its PRD has not added a match model for yet.
+    monkeypatch.setitem(kinds.KINDS, "route", kinds.KindSpec("resolver", ("route",)))
+    unavailable = _refused({"revision": 1, "rules": [_rule(kind="route")]})
     assert (unavailable.code, unavailable.path) == (
         "RULE_KIND_UNAVAILABLE",
         "rules[0].kind",
@@ -146,6 +150,8 @@ def test_a_kind_is_unavailable_until_its_prd_adds_a_match_model() -> None:
         "destination": DestinationMatch,
         "request_limit": RequestLimitMatch,
         "record_set": RecordSetMatch,
+        "parameter_pin": ParameterPinMatch,
+        "route": RouteMatch,
     }
     assert {kind: spec.point for kind, spec in kinds.KINDS.items()} == {
         "term": "privacy",

@@ -28,6 +28,13 @@ from shim.gateway.admission import (
     TaskCounter,
 )
 
+from shim.gateway.concurrency import (
+    ConcurrencyLimiter,
+    ConcurrencyRefused,
+    Lease,
+    concurrency_target,
+    work_tokens,
+)
 from shim.gateway.kernel.result import (
     EMBEDDINGS_PROTOCOLS,
     AdmissionState,
@@ -99,6 +106,8 @@ class AdmissionStage:
         task_counter: TaskCounter | None = None,
         inflight: InFlightRegistry | None = None,
         model_lifecycle: ModelLifecycle | None = None,
+        concurrency_limiter: ConcurrencyLimiter | None = None,
+        concurrency_wait_ms: int = 0,
     ) -> None:
         if loop_repeat_limit < 2 or loop_window_seconds < 1:
             raise ValueError("loop-detection bounds are invalid")
@@ -114,6 +123,8 @@ class AdmissionStage:
         self.task_counter = task_counter or InMemoryTaskCounter()
         self.inflight = inflight or InFlightRegistry()
         self.model_lifecycle = model_lifecycle or load_lifecycle()
+        self.concurrency_limiter = concurrency_limiter
+        self.concurrency_wait_ms = concurrency_wait_ms
         # The shareable leader of this request's key whose answer it may receive.
         self.leader: InFlightEntry | None = None
         self.loop_result = LoopDetectionResult("SAFE", 0)
@@ -441,10 +452,17 @@ class AdmissionStage:
             request_digest=request_digest,
             inflight_duplicate_of=earlier.request_id if earlier is not None else None,
         )
+        lease = None
         if value.protocol != "count_tokens":
             try:
+                if self.concurrency_limiter is not None:
+                    # The approximate input unit TPM uses, plus the output resolved above.
+                    lease = await self._acquire(value, work_tokens(admission))
+                    admission = replace(admission, queue_wait_ms=lease.waited_ms)
                 await self.usage.admit(value, admission)
             except BaseException:
+                if lease is not None:
+                    await lease.release()
                 self.inflight.leave(
                     str(value.tenant_id), request_digest, str(value.request_id)
                 )
@@ -459,7 +477,42 @@ class AdmissionStage:
             value,
             admission=admission,
             rules_evaluated=value.rules_evaluated or limited,
+            concurrency_lease=lease,
         )
+
+    async def _acquire(self, value: PreparedInference, tokens: int) -> Lease:
+        assert self.concurrency_limiter is not None
+        policy = {"tokens": tokens, "wait_ms": self.concurrency_wait_ms}
+        try:
+            lease = await self.concurrency_limiter.acquire(
+                concurrency_target(value), tokens, "normal", self.concurrency_wait_ms
+            )
+        except ConcurrencyRefused as refused:
+            value.record_verdict(
+                "admission.concurrency",
+                stage="admission",
+                outcome="deny",
+                reason_code="CONCURRENCY_LIMITED",
+                policy=policy,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "CONCURRENCY_LIMITED",
+                    "message": "The model target is running all the work it allows.",
+                },
+                headers={"x-should-retry": "false"}
+                if refused.never_fits
+                else {"Retry-After": str(refused.retry_after_seconds)},
+            ) from None
+        value.record_verdict(
+            "admission.concurrency",
+            stage="admission",
+            outcome="allow",
+            reason_code="CONCURRENCY_ADMITTED",
+            policy=policy,
+        )
+        return lease
 
     async def _admit_task_call(
         self, value: PreparedInference, task_id: str | None

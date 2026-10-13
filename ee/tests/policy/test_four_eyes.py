@@ -214,6 +214,14 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             "four_eyes": "relaxing",
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
+            "auto_remediation_paused": False,
+            "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
+            "bedrock_attribution": {
+                "mode": "off",
+                "tag_key": "shim-team",
+                "unassigned_value": "unassigned",
+            },
+            "inference_metrics": [],
             "injection_markers": "off",
             "price_tier_warning": False,
             "model_retiring_warning": "record",
@@ -225,6 +233,22 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
             },
             "agent_loop": {"action": "count", "repeats": 5},
             "inflight_sharing_api_key_ids": [],
+            "provider_cache": {
+                "anthropic_auto_cache": "off",
+                "openai_prompt_cache_key": "off",
+                "deployments": [],
+            },
+            "tool_search": {
+                "mode": "off",
+                "min_tools": 10,
+                "keep_loaded": [],
+                "api_key_ids": [],
+            },
+            "thinking_history": {
+                "anthropic_keep_turns": 0,
+                "openai_reasoning_context": "off",
+            },
+            "transforms": {"json_compaction": "off"},
         }
     }
     assert (version.source, version.risk) == ("api", "tightening")
@@ -235,6 +259,14 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 "four_eyes": "off",
                 "finding_modes": {},
                 "request_archive": {"enabled": False, "retention_days": 90},
+                "auto_remediation_paused": False,
+                "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
+                "bedrock_attribution": {
+                    "mode": "off",
+                    "tag_key": "shim-team",
+                    "unassigned_value": "unassigned",
+                },
+                "inference_metrics": [],
                 "injection_markers": "off",
                 "price_tier_warning": False,
                 "model_retiring_warning": "record",
@@ -246,6 +278,22 @@ async def test_gateway_settings_are_a_managed_resource(db) -> None:
                 },
                 "agent_loop": {"action": "count", "repeats": 5},
                 "inflight_sharing_api_key_ids": [],
+                "provider_cache": {
+                    "anthropic_auto_cache": "off",
+                    "openai_prompt_cache_key": "off",
+                    "deployments": [],
+                },
+                "tool_search": {
+                    "mode": "off",
+                    "min_tools": 10,
+                    "keep_loaded": [],
+                    "api_key_ids": [],
+                },
+                "thinking_history": {
+                    "anthropic_keep_turns": 0,
+                    "openai_reasoning_context": "off",
+                },
+                "transforms": {"json_compaction": "off"},
             }
         }
     }
@@ -1015,6 +1063,22 @@ def test_a_field_change_not_listed_as_neutral_or_tightening_relaxes(
     resource: str, before: dict, change: dict, risk: str
 ) -> None:
     assert REGISTRY[resource].classify(before, {**before, **change}) == risk
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"tool_search": {"mode": "bm25", "min_tools": 3}},
+        {"thinking_history": {"anthropic_keep_turns": 2}},
+        {"provider_cache": {"anthropic_auto_cache": "1h"}},
+    ],
+)
+def test_a_plan_on_the_band_settings_alone_is_neutral(change: dict) -> None:
+    before = GatewaySettings().model_dump(mode="json")
+    after = GatewaySettings.model_validate(change).model_dump(mode="json")
+
+    assert REGISTRY["gateway_settings"].classify(before, after) == "neutral"
+    assert REGISTRY["gateway_settings"].classify(after, before) == "neutral"
 
 
 @pytest.mark.asyncio

@@ -95,13 +95,19 @@ rule's action:
   [policy plan](POLICY_DECISIONS.md#policy-versions-and-plans) with
   `POST /api/v1/management/findings/{id}/plan`. Nothing changes until someone
   applies the plan, and a restore undoes it.
-- `auto`: shim may apply the action itself. Only an action that tightens or
+- `auto`: shim applies the action itself and watches it
+  ([automatic fixes](#automatic-fixes)). Only an action that tightens or
   cheapens and, by the rule's own condition, touches no request that would
   otherwise be served may be `auto`; today that is disabling a deployment that
-  served nothing in 30 days. No executor is installed yet, so `auto` is stored
-  and shown and works as `suggest`: the finding says `mode: "suggest"`, and the
-  rules read says `effective_mode: "suggest"` with `unavailable_reason:
-  "auto_executor_not_installed"`.
+  served nothing in 30 days. While `auto` cannot run it works as `suggest`: the
+  finding says `mode: "suggest"`, and the rules read says `effective_mode:
+  "suggest"` with an `unavailable_reason`: `auto_paused` (the tenant paused
+  automatic changes), `proof_unavailable` (audit mode `off`, so refusals leave no
+  row to measure), `no_allowlist_entry` (no allowlist entry has the rule's action
+  kind) or, on one finding, `remediation_restored` (its fix was set back,
+  skipped or undone). An effective `auto` finding carries `remediation.proof_after`:
+  `{"metric": "refusals", "window_hours": 24, "baseline": null, "threshold":
+  null, "comparison": "lte"}`.
 
 Each rule declares its highest mode (`max_mode`) and its action; a rule whose fix
 is in the client, the prompt or the provider stays `observe`. The tenant sets
@@ -124,12 +130,95 @@ action this build does not know (another kind, no deployment id) answers 409.
 | `gateway.language_drift`, `gateway.schema_errors`, `gateway.soft_refusals` | `observe` | none: the prompt, the model choice or the client |
 | `gateway.oversized_parts`, `gateway.dead_tools`, `gateway.cache_order_churn` | `observe` | none: the fix is in the client's code |
 | `gateway.cold_start`, `gateway.queueing` | `observe` | none: the model server's settings or capacity |
+| `gateway.idle_inference_capacity`, `gateway.inference_queue_saturated` | `observe` | none: replicas, capacity or the server's idle settings |
 | `gateway.idle_internal_deployment` | `suggest` | `deployment.disable`: it still serves some requests |
 | `gateway.unused_deployment` | `auto` | `deployment.disable`: no request in 30 days |
 
 `deployment.disable` is `{"kind": "deployment.disable", "params":
 {"deployment_id": ...}}`, built from the finding's subject; it is reversible and
 its blast radius is the deployment.
+
+## Automatic fixes
+
+shim applies a change by itself only when the change tightens or cheapens,
+touches one item, changes nothing in a request's content, and is undone by
+setting the item back. The allowlist (`shim_enterprise.policy.allowlist`) holds
+exactly these entries:
+
+| Entry | Resource and fields | Accepted direction | Impact bound | Proof |
+| --- | --- | --- | --- | --- |
+| `deployment.disable` | `deployments.enabled` | true to false | 0 requests in 7 days | refusals of `deployment.registry`, tenant-wide, 24 h |
+| `api_key.narrow_models` | `api_keys.allowed_models` | null to a list, or a list to a strict non-empty subset | 0 | refusals of `access.key_models` and `api_key.access` for that key, 24 h |
+| `team.lower_limit` | `teams.daily_request_limit`, `monthly_request_limit`, `monthly_token_limit` | each changed limit lowered, or null to a number | 0 | refusals of `quota.requests_and_tokens` for the team's keys, 24 h |
+| `budget.lower` | `budgets.limit_usd`, `limit_tokens`, `enabled` | each changed limit lowered (never to or from null), `enabled` false to true | none: budgets only notify | none |
+| `privacy.start_counting` | `privacy.entity_actions` | every changed type from `off` to `monitor` | none: counting leaves content untouched | none |
+
+Never automatic: anything that masks or blocks content, any rule change (route
+rules included, whatever their `match.on`), any gateway setting, creates,
+deletes and loosening moves. An unattended plan holds at most 5 changes, and a
+tenant at most 20 unattended changes by shim and another 20 by agents in 24
+hours (skipped ones not counted; above it 429 `REMEDIATION_LIMIT`), so an agent
+cannot use up the executor's day.
+
+**Who applies.** The reconciliation worker, right after each findings pass, as
+the system actor (`actor: "system"`, versions with source `auto` and actor type
+`system`): per organization, at most 5 open findings whose rule's stored mode is
+`auto`, oldest first, that have no remediation yet. And an agent holding
+`plans.apply_allowlisted` without `plans.apply` (the
+[recommender](MCP.md#what-a-recommender-can-apply)) when it applies a plan: its
+change is watched the same way, with `actor_type: "service"`. A refusal that
+passes (the day's limit, a pause, or `proof_unavailable` while the tenant's audit
+mode is `off`) writes nothing, and the next pass tries again. Every other refusal
+(not on the list, wrong direction, impact above the bound, a stale item, a
+file-managed resource, an item that refuses the change) writes a `skipped` row
+with the reasons and changes nothing. A finding gets one remediation, ever:
+after a skip or an undo shim only suggests it. The worker measures and plans
+without the tenant lock that every request of the tenant waits on, and takes it
+only to write.
+
+**The window.** An applied change with a proof is `watching` for the largest
+proof window (24 hours). The window is closed on the first pass after
+`window_end + REMEDIATION_WINDOW_GRACE_SECONDS` (operator setting, default 900,
+0 to 3,600: the allowance for outbox lag before refusals reach the audit log).
+For each item it counts audit-log requests refused with one of the proof's
+verdicts in the window (`measured`) and in the window before it (`baseline`);
+a key or team proof counts only that key's or team's keys. Every
+`measured <= baseline`: `kept`, and the finding is resolved by `system`. Any
+rise: one plan sets every item back to its `before` in the fields the change
+moved, applied as the system actor even under four eyes (it returns each item to
+a state a person set, and the stale check stops it when anything else changed);
+the row is `restored` and the finding goes back to `new`. When someone changed an
+item since, nothing is written: `restore_skipped` with reason `item_changed`, and
+a notification so a person decides. An item that refuses the undo (a deployment
+whose origin is no longer approved) gives `restore_skipped` with its error code
+(`http_422`) for that row only; the rest of the pass goes on. A measurement that runs out of its 10-second
+statement timeout leaves the row `watching` for the next pass. A change with no
+proof is `kept` at once.
+
+**Seeing and undoing.** `GET /api/v1/management/remediations` (`status`,
+`limit` 1 to 100, `before`, newest first) and `GET .../remediations/{id}`
+(`findings.read` or `audit.read`) show each row's items (resource, item, entry,
+before, after, proof), status, window, result, plans, versions and actor.
+`POST .../remediations/{id}/undo` (`plans.apply`, people only: a service account
+gets 403 `UNDO_NEEDS_HUMAN`), body `{"reason"}`, sets a `watching` or `kept`
+row's items back through a plan with source `restore`, applied as the caller,
+and marks the row `undone`. Under four eyes the undo answers 202 with the plan
+waiting for a second approver and the row unchanged; approving the plan marks
+the row `undone`. Any other status is 409
+`REMEDIATION_STATE_CONFLICT`; an item changed since is 409 `PLAN_STALE`.
+
+**The kill switch.** `PATCH /gateway-settings {"auto_remediation_paused": true}`
+stops new automatic and agent applies (409 `AUTO_REMEDIATION_PAUSED`); windows
+keep closing and automatic undo keeps running. Pausing is tightening, resuming is
+relaxing.
+
+**Notifications.** Every phase (`applied`, `kept`, `restored`,
+`restore_skipped`, `undone`) is one outbox event `remediation.changed` that
+reaches every enabled forward target (`kind: "remediation_changed"`, ids, entry
+ids, resources, policy version and actor type, never a before or after value),
+and one audit action `tenant.remediation_<phase>` (`skipped` included). The
+counter `shim_remediations_total{entry, phase}` counts them; a skipped finding
+counts under entry `none`.
 
 ## API
 
@@ -138,9 +227,10 @@ its blast radius is the deployment.
 | `GET /api/v1/management/findings` | Owner, admin, auditor | Newest `last_seen_at` first; filters `status` (`open`, `dismissed`, `resolved`, or the workflow states `new`, `in_progress`, `suppressed`), `rule_id`, `severity_id`; `limit` (default 50, at most 200) and `offset` |
 | `GET /api/v1/management/findings/rules` | Owner, admin, auditor | Per rule: `rule_id`, `rule_version`, `max_mode`, `action_kind`, `mode` (stored, or `observe`), `effective_mode`, `unavailable_reason` and `open_findings`, by rule id |
 | `GET /api/v1/management/findings/{id}` | Owner, admin, auditor | One finding (Finding v1) |
+| `GET /api/v1/management/findings/{id}/explain` | Owner, admin, auditor | The finding and its rule's facts (`rule_id`, `rule_version`, `title`, `max_mode`, `action_kind`, `blast_radius`, `playbook`) with `doc`: this file's section for the rule, at most 16 KB (cut at a line end with `...`), `null` without one. No model is called; an agent writes the explanation from these facts ([MCP](MCP.md)). The section comes from the packaged copy `ee/src/shim_enterprise/findings/FINDINGS.md`: copy this file there after editing it, or a test fails |
 | `PATCH /api/v1/management/findings/{id}` | Owner, admin | `{"status": ...}` with the same values as the filter (`open` keeps an open finding's state and reopens a closed one as `new`, `dismissed` is `suppressed`); recorded as `tenant.finding_status_changed`; 409 when reopening a resolved finding while another open finding exists for the same subject |
 | `GET /api/v1/management/findings/export` | Owner, admin, auditor | NDJSON, one OCSF Detection Finding per line, with the same filters; at most 10,000 (422 beyond) |
-| `POST /api/v1/management/findings/{id}/plan` | `plans.create` and `deployments.manage` | A draft plan (reason `finding:<id>`) that makes the finding's action: 201; 409 when the finding is not open (`new`, `in_progress`) or has no action; 404 for another organization's finding |
+| `POST /api/v1/management/findings/{id}/plan` | `plans.create` and `deployments.manage` (a recommender needs only `plans.create`) | A draft plan (reason `finding:<id>`) that makes the finding's action: 201; 409 when the finding is not open (`new`, `in_progress`) or has no action; 404 for another organization's finding |
 
 Each export line is an OCSF 1.3.0 Detection Finding: `class_uid` 2004,
 `category_uid` 2, `activity_id` 1 (created, seen once), 2 (updated: seen again
@@ -623,6 +713,51 @@ Impact is the streams in congested hours.
 **Fix.** More capacity for the deployment, a concurrency budget for the target,
 or a separate lane for long requests; the latency read grouped by deployment shows
 the hours.
+
+**Resolves** after 7 days without firing.
+
+## gateway.idle_inference_capacity
+
+**Checks.** For each internal deployment whose model server shim reads
+([server metrics](MODEL_DEPLOYMENTS.md#server-metrics); vLLM and TGI only, since
+Ollama reports no running requests), the readings of the last 7 days: with at
+least 1,000 of them, it fires when fewer than 10 percent had a request running.
+Severity low. Subject: the deployment. Max mode `observe`, blast radius
+`deployment`, risk class `cost`.
+
+**Why.** Hardware is paid for whether it runs requests or not. The gateway's own
+count can miss load that bypasses shim; the server's count does not.
+
+**Evidence and impact.** The readings, the busy share, the running peak, the
+average cache use and the requests shim sent to the deployment in the window; with
+a [hardware cost](MODEL_DEPLOYMENTS.md#hardware-cost-and-capacity) entered for the
+month, that amount and its currency (never converted). Impact is the requests.
+When `gateway.idle_internal_deployment` is open for the same deployment both stay:
+one counts gateway traffic, this one the server's load.
+
+**Fix.** Move the deployment's callers to a shared deployment, lower its replica
+count, or let the server unload the model when idle; the fix is outside the
+gateway.
+
+**Resolves** after 7 days without firing.
+
+## gateway.inference_queue_saturated
+
+**Checks.** For the same servers, the hours of the last 24 with at least 30
+readings in which requests waited in at least half of them. It fires at 2 such
+hours. Severity medium. Subject: the deployment. Max mode `observe`, blast radius
+`deployment`, risk class `reliability`.
+
+**Why.** A queue that stays full means callers wait for the server, not for the
+model; `gateway.queueing` infers the same from first-byte times, this rule reads
+the server's own queue, and both can fire.
+
+**Evidence and impact.** The saturated hours, the worst hour's queued share, the
+waiting and running peaks and the peak cache use. Impact is the requests shim sent
+to the deployment in those hours.
+
+**Fix.** Add capacity, set a concurrency budget for the deployment, or send long
+requests to their own lane.
 
 **Resolves** after 7 days without firing.
 

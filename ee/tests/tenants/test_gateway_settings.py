@@ -126,14 +126,40 @@ async def test_get_without_a_row_gives_defaults_and_writes_nothing(
             "four_eyes": "off",
             "finding_modes": {},
             "request_archive": {"enabled": False, "retention_days": 90},
+            "provider_cache": {
+                "anthropic_auto_cache": "off",
+                "openai_prompt_cache_key": "off",
+                "deployments": [],
+            },
+            "tool_search": {
+                "mode": "off",
+                "min_tools": 10,
+                "keep_loaded": [],
+                "api_key_ids": [],
+            },
+            "thinking_history": {
+                "anthropic_keep_turns": 0,
+                "openai_reasoning_context": "off",
+            },
+            "transforms": {"json_compaction": "off"},
+            "auto_remediation_paused": False,
+            "bedrock_region_lock": {"mode": "off", "scopes": [], "regions": []},
+            "bedrock_attribution": {
+                "mode": "off",
+                "tag_key": "shim-team",
+                "unassigned_value": "unassigned",
+            },
+            "inference_metrics": [],
         },
         "revision": 0,
         "updated_at": None,
         "updated_by": None,
         "available_analyzers": ["shape", "language"],
         "unavailable": {
+            "bedrock_attribution": "off, needs AWS_GATEWAY_IDENTITY in this "
+            "installation",
             "request_archive": "off, needs REQUEST_ARCHIVE_ENABLED in this "
-            "installation (self-hosted only)"
+            "installation (self-hosted only)",
         },
         "request_archive_state": "off",
     }
@@ -884,3 +910,239 @@ async def test_inflight_sharing_names_only_this_organizations_keys(
         GatewaySettingsPatch.model_validate(
             {"inflight_sharing_api_key_ids": [str(uuid4()) for _ in range(1001)]}
         )
+
+
+async def _deployment(db, organization_id: UUID, alias: str, upstream: str) -> None:
+    from shim_enterprise.tenants.models import ModelDeployment, ProviderSecret
+
+    secret = ProviderSecret(
+        id=uuid4(),
+        organization_id=organization_id,
+        provider="anthropic",
+        secret_ref=f"reference-{uuid4().hex}",
+        secret_backend="fernet",
+        secret_version="v2",
+        masked_key="masked",
+    )
+    db.add(secret)
+    await db.flush()
+    db.add(
+        ModelDeployment(
+            organization_id=organization_id,
+            alias=alias,
+            provider="anthropic",
+            upstream_model="claude-sonnet-4-6",
+            base_url="https://models.internal.test",
+            provider_secret_id=secret.id,
+            timeout_seconds=5,
+            deployment_kind="internal",
+            declared_version="v1",
+            owner="Platform",
+            upstream=upstream,
+            aws_region="eu-central-1" if upstream == "aws_bedrock" else None,
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_provider_cache_round_trips_and_names_only_known_deployments(
+    db, test_org, audit_events
+) -> None:
+    admin = await _admin(db, test_org.id)
+    await _deployment(db, test_org.id, "support-llm", "generic")
+
+    with pytest.raises(HTTPException) as unknown:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"provider_cache": {"deployments": ["nobody-llm"]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {
+                "provider_cache": {
+                    "anthropic_auto_cache": "5m",
+                    "deployments": ["support-llm"],
+                }
+            }
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    merged = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {"provider_cache": {"openai_prompt_cache_key": "key"}}
+        ),
+        _request(),
+        admin,
+        db,
+    )
+
+    assert unknown.value.status_code == 422
+    assert "provider_cache.deployments" in unknown.value.detail
+    assert changed.settings.provider_cache.model_dump() == {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "off",
+        "deployments": ["support-llm"],
+    }
+    assert merged.settings.provider_cache.model_dump() == {
+        "anthropic_auto_cache": "5m",
+        "openai_prompt_cache_key": "key",
+        "deployments": ["support-llm"],
+    }
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(test_org.id)
+    ), "the provider cache is neutral"
+    for bad in (
+        {"anthropic_auto_cache": "1d"},
+        {"openai_prompt_cache_key": "user"},
+        {"deployments": ["bad alias"]},
+        {"deployments": [f"a{n}" for n in range(101)]},
+    ):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"provider_cache": bad})
+
+
+@pytest.mark.asyncio
+async def test_a_bedrock_deployment_cannot_take_automatic_cache_placement(
+    db, test_org
+) -> None:
+    admin = await _admin(db, test_org.id)
+    await _deployment(db, test_org.id, "bedrock-claude", "aws_bedrock")
+
+    with pytest.raises(HTTPException) as refused:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"provider_cache": {"deployments": ["bedrock-claude"]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+
+    assert refused.value.status_code == 422
+    assert (
+        refused.value.detail
+        == "Bedrock deployments cannot use automatic cache placement yet"
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({}, {"anthropic_auto_cache": "1h"}),
+        ({"openai_prompt_cache_key": "key"}, {}),
+        ({}, {"deployments": ["support-llm"]}),
+    ],
+)
+def test_provider_cache_changes_are_neutral(before, after) -> None:
+    from shim_enterprise.tenants.gateway_settings import ProviderCacheSettings
+
+    assert classify_change(
+        GatewaySettings(provider_cache=ProviderCacheSettings(**before)),
+        GatewaySettings(provider_cache=ProviderCacheSettings(**after)),
+    ) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_tool_search_and_thinking_history_round_trip_as_neutral_groups(
+    db, test_api_key, audit_events
+) -> None:
+    organization_id = test_api_key.organization_id
+    admin = await _admin(db, organization_id)
+
+    with pytest.raises(HTTPException) as unknown:
+        await management.configuration.update_gateway_settings(
+            GatewaySettingsPatch.model_validate(
+                {"tool_search": {"api_key_ids": [str(uuid4())]}}
+            ),
+            _request(),
+            admin,
+            db,
+        )
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate(
+            {
+                "tool_search": {
+                    "mode": "bm25",
+                    "min_tools": 3,
+                    "api_key_ids": [str(test_api_key.id)],
+                },
+                "thinking_history": {"anthropic_keep_turns": 2},
+            }
+        ),
+        _request(),
+        admin,
+        db,
+    )
+    row = await db.get(OrganizationGatewaySettings, organization_id)
+
+    assert unknown.value.status_code == 422
+    assert "tool_search names api_key_ids" in unknown.value.detail
+    assert changed.settings.tool_search.mode == "bm25"
+    assert changed.settings.tool_search.api_key_ids == [test_api_key.id]
+    assert changed.settings.thinking_history.anthropic_keep_turns == 2
+    assert row.settings == {
+        "tool_search": {
+            "mode": "bm25",
+            "min_tools": 3,
+            "api_key_ids": [str(test_api_key.id)],
+        },
+        "thinking_history": {"anthropic_keep_turns": 2},
+    }, "defaults are not stored"
+    assert not any(
+        event["endpoint"].endswith("_protection_relaxed")
+        for event in await audit_events(organization_id)
+    )
+    for bad in (
+        {"tool_search": {"mode": "on"}},
+        {"tool_search": {"min_tools": 1}},
+        {"tool_search": {"keep_loaded": ["x" * 129]}},
+        {"tool_search": {"keep_loaded": [f"t{n}" for n in range(65)]}},
+        {"tool_search": {"api_key_ids": [str(uuid4()) for _ in range(101)]}},
+        {"thinking_history": {"anthropic_keep_turns": 9}},
+        {"thinking_history": {"openai_reasoning_context": "all_turns"}},
+    ):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate(bad)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {"tool_search": {"mode": "regex"}},
+        {"thinking_history": {"anthropic_keep_turns": 3}},
+        {"thinking_history": {"openai_reasoning_context": "current_turn"}},
+        {"transforms": {"json_compaction": "on"}},
+    ],
+)
+def test_tool_search_and_thinking_changes_are_neutral(after) -> None:
+    on = GatewaySettings.model_validate(after)
+
+    assert classify_change(GatewaySettings(), on) == ("neutral", [])
+    assert classify_change(on, GatewaySettings()) == ("neutral", [])
+
+
+@pytest.mark.asyncio
+async def test_json_compaction_round_trips(db, test_org) -> None:
+    admin = await _admin(db, test_org.id)
+
+    changed = await management.configuration.update_gateway_settings(
+        GatewaySettingsPatch.model_validate({"transforms": {"json_compaction": "on"}}),
+        _request(),
+        admin,
+        db,
+    )
+    row = await db.get(OrganizationGatewaySettings, test_org.id)
+
+    assert changed.settings.transforms.json_compaction == "on"
+    assert row.settings == {"transforms": {"json_compaction": "on"}}
+    for bad in ({"json_compaction": True}, {"json_compaction": "yes"}, {"other": "on"}):
+        with pytest.raises(ValidationError):
+            GatewaySettingsPatch.model_validate({"transforms": bad})

@@ -34,12 +34,17 @@ async def record_management_action(
                 "organization_id": str(user.organization_id),
                 "request_id": event_id,
                 "event_type": "management_action",
-                "actor": str(user.id),
+                # shim's own unattended changes are the internal actor.
+                "actor": "system" if user.kind == "system" else str(user.id),
                 "endpoint": action,
                 "extra": {
                     "subject_id": subject_id,
                     **(details or {}),
-                    "actor_type": "service" if user.kind == "service" else "user_jwt",
+                    "actor_type": {"service": "service", "system": "internal"}.get(
+                        user.kind, "user_jwt"
+                    ),
+                    # An agent's rows say which service role acted; people's rows are unchanged.
+                    **({"actor_role": user.role} if user.kind == "service" else {}),
                 },
             },
             "status": "pending",

@@ -25,7 +25,7 @@ from shim.rules import KINDS, LIMITS, Rule, load_rule_set
 from shim_enterprise.billing.models import RequestLifecycle
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.core.database import get_db
-from shim_enterprise.findings.service import apply_modes
+from shim_enterprise.findings.service import apply_modes, finding_ladder
 from shim.privacy.policies import (
     PII_CONFIG_DEFAULTS,
     EntityAction,
@@ -56,6 +56,7 @@ from shim_enterprise.tenants.gateway_settings import (
 )
 from shim_enterprise.tenants.models import (
     ApiKey,
+    ModelDeployment,
     OrganizationGatewaySettings,
     Organization,
     OrganizationPIIConfig,
@@ -748,6 +749,7 @@ class _GatewaySettingsResource:
                 ApiKey,
                 set(after.inflight_sharing_api_key_ids),
             ),
+            ("tool_search", "api_key_ids", ApiKey, set(after.tool_search.api_key_ids)),
         ):
             known = (
                 set(
@@ -764,6 +766,42 @@ class _GatewaySettingsResource:
                 raise HTTPException(
                     422, detail=f"{setting} names {field} this organization lacks"
                 )
+        aliases = set(after.provider_cache.deployments)
+        if aliases and "provider_cache" in changes:
+            rows = await session.execute(
+                select(ModelDeployment.alias, ModelDeployment.upstream).where(
+                    ModelDeployment.organization_id == tenant_id,
+                    ModelDeployment.alias.in_(aliases),
+                )
+            )
+            upstreams = {alias: upstream for alias, upstream in rows}
+            if aliases - upstreams.keys():
+                raise HTTPException(
+                    422,
+                    detail="provider_cache.deployments names a deployment this "
+                    "organization lacks",
+                )
+            if "aws_bedrock" in upstreams.values():
+                raise HTTPException(
+                    422,
+                    detail="Bedrock deployments cannot use automatic cache placement yet",
+                )
+        if "inference_metrics" in changes:
+            internal = set(
+                await session.scalars(
+                    select(ModelDeployment.id).where(
+                        ModelDeployment.organization_id == tenant_id,
+                        ModelDeployment.deployment_kind == "internal",
+                    )
+                )
+            )
+            for index, source in enumerate(after.inference_metrics):
+                if source.deployment_id not in internal:
+                    raise HTTPException(
+                        422,
+                        detail=f"inference_metrics[{index}].deployment_id is not an "
+                        "internal deployment of this organization",
+                    )
         return after.model_dump(mode="json")
 
     async def apply(
@@ -811,7 +849,11 @@ class _GatewaySettingsResource:
             await shorten_retention(session, organization_id, days)
         if "finding_modes" in changed:
             # A lowered mode takes the suggested action away now, not at the next pass.
-            await apply_modes(session, organization_id, current.finding_modes)
+            await apply_modes(
+                session,
+                organization_id,
+                await finding_ladder(session, organization_id, current),
+            )
         await _audit(
             session,
             actor,

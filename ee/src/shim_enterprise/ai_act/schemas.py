@@ -25,6 +25,12 @@ class AuditLogRead(OrmReadModel):
     actor_type: Literal["api_key", "user_jwt", "internal", "service"] | None = Field(
         default=None, validation_alias=AliasPath("extra", "actor_type")
     )
+    actor_role: str | None = Field(
+        default=None,
+        validation_alias=AliasPath("extra", "actor_role"),
+        description="The service account's role (admin, auditor or recommender); "
+        "null for people.",
+    )
     lifecycle_status: str | None = Field(
         default=None, validation_alias=AliasPath("extra", "lifecycle_status")
     )

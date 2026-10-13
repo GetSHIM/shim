@@ -25,6 +25,7 @@ from shim.gateway.contracts.ids import TenantId
 from shim.gateway.contracts.principal import AuthenticatedPrincipal
 from shim_enterprise.gateway.pipeline.audit_intent import resolve_audit_policy
 from shim.gateway.request_policy import (
+    BandSettings,
     RequestPolicyContext,
     ResolvedRequestPolicy,
 )
@@ -168,7 +169,7 @@ class TenantPolicyService:
             raise TenantPolicyConfigurationError(
                 "tenant gateway settings are invalid"
             ) from exc
-        tier = await self._tier_definition(api_key.tier, session)
+        tier = await self.tier_definition(api_key.tier, session)
         switches = dict(pii_config or {})
         # Every key but the five switches is a setting of its own; an entry cached
         # before rules existed has no rules_revision, which correctly means none.
@@ -300,7 +301,7 @@ class TenantPolicyService:
         await self.cache.set_pii_config(cache_key, value)
         return value
 
-    async def _tier_definition(
+    async def tier_definition(
         self,
         slug: str,
         session: AsyncSession,
@@ -387,6 +388,12 @@ class TenantRequestPolicyResolver:
                 raise TenantPolicyConfigurationError(
                     "tenant policy is invalid"
                 ) from exc
+            gateway = tenant_settings.gateway_settings
+            cache, search, thinking = (
+                gateway.provider_cache,
+                gateway.tool_search,
+                gateway.thinking_history,
+            )
             resolved = ResolvedRequestPolicy(
                 tenant_id=TenantId(tenant_settings.tenant_id),
                 tenant_policy=tenant_policy,
@@ -436,6 +443,18 @@ class TenantRequestPolicyResolver:
                 agent_loop=tenant_settings.gateway_settings.agent_loop,
                 inflight_sharing=api_key.id
                 in tenant_settings.gateway_settings.inflight_sharing_api_key_ids,
+                band=BandSettings(
+                    anthropic_auto_cache=cache.anthropic_auto_cache,
+                    openai_prompt_cache_key=cache.openai_prompt_cache_key,
+                    provider_cache_deployments=tuple(cache.deployments),
+                    tool_search=search.mode,
+                    tool_search_min_tools=search.min_tools,
+                    tool_search_keep_loaded=tuple(search.keep_loaded),
+                    tool_search_api_key_ids=tuple(map(str, search.api_key_ids)),
+                    anthropic_keep_thinking_turns=thinking.anthropic_keep_turns,
+                    openai_reasoning_context=thinking.openai_reasoning_context,
+                    json_compaction=gateway.transforms.json_compaction == "on",
+                ),
                 restore_withheld=frozenset(
                     kind
                     for kind, grant in tenant_settings.gateway_settings.restore_withheld.items()

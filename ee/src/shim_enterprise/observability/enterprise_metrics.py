@@ -46,3 +46,52 @@ LICENSE_DAYS_REMAINING = Gauge(
     "license_days_remaining",
     "Days until the enterprise licence expires; negative inside the grace period.",
 )
+ROUTE_DECISIONS_TOTAL = Counter(
+    "shim_route_decisions_total",
+    "Route rule decisions at the conversation start, by rule state and outcome.",
+    ("state", "outcome"),
+)
+# Bounded: method is an MCP method name or "other"; tool a TOOLS name or "unknown".
+MCP_METHOD_LABELS = frozenset(
+    {
+        "initialize",
+        "server/discover",
+        "ping",
+        "tools/list",
+        "tools/call",
+        "prompts/list",
+        "prompts/get",
+        "resources/list",
+        "resources/read",
+        "notifications/initialized",
+        "notifications/cancelled",
+        "other",
+    }
+)
+MCP_REQUESTS_TOTAL = Counter(
+    "shim_mcp_requests_total",
+    "MCP endpoint requests by method and outcome (ok, tool_error, protocol_error).",
+    ("method", "outcome"),
+)
+MCP_TOOL_CALLS_TOTAL = Counter(
+    "shim_mcp_tool_calls_total",
+    "MCP tool calls by tool and outcome (ok, error).",
+    ("tool", "outcome"),
+)
+RULE_PROPOSALS_TOTAL = Counter(
+    "shim_rule_proposals_total",
+    "Rule proposals by outcome: proposed, needs_examples, invalid, limited, file_managed.",
+    ("outcome",),
+)
+REMEDIATIONS_TOTAL = Counter(
+    "shim_remediations_total",
+    "Unattended changes by allowlist entry (none for a skipped finding) and phase: "
+    "applied, kept, restored, restore_skipped, skipped, undone.",
+    ("entry", "phase"),
+)
+INFERENCE_SCRAPES_TOTAL = Counter(
+    "shim_inference_metrics_scrapes_total",
+    "Model server metrics reads by server (vllm, tgi, ollama) and outcome (ok, "
+    "error, skipped).",
+    ("server", "outcome"),
+)

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from shim.gateway.kernel.result import PreparedInference
 
 MAX_RECORDED_MATCHES = 32
-Outcome = Literal["allow", "mask", "deny", "error"]
+Outcome = Literal["allow", "mask", "deny", "error", "skip"]
 
 
 def in_scope(
@@ -114,7 +114,10 @@ def _verdict(match: RuleMatch) -> tuple[Outcome, str]:
 
 
 def record_rule_verdicts(
-    prepared: PreparedInference, verdicts: Mapping[str, tuple[Outcome, str]]
+    prepared: PreparedInference,
+    verdicts: Mapping[str, tuple[Outcome, str]],
+    *,
+    stage: Literal["rules", "settings"] = "rules",
 ) -> None:
     """One rule.<id> verdict per rule, the first 32 in the given order."""
 
@@ -138,7 +141,7 @@ def record_rule_verdicts(
         )
         prepared.record_verdict(
             f"rule.{rule_id}",
-            stage="rules",
+            stage=stage,
             outcome=outcome,
             reason_code=reason,
             policy_version=sha256(canonical.encode()).hexdigest(),
@@ -165,7 +168,49 @@ def settle_matches(prepared: PreparedInference) -> tuple[list[str], list[str]]:
     blocks: dict[str, tuple[Outcome, str]] = dict.fromkeys(
         unusable, ("deny", "RULE_BLOCKED")
     )
-    record_rule_verdicts(prepared, blocks | verdicts)
+    _settle(prepared, matches, blocks | verdicts, stage="rules")
+    blocked = [
+        *unusable,
+        *(rule_id for rule_id, (outcome, _) in verdicts.items() if outcome == "deny"),
+    ]
+    approval = [
+        match.rule_id
+        for match in matches
+        if (match.state, match.action, match.error)
+        == ("enforced", "require_approval", False)
+    ]
+    return sorted(blocked), sorted(approval)
+
+
+def settle_pins(
+    prepared: PreparedInference,
+    matches: Sequence[RuleMatch],
+    skipped: Mapping[str, str],
+) -> list[str]:
+    """Record the settings band's pin verdicts, `skip` with its reason for skipped pins.
+
+    Returns the ids of the enforced pins that block.
+    """
+
+    verdicts = {match.rule_id: _verdict(match) for match in ordered_matches(matches)}
+    skips: dict[str, tuple[Outcome, str]] = {
+        rule_id: ("skip", reason) for rule_id, reason in skipped.items()
+    }
+    _settle(prepared, matches, verdicts | skips, stage="settings")
+    return sorted(
+        rule_id for rule_id, (outcome, _) in verdicts.items() if outcome == "deny"
+    )
+
+
+def _settle(
+    prepared: PreparedInference,
+    matches: Sequence[RuleMatch],
+    verdicts: Mapping[str, tuple[Outcome, str]],
+    *,
+    stage: Literal["rules", "settings"],
+) -> None:
+    assert prepared.rules is not None
+    record_rule_verdicts(prepared, verdicts, stage=stage)
     if prepared.rules_evaluated or prepared.rule_matches:
         prepared.record_verdict(
             "rules.evaluated",
@@ -174,20 +219,11 @@ def settle_matches(prepared: PreparedInference) -> tuple[list[str], list[str]]:
             reason_code="RULES_EVALUATED",
             policy_version=sha256(str(prepared.rules.revision).encode()).hexdigest(),
         )
-    blocked = [
-        *unusable,
-        *(rule_id for rule_id, (outcome, _) in verdicts.items() if outcome == "deny"),
-    ]
-    approval: list[str] = []
     for match in matches:
         RULE_MATCHES_TOTAL.labels(
             kind=bounded_label("rule_kind", match.kind),
             action=bounded_label("rule_action", match.action),
             state=bounded_label("rule_state", match.state),
         ).inc()
-        if match.state == "enforced" and not match.error:
-            if match.action == "require_approval":
-                approval.append(match.rule_id)
-            elif match.action == "warn":
-                prepared.warn("RULE_WARN")
-    return sorted(blocked), sorted(approval)
+        if (match.state, match.action, match.error) == ("enforced", "warn", False):
+            prepared.warn("RULE_WARN")

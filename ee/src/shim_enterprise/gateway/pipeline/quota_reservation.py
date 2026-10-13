@@ -61,6 +61,7 @@ from shim_enterprise.gateway.pipeline.audit_intent import (
 from shim_enterprise.gateway.pipeline.scan_policy import ResolvedScanActor
 from shim_enterprise.gateway.pipeline.outbox import rejection_intent
 from shim_enterprise.outbox.publisher import OutboxWriter
+from shim_enterprise.aws.regions import bedrock_record
 from shim_enterprise.tenants.permissions import KEY_OWNER_ROLES
 from shim_enterprise.tenants.models import (
     ApiKey,
@@ -320,6 +321,22 @@ class AccountingPolicyLoader:
         return digest[:24]
 
 
+def _route_record(
+    prepared: PreparedInference, *, keep_conversation: bool
+) -> dict[str, Any] | None:
+    """The route decision to store; its conversation id may be a keyed digest of the
+    first turn's text, so it is kept only for a request privacy found nothing in."""
+
+    if prepared.route_decision is None:
+        return None
+    record = dict(prepared.route_decision)
+    if not keep_conversation:
+        record["conversation_id"] = None
+        if isinstance(record.get("previous"), Mapping):
+            record["previous"] = {**record["previous"], "conversation_id": None}
+    return record
+
+
 class DurableAccountingCoordinator:
     """Own short accounting transactions at kernel stage boundaries."""
 
@@ -342,6 +359,7 @@ class DurableAccountingCoordinator:
             "utf-8"
         )
         loop_digest = take_repeat_digest(str(prepared.tenant_id))
+        attempt = prepared.attempt
         with start_span("gateway.quota_reservation") as span:
             try:
                 policy = await self.policy_loader.quota(session, prepared)
@@ -395,6 +413,23 @@ class DurableAccountingCoordinator:
                             verdict.model_dump(mode="json")
                             for verdict in prepared.policy_verdicts
                         ),
+                        # One unit per client request: an extra attempt takes it only
+                        # when no earlier one was answered; a shadow copy never does.
+                        request_delta=0
+                        if prepared.shadow or (attempt and attempt.counted)
+                        else 1,
+                        attempt_group_id=attempt.group_id if attempt else None,
+                        attempt_number=attempt.number if attempt else None,
+                        attempt_reason=attempt.reason if attempt else None,
+                        attempt_rule_id=attempt.rule_id if attempt else None,
+                        queue_wait_ms=admission.queue_wait_ms,
+                        shadow_of=prepared.shadow.of if prepared.shadow else None,
+                        shadow_rule_id=prepared.shadow.rule_id
+                        if prepared.shadow
+                        else None,
+                        # Before privacy: the first-turn digest waits for its outcome.
+                        route_decision=_route_record(prepared, keep_conversation=False),
+                        aws_bedrock=bedrock_record(prepared),
                     ),
                 )
                 await session.commit()
@@ -566,6 +601,9 @@ class DurableAccountingCoordinator:
             raise ValueError("privacy outcome is required")
         privacy_facts = REQUEST_PRIVACY_RETENTION.durable_facts(prepared.privacy)
         bulk = prepared.privacy.bulk_disclosure
+        route_decision = _route_record(
+            prepared, keep_conversation=not privacy_facts["pii_detected"]
+        )
         try:
             lifecycle = await RequestLifecycleRepository.update(
                 session,
@@ -601,6 +639,34 @@ class DurableAccountingCoordinator:
                                 else {}
                             ),
                             **match_records(prepared),
+                            # A target chosen after privacy replaces the one reserved.
+                            **(
+                                {}
+                                if route_decision is None
+                                else {
+                                    "route_decision": route_decision,
+                                    "deployment_kind": prepared.deployment_kind,
+                                    "deployment_id": prepared.target.deployment_id
+                                    if prepared.target
+                                    else None,
+                                }
+                            ),
+                            **(
+                                {}
+                                if prepared.settings_applied is None
+                                else {
+                                    "settings_applied": list(prepared.settings_applied)
+                                }
+                            ),
+                            **(
+                                {}
+                                if prepared.transforms_applied is None
+                                else {
+                                    "transforms_applied": list(
+                                        prepared.transforms_applied
+                                    )
+                                }
+                            ),
                             **(
                                 {"approval_id": prepared.approval_id}
                                 if prepared.approval_id is not None

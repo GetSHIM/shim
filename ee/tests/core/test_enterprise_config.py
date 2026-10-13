@@ -185,3 +185,32 @@ def test_enterprise_ignores_community_azure_settings_but_checks_the_scope() -> N
             SHIM_AZURE_TOKEN_SCOPE="https://ai.azure.com/",
             _env_file=None,
         )
+
+
+def test_aws_url_templates_have_an_origin_and_at_most_one_region() -> None:
+    configured = Settings(
+        **ENTERPRISE_REQUIRED_VALUES,
+        AWS_BEDROCK_RUNTIME_URL_TEMPLATE="http://127.0.0.1:9215/",
+        AWS_STS_URL_TEMPLATE="https://vpce-1.sts.{region}.vpce.amazonaws.com",
+        _env_file=None,
+    )
+
+    assert configured.AWS_BEDROCK_RUNTIME_URL_TEMPLATE == "http://127.0.0.1:9215"
+    assert configured.AWS_BEDROCK_CONTROL_URL_TEMPLATE == (
+        "https://bedrock.{region}.amazonaws.com"
+    )
+    for template in [
+        "https://{region}.{region}.amazonaws.com",
+        "https://bedrock.{zone}.amazonaws.com",
+        "https://bedrock.amazonaws.com/path",
+        "https://bedrock.amazonaws.com/?q=1",
+        "https://user@bedrock.amazonaws.com",
+        "ftp://bedrock.amazonaws.com",
+        "bedrock.amazonaws.com",
+    ]:
+        with pytest.raises(ValidationError, match="AWS URL template"):
+            Settings(
+                **ENTERPRISE_REQUIRED_VALUES,
+                AWS_BEDROCK_CONTROL_URL_TEMPLATE=template,
+                _env_file=None,
+            )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -69,6 +69,14 @@ from shim.observability.metrics import (
 from shim.observability.tracing import safe_attributes
 from shim.privacy.classification import content_ref
 from shim.privacy.pii_scrubber import PIIScrubberService
+
+# After a request settled: its terminal facts and, when kept, its answer text and
+# tool calls and whether they were cut. Runs off the response path.
+OnSettled = Callable[
+    [StreamFinalization, str | None, tuple[AnalysisToolCall, ...], bool],
+    Awaitable[None],
+]
+
 
 if TYPE_CHECKING:
     from shim.gateway.kernel.stage import TraceValue
@@ -162,6 +170,8 @@ class ResponsePostprocessor:
         amount = micro_usd(cost)
         if (
             self.task_counter is None
+            # A shadow copy is the tenant's, never the caller's task.
+            or prepared.shadow is not None
             or caps.max_cost_usd is None
             or admission is None
             or admission.task_id is None
@@ -252,6 +262,8 @@ class ResponsePostprocessor:
         response: ProviderNonStream | ProviderStream,
         *,
         stream_session: StreamSession | None,
+        on_settled: OnSettled | None = None,
+        keep_answer: bool = False,
     ) -> JSONResponse | StreamingResponse:
         if isinstance(response, ProviderStream):
             assert stream_session is not None
@@ -268,21 +280,32 @@ class ResponsePostprocessor:
                 headers=_gateway_headers(prepared, response.request_id),
             )
 
-        gateway_response, terminal = self._settle(prepared, response)
-        record_settled_usage(prepared, terminal.usage)
-        await self.usage.finalize(prepared, terminal)
-        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
+        gateway_response, terminal = await self.settle_json(prepared, response)
         scan = prepared.response_scan == "count"
         analyzers = _analyzers(prepared)
+        reads = any(analyzer.reads_answer for analyzer in analyzers)
+        text = (
+            answer_text(response.payload)
+            if (reads or keep_answer) and prepared.protocol not in EMBEDDINGS_PROTOCOLS
+            else ""
+        )
+        calls = answer_tool_calls(response.payload) if reads or keep_answer else ()
+        settled = (
+            None
+            if on_settled is None
+            else on_settled(
+                terminal,
+                text[:KEPT_ANSWER_CHARACTERS] if keep_answer else None,
+                calls[:KEPT_TOOL_CALLS] if keep_answer else (),
+                len(text) > KEPT_ANSWER_CHARACTERS or len(calls) > KEPT_TOOL_CALLS,
+            )
+        )
         # A vector has no text to scan or analyse.
         if (
             terminal.terminal_status == "completed"
             and (scan or analyzers)
             and prepared.protocol not in EMBEDDINGS_PROTOCOLS
         ):
-            reads = any(analyzer.reads_answer for analyzer in analyzers)
-            text = answer_text(response.payload) if reads else ""
-            calls = answer_tool_calls(response.payload) if reads else ()
             answer = _Answer(
                 scan_text="\n".join(answer_texts(response.payload, tool_arguments=True))
                 if scan
@@ -296,10 +319,34 @@ class ResponsePostprocessor:
 
             async def after_send() -> None:
                 await self._start_after_answer(prepared, answer)
+                if settled is not None:
+                    self.detach(settled)
 
             # Starlette runs this after the body is sent.
             gateway_response.background = BackgroundTask(after_send)
+        elif settled is not None:
+
+            async def after_body() -> None:
+                self.detach(settled)
+
+            gateway_response.background = BackgroundTask(after_body)
         return gateway_response
+
+    async def settle_json(
+        self, prepared: PreparedInference, response: ProviderNonStream
+    ) -> tuple[JSONResponse, StreamFinalization]:
+        """Settle a JSON answer: its usage recorded and finalized at its own price."""
+        gateway_response, terminal = self._settle(prepared, response)
+        record_settled_usage(prepared, terminal.usage)
+        await self.usage.finalize(prepared, terminal)
+        self._add_task_cost(prepared, terminal.usage.settlement_cost_usd)
+        return gateway_response, terminal
+
+    def detach(self, work: Awaitable[Any]) -> None:
+        """Run `work` off the response path, bound to the app's lifetime (`drain`)."""
+        task = asyncio.ensure_future(work)
+        self._finalization_tasks.add(task)
+        task.add_done_callback(self._finalization_tasks.discard)
 
     async def finalize_shared(
         self,
@@ -486,6 +533,8 @@ class ResponsePostprocessor:
         prepared: PreparedInference,
         *,
         on_terminal: Callable[[], None] | None = None,
+        on_settled: OnSettled | None = None,
+        keep_answer: bool = False,
     ) -> StreamSession:
         if prepared.admission is None:
             raise ValueError("admission state is required")
@@ -501,7 +550,8 @@ class ResponsePostprocessor:
             expected_candidates=candidate_count(prepared),
             output_hash_salt=self.output_hash_salt,
             keep_scan_text=scan,
-            keep_answer=any(analyzer.reads_answer for analyzer in analyzers),
+            keep_answer=keep_answer
+            or any(analyzer.reads_answer for analyzer in analyzers),
         )
 
         async def record_stream_start() -> None:
@@ -509,8 +559,17 @@ class ResponsePostprocessor:
 
         async def record_stream_heartbeat() -> None:
             await self.usage.heartbeat_stream(prepared)
+            if prepared.concurrency_lease is not None:
+                await prepared.concurrency_lease.renew()
 
         async def finalize_stream(terminal: StreamFinalization) -> None:
+            try:
+                await settle_stream(terminal)
+            finally:
+                if prepared.concurrency_lease is not None:
+                    await prepared.concurrency_lease.release()
+
+        async def settle_stream(terminal: StreamFinalization) -> None:
             warn_after_answer(
                 prepared,
                 None if terminal.usage.estimated else terminal.usage.prompt_tokens,
@@ -530,6 +589,15 @@ class ResponsePostprocessor:
                         tool_calls=meter.kept_tool_calls(),
                         completion_outcome=terminal.usage.completion_outcome,
                     ),
+                )
+            if on_settled is not None:
+                self.detach(
+                    on_settled(
+                        terminal,
+                        "".join(meter.answer_text) if keep_answer else None,
+                        meter.kept_tool_calls() if keep_answer else (),
+                        meter.answer_truncated,
+                    )
                 )
 
         def observe_terminal(terminal_status: str) -> None:
@@ -597,26 +665,39 @@ def warn_after_answer(
     if (
         prepared.provider == "anthropic"
         and split == (0, 0, 0)
-        and _has_cache_control(prepared.payload)
+        and has_cache_control(prepared.payload)
+        # The band's own breakpoint costs no write below the model's minimum.
+        and not any(
+            step["id"] == "anthropic_auto_cache"
+            for step in prepared.settings_applied or ()
+        )
     ):
         prepared.warn("CACHE_NOT_APPLIED")
 
 
-def _has_cache_control(payload: Mapping[str, object]) -> bool:
-    """Top-level, system, tool and message-content breakpoints; not a tool schema's keys."""
+def has_cache_control(payload: Mapping[str, object]) -> bool:
+    """Top-level, system, tool, message-content and tool-result breakpoints; not a tool
+    schema's keys."""
 
     def blocks(value: object) -> list[object]:
         return value if isinstance(value, list) else []
 
+    content = [
+        block
+        for message in blocks(payload.get("messages"))
+        if isinstance(message, Mapping)
+        for block in blocks(message.get("content"))
+    ]
     candidates = [
         payload,
         *blocks(payload.get("system")),
         *blocks(payload.get("tools")),
+        *content,
         *(
-            block
-            for message in blocks(payload.get("messages"))
-            if isinstance(message, Mapping)
-            for block in blocks(message.get("content"))
+            nested
+            for block in content
+            if isinstance(block, Mapping) and block.get("type") == "tool_result"
+            for nested in blocks(block.get("content"))
         ),
     ]
     return any(
@@ -673,10 +754,14 @@ class PostprocessStage:
         prepared: PreparedInference,
         *,
         stream_session: StreamSession | None,
+        on_settled: OnSettled | None = None,
+        keep_answer: bool = False,
     ) -> None:
         self.postprocessor = postprocessor
         self.prepared = prepared
         self.stream_session = stream_session
+        self.on_settled = on_settled
+        self.keep_answer = keep_answer
 
     async def run(
         self,
@@ -686,6 +771,8 @@ class PostprocessStage:
             self.prepared,
             value,
             stream_session=self.stream_session,
+            on_settled=self.on_settled,
+            keep_answer=self.keep_answer,
         )
 
     def trace_metadata(

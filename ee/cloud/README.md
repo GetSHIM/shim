@@ -53,6 +53,17 @@ builds default to `onprem`; both profiles retain their independently configured
 authentication mode. Match `CLOUD_DASHBOARD_URL`, CORS, and (for OIDC)
 `DASHBOARD_ORIGIN` to the dashboard's origin.
 
+### AWS roles
+
+Tenants connect Bedrock through roles in their own AWS accounts. The hosted cloud
+has no AWS credentials of its own: set `AWS_GATEWAY_IDENTITY=gcp_metadata` and
+`AWS_GCP_SERVICE_ACCOUNT_ID` (the numeric unique id of the cloud's Google service
+account). Each tenant's trust policy then accepts a Google ID token for that
+account whose audience is `shim-aws:<the tenant's external id>`, so one tenant's
+role is never assumable for another (the per-tenant audience is the
+confused-deputy guard). See [the gateway's AWS
+identity](../docs/ON_PREM_IDENTITY.md#the-gateways-aws-identity).
+
 ## First cloud rollout
 
 `CLOUD_BILLING_ENABLED` defaults to `false`. The gateway still serves inference

@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 import shim_enterprise.tenants.policy as policy_module
 from shim.privacy.policies import PrivacyAction, PrivacyOutcome
 from shim.rules import KINDS, LIMITS, Rule, RuleSet, validate_rule_set
+from shim.rules.kinds import KindSpec
 from shim.rules.model import RuleMatch
 import shim_enterprise.api.enterprise_deps as enterprise_deps
 from shim_enterprise.api.enterprise_deps import ADMIN_REQUIRED, READER_REQUIRED
@@ -116,6 +117,8 @@ async def test_get_without_a_row_lists_the_kinds_and_writes_nothing(
         "record_set",
         "destination",
         "request_limit",
+        "parameter_pin",
+        "route",
     }
     # The enterprise approval gate makes require_approval available where the kind allows it.
     assert {
@@ -262,11 +265,13 @@ async def test_scope_ids_must_belong_to_the_organization(
 
 @pytest.mark.asyncio
 async def test_unavailable_kinds_and_actions_are_refused_with_their_path(
-    db, test_org
+    db, test_org, monkeypatch
 ) -> None:
     admin = await _admin(db, test_org.id)
+    # A kind its PRD has not added a match model for yet.
+    monkeypatch.setitem(KINDS, "route", KindSpec("resolver", ("route",)))
 
-    unavailable = await _refused(db, admin, 0, [_rule(kind="parameter_pin")])
+    unavailable = await _refused(db, admin, 0, [_rule(kind="route")])
     action = await _refused(db, admin, 0, [_rule(action="set")])
     unknown_key = await _refused(
         db, admin, 0, [_rule(match={"terms": ["Project"], "regex": "y"})]
@@ -542,6 +547,12 @@ async def test_the_lifecycle_metadata_carries_the_rule_matches() -> None:
                 rule_id="falcon", kind="term", action="block", state="monitor", count=2
             )
         ],
+        settings_applied=None,
+        transforms_applied=None,
+        route_decision=None,
+        attempt=None,
+        shadow=None,
+        concurrency_lease=None,
         approval_id=None,
         tenant_id=uuid4(),
         request_id=f"req_{uuid4().hex}",

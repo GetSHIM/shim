@@ -299,3 +299,23 @@ async def test_enterprise_postprocessor_puts_model_tokens_and_cost_on_the_span(
     assert float(str(attributes["shim.cost_usd"])) > 0
     kernel.postprocessor.usage.finalize.assert_awaited_once()
     tracer_provider.shutdown()
+
+
+def test_the_mcp_counters_take_bounded_labels() -> None:
+    from shim_enterprise.mcp import protocol
+    from shim_enterprise.mcp.tools import TOOLS
+    from shim_enterprise.observability.enterprise_metrics import (
+        MCP_METHOD_LABELS,
+        MCP_REQUESTS_TOTAL,
+        MCP_TOOL_CALLS_TOTAL,
+    )
+
+    assert MCP_METHOD_LABELS == {
+        *protocol.MODERN_METHODS,
+        *protocol.LEGACY_METHODS,
+        *protocol.NOTIFICATIONS,
+        "other",
+    }
+    assert MCP_REQUESTS_TOTAL._labelnames == ("method", "outcome")
+    assert MCP_TOOL_CALLS_TOTAL._labelnames == ("tool", "outcome")
+    assert len({tool.name for tool in TOOLS} | {"unknown"}) == 19

@@ -18,6 +18,7 @@ provider attempt rule are unchanged.
 | `system_prompt_hash` | `hmac-sha256:v1:` followed by a 64-character digest of explicitly supplied system/developer instructions. | `null` when instructions are absent or inherited from provider-held state. |
 | `deployment_kind` | `internal`, `external`, or `unknown`, supplied by trusted deployment resolution; tenant rules treat `unknown` as external. A row labelled `internal` outside `MODEL_DEPLOYMENT_INTERNAL_ORIGINS` resolves as `external`. | New unclassified requests use `unknown`; historical rows use `null`. |
 | `deployment_id` | The registry UUID, as a string, of the [deployment](MODEL_DEPLOYMENTS.md) that served the request, written at reservation and never changed. It stays the same when the alias, base URL or upstream model is edited. | `null` for catalog routes; absent on rows written before it existed. |
+| `aws_bedrock` | An [Amazon Bedrock](MODEL_DEPLOYMENTS.md) request's `region` (the deployment's source region), `model` (the upstream model or profile id), `scope` (`in_region` or the profile prefix), `lock` (`off`, `pass` or `outside` of the tenant's region lock) and `session_tag` (the team's cost tag value, or `null`). Written at reservation from the request alone. Ids and tenant labels only. | Absent on every non-Bedrock request; a refused request carries the `aws.region_lock` verdict instead. |
 | `repeat_digest` | 64 lowercase hex characters: a keyed, tenant-bound digest of the same repeat material the loop detector compares. Equal values mean equal repeat material, not the same request, whatever `LOOP_WINDOW_SECONDS` says. | `null` when the request had no prompt material or PII was detected in it; absent on rows written before it existed. |
 
 `completion_outcome` answers whether the caller received a whole answer. The
@@ -86,7 +87,9 @@ The unkeyed detector digest never reaches PostgreSQL, the outbox, logs, spans or
 metrics. It lives in Redis, in the `loop:{org}:{sha256(material)}` key, for up to
 `LOOP_WINDOW_SECONDS`.
 
-`deployment_id` and `repeat_digest` are lifecycle-only keys: they are in
+The hardware cost allocation and the capacity forecast read `deployment_id`.
+
+`deployment_id`, `aws_bedrock` and `repeat_digest` are lifecycle-only keys: they are in
 `request_lifecycle.metadata` and not in the analytics row, the request list, its
 CSV or the audit completion. Community JSONL does not carry them.
 
@@ -240,8 +243,13 @@ a placeholder.
 
 `task_id` and `trace_id` are written at reservation: `task_id` is the request's
 `X-Shim-Task-Id` (up to 128 characters), else the trace id of a valid incoming
-`traceparent`; `trace_id` is that trace id; each is `null` when absent. They are in
-the lifecycle metadata only; reads and filters by task come with the task view.
+`traceparent`; `trace_id` is that trace id; each is `null` when absent. `task_id`
+is also in the analytics row, the request list (`task_id`, filter `?task_id=`, an
+exact match) and the CSV (the column after `tags`); it stays out of the audit chain,
+which keeps no caller-chosen identifier. `trace_id` is in the lifecycle metadata only.
+The [tasks read](COOKBOOK.md#see-what-an-agent-task-cost) groups lifecycle rows by
+`task_id`: its `calls` are client requests (rows without `attempt_number`, or with
+`attempt_number` 1), its `attempts` every row, extra attempts included.
 
 `tool_call_repeats` (how many times the latest tool call of the request's history
 was seen for its task, else its key, within the loop window) and `task_calls` (the
@@ -344,6 +352,74 @@ run (those show as a `rule.<id>` verdict). A match is ids and counts, never the 
 its CSV (compact JSON) show it, the community JSONL event carries it, and
 `GET /api/v1/management/requests?rule_id=<id>` and the export filter on one
 rule. `shim_rule_matches_total{kind, action, state}` counts every match.
+A [preview](POLICY_DECISIONS.md#tenant-rules) of a new `destination` rule reads
+`pii_entities` and `monitored_entities`; one of a `request_limit` rule reads the
+quota reservation's `prompt_tokens`, `media_parts`, `warnings` and
+`response_analysis.shape`. Both read the scope keys (`team_id`, `tags`,
+`deployment_kind`) and never a value.
+
+`settings_applied` lists the settings band steps that set a provider parameter on
+the request, as `{"id", "version"}`: a [parameter pin](COOKBOOK.md#pin-a-parameter)
+is `parameter_pin.<rule id>` with the rule set's revision; the provider-cache steps
+are `anthropic_auto_cache` and `openai_prompt_cache_key`, and the tool and thinking
+steps `tool_search`, `anthropic_clear_thinking` and `openai_reasoning_context`, all
+version 1. It is written with the
+privacy facts, `[]` when the band ran and set nothing (a pin in monitor state, a
+`warn` pin, a provider-cache step with nothing to do, a refused request), and absent
+when the band did not run: no pin in scope for the request's protocol and every
+band setting off, and token counting. Ids and versions only, never
+a parameter value. The request list and its CSV (compact JSON) show it; the
+community JSONL event carries it only when a step was applied.
+
+`transforms_applied` lists the transform band steps that changed the request, as
+`{"id", "version", "before_chars", "after_chars"}` plus the step's own counts:
+`json_compaction` adds `items`, the tool result strings it compacted, and its
+character sums cover those strings only. Written with the privacy facts, `[]` when the
+band ran and changed nothing (no JSON tool result qualified, or the request was
+skipped as bound to Anthropic thinking), absent when no transform is on and for token
+counting. Sizes and counts only. The request list and its CSV show it, and the
+community JSONL event carries it whenever the band ran.
+
+`attempt_group_id`, `attempt_number`, `attempt_reason` and `attempt_rule_id` are on
+the row of an extra attempt a tenant rule asked for (number 2 or 3, reason
+`fallback`, `overflow`, `format_retry`, `canary_fallback` or `degrade`, and the rule's
+id), written at reservation. The first attempt's row carries none of them and is never
+rewritten: a group is the row whose `request_id` is the `attempt_group_id` plus every
+row carrying it, and the attempt that served the client is the highest
+`attempt_number` that completed. Each row has its own tokens and cost; a client
+request settles one daily and monthly request unit across its attempts: an extra
+attempt reserves the unit only when every earlier attempt failed (and so gave its
+unit back), and none after an answered one. The request list, its CSV and
+`GET /api/v1/management/requests?attempt_group_id=<request id>` (both the first row
+and the later ones) carry them. `route_decision` is set when a
+[route rule](POLICY_DECISIONS.md#route-rules) decided at the conversation start,
+written at reservation: `rule_id`, `state`, `from` (the model the client named), `to`
+(the rule's alias), `reason` (the first `when` condition that matched, or `always`),
+`conversation_id` (16 hex characters of a keyed digest of the `X-Shim-Conversation-Id`
+header, or of the first turn without one; the header itself is never stored) and
+`outcome` (`routed`, `would_route`,
+`not_allowed_for_key` or `target_unavailable`). When a tenant rule moves the request
+again after privacy, that decision replaces it, with `from` and `to` as deployment ids
+(or `catalog`), `conversation_id` null, and the earlier decision under `previous` (one
+level); `deployment_kind` and `deployment_id` are then rewritten in the same update.
+Absent otherwise. The reservation writes `conversation_id` as null; the privacy
+update fills it in only when privacy found no personal data (null otherwise, also
+under `previous`, as it clears `repeat_digest`), so a request refused before privacy
+finished never keeps it. The
+request list filters on it with `route_outcome=<outcome>`; prompt text and keywords are
+never recorded.
+
+`shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
+to a candidate model: the primary request's id and the rule that chose it. The copy
+has its own tokens and cost, which the tenant pays, and reserves no daily or monthly
+request unit (`request_count` 0). Its tokens count against the organization's quota
+only, never the caller's key or team quota, task cost cap, or a team or tag cost
+budget. The request list and its CSV carry `shadow_of`;
+both keys are absent on every other row.
+
+`queue_wait_ms` is the milliseconds a request waited for room on its target under a
+concurrency limiter (0 when admitted at once), written at reservation; absent when no
+limiter is configured.
 
 `approval_id` is the [request approval](POLICY_DECISIONS.md#request-approval)
 the approval gate decided the request with: the one it was held under
