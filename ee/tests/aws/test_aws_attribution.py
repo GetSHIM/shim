@@ -75,11 +75,41 @@ async def _bedrock_request(
         "provider": "anthropic",
         "provider_model": "eu.anthropic.fixture-v1:0",
         "cost_usd": Decimal(cost),
-        "prompt_tokens": 100,
-        "completion_tokens": 20,
-        "total_tokens": 120,
         "created_at": started,
     }
+    quota = {
+        key: ledger[key]
+        for key in (
+            "request_id",
+            "organization_id",
+            "api_key_id",
+            "requested_model",
+            "created_at",
+        )
+    }
+    quota_reservation = uuid4()
+    db.add_all(
+        [
+            UsageLedger(
+                id=quota_reservation,
+                event_type="quota_reservation",
+                idempotency_key=f"request:{request_id}:quota:reservation",
+                prompt_tokens=100,
+                completion_tokens=0,
+                total_tokens=100,
+                **quota,
+            ),
+            UsageLedger(
+                event_type="quota_settlement",
+                idempotency_key=f"request:{request_id}:quota:settlement",
+                reservation_event_id=quota_reservation,
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                **quota,
+            ),
+        ]
+    )
     reservation = uuid4()
     db.add_all(
         [

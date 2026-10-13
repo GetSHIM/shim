@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import Date, Integer, and_, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from shim_enterprise.api.enterprise_deps import require
 from shim_enterprise.api.v1.management._common import _tenant_id
@@ -196,6 +197,10 @@ async def _attribution_rows(
     def tokens(name: str) -> Any:
         return func.coalesce(func.sum(cast(pricing[name].as_string(), Integer)), 0)
 
+    # Token counts are settled on the quota row, cost and the cache split on the
+    # spend row; a request has at most one of each.
+    quota = aliased(UsageLedger)
+
     statement = (
         select(
             day,
@@ -203,8 +208,8 @@ async def _attribution_rows(
             region,
             model,
             func.count(RequestLifecycle.request_id),
-            func.coalesce(func.sum(UsageLedger.prompt_tokens), 0),
-            func.coalesce(func.sum(UsageLedger.completion_tokens), 0),
+            func.coalesce(func.sum(quota.prompt_tokens), 0),
+            func.coalesce(func.sum(quota.completion_tokens), 0),
             tokens("cache_read_tokens"),
             tokens("cache_write_tokens") + tokens("cache_write_1h_tokens"),
             func.coalesce(func.sum(UsageLedger.cost_usd), 0),
@@ -217,6 +222,14 @@ async def _attribution_rows(
                 UsageLedger.organization_id == RequestLifecycle.organization_id,
                 UsageLedger.request_id == RequestLifecycle.request_id,
                 UsageLedger.event_type == "spend_settlement",
+            ),
+        )
+        .outerjoin(
+            quota,
+            and_(
+                quota.organization_id == RequestLifecycle.organization_id,
+                quota.request_id == RequestLifecycle.request_id,
+                quota.event_type == "quota_settlement",
             ),
         )
         .where(
