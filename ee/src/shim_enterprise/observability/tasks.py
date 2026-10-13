@@ -206,6 +206,8 @@ def _task_rows(
             RequestLifecycle.organization_id == tenant_id,
             RequestLifecycle.started_at >= start_at,
             RequestLifecycle.started_at < end_at,
+            # S58: a copy keeps the caller's task id but is never one of its calls.
+            metadata["shadow_of"].as_string().is_(None),
             *(() if scope is None else (scope,)),
         )
     )

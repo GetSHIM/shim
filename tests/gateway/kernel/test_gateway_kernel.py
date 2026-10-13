@@ -3401,6 +3401,39 @@ async def test_the_kept_answer_serves_when_the_next_attempt_is_not_admitted(
 
 
 @pytest.mark.asyncio
+async def test_a_failed_attempt_gives_back_its_unit_before_the_next_one_takes_one(
+    monkeypatch,
+) -> None:
+    from shim.gateway.usage import UsageLimitExceeded
+
+    failed: list = []
+    original_fail = LocalUsageLifecycle.fail
+
+    async def spy_fail(self, prepared, *, reason):
+        failed.append(prepared.request_id)
+        return await original_fail(self, prepared, reason=reason)
+
+    monkeypatch.setattr(LocalUsageLifecycle, "fail", spy_fail)
+    holding: list = []
+
+    # One request unit left: it is free only once every earlier attempt gave it back.
+    async def last_unit(prepared):
+        if any(held not in failed for held in holding):
+            raise UsageLimitExceeded("no request unit left")
+        holding.append(prepared.request_id)
+
+    policy = _StubPolicy(after_error=[_target()])
+
+    response, calls, admitted, lines = await _attempt_call(
+        monkeypatch, policy, [503], admit=last_unit
+    )
+
+    assert response.status_code == 200 and len(calls) == 2 and len(admitted) == 2
+    assert response.headers["x-shim-attempts"] == "2"
+    assert failed == [admitted[0].request_id]
+
+
+@pytest.mark.asyncio
 async def test_a_stream_refused_before_its_first_byte_may_take_a_second_attempt(
     monkeypatch,
 ) -> None:

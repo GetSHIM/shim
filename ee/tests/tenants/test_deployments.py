@@ -2060,7 +2060,9 @@ async def test_a_routed_request_keeps_the_client_model_and_records_the_decision(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("problem", ["allowlist", "disabled", "unhealthy", "provider"])
+@pytest.mark.parametrize(
+    "problem", ["allowlist", "disabled", "unhealthy", "provider", "bedrock"]
+)
 async def test_a_target_the_key_or_registry_refuses_leaves_the_request_alone(
     db, test_api_key, origins, problem
 ):
@@ -2072,8 +2074,11 @@ async def test_a_target_the_key_or_registry_refuses_leaves_the_request_alone(
     elif problem == "unhealthy":
         rows[1].health = "unhealthy"
         rows[1].health_checked_at = datetime.now(timezone.utc)
-    else:
+    elif problem == "provider":
         rows[1].provider = "anthropic"
+    else:
+        # The region lock runs only where a request starts, never on a move.
+        rows[1].upstream, rows[1].aws_region = "aws_bedrock", "eu-central-1"
     await db.flush()
 
     hosts, [decision], _ = await _routed(

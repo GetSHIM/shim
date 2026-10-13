@@ -939,6 +939,7 @@ async def _deployment(db, organization_id: UUID, alias: str, upstream: str) -> N
             declared_version="v1",
             owner="Platform",
             upstream=upstream,
+            aws_region="eu-central-1" if upstream == "aws_bedrock" else None,
         )
     )
     await db.flush()
@@ -1013,12 +1014,6 @@ async def test_a_bedrock_deployment_cannot_take_automatic_cache_placement(
     db, test_org
 ) -> None:
     admin = await _admin(db, test_org.id)
-    # Bedrock deployments arrive with PRD-E58; the row is seeded past today's check.
-    await db.execute(
-        text(
-            "ALTER TABLE model_deployments DROP CONSTRAINT ck_model_deployments_upstream"
-        )
-    )
     await _deployment(db, test_org.id, "bedrock-claude", "aws_bedrock")
 
     with pytest.raises(HTTPException) as refused:

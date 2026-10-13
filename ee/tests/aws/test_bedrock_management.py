@@ -325,6 +325,50 @@ async def test_a_put_keeps_the_region_and_a_new_region_moves_the_url(
     )
 
 
+@pytest.mark.asyncio
+async def test_a_deployment_in_the_provider_cache_list_cannot_become_bedrock(
+    db,
+) -> None:
+    user = await _admin(db)
+    aws = await _aws_secret(db, user)
+    plain = await _call(
+        db,
+        user,
+        "POST",
+        PROVIDERS,
+        json={"provider": "anthropic", "key": "sk-ant-" + "0" * 20},
+    )
+    generic = {
+        **_deployment(plain.json()),
+        "upstream": "generic",
+        "aws_region": None,
+        "base_url": "https://a.internal/v1",
+    }
+    created = (await _call(db, user, "POST", DEPLOYMENTS, json=generic)).json()
+    listed = await _call(
+        db,
+        user,
+        "PATCH",
+        "/api/v1/management/gateway-settings",
+        json={"provider_cache": {"deployments": [created["alias"]]}},
+    )
+
+    moved = await _call(
+        db,
+        user,
+        "PUT",
+        f"{DEPLOYMENTS}/{created['id']}",
+        json=_deployment(aws, alias=created["alias"]),
+    )
+
+    assert listed.status_code == 200, listed.text
+    assert moved.status_code == 422
+    assert (
+        moved.json()["detail"]
+        == "Bedrock deployments cannot use automatic cache placement yet"
+    )
+
+
 @pytest.mark.parametrize(
     ("model", "path", "answer", "health"),
     [

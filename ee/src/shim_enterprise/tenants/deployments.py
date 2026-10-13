@@ -204,7 +204,9 @@ async def alias_target(
     | Literal["not_allowed", "unavailable"]
 ):
     """The registry deployment `alias` names, checked as the resolver checks one:
-    the key's allowlist, then disabled, another provider, unhealthy, origin."""
+    the key's allowlist, then disabled, another provider, unhealthy, origin.
+    A Bedrock deployment is never a move target: its region lock runs in the
+    resolver only."""
 
     allowed = await session.scalar(
         select(ApiKey.allowed_models).where(ApiKey.id == prepared.api_key_id)
@@ -221,6 +223,7 @@ async def alias_target(
     if (
         deployment is not None
         and deployment.enabled
+        and deployment.upstream != "aws_bedrock"
         and deployment.provider == str(prepared.provider)
         and not unhealthy_seconds_left(deployment)
     ):

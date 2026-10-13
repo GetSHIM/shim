@@ -250,6 +250,20 @@ async def test_tasks_group_calls_attempts_tokens_cost_and_signals(db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_shadow_copy_is_never_part_of_the_callers_task(db) -> None:
+    user, first, _ = await _tenant(db)
+    primary = _request(db, first, "agent-s", 0)
+    # S58: the copy carries the caller's admission, task id included.
+    _request(db, first, "agent-s", 1, cost="0.500", shadow_of=primary)
+    await db.flush()
+
+    report = await _read(db, user)
+
+    [task] = report.items
+    assert (task.calls, task.attempts, task.cost_usd) == (1, 1, Decimal("0.010"))
+
+
+@pytest.mark.asyncio
 async def test_tasks_sort_and_cap_the_list(db, monkeypatch) -> None:
     user, *_ = await _seed(db)
 

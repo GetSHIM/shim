@@ -482,17 +482,20 @@ class GatewayKernel:
                         attempts=attempts,
                         byok=byok,
                     )
-                    following = (
-                        None
-                        if target is None
-                        else await self._start_attempt(
-                            invocation, prepared, target, attempts + 1, answered=False
-                        )
-                    )
-                    # Settled after the next attempt's start, so a skip that start
-                    # records lands on this attempt's row too.
-                    await self._fail_safely(prepared, reason=_failure_reason(error))
+                    if target is None:
+                        await self._fail_safely(prepared, reason=_failure_reason(error))
+                        settled = True
+                        raise
+                    # The next attempt's start settles this one, on every path.
                     settled = True
+                    following = await self._start_attempt(
+                        invocation,
+                        prepared,
+                        target,
+                        attempts + 1,
+                        answered=False,
+                        failed=_failure_reason(error),
+                    )
                     if following is None:
                         raise
                     prepared, attempts, settled = following, attempts + 1, False
@@ -772,13 +775,28 @@ class GatewayKernel:
         number: int,
         *,
         answered: bool,
+        failed: UsageFailureReason | None = None,
     ) -> PreparedInference | None:
         # Attempt `number`, admitted and reserved, or None. Admission is the usage
         # reservation only: rate limits and the repeat detector never see it.
+        # A `failed` previous attempt is settled after the bands and the lease, so
+        # a skip they record lands on its row, and before this attempt reserves,
+        # so the request unit it gives back can serve this one.
+        moved = None
         try:
             following, blocked = await self._bands(
                 next_attempt(prepared, target, number=number, answered=answered)
             )
+            if blocked is not None:
+                skip_attempt(
+                    following,
+                    target.reason,
+                    target.rule_id,
+                    "ATTEMPT_NOT_ADMITTED",
+                    outcome="not_admitted",
+                )
+            else:
+                moved = await self._leased(prepared, following, target)
         except Exception as exc:
             # The previous attempt's result stands; a band error never replaces it.
             logger.warning("Attempt bands failed type=%s", type(exc).__name__)
@@ -789,21 +807,10 @@ class GatewayKernel:
                 "ATTEMPT_NOT_ADMITTED",
                 outcome="not_admitted",
             )
-            return None
-        moved = (
-            None
-            if blocked is not None
-            else await self._leased(prepared, following, target)
-        )
+        finally:
+            if failed is not None:
+                await self._fail_safely(prepared, reason=failed)
         if moved is None:
-            if blocked is not None:
-                skip_attempt(
-                    following,
-                    target.reason,
-                    target.rule_id,
-                    "ATTEMPT_NOT_ADMITTED",
-                    outcome="not_admitted",
-                )
             return None
         following = moved
         assert following.admission is not None

@@ -149,6 +149,12 @@ async def test_a_listed_deployment_becomes_a_target_and_the_first_candidate_wins
         ),
         ({"provider": "anthropic"}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
         ({"base_url": "https://b.internal/v1"}, None, "ATTEMPT_TARGET_UNAVAILABLE"),
+        # The region lock runs only where a request starts, never on a move.
+        (
+            {"upstream": "aws_bedrock", "aws_region": "eu-central-1"},
+            None,
+            "ATTEMPT_TARGET_UNAVAILABLE",
+        ),
         (None, None, "ATTEMPT_TARGET_UNAVAILABLE"),
     ],
 )

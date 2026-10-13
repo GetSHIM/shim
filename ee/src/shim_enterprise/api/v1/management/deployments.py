@@ -892,6 +892,20 @@ class _DeploymentResource:
             raise HTTPException(
                 422, detail="Credential provider does not match deployment"
             )
+        if aws:
+            # The gateway-settings PATCH refuses the same pairing from its side.
+            stored = await session.scalar(
+                select(OrganizationGatewaySettings.settings).where(
+                    OrganizationGatewaySettings.organization_id == _tenant_id(actor)
+                )
+            )
+            if stored is not None and payload.alias in (
+                stored_settings(stored).provider_cache.deployments
+            ):
+                raise HTTPException(
+                    422,
+                    detail="Bedrock deployments cannot use automatic cache placement yet",
+                )
         # The input model sets base_url for every upstream, derived or given.
         assert payload.base_url is not None
         if payload.deployment_kind == "internal" and not internal_origin_approved(
