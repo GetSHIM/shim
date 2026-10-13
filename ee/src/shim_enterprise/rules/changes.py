@@ -25,8 +25,20 @@ _LABELS = frozenset({"id", "name"})
 _CHECKED = frozenset({"state", "action", "scope", "match"})
 
 
-def _relaxes(before: Rule, after: Rule | None) -> bool:
-    if before.state != "enforced":
+def _relaxes(before: Rule | None, after: Rule | None) -> bool:
+    if {rule.kind for rule in (before, after) if rule is not None} == {"route"}:
+        # A route rule moves requests to another model: enforcing one, or changing
+        # an enforced one, is what needs a second look; removing one protects.
+        return (
+            after is not None
+            and after.state == "enforced"
+            and (
+                before is None
+                or before.model_dump(exclude={"name"})
+                != after.model_dump(exclude={"name"})
+            )
+        )
+    if before is None or before.state != "enforced":
         return False
     if after is None or after.state == "monitor":
         return True
@@ -50,11 +62,12 @@ def _relaxes(before: Rule, after: Rule | None) -> bool:
 def classify_rule_changes(before: RuleSet | None, after: RuleSet) -> list[str]:
     """`rules.<id>` for each rule whose protection weakens between two sets."""
 
+    previous = {rule.id: rule for rule in (before.rules if before is not None else ())}
     current = {rule.id: rule for rule in after.rules}
     return sorted(
-        f"rules.{rule.id}"
-        for rule in (before.rules if before is not None else ())
-        if _relaxes(rule, current.get(rule.id))
+        f"rules.{rule_id}"
+        for rule_id in previous.keys() | current.keys()
+        if _relaxes(previous.get(rule_id), current.get(rule_id))
     )
 
 

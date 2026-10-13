@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shim.gateway.contracts.ids import TenantId
 from shim.rules import LIMITS, Rule, RuleScope, RuleSet
+from shim.rules.route import owned
 from shim_enterprise.cache.redis_index import CacheManager, CacheService
 from shim_enterprise.compliance.services.forwarder import ComplianceForwarderService
 from shim_enterprise.policy.plans import (
@@ -34,7 +35,13 @@ from shim_enterprise.rules.preview import (
     stored_rules,
 )
 from shim_enterprise.tenants.audit import record_management_action as _audit
-from shim_enterprise.tenants.models import ApiKey, RecordSet, Team, User
+from shim_enterprise.tenants.models import (
+    ApiKey,
+    ModelDeployment,
+    RecordSet,
+    Team,
+    User,
+)
 from shim_enterprise.tenants.permissions import Permission
 
 logger = logging.getLogger(__name__)
@@ -174,6 +181,21 @@ def _check_record_set_rule(
         )
 
 
+def _check_route_rule(rule: Rule, index: int, providers: Mapping[str, str]) -> None:
+    """`to` is a registered alias of the provider of every registered `from` alias."""
+
+    provider = providers.get(rule.match["to"])
+    if provider is None:
+        problem = "to names a model alias this organization has not registered"
+    elif any(
+        providers.get(model, provider) != provider for model in rule.match["from"]
+    ):
+        problem = "to is an alias of another provider than a from alias"
+    else:
+        return
+    raise _refused("RULE_MATCH_INVALID", f"rules[{index}].match.to", problem)
+
+
 async def store_rule_set(
     session: AsyncSession,
     actor: User,
@@ -223,9 +245,26 @@ async def store_rule_set(
             ).where(RecordSet.organization_id == organization_id)
         )
     }
+    routes = {
+        rule.id for rule in after.rules if rule.kind == "route" and owned(rule.match)
+    }
+    providers: dict[str, str] = (
+        {
+            alias: provider
+            for alias, provider in await session.execute(
+                select(ModelDeployment.alias, ModelDeployment.provider).where(
+                    ModelDeployment.organization_id == organization_id
+                )
+            )
+        }
+        if routes
+        else {}
+    )
     for index, rule in enumerate(after.rules):
         if rule.kind == "record_set":
             _check_record_set_rule(rule, index, record_sets)
+        if rule.id in routes:
+            _check_route_rule(rule, index, providers)
         if rule.id in kept_ids:
             raise _refused(
                 "RULE_ID_DUPLICATE",

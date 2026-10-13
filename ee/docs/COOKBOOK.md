@@ -611,6 +611,50 @@ applies, the other records `RULE_PIN_SHADOWED`. Request parameters are not store
 so a pin has no [preview](#preview-a-rule-before-you-enforce-it) from older
 traffic; its monitor history is the preview.
 
+## Send simple requests to a cheaper model
+
+Serve conversations that start short, or with given words, from a cheaper model of the
+same provider, and see which ones would move before any does.
+
+1. Register both models as [deployments](#register-a-private-model-deployment), for
+   example `strong` and `cheap`, and add a `route` rule to the
+   [rule set](#write-a-tenant-rule) in `monitor` state:
+
+```json
+{"id": "cheap_start", "name": "Short starts", "kind": "route", "action": "route",
+ "state": "monitor", "match": {"from": ["strong"], "to": "cheap",
+ "when": {"max_start_chars": 400, "tools": false}}}
+```
+
+`from` lists the model names clients send (1 to 20); `to` is a registered alias of
+the same provider. `when` is optional, and every condition in it must hold:
+`max_start_chars` and `min_start_chars` (the first turn's characters), `tools`,
+`media`, `structured_output` and `keywords_any` / `keywords_none` (up to 50 words each,
+matched at a word start with Turkish-aware casing, so `fatura` finds
+"Faturalarımı özetle"). Without `when`, the rule always applies; scope it by
+`api_key_ids` or `tags` for "this app always uses that model".
+
+2. Read the request list with `route_outcome=would_route`: each request the rule would
+   have moved has a `route_decision` with the rule, the condition that matched and a
+   `conversation_id`.
+3. Send the set again with `"state": "enforced"`. Matching conversations are served by
+   `cheap` from their first turn on (`route_outcome=routed`); the client still names
+   `strong`, and the answer's `model` is `cheap`'s upstream model. A key whose
+   allowlist lacks `cheap` stays on `strong` (`not_allowed_for_key`), and so does a
+   request when `cheap` is disabled or unhealthy (`target_unavailable`).
+4. To undo, restore the previous [policy version](#plan-apply-and-undo-a-change), or
+   send the rule back in `monitor`.
+
+Notes: the conditions read only the conversation's first turn (system instructions
+and the first user message), so a conversation keeps its model on every turn and its
+provider prompt-cache discount; send `X-Shim-Conversation-Id` to name conversations
+yourself. Responses requests that the provider stores (`store` not `false`, or a
+`previous_response_id` / `conversation`) are never routed. With
+[four eyes](#require-a-second-admin-for-loosening-changes) on, enforcing a route rule
+needs a second admin. Prompts are not kept, so a route rule has no
+[preview](#preview-a-rule-before-you-enforce-it) from older traffic; its monitor
+history is the preview.
+
 ## Preview a rule before you enforce it
 
 See how many requests a rule would have hit before it blocks anything.

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from shim.gateway.kernel.attempts import (
@@ -15,13 +14,7 @@ from shim.gateway.kernel.attempts import (
     skip_attempt,
 )
 from shim.gateway.kernel.result import PreparedInference
-from shim_enterprise.tenants.deployments import (
-    unhealthy_seconds_left,
-    deployment_target,
-    internal_origin_approved,
-    validate_deployment_url,
-)
-from shim_enterprise.tenants.models import ApiKey, ModelDeployment
+from shim_enterprise.tenants.deployments import alias_target
 
 
 @dataclass(frozen=True)
@@ -53,45 +46,21 @@ async def resolve_alias_target(
     cannot serve: disabled, another provider, marked unhealthy, origin not approved.
     """
 
-    alias = candidate.alias
-    allowed = await session.scalar(
-        select(ApiKey.allowed_models).where(ApiKey.id == prepared.api_key_id)
-    )
-    if allowed is not None and alias not in allowed:
+    assert candidate.alias is not None
+    found = await alias_target(session, prepared, candidate.alias)
+    if found == "not_allowed" or found == "unavailable":
         skip_attempt(
-            prepared, candidate.reason, candidate.rule_id, "ATTEMPT_TARGET_NOT_ALLOWED"
+            prepared,
+            candidate.reason,
+            candidate.rule_id,
+            "ATTEMPT_TARGET_NOT_ALLOWED"
+            if found == "not_allowed"
+            else "ATTEMPT_TARGET_UNAVAILABLE",
         )
         return None
-    deployment = await session.scalar(
-        select(ModelDeployment).where(
-            ModelDeployment.organization_id == prepared.tenant_id,
-            ModelDeployment.alias == alias,
-        )
-    )
-    base_url = None
-    if (
-        deployment is not None
-        and deployment.enabled
-        and deployment.provider == str(prepared.provider)
-        and not unhealthy_seconds_left(deployment)
-    ):
-        try:
-            base_url = validate_deployment_url(deployment.base_url)
-        except ValueError:
-            pass
-    if deployment is None or base_url is None:
-        skip_attempt(
-            prepared, candidate.reason, candidate.rule_id, "ATTEMPT_TARGET_UNAVAILABLE"
-        )
-        return None
-    kind: Literal["internal", "external"] = (
-        "internal"
-        if deployment.deployment_kind == "internal"
-        and internal_origin_approved(base_url)
-        else "external"
-    )
+    provider_target, kind = found
     return Target(
-        provider_target=deployment_target(deployment, base_url),
+        provider_target=provider_target,
         deployment_kind=kind,
         reason=candidate.reason,
         rule_id=candidate.rule_id,

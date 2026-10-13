@@ -185,6 +185,35 @@ Anthropic request with `thinking.type` `enabled` or `adaptive`, a `temperature` 
 `top_k` pin records `skip`, `RULE_PIN_INCOMPATIBLE` and changes nothing, since
 Anthropic refuses those parameters with thinking.
 
+### Route rules
+
+A `route` rule moves a conversation from the model the client names to a cheaper or
+stronger registered alias of the same provider (`match: {"from", "to", "when"}`, action
+`route`). It is evaluated by the deployment resolver, before admission and privacy, and
+only for tenants whose rule set holds one: enforced rules first, then monitor rules,
+each in rule-set order; the first whose scope and `from` match and whose `when` holds
+decides. Its conditions read the conversation's first turn only (system and developer
+instructions plus the first user message), so every turn of one conversation gets the
+same decision. Token counting, embeddings and Responses requests the provider stores
+(`store` not `false`, `previous_response_id`, `conversation`) get none.
+
+| State | Outcome in `route_decision` | Effect |
+| --- | --- | --- |
+| `monitor` | `would_route` | none |
+| `enforced` | `routed` | the request takes `to`'s deployment; the client's model name stays the requested model |
+| `enforced` | `not_allowed_for_key` | none: the key's model allowlist lacks `to` |
+| `enforced` | `target_unavailable` | none: `to` is disabled, unhealthy, of another provider or at an unapproved origin |
+
+Neither refusal of the target is an error for the caller. Every decision enters
+`rule_matches` with count 1 and its `rule.<id>` verdict, and counts in
+`shim_route_decisions_total{state, outcome}`. Admission, destination rules, privacy
+and everything after run against the chosen target. A `PUT` refuses with 422
+`RULE_MATCH_INVALID` a `to` that is not a registered alias, or one of another provider
+than a registered `from` alias. A `route` rule with a `match.on` value belongs to
+another feature (shadow copies, degrade, attempt triggers) and is skipped here with no
+verdict. Enforcing a route rule, or changing an enforced one, is a relaxing change for
+[four eyes](#four-eyes); moving it back to monitor or deleting it tightens.
+
 Rules are evaluated in the `rules` stage, after the base privacy decision, which
 wins when both refuse. The verdict of each matched rule:
 
@@ -196,6 +225,7 @@ wins when both refuse. The verdict of each matched rule:
 | enforced `mask` | `mask` | `RULE_MASKED` |
 | enforced `warn` | `allow` | `RULE_WARN`, and the `RULE_WARN` response warning |
 | enforced `set` (parameter pin) | `allow` | `RULE_SET`; `skip` with `RULE_PIN_SHADOWED` or `RULE_PIN_INCOMPATIBLE` when it does not apply |
+| enforced `route` | `allow` | `RULE_ROUTE`; the outcome is in `route_decision` |
 | enforced `require_approval` | `allow` / `deny` / `error` | `RULE_APPROVED`, `APPROVAL_REQUIRED`, `APPROVAL_REJECTED`, `APPROVAL_QUEUE_FULL`, `APPROVAL_UNAVAILABLE` |
 | evaluation timed out, enforced `mask`, `block` or `require_approval` | `deny` | `RULE_BLOCKED` |
 | evaluation timed out, any other rule | `error` | `RULE_EVALUATION_TIMEOUT` |

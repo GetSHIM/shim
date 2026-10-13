@@ -16,7 +16,12 @@ from shim_enterprise.policy.resources import REGISTRY
 from shim_enterprise.rules.models import OrganizationRuleSet, RulePreview
 from shim_enterprise.rules.preview import preview_digest
 from shim_enterprise.rules.resource import RULES
-from shim_enterprise.tenants.models import Organization, User
+from shim_enterprise.tenants.models import (
+    ModelDeployment,
+    Organization,
+    ProviderSecret,
+    User,
+)
 from shim.rules import Rule
 
 MANAGEMENT = "/api/v1/management"
@@ -389,3 +394,126 @@ async def test_a_restore_brings_back_a_deleted_enforced_rule_without_a_preview(
         )
         == 0
     )
+
+
+def _route_rule(state: str = "monitor", **match) -> dict:
+    return {
+        "id": "cheap_start",
+        "name": "Short starts",
+        "kind": "route",
+        "action": "route",
+        "state": state,
+        "match": {"from": ["strong"], "to": "cheap", **match},
+    }
+
+
+def _route_state(state: str = "monitor", **match) -> dict:
+    return Rule.model_validate(_route_rule(state, **match)).model_dump(
+        mode="json", exclude={"id"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "risk"),
+    [
+        # A route rule moves requests: enforcing it is what needs a second look.
+        (None, _route_state("enforced"), "relaxing"),
+        (None, _route_state(), "neutral"),
+        (_route_state(), _route_state("enforced"), "relaxing"),
+        (_route_state("enforced"), _route_state(), "tightening"),
+        (_route_state("enforced"), None, "tightening"),
+        (_route_state(), None, "neutral"),
+        (_route_state("enforced"), _route_state("enforced", to="cheaper"), "relaxing"),
+        (
+            _route_state("enforced"),
+            {**_route_state("enforced"), "name": "R"},
+            "neutral",
+        ),
+        (_route_state(), _route_state(to="cheaper"), "neutral"),
+    ],
+)
+def test_each_route_rule_change_classifies(before, after, risk) -> None:
+    assert RULES.classify(before, after) == risk
+
+
+async def _aliases(db, organization_id: UUID, providers: dict[str, str]) -> None:
+    for alias, provider in providers.items():
+        secret = ProviderSecret(
+            id=uuid4(),
+            organization_id=organization_id,
+            provider=provider,
+            secret_ref=f"reference-{alias}",
+            secret_backend="fernet",
+            secret_version="v2",
+            masked_key="masked",
+        )
+        db.add(secret)
+        await db.flush()
+        db.add(
+            ModelDeployment(
+                organization_id=organization_id,
+                alias=alias,
+                provider=provider,
+                upstream_model=f"{alias}-model",
+                base_url="https://a.internal/v1",
+                provider_secret_id=secret.id,
+                timeout_seconds=5,
+                deployment_kind="internal",
+                declared_version="sha256:operator-declared",
+                owner="Platform",
+                enabled=True,
+            )
+        )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_a_route_target_must_be_a_registered_alias_of_the_same_provider(
+    db,
+) -> None:
+    owner = (await _organization(db))["owner"]
+    await _aliases(
+        db,
+        owner.organization_id,
+        {"strong": "openai", "cheap": "openai", "sonnet": "anthropic"},
+    )
+
+    responses = [
+        await _put(db, owner, [_route_rule(**match)])
+        for match in (
+            {"to": "unregistered"},
+            {"to": "sonnet"},
+            {"from": ["strong", "gpt-5-catalog"], "to": "cheap"},
+        )
+    ]
+
+    for refused in responses[:2]:
+        assert refused.status_code == 422, refused.text
+        assert (refused.json()["detail"]["code"], refused.json()["detail"]["path"]) == (
+            "RULE_MATCH_INVALID",
+            "rules[0].match.to",
+        )
+    assert responses[2].status_code == 200, responses[2].text
+
+
+@pytest.mark.asyncio
+async def test_four_eyes_refuses_a_put_that_enforces_a_route_rule(db) -> None:
+    users = await _organization(db, "admin")
+    owner = users["owner"]
+    tenant = owner.organization_id
+    await _aliases(db, tenant, {"strong": "openai", "cheap": "openai"})
+    await _put(db, owner, [_route_rule()])
+    await _call(
+        db,
+        owner,
+        "PATCH",
+        f"{MANAGEMENT}/gateway-settings",
+        json={"four_eyes": "relaxing"},
+    )
+
+    enforced = await _put(db, owner, [_route_rule("enforced")])
+
+    assert enforced.status_code == 409, enforced.text
+    assert enforced.json()["detail"]["code"] == "CHANGE_REQUIRES_APPROVAL"
+    [rule] = await _stored(db, tenant)
+    assert rule["state"] == "monitor"

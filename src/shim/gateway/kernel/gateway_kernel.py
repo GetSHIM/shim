@@ -140,7 +140,9 @@ class GatewayKernel:
         usage: UsageLifecycle,
         heartbeat_interval_seconds: float = 30,
         output_hash_salt: str | None = None,
-        prepare_inference: Callable[[PreparedInference], Awaitable[PreparedInference]]
+        prepare_inference: Callable[
+            [PreparedInference, Mapping[str, str]], Awaitable[PreparedInference]
+        ]
         | None = None,
         approval_gate: ApprovalGate | None = None,
         honor_trace_parent: bool = False,
@@ -264,7 +266,7 @@ class GatewayKernel:
             prepared_observer(prepared)
         if self.prepare_inference is not None:
             try:
-                prepared = await self.prepare_inference(prepared)
+                prepared = await self.prepare_inference(prepared, invocation.headers)
             except BaseException:
                 if not any(
                     verdict.outcome in {"deny", "error"}

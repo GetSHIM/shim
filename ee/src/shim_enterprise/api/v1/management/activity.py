@@ -177,6 +177,11 @@ _OutcomeFilter = Annotated[
         "recorded outcome (failed, rejected or older rows)."
     ),
 ]
+_RouteOutcomeFilter = Annotated[
+    Literal["routed", "would_route", "not_allowed_for_key", "target_unavailable"]
+    | None,
+    Query(description="What a route rule decided at the conversation start."),
+]
 _SoftRefusalFilter = Annotated[
     bool | None,
     Query(
@@ -306,8 +311,11 @@ class RequestActivityView(BaseModel):
     )
     route_decision: dict[str, Any] | None = Field(
         default=None,
-        description="Where a tenant rule sent the request after privacy; null "
-        "when no rule chose its target.",
+        description="Where a route rule sent, or would have sent, the request: "
+        "rule_id, state, from, to, reason, conversation_id and outcome (routed, "
+        "would_route, not_allowed_for_key, target_unavailable), with the earlier "
+        "decision under previous when a rule moved it again after privacy; null "
+        "when no rule decided.",
     )
     transforms_applied: list[dict[str, Any]] | None = Field(
         default=None,
@@ -410,6 +418,7 @@ async def list_requests(
     approval_id: _ApprovalFilter = None,
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
+    route_outcome: _RouteOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -436,6 +445,7 @@ async def list_requests(
         approval_id=approval_id,
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
+        route_outcome=route_outcome,
         soft_refusal=soft_refusal,
     )
     summary_row = (
@@ -605,6 +615,7 @@ async def export_requests(
     approval_id: _ApprovalFilter = None,
     attempt_group_id: _AttemptGroupFilter = None,
     completion_outcome: _OutcomeFilter = None,
+    route_outcome: _RouteOutcomeFilter = None,
     soft_refusal: _SoftRefusalFilter = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
@@ -629,6 +640,7 @@ async def export_requests(
         approval_id=approval_id,
         attempt_group_id=attempt_group_id,
         completion_outcome=completion_outcome,
+        route_outcome=route_outcome,
         soft_refusal=soft_refusal,
     )
     rows_statement = _request_rows_statement(tenant_id, filters)
@@ -805,6 +817,7 @@ async def _request_filters(
     approval_id: UUID | None = None,
     attempt_group_id: str | None = None,
     completion_outcome: CompletionOutcomeFilter | None = None,
+    route_outcome: str | None = None,
     soft_refusal: bool | None = None,
 ) -> list[Any]:
     start_at = _aware(start) if start is not None else None
@@ -902,6 +915,10 @@ async def _request_filters(
             outcome.is_(None)
             if completion_outcome == "none"
             else outcome == completion_outcome
+        )
+    if route_outcome is not None:
+        filters.append(
+            RequestLog.details.contains({"route_decision": {"outcome": route_outcome}})
         )
     if soft_refusal is not None:
         lifecycle = aliased(RequestLifecycle)

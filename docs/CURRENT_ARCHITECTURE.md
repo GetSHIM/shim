@@ -324,7 +324,10 @@ names entity types: for a request in its scope the privacy stage detects them,
 masks them under an enforced `mask` rule, and records the matches for the decision
 point. The `request_limit` kind (`src/shim/rules/request_limit.py`) is evaluated in
 admission before the rate limits, where an enforced block refuses; token counting is
-exempt. The `parameter_pin` kind (`src/shim/rules/parameter_pin.py`) is evaluated in
+exempt. The `route` kind (`src/shim/rules/route.py`) is evaluated at the resolver
+point, which only enterprise has: the `prepare_inference` hook, called with the
+request headers, reads the conversation's first turn (`start_view`) and may give the
+request another registry target before admission. The `parameter_pin` kind (`src/shim/rules/parameter_pin.py`) is evaluated in
 the settings band (`src/shim/gateway/pipeline/settings_band.py`), a kernel stage
 after the token-count branch and before `record_privacy`: it runs only when a pin
 is in scope for the request's protocol or a band setting is on, sets

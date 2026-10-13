@@ -376,11 +376,18 @@ row carrying it, and the attempt that served the client is the highest
 `attempt_number` that completed. Each row has its own tokens and cost; an extra
 attempt reserves no daily or monthly request unit. The request list, its CSV and
 `GET /api/v1/management/requests?attempt_group_id=<request id>` (both the first row
-and the later ones) carry them. `route_decision` is set when a tenant rule chose the
-request's target after privacy: `rule_id`, `state`, `from` and `to` (deployment ids,
-or `catalog`), `reason`, `conversation_id` and `outcome`, with an earlier decision of
-the same request under `previous` (one level); `deployment_kind` and `deployment_id`
-are then rewritten in the same update. Absent otherwise.
+and the later ones) carry them. `route_decision` is set when a
+[route rule](POLICY_DECISIONS.md#route-rules) decided at the conversation start,
+written at reservation: `rule_id`, `state`, `from` (the model the client named), `to`
+(the rule's alias), `reason` (the first `when` condition that matched, or `always`),
+`conversation_id` (the `X-Shim-Conversation-Id` header, or 16 hex characters of a keyed
+digest of the first turn) and `outcome` (`routed`, `would_route`,
+`not_allowed_for_key` or `target_unavailable`). When a tenant rule moves the request
+again after privacy, that decision replaces it, with `from` and `to` as deployment ids
+(or `catalog`), `conversation_id` null, and the earlier decision under `previous` (one
+level); `deployment_kind` and `deployment_id` are then rewritten in the same update.
+Absent otherwise. The request list filters on it with
+`route_outcome=<outcome>`; prompt text and keywords are never recorded.
 
 `shadow_of` and `shadow_rule_id` are on the row of a copy of a finished request sent
 to a candidate model: the primary request's id and the rule that chose it. The copy

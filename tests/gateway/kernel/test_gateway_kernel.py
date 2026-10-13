@@ -866,7 +866,8 @@ class _RulesResolver:
 def _rule_set(*rules: tuple[str, str, str]):
     from shim.rules import Rule, RuleSet
 
-    # A kind with no matcher yet, so only the stub below records its matches.
+    # A kind the community kernel never evaluates, so only the stub below records
+    # its matches.
     return RuleSet(
         revision=4,
         rules=tuple(
@@ -1955,7 +1956,7 @@ async def _call_with_destination(
         calls.append(request)
         return httpx.Response(200, json=_RULE_REPLIES[request.url.path])
 
-    async def classify(prepared):
+    async def classify(prepared, _headers):
         return replace(prepared, deployment_kind=kind)
 
     events = io.StringIO()

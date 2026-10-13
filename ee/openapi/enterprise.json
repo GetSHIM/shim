@@ -12926,7 +12926,7 @@
                 "type": "null"
               }
             ],
-            "description": "Where a tenant rule sent the request after privacy; null when no rule chose its target.",
+            "description": "Where a route rule sent, or would have sent, the request: rule_id, state, from, to, reason, conversation_id and outcome (routed, would_route, not_allowed_for_key, target_unavailable), with the earlier decision under previous when a rule moved it again after privacy; null when no rule decided.",
             "title": "Route Decision"
           },
           "rule_matches": {
@@ -23990,6 +23990,30 @@
             }
           },
           {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
+            }
+          },
+          {
             "description": "Whether the refusal analyzer found a text refusal in the answer. The field exists only when the tenant enabled the refusal analyzer; answers it did not read match neither value.",
             "in": "query",
             "name": "soft_refusal",
@@ -24369,6 +24393,30 @@
               ],
               "description": "How the answer ended; none is a request without a recorded outcome (failed, rejected or older rows).",
               "title": "Completion Outcome"
+            }
+          },
+          {
+            "description": "What a route rule decided at the conversation start.",
+            "in": "query",
+            "name": "route_outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "routed",
+                    "would_route",
+                    "not_allowed_for_key",
+                    "target_unavailable"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What a route rule decided at the conversation start.",
+              "title": "Route Outcome"
             }
           },
           {

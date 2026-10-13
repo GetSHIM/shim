@@ -222,6 +222,8 @@ class QuotaReservationCommand:
     shadow_of: str | None = None
     shadow_rule_id: str | None = None
     queue_wait_ms: int | None = None
+    # Where a route rule sent, or would have sent, the conversation's start.
+    route_decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_input_tokens < 0 or self.maximum_output_tokens < 0:
@@ -411,6 +413,11 @@ class DurableAccountingRepository:
                             "shadow_of": command.shadow_of,
                             "shadow_rule_id": command.shadow_rule_id,
                         }
+                    ),
+                    **(
+                        {}
+                        if command.route_decision is None
+                        else {"route_decision": command.route_decision}
                     ),
                 },
             },

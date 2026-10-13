@@ -116,6 +116,21 @@ placeholder with `pricing_resolution=unknown`, and usage reports carry
 completeness counters. A monetary provider limit rejects unpriced inference
 instead of treating it as free. Token and request quotas still apply.
 
+## Routing rules
+
+A tenant [route rule](POLICY_DECISIONS.md#route-rules) can serve a conversation from
+another registered alias of the same provider than the one the client names, chosen
+from the conversation's first turn: its length, tools, media, structured output or
+keywords. The resolver applies it after the client's alias passed its own checks
+(key allowlist, enabled, provider, health, origin) and checks the target the same way;
+a target the key may not use or that cannot serve leaves the request on the client's
+alias. The client's model name stays the requested model in records; the answer's
+`model` is the target's upstream model. What is never routed: token counting,
+embeddings, and Responses requests the provider stores (`store` not `false`, or a
+`previous_response_id` or `conversation`), since that conversation's state lives where
+it started. New route rules start in `monitor`, which only records where a request
+would have gone. Recipe: [Send simple requests to a cheaper model](COOKBOOK.md#send-simple-requests-to-a-cheaper-model).
+
 ## The inventory
 
 `GET /api/v1/management/model-inventory?start=…&end=…` (owners, admins and

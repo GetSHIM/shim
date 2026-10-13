@@ -407,6 +407,9 @@ class DurableAccountingCoordinator:
                         shadow_rule_id=prepared.shadow.rule_id
                         if prepared.shadow
                         else None,
+                        route_decision=None
+                        if prepared.route_decision is None
+                        else dict(prepared.route_decision),
                     ),
                 )
                 await session.commit()

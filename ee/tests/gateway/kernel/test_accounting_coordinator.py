@@ -4225,3 +4225,127 @@ async def test_a_shadow_copy_is_its_own_row_with_no_request_unit(
     )
     assert page.items[0].shadow_of == "req_primary"
     assert row["shadow_of"] == "req_primary"
+
+
+@pytest.mark.asyncio
+async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
+    db, test_api_key, monkeypatch
+) -> None:
+    @asynccontextmanager
+    async def session_scope():
+        yield db
+
+    coordinator = DurableAccountingCoordinator()
+    usage = DurableUsageLifecycle(coordinator, session_scope)
+    started_at = datetime.now(timezone.utc)
+    decision = {
+        "rule_id": "cheap_start",
+        "state": "monitor",
+        "from": "strong",
+        "to": "cheap",
+        "reason": "max_start_chars",
+        "conversation_id": "0123456789abcdef",
+        "outcome": "would_route",
+    }
+
+    def request(route_decision: dict | None) -> SimpleNamespace:
+        prepared = _prepared()
+        prepared.tenant_id = test_api_key.organization_id
+        prepared.api_key_id = test_api_key.id
+        prepared.source_endpoint = "chat.completions"
+        prepared.policy = SimpleNamespace(team=None)
+        prepared.context.started_at = started_at
+        prepared.admission.cost_center = "untagged"
+        prepared.admission.tags = ()
+        prepared.admission.repeat_chain_length = None
+        prepared.privacy = PrivacyOutcome(
+            action=PrivacyAction.DETECTED, pii_detected=False
+        )
+        prepared.route_decision = route_decision
+        return prepared
+
+    # Refused before privacy: the reservation alone carries the decision.
+    refused, plain, moved = request(decision), request(None), request(decision)
+    for prepared in (refused, plain, moved):
+        await usage.admit(prepared, prepared.admission)
+    # A rule moved it again after privacy; the start decision stays under previous.
+    moved.route_decision = {
+        **decision,
+        "state": "enforced",
+        "reason": "fallback",
+        "outcome": "routed",
+        "previous": decision,
+    }
+    for prepared in (plain, moved):
+        await usage.record_privacy(prepared)
+    for prepared in (refused, plain, moved):
+        await usage.fail(prepared, reason="request_aborted")
+    rows = {
+        row.request_id: row.lifecycle_metadata
+        for row in (
+            await db.scalars(
+                select(RequestLifecycle).where(
+                    RequestLifecycle.request_id.in_(
+                        [refused.request_id, plain.request_id, moved.request_id]
+                    )
+                )
+            )
+        ).all()
+    }
+    assert rows[refused.request_id]["route_decision"] == decision
+    assert "route_decision" not in rows[plain.request_id]
+    assert rows[moved.request_id]["route_decision"]["previous"] == decision
+
+    monkeypatch.setattr(analytics_projection, "AsyncSessionLocal", session_scope)
+    for event in (
+        await db.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id.in_(list(rows)),
+                OutboxEvent.event_type.like("analytics.%"),
+            )
+        )
+    ).all():
+        await analytics_projection.project_request(OutboxMessage.from_event(event))
+    filters = dict(
+        start=started_at - timedelta(minutes=1),
+        end=None,
+        status_filter=None,
+        model=None,
+        request_id=None,
+        pii_detected=None,
+        tag=None,
+        cost_center=None,
+        user=SimpleNamespace(
+            id=uuid4(),
+            kind="human",
+            role="owner",
+            custom_role_id=None,
+            organization_id=refused.tenant_id,
+        ),
+        session=db,
+    )
+    listed = {}
+    for outcome in ("would_route", "routed", "target_unavailable"):
+        page = await management.activity.list_requests(
+            **filters, route_outcome=outcome, limit=10, offset=0
+        )
+        listed[outcome] = {item.request_id for item in page.items}
+    exported = await management.activity.export_requests(
+        **filters, route_outcome="would_route"
+    )
+    csv_rows = list(
+        csv.DictReader(
+            io.StringIO(
+                b"".join([chunk async for chunk in exported.body_iterator]).decode(
+                    "utf-8-sig"
+                )
+            )
+        )
+    )
+    assert listed == {
+        "would_route": {refused.request_id},
+        "routed": {moved.request_id},
+        "target_unavailable": set(),
+    }
+    [row] = csv_rows
+    assert json.loads(row["route_decision"]) == decision

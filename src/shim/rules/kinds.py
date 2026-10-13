@@ -12,6 +12,7 @@ from shim.rules.destination import DestinationMatch
 from shim.rules.parameter_pin import ParameterPinMatch
 from shim.rules.record_set import RecordSetMatch
 from shim.rules.request_limit import RequestLimitMatch
+from shim.rules.route import RouteMatch
 from shim.rules.model import (
     LIMITS,
     Rule,
@@ -55,7 +56,7 @@ KINDS: dict[RuleKind, KindSpec] = {
     "parameter_pin": KindSpec(
         "settings", ("monitor", "warn", "set", "block"), ParameterPinMatch
     ),
-    "route": KindSpec("resolver", ("route",)),
+    "route": KindSpec("resolver", ("route",), RouteMatch),
 }
 
 
