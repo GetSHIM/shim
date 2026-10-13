@@ -29,6 +29,11 @@ _Chars = Annotated[int, Field(ge=1, le=10_000_000)]
 # Characters of the start view the keywords are looked for in.
 KEYWORD_WINDOW = 20_000
 _CONVERSATION_HEADER = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+# The `on` values other features own: E63 unavailable, E64 capacity, E65
+# format_invalid, E66 split, E67 degrade, E68 size, E70 shadow.
+ROUTE_TRIGGERS = frozenset(
+    {"unavailable", "capacity", "format_invalid", "split", "degrade", "size", "shadow"}
+)
 
 
 class RouteWhen(BaseModel):
@@ -81,8 +86,8 @@ class RouteMatch(BaseModel):
                 mode="json", by_alias=True, exclude_none=True
             )
         on = data["on"]
-        if not isinstance(on, str) or not 1 <= len(on) <= 32:
-            raise ValueError("on is a name of 1 to 32 characters")
+        if not isinstance(on, str) or on not in ROUTE_TRIGGERS:
+            raise ValueError(f"on is one of {', '.join(sorted(ROUTE_TRIGGERS))}")
         return data
 
 
@@ -250,10 +255,14 @@ def route_reason(
 
 
 def conversation_id(sent: str | None, key: bytes, start_text: str) -> str:
-    """The client's `X-Shim-Conversation-Id`, else a keyed digest of the first turn."""
+    """A keyed digest of the client's `X-Shim-Conversation-Id`, else of the first turn.
+
+    Never the header itself: a client may put a name or an identifier in it.
+    """
 
     if sent is not None and _CONVERSATION_HEADER.fullmatch(sent):
-        return sent
-    # The resolver runs before admission refuses a lone surrogate with a 400.
-    digest = hmac.new(key, start_text.encode("utf-8", "surrogatepass"), hashlib.sha256)
-    return digest.hexdigest()[:16]
+        material = b"header\0" + sent.encode("ascii")
+    else:
+        # The resolver runs before admission refuses a lone surrogate with a 400.
+        material = b"start\0" + start_text.encode("utf-8", "surrogatepass")
+    return hmac.new(key, material, hashlib.sha256).hexdigest()[:16]

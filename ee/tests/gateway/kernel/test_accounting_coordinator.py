@@ -4391,7 +4391,11 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
             )
         ).all()
     }
-    assert rows[refused.request_id]["route_decision"] == decision
+    # Refused before privacy: the first-turn digest is never written (night 3 M6).
+    assert rows[refused.request_id]["route_decision"] == {
+        **decision,
+        "conversation_id": None,
+    }
     assert "route_decision" not in rows[plain.request_id]
     assert rows[moved.request_id]["route_decision"]["previous"] == decision
     # A personal-data request keeps the decision without the first-turn digest.
@@ -4453,4 +4457,4 @@ async def test_a_route_decision_is_stored_at_reservation_and_filters_the_list(
         "target_unavailable": set(),
     }
     [row] = csv_rows
-    assert json.loads(row["route_decision"]) == decision
+    assert json.loads(row["route_decision"]) == {**decision, "conversation_id": None}

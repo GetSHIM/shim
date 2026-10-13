@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import re
 
 import pytest
@@ -57,12 +55,18 @@ def test_the_match_is_checked_and_a_foreign_on_value_is_kept_as_sent() -> None:
         {"from": ["strong"], "to": "cheap", "when": {"keywords_any": ["x"] * 51}},
         {"from": ["strong"], "to": "cheap", "extra": 1},
         {"on": 5},
+        {"on": ["shadow"]},
+        # A typo would be an enforced rule that never runs (night 3 L7).
+        {"on": "fallbak", "to": "spare"},
+        {"on": "fallback", "to": "spare"},
     ):
         with pytest.raises(ValidationError):
             RouteMatch.model_validate(refused)
     foreign = {"on": "shadow", "to": "candidate", "sample": 0.1}
     assert RouteMatch.model_validate(foreign).model_dump() == foreign
     assert not owned(foreign)
+    for on in ("unavailable", "capacity", "format_invalid", "split", "degrade", "size"):
+        assert not owned(RouteMatch.model_validate({"on": on}).model_dump())
 
 
 def test_a_route_rule_is_available_with_its_one_action() -> None:
@@ -240,13 +244,23 @@ def test_provider_kept_conversations_and_other_endpoints_get_no_view() -> None:
         assert start_view(_chat("x"), protocol) is None
 
 
-def test_the_conversation_id_is_the_header_or_a_keyed_digest() -> None:
+def test_the_conversation_id_is_a_keyed_digest_of_the_header_or_the_first_turn() -> (
+    None
+):
     key = b"k" * 32
-    digest = hmac.new(key, b"Be brief.", hashlib.sha256).hexdigest()[:16]
+    header = "ahmet.yilmaz.10000000146"
+    named = conversation_id(header, key, "Be brief.")
+    started = conversation_id(None, key, "Be brief.")
 
-    assert conversation_id("app-7:conv.42_x", key, "Be brief.") == "app-7:conv.42_x"
-    assert conversation_id(None, key, "Be brief.") == digest
+    # The header can carry a name or an identifier: only its digest is kept.
+    for value in (named, started, conversation_id(None, key, "a\ud800b")):
+        assert re.fullmatch(r"[0-9a-f]{16}", value)
+    assert named == conversation_id(header, key, "Another start.")
+    assert named != conversation_id("app-7:conv.42_x", key, "Be brief.")
+    # A header equal to some first turn's text never joins that conversation.
+    assert conversation_id("Be.brief", key, "x") != conversation_id(
+        None, key, "Be.brief"
+    )
     for ignored in ("has space", "x" * 129, "", "ünicode"):
-        assert conversation_id(ignored, key, "Be brief.") == digest
-    assert conversation_id(None, b"o" * 32, "Be brief.") != digest
-    assert re.fullmatch(r"[0-9a-f]{16}", conversation_id(None, key, "a\ud800b"))
+        assert conversation_id(ignored, key, "Be brief.") == started
+    assert conversation_id(header, b"o" * 32, "Be brief.") != named

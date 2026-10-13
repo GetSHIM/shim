@@ -7,6 +7,7 @@ from decimal import Decimal
 import hashlib
 import io
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -1879,7 +1880,7 @@ _FOREIGN = [
         "state": "enforced",
         "match": {"on": on, "to": "internal-b"},
     }
-    for on in ("shadow", "degrade", "unavailable", "capacity", "split", "size", "lane")
+    for on in ("shadow", "degrade", "unavailable", "capacity", "split", "size")
 ]
 
 
@@ -1953,6 +1954,7 @@ async def test_a_monitor_rule_records_where_it_would_route_and_changes_nothing(
     )
 
     assert hosts == ["a.internal", "a.internal"]
+    conversation = decisions[0].pop("conversation_id")
     assert decisions == [
         {
             "rule_id": "cheap_start",
@@ -1960,11 +1962,20 @@ async def test_a_monitor_rule_records_where_it_would_route_and_changes_nothing(
             "from": "internal-a",
             "to": "internal-b",
             "reason": "max_start_chars",
-            "conversation_id": "conv-1",
             "outcome": "would_route",
         },
         None,
     ]
+    # The header is kept only as its keyed digest, the same one for every turn.
+    assert re.fullmatch(r"[0-9a-f]{16}", conversation)
+    _, [again], _ = await _routed(
+        db,
+        test_api_key,
+        _rules(_route(when={"max_start_chars": 400})),
+        "another short start",
+        headers={"x-shim-conversation-id": "conv-1"},
+    )
+    assert again["conversation_id"] == conversation
     assert rows[0].lifecycle_metadata["rule_matches"] == [
         {
             "rule_id": "cheap_start",

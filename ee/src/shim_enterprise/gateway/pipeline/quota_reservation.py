@@ -320,6 +320,22 @@ class AccountingPolicyLoader:
         return digest[:24]
 
 
+def _route_record(
+    prepared: PreparedInference, *, keep_conversation: bool
+) -> dict[str, Any] | None:
+    """The route decision to store; its conversation id may be a keyed digest of the
+    first turn's text, so it is kept only for a request privacy found nothing in."""
+
+    if prepared.route_decision is None:
+        return None
+    record = dict(prepared.route_decision)
+    if not keep_conversation:
+        record["conversation_id"] = None
+        if isinstance(record.get("previous"), Mapping):
+            record["previous"] = {**record["previous"], "conversation_id": None}
+    return record
+
+
 class DurableAccountingCoordinator:
     """Own short accounting transactions at kernel stage boundaries."""
 
@@ -410,9 +426,8 @@ class DurableAccountingCoordinator:
                         shadow_rule_id=prepared.shadow.rule_id
                         if prepared.shadow
                         else None,
-                        route_decision=None
-                        if prepared.route_decision is None
-                        else dict(prepared.route_decision),
+                        # Before privacy: the first-turn digest waits for its outcome.
+                        route_decision=_route_record(prepared, keep_conversation=False),
                     ),
                 )
                 await session.commit()
@@ -584,17 +599,9 @@ class DurableAccountingCoordinator:
             raise ValueError("privacy outcome is required")
         privacy_facts = REQUEST_PRIVACY_RETENTION.durable_facts(prepared.privacy)
         bulk = prepared.privacy.bulk_disclosure
-        route_decision = (
-            None if prepared.route_decision is None else dict(prepared.route_decision)
+        route_decision = _route_record(
+            prepared, keep_conversation=not privacy_facts["pii_detected"]
         )
-        if route_decision is not None and privacy_facts["pii_detected"]:
-            # The conversation id may be a keyed hash of the first turn's text.
-            route_decision["conversation_id"] = None
-            if isinstance(route_decision.get("previous"), Mapping):
-                route_decision["previous"] = {
-                    **route_decision["previous"],
-                    "conversation_id": None,
-                }
         try:
             lifecycle = await RequestLifecycleRepository.update(
                 session,
